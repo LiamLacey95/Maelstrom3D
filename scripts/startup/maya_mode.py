@@ -263,8 +263,69 @@ def _submode(layout, text, mode, icon):
     op.mesh_select_mode = mode
 
 
+# Everything Maya offers for a component selection: (label, idname, icon, props).
+COMPONENT_TOOLS = {
+    'VERT': ("Vertex Tools", (
+        ("Extrude Vertex", "mesh.extrude_vertices_move", 'VERTEXSEL', {}),
+        ("Chamfer Vertex", "mesh.bevel", 'MOD_BEVEL', {"affect": 'VERTICES', "offset_type": 'PERCENT'}),
+        ("Connect", "maya.connect", 'MOD_EDGESPLIT', {}),
+        ("Merge", "mesh.remove_doubles", 'AUTOMERGE_ON', {"threshold": 0.001}),
+        ("Merge to Center", "mesh.merge", 'PIVOT_MEDIAN', {"type": 'CENTER'}),
+        ("Target Weld (to last selected)", "mesh.merge", 'AUTOMERGE_OFF', {"type": 'LAST'}),
+        ("Average Vertices", "mesh.vertices_smooth", 'MOD_SMOOTH', {}),
+        ("Slide", "transform.vert_slide", 'ARROW_LEFTRIGHT', {}),
+        ("Detach (Rip)", "mesh.rip_move", 'MOD_EXPLODE', {}),
+        ("Create Polygon", "mesh.edge_face_add", 'SNAP_FACE', {}),
+        ("Delete Vertex", "mesh.dissolve_verts", 'X', {}),
+    )),
+    'EDGE': ("Edge Tools", (
+        ("Extrude Edge", "mesh.extrude_edges_move", 'EDGESEL', {}),
+        ("Bevel", "mesh.bevel", 'MOD_BEVEL', {"offset_type": 'PERCENT'}),
+        ("Bridge", "mesh.bridge_edge_loops", 'MOD_LATTICE', {}),
+        ("Connect", "maya.connect", 'MOD_EDGESPLIT', {}),
+        ("Insert Edge Loop", "mesh.loopcut_slide", 'MOD_EDGESPLIT', {}),
+        ("Offset Edge Loop", "mesh.offset_edge_loops_slide", 'SNAP_EDGE', {}),
+        ("Slide Edge", "transform.edge_slide", 'ARROW_LEFTRIGHT', {}),
+        ("Collapse", "mesh.merge", 'FULLSCREEN_EXIT', {"type": 'COLLAPSE'}),
+        ("Merge to Center", "mesh.merge", 'PIVOT_MEDIAN', {"type": 'CENTER'}),
+        ("Fill Hole", "maya.fill_hole", 'SNAP_FACE', {}),
+        ("Spin Edge", "mesh.edge_rotate", 'FILE_REFRESH', {}),
+        ("Crease", "transform.edge_crease", 'MOD_SMOOTH', {}),
+        ("Soften Edge", "mesh.mark_sharp", 'SHADING_SOLID', {"clear": True}),
+        ("Harden Edge", "mesh.mark_sharp", 'SHADING_WIRE', {}),
+        ("Cut UVs (Mark Seam)", "mesh.mark_seam", 'UV', {}),
+        ("Detach", "mesh.edge_split", 'MOD_EXPLODE', {}),
+        ("Delete Edge", "mesh.dissolve_edges", 'X', {}),
+    )),
+    'FACE': ("Face Tools", (
+        ("Extrude Face", "view3d.edit_mesh_extrude_move_normal", 'FACESEL', {}),
+        ("Extrude Offset (Inset)", "mesh.inset", 'MOD_SOLIDIFY', {}),
+        ("Bevel", "mesh.bevel", 'MOD_BEVEL', {"offset_type": 'PERCENT'}),
+        ("Bridge", "mesh.bridge_edge_loops", 'MOD_LATTICE', {}),
+        ("Poke", "mesh.poke", 'DECORATE', {}),
+        ("Wedge (Spin)", "mesh.spin", 'MOD_SCREW', {}),
+        ("Add Divisions", "mesh.subdivide", 'MOD_SUBSURF', {}),
+        ("Triangulate", "mesh.quads_convert_to_tris", 'MOD_TRIANGULATE', {}),
+        ("Quadrangulate", "mesh.tris_convert_to_quads", 'MESH_GRID', {}),
+        ("Merge to Center", "mesh.merge", 'PIVOT_MEDIAN', {"type": 'CENTER'}),
+        ("Duplicate", "mesh.duplicate_move", 'DUPLICATE', {}),
+        ("Extract", "mesh.separate", 'MOD_EXPLODE', {"type": 'SELECTED'}),
+        ("Detach", "mesh.split", 'UNLINKED', {}),
+        ("Flip Normal", "mesh.flip_normals", 'NORMALS_FACE', {}),
+        ("Planar UV", "uv.project_from_view", 'UV', {}),
+        ("Delete Face", "mesh.delete", 'X', {"type": 'FACE'}),
+    )),
+}
+
+
+def _component_kind(context):
+    """Face > edge > vertex, from the active select mode (Maya shows the tools for what is selected)."""
+    vert, edge, face = context.tool_settings.mesh_select_mode
+    return 'FACE' if face else 'EDGE' if edge else 'VERT'
+
+
 class MAYA_MT_marking_menu(Menu):
-    """Right-click marking menu (component modes)"""
+    """Right-click marking menu: component modes, plus every tool for the selected component type"""
     bl_label = "Marking Menu"
 
     def draw(self, context):
@@ -275,25 +336,35 @@ class MAYA_MT_marking_menu(Menu):
         # Pie order: W, E, S, N, NW, NE, SW, SE.
         if is_mesh:
             _submode(pie, "Vertex", {'VERT'}, 'VERTEXSEL')
+            _submode(pie, "Face", {'FACE'}, 'FACESEL')
         else:
             pie.separator()
-        pie.operator("object.mode_set", text="Object Mode", icon='OBJECT_DATAMODE').mode = 'OBJECT'
+            pie.separator()
+        if edit:
+            label, tools = COMPONENT_TOOLS[_component_kind(context)]
+            box = pie.box().column(align=True)
+            box.label(text=label)
+            for label, idname, icon, props in tools:
+                o = box.operator(idname, text=label, icon=icon)
+                for k, v in props.items():
+                    setattr(o, k, v)
+        else:
+            pie.operator("maya.group", text="Group", icon='EMPTY_AXIS')
         if is_mesh:
-            _submode(pie, "Face", {'FACE'}, 'FACESEL')
             _submode(pie, "Edge", {'EDGE'}, 'EDGESEL')
             _submode(pie, "Multi", {'VERT', 'EDGE', 'FACE'}, 'MOD_WIREFRAME')
         else:
             pie.separator()
             pie.separator()
-            pie.separator()
+        pie.operator("object.mode_set", text="Object Mode", icon='OBJECT_DATAMODE').mode = 'OBJECT'
         if edit:
-            pie.operator("mesh.select_all", text="Select All", icon='SELECT_EXTEND').action = 'SELECT'
             pie.menu("VIEW3D_MT_edit_mesh_context_menu", text="More...", icon='COLLAPSEMENU')
-            pie.operator("mesh.select_all", text="Invert Selection", icon='SELECT_DIFFERENCE').action = 'INVERT'
+            col = pie.column(align=True)
+            col.operator("mesh.select_all", text="Select All", icon='SELECT_EXTEND').action = 'SELECT'
+            col.operator("mesh.select_all", text="Invert Selection", icon='SELECT_DIFFERENCE').action = 'INVERT'
         else:
-            pie.operator("object.select_all", text="Select All", icon='SELECT_EXTEND').action = 'SELECT'
             pie.menu("VIEW3D_MT_object_context_menu", text="More...", icon='COLLAPSEMENU')
-            pie.operator("maya.group", text="Group", icon='EMPTY_AXIS')
+            pie.operator("object.select_all", text="Select All", icon='SELECT_EXTEND').action = 'SELECT'
 
 
 class MAYA_MT_poly_tools(Menu):
@@ -440,6 +511,158 @@ class MAYA_MT_create_pie(Menu):
         pie.menu("VIEW3D_MT_light_add", text="Lights", icon='LIGHT')
 
 
+class MAYA_OT_gizmo_extrude(Operator):
+    """Maya Shift+drag on the move manipulator: extrude the components along the dragged axis"""
+    bl_idname = "maya.gizmo_extrude"
+    bl_label = "Extrude (Shift+Drag)"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'EDIT_MESH'
+
+    def invoke(self, context, _event):
+        gizmo_group = getattr(context, "gizmo_group", None)
+        gz = next((g for g in gizmo_group.gizmos if g.is_highlight), None) if gizmo_group else None
+        idname = getattr(gz, "bl_idname", "") if gz else ""
+        if "arrow" in idname:
+            constraint = (False, False, True)       # Arrow handle: along its axis.
+        elif "primitive" in idname:
+            constraint = (True, True, False)        # Plane handle: in its plane.
+        else:
+            return bpy.ops.view3d.edit_mesh_extrude_move_normal('INVOKE_DEFAULT')
+        return bpy.ops.mesh.extrude_context_move('INVOKE_DEFAULT', TRANSFORM_OT_translate={
+            "orient_type": 'GLOBAL',
+            "orient_matrix": gz.matrix_basis.to_3x3().normalized(),
+            "orient_matrix_type": 'GLOBAL',
+            "constraint_axis": constraint,
+        })
+
+
+class MAYA_OT_pivot_hold(Operator):
+    """Maya D (hold): edit the pivot. Objects move their origin only; components move a custom pivot"""
+    bl_idname = "maya.pivot_hold"
+    bl_label = "Edit Pivot (hold)"
+    bl_options = {'INTERNAL'}
+
+    def invoke(self, context, event):
+        ts = context.tool_settings
+        self.key = event.type
+        self.edit = context.mode == 'EDIT_MESH'
+        if self.edit:
+            self.prev_tool = context.workspace.tools.from_space_view3d_mode(context.mode).idname
+            if ts.transform_pivot_point != 'CURSOR':
+                bpy.ops.view3d.snap_cursor_to_selected()
+                ts.transform_pivot_point = 'CURSOR'
+            bpy.ops.wm.tool_set_by_id(name="builtin.cursor")
+        else:
+            ts.use_transform_data_origin = True
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if event.type != self.key or event.value != 'RELEASE':
+            return {'PASS_THROUGH'}
+        if self.edit:
+            bpy.ops.wm.tool_set_by_id(name=self.prev_tool, space_type='VIEW_3D')
+        else:
+            context.tool_settings.use_transform_data_origin = False
+        return {'FINISHED'}
+
+
+class MAYA_OT_duplicate(Operator):
+    """Maya Duplicate: Ctrl+D copies in place, Shift+D also repeats the last duplicate's move/rotate/scale"""
+    bl_idname = "maya.duplicate"
+    bl_label = "Duplicate"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    with_transform: bpy.props.BoolProperty(name="With Transform")
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'OBJECT' and context.selected_objects
+
+    def execute(self, context):
+        sources = list(context.selected_objects)
+        bpy.ops.object.duplicate()
+        for src, new in zip(sources, context.selected_objects):
+            prev = bpy.data.objects.get(src.get("maya_duplicate_of", ""))
+            if self.with_transform and prev is not None:
+                new.matrix_world = src.matrix_world @ prev.matrix_world.inverted() @ src.matrix_world
+            new["maya_duplicate_of"] = src.name
+        return {'FINISHED'}
+
+
+class MAYA_OT_smooth_levels(Operator):
+    """Maya Page Up / Page Down: more or fewer smooth mesh preview divisions"""
+    bl_idname = "maya.smooth_levels"
+    bl_label = "Smooth Preview Divisions"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    delta: bpy.props.IntProperty(default=1)
+
+    def execute(self, context):
+        for ob in context.selected_objects or [context.active_object]:
+            mod = ob and ob.modifiers.get(SMOOTH_MOD)
+            if mod:
+                mod.levels = max(0, min(6, mod.levels + self.delta))
+        return {'FINISHED'}
+
+
+class MAYA_MT_hotbox(Menu):
+    """Maya hotbox: every menu in one place"""
+    bl_label = "Hotbox"
+
+    def draw(self, context):
+        from maya_ui import COMMON_MENUS, MENU_SETS, MENUS
+        row = self.layout.row()
+        col = row.column()
+        col.label(text="Common")
+        for idname in COMMON_MENUS + ["MAYA_MT_help"]:
+            col.menu(idname)
+        for _key, (label, menus) in MENU_SETS.items():
+            col = row.column()
+            col.label(text=label)
+            for idname in menus:
+                col.menu(idname, text=MENUS[idname][0])
+        col = row.column()
+        col.label(text="Panels")
+        col.operator("screen.region_quadview", text="Four View / Single", icon='VIEW_PERSPECTIVE')
+        col.operator("screen.screen_full_area", text="Maximize Panel", icon='FULLSCREEN_ENTER')
+        col.menu("MAYA_MT_workspaces")
+
+
+class MAYA_OT_space_hotbox(Operator):
+    """Maya Space: tap toggles four views, hold shows the hotbox"""
+    bl_idname = "maya.space_hotbox"
+    bl_label = "Hotbox / Four View"
+    bl_options = {'INTERNAL'}
+
+    HOLD_SECONDS = 0.2
+
+    def invoke(self, context, _event):
+        self.area, self.region = context.area, context.region
+        self.timer = context.window_manager.event_timer_add(self.HOLD_SECONDS, window=context.window)
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if event.type == 'SPACE' and event.value == 'RELEASE':
+            self.finish(context)
+            with context.temp_override(area=self.area, region=self.region):
+                bpy.ops.screen.region_quadview()
+            return {'FINISHED'}
+        if event.type == 'TIMER':
+            self.finish(context)
+            with context.temp_override(area=self.area, region=self.region):
+                bpy.ops.wm.call_menu(name="MAYA_MT_hotbox")
+            return {'FINISHED'}
+        return {'RUNNING_MODAL'}
+
+    def finish(self, context):
+        context.window_manager.event_timer_remove(self.timer)
+
+
 class _MayaDockPanel:
     bl_space_type = 'PROPERTIES'
     bl_region_type = 'WINDOW'
@@ -483,7 +706,7 @@ class PROPERTIES_PT_maya_layer_editor(_MayaDockPanel, Panel):
     def draw(self, context):
         layout = self.layout
         _button(layout, context, "Create Layer from Selected", "object.move_to_collection", 'COLLECTION_NEW',
-                    {"collection_index": 0, "is_new": True, "new_collection_name": "layer1"})
+                    {"is_new": True, "new_collection_name": "layer1"})
         col = layout.column(align=True)
         for lc in context.view_layer.layer_collection.children:
             row = col.row(align=True)
@@ -663,6 +886,12 @@ classes = (
     MAYA_OT_connect,
     MAYA_OT_fill_hole,
     MAYA_OT_snap_hold,
+    MAYA_OT_gizmo_extrude,
+    MAYA_OT_pivot_hold,
+    MAYA_OT_duplicate,
+    MAYA_OT_smooth_levels,
+    MAYA_OT_space_hotbox,
+    MAYA_MT_hotbox,
     MAYA_MT_marking_menu,
     MAYA_MT_poly_tools,
     MAYA_MT_convert_selection_pie,
@@ -678,11 +907,22 @@ classes = (
 )
 
 
+@bpy.app.handlers.persistent
+def hide_viewport_sidebars(*_args):
+    """Maya keeps panels in the right-hand dock, so start with Blender's viewport sidebar closed."""
+    for screen in bpy.data.screens:
+        for area in screen.areas:
+            if area.type == 'VIEW_3D':
+                area.spaces.active.show_region_ui = False
+
+
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    bpy.app.handlers.load_factory_startup_post.append(hide_viewport_sidebars)
 
 
 def unregister():
+    bpy.app.handlers.load_factory_startup_post.remove(hide_viewport_sidebars)
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

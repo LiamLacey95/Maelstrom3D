@@ -60,6 +60,11 @@ for tab, (label, items) in maya_ui.SHELVES.items():
         check(op_ok(it[0], it[2]), "bad shelf op %s %s" % (tab, it[0]))
         check(it[1] in icons, "bad shelf icon %s %s" % (tab, it[1]))
 
+import maya_uv
+for label, items in [*maya_mode.COMPONENT_TOOLS.values(), *maya_uv.UV_TOOLKIT_SECTIONS]:
+    for item_label, idname, icon, props in items:
+        check(op_ok(idname, props), "bad tool %s / %s %s" % (label, item_label, idname))
+        check(icon in icons, "bad tool icon %s / %s %s" % (label, item_label, icon))
 for group in (maya_mode.MTK_SELECT_TOOLS, maya_mode.MTK_MESH, maya_mode.MTK_COMPONENTS, maya_mode.MTK_TOOLS):
     for label, idname, icon, props in group:
         check(op_ok(idname, props), "bad toolkit op %s %s" % (label, idname))
@@ -74,7 +79,6 @@ def find(km, idname, type, **mods):
 check(find("Object Mode", "wm.call_menu_pie", "RIGHTMOUSE", shift=False), "rmb pie object")
 check(find("Mesh", "wm.call_menu_pie", "RIGHTMOUSE", shift=True), "shift rmb pie mesh")
 check(not [k for k in kc.keymaps["Frames"].keymap_items if k.type == 'SPACE'], "space still plays")
-check(find("3D View", "screen.region_quadview", "SPACE"), "space quadview")
 check(find("3D View", "wm.context_set_enum", "FOUR"), "4 wireframe")
 check(find("Object Mode", "maya.smooth_preview", "THREE"), "3 smooth")
 check(not find("Object Mode", "object.mode_set_with_submode", "ONE"), "1 still edit-mode")
@@ -85,6 +89,14 @@ check(find("Mesh", "maya.delete_components", "DEL"), "delete components")
 check(find("Mesh", "view3d.edit_mesh_extrude_move_normal", "E", ctrl=True), "ctrl e extrude")
 check(find("Frames", "screen.keyframe_jump", "PERIOD", shift=False, alt=False), ". next key")
 check(find("3D View", "maya.snap_hold", "V"), "hold v snap")
+check(find("3D View", "maya.space_hotbox", "SPACE", ctrl=False), "space hotbox")
+check(find("Object Mode", "maya.pivot_hold", "D", shift=False, ctrl=False), "d pivot object")
+check(find("Mesh", "maya.pivot_hold", "D", shift=False, ctrl=False), "d pivot mesh")
+check(find("Object Mode", "maya.duplicate", "D", shift=True), "shift d duplicate with transform")
+check(find("Generic Gizmo Maybe Drag", "maya.gizmo_extrude", "LEFTMOUSE", shift=True), "shift drag extrude")
+check(find("Window", "wm.context_set_enum", "F3"), "F3 modeling menu set")
+check(find("UV Editor", "wm.call_menu_pie", "RIGHTMOUSE", shift=False), "uv marking menu")
+check(find("Mesh", "mesh.select_mode", "F11", ctrl=True), "ctrl f11 convert to faces")
 ctrl_click = [k for k in kc.keymaps["3D View"].keymap_items if k.idname == "view3d.select" and k.type == 'LEFTMOUSE'
               and k.ctrl and not k.shift and not k.alt]
 check(ctrl_click and ctrl_click[0].properties.deselect, "ctrl click deselects")
@@ -125,5 +137,30 @@ bpy.ops.object.mode_set(mode='OBJECT')
 check(len(cube.data.polygons) == 5, "delete face")
 bpy.ops.maya.fill_hole()
 check(len(cube.data.polygons) == 6, "fill hole")
+# Maya Shift+D repeats the last duplicate's offset.
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.maya.add_primitive(kind='SPHERE')
+first = bpy.context.active_object
+bpy.ops.maya.duplicate()
+second = bpy.context.active_object
+second.location.x += 2.0
+bpy.context.view_layer.update()
+bpy.ops.maya.duplicate(with_transform=True)
+check(abs(bpy.context.active_object.location.x - 4.0) < 1e-4, "shift d offset")
+
+# UV workflow: cut, unfold, layout, checker on/off.
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.maya.add_primitive(kind='CUBE')
+cube = bpy.context.active_object
+bpy.ops.object.mode_set(mode='EDIT')
+bpy.ops.mesh.select_all(action='SELECT')
+bpy.ops.maya.uv_cut()
+bpy.ops.maya.uv_unfold()
+bpy.ops.object.mode_set(mode='OBJECT')
+check(any(e.use_seam for e in cube.data.edges), "uv cut marks seams")
+bpy.ops.maya.uv_checker()
+check(cube.data.materials[0].name == "mayaUVChecker", "checker on")
+bpy.ops.maya.uv_checker()
+check(len(cube.data.materials) == 0, "checker off restores materials")
 print("FAILS:", fails or "none")
 sys.exit(1 if fails else 0)

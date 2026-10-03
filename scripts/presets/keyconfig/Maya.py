@@ -43,7 +43,17 @@ MAYA_OVERRIDES = {
         ("REMOVE", {"type": 'SPACE', "value": 'PRESS'}, None),
     ],
     "3D View": [
-        _kmi("screen.region_quadview", 'SPACE'),
+        _kmi("maya.space_hotbox", 'SPACE'),
+        _kmi("screen.screen_full_area", 'SPACE', props={"use_hide_panels": True}, ctrl=True),
+        _kmi("view3d.localview", 'L', shift=True),
+        _kmi("maya.snap_hold", 'J', props={"element": 'INCREMENT', "enable": True}),
+        _kmi("maya.snap_hold", 'J', 'RELEASE', props={"element": 'INCREMENT', "enable": False}),
+        _kmi("wm.context_scale_int", 'EQUAL', props={"data_path": "preferences.view.gizmo_size", "value": 1.15}, repeat=True),
+        _kmi("wm.context_scale_int", 'MINUS', props={"data_path": "preferences.view.gizmo_size", "value": 0.87}, repeat=True),
+        _kmi("wm.context_toggle", 'M', props={"data_path": "space_data.show_region_header"}, shift=True),
+        _kmi("wm.context_toggle", 'M', props={"data_path": "space_data.show_region_tool_header"}, ctrl=True, shift=True),
+        # F2-F5 switch Maya menu sets (Window keymap), not views.
+        *(("REMOVE", {"type": k, "value": 'PRESS'}, None) for k in ('F2', 'F3', 'F4', 'F5')),
         _shading('FOUR', 'WIREFRAME'),
         _shading('FIVE', 'SOLID'),
         _shading('SIX', 'MATERIAL'),
@@ -59,6 +69,27 @@ MAYA_OVERRIDES = {
         ("REMOVE", {"type": 'COMMA', "value": 'PRESS'}, None),
         ("REMOVE", {"type": 'PERIOD', "value": 'PRESS'}, None),
     ],
+    "Window": [
+        *(_kmi("wm.context_set_enum", k, props={"data_path": "window_manager.maya_menu_set", "value": v})
+          for k, v in (('F2', 'ANIMATION'), ('F3', 'MODELING'), ('F4', 'RIGGING'), ('F5', 'FX'), ('F6', 'RENDERING'))),
+        _kmi("wm.link", 'R', ctrl=True),
+    ],
+    # Shift+drag on the move manipulator extrudes (components only; objects keep box selection).
+    "Generic Gizmo Drag": [_kmi("maya.gizmo_extrude", 'LEFTMOUSE', 'CLICK_DRAG', shift=True)],
+    "Generic Gizmo Maybe Drag": [_kmi("maya.gizmo_extrude", 'LEFTMOUSE', 'CLICK_DRAG', shift=True)],
+    "Image": [
+        _kmi("ed.undo", 'Z', repeat=True),
+        _kmi("ed.redo", 'Z', shift=True, repeat=True),
+    ],
+    "UV Editor": [
+        _pie("MAYA_MT_uv_marking_menu", 'RIGHTMOUSE'),
+        _pie("MAYA_MT_uv_tools", 'RIGHTMOUSE', shift=True),
+        _kmi("object.editmode_toggle", 'F8'),
+        *(_kmi("uv.select_mode", k, props={"type": m})
+          for k, m in (('F9', 'VERTEX'), ('F10', 'EDGE'), ('F11', 'FACE'), ('F12', 'VERTEX'))),
+        _kmi("uv.select_more", 'PERIOD', shift=True, repeat=True),
+        _kmi("uv.select_less", 'COMMA', shift=True, repeat=True),
+    ],
     "Object Non-modal": [
         ("REMOVE", {"type": 'FOUR', "value": 'PRESS'}, None),
         ("REMOVE", {"type": 'FIVE', "value": 'PRESS'}, None),
@@ -70,8 +101,13 @@ MAYA_OVERRIDES = {
           for k, m in _SUBMODE),
         _smooth('ONE', 'OFF'), _smooth('TWO', 'CAGE'), _smooth('THREE', 'SMOOTH'),
         _kmi("maya.group", 'G', ctrl=True),
-        _kmi("wm.context_toggle", 'D', props={"data_path": "tool_settings.use_transform_data_origin"}),
-        _kmi("wm.context_toggle", 'D', 'RELEASE', props={"data_path": "tool_settings.use_transform_data_origin"}),
+        _kmi("maya.pivot_hold", 'D'),
+        _kmi("maya.duplicate", 'D', ctrl=True),
+        _kmi("maya.duplicate", 'D', props={"with_transform": True}, shift=True),
+        _kmi("object.duplicate_move_linked", 'D', ctrl=True, shift=True),
+        _kmi("object.hide_view_set", 'H', props={"unselected": True}, alt=True),
+        _kmi("maya.smooth_levels", 'PAGE_UP', props={"delta": 1}),
+        _kmi("maya.smooth_levels", 'PAGE_DOWN', props={"delta": -1}),
         _kmi("wm.context_toggle", 'INSERT', props={"data_path": "tool_settings.use_transform_data_origin"}),
         _pie("MAYA_MT_create_pie", 'RIGHTMOUSE', shift=True),
         # Pickwalk up / down the hierarchy.
@@ -96,6 +132,12 @@ MAYA_OVERRIDES = {
         _kmi("mesh.select_more", 'PERIOD', shift=True, repeat=True),
         _kmi("mesh.select_less", 'COMMA', shift=True, repeat=True),
         _kmi("mesh.reveal", 'H', ctrl=True, shift=True),
+        _kmi("mesh.hide", 'H', props={"unselected": True}, alt=True),
+        _kmi("maya.pivot_hold", 'D'),
+        *(_kmi("mesh.select_mode", k, props={"type": m, "use_expand": True}, ctrl=True) for k, m in _SUBMODE),
+        _kmi("maya.smooth_levels", 'PAGE_UP', props={"delta": 1}),
+        _kmi("maya.smooth_levels", 'PAGE_DOWN', props={"delta": -1}),
+        _kmi("wm.context_set_id", 'F12', props={"data_path": "window.workspace", "value": "UV Editing"}),
         ("REMOVE", {"type": 'A', "value": 'PRESS', "ctrl": True}, None),
         ("REMOVE", {"type": 'C', "value": 'PRESS'}, None),
     ],
@@ -117,10 +159,13 @@ def maya_selection_modifiers(keyconfig_data):
             mods = (bool(args.get("shift")), bool(args.get("ctrl")))
             if args.get("alt") or not any(mods):
                 continue
-            if idname in {"view3d.select_box", "view3d.select_lasso"} and data and                     any(k == "mode" for k, _ in data.get("properties", ())):
-                props = [(k, v) for k, v in data["properties"] if k != "mode"] + [("mode", drag_modes[mods])]
+            if idname in {"view3d.select_box", "view3d.select_lasso", "uv.select_box", "uv.select_lasso"} and data and                     any(k == "mode" for k, _ in data.get("properties", ())):
+                mode = drag_modes[mods]
+                if mode == 'XOR' and idname.startswith("uv."):
+                    mode = 'ADD'  # UV box/lasso select has no toggle mode.
+                props = [(k, v) for k, v in data["properties"] if k != "mode"] + [("mode", mode)]
                 km_content["items"][i] = (idname, args, {**data, "properties": props})
-            elif idname == "view3d.select" and args["type"] == 'LEFTMOUSE' and mods in click_props:
+            elif idname in {"view3d.select", "uv.select"} and args["type"] == 'LEFTMOUSE' and mods in click_props:
                 km_content["items"][i] = (idname, args, {"properties": click_props[mods]})
     return keyconfig_data
 
