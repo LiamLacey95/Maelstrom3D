@@ -577,7 +577,7 @@ const EnumPropertyItem rna_enum_clip_editor_mode_items[] = {
  * but helps for contextless access (e.g. doc, i18n...).
  */
 const EnumPropertyItem buttons_context_items[] = {
-    {BCONTEXT_TOOL, "TOOL", ICON_TOOL_SETTINGS, "Tool", "Active Tool and Workspace settings"},
+    {BCONTEXT_TOOL, "TOOL", ICON_TOOL_SETTINGS, "Tool Settings", "Active Tool and Workspace settings"},
     {BCONTEXT_SCENE, "SCENE", ICON_SCENE_DATA, "Scene", "Scene Properties"},
     {BCONTEXT_RENDER, "RENDER", ICON_SCENE, "Render", "Render Properties"},
     {BCONTEXT_OUTPUT, "OUTPUT", ICON_OUTPUT, "Output", "Output Properties"},
@@ -609,6 +609,16 @@ const EnumPropertyItem buttons_context_items[] = {
      ICON_SEQ_STRIP_MODIFIER,
      "Strip Modifiers",
      "Strip Modifier Properties"},
+    {BCONTEXT_CHANNEL_BOX,
+     "CHANNEL_BOX",
+     ICON_PROPERTIES,
+     "Channel Box / Layer Editor",
+     "Maya Channel Box and Layer Editor"},
+    {BCONTEXT_MODELING_TOOLKIT,
+     "MODELING_TOOLKIT",
+     ICON_EDITMODE_HLT,
+     "Modeling Toolkit",
+     "Maya Modeling Toolkit"},
     {0, nullptr, 0, nullptr, nullptr},
 };
 
@@ -6135,6 +6145,8 @@ static void rna_def_space_properties_filter(StructRNA *srna)
       "show_properties_effects",
       "show_properties_strip",
       "show_properties_strip_modifier",
+      "show_properties_channel_box",
+      "show_properties_modeling_toolkit",
   };
 
   for (const int i : IndexRange(BCONTEXT_TOT)) {

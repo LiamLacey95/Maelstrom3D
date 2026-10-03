@@ -114,6 +114,9 @@ enum eSpaceButtons_Context : short {
   BCONTEXT_COLLECTION = 17,
   BCONTEXT_STRIP = 18,
   BCONTEXT_STRIP_MODIFIER = 19,
+  /* MayaBlender: Maya right-hand dock tabs. */
+  BCONTEXT_CHANNEL_BOX = 20,
+  BCONTEXT_MODELING_TOOLKIT = 21,
 
   /* Keep last. */
   BCONTEXT_TOT,

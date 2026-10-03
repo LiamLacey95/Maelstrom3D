@@ -88,7 +88,8 @@ static SpaceLink *buttons_create(const ScrArea * /*area*/, const Scene * /*scene
 
   BLI_addtail(&sbuts->regionbase, region);
   region->regiontype = RGN_TYPE_NAV_BAR;
-  region->alignment = RGN_ALIGN_LEFT;
+  /* MayaBlender: tabs on the right edge, like Maya's dock. */
+  region->alignment = RGN_ALIGN_RIGHT;
 
 #if 0
   /* context region */
@@ -184,6 +185,7 @@ void ED_buttons_visible_tabs_menu(bContext *C, ui::Layout *layout, void * /*arg*
       "show_properties_bone",        "show_properties_bone_constraints",
       "show_properties_material",    "show_properties_texture",
       "show_properties_strip",       "show_properties_strip_modifier",
+      "show_properties_channel_box", "show_properties_modeling_toolkit",
   };
 
   for (StringRefNull item : filter_items) {
@@ -215,6 +217,9 @@ Vector<eSpaceButtons_Context> ED_buttons_tabs_list(const SpaceProperties *sbuts,
     }
   };
 
+  /* MayaBlender: Maya dock tabs first, then the Attribute Editor tabs. */
+  add_tab(BCONTEXT_CHANNEL_BOX);
+  add_tab(BCONTEXT_MODELING_TOOLKIT);
   add_tab(BCONTEXT_TOOL);
 
   add_spacer();
@@ -297,6 +302,10 @@ static const char *buttons_main_region_context_string(const short mainb)
       return "strip";
     case BCONTEXT_STRIP_MODIFIER:
       return "strip_modifier";
+    case BCONTEXT_CHANNEL_BOX:
+      return "channel_box";
+    case BCONTEXT_MODELING_TOOLKIT:
+      return "modeling_toolkit";
   }
 
   /* All the cases should be handled. */
@@ -711,8 +720,11 @@ static void buttons_area_redraw(ScrArea *area, short buttons)
 {
   SpaceProperties *sbuts = static_cast<SpaceProperties *>(area->spacedata.first);
 
-  /* if the area's current button set is equal to the one to redraw */
-  if (sbuts->mainb == buttons) {
+  /* if the area's current button set is equal to the one to redraw.
+   * MayaBlender: the Maya tabs show selection, transforms and modes, so they follow every update. */
+  if (sbuts->mainb == buttons ||
+      ELEM(sbuts->mainb, BCONTEXT_CHANNEL_BOX, BCONTEXT_MODELING_TOOLKIT))
+  {
     ED_area_tag_redraw(area);
   }
 }

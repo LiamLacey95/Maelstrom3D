@@ -174,6 +174,16 @@ static void blo_update_defaults_screen(bScreen *screen,
         }
       }
     }
+    else if (area.spacetype == SPACE_PROPERTIES) {
+      /* MayaBlender: the right-hand dock opens on the Channel Box, tabs on the right edge. */
+      SpaceProperties *sbuts = static_cast<SpaceProperties *>(area.spacedata.first);
+      sbuts->mainb = sbuts->mainbo = sbuts->mainbuser = BCONTEXT_CHANNEL_BOX;
+      for (ARegion &region : area.regionbase) {
+        if (region.regiontype == RGN_TYPE_NAV_BAR) {
+          region.alignment = RGN_ALIGN_RIGHT;
+        }
+      }
+    }
     else if (area.spacetype == SPACE_GRAPH) {
       SpaceGraph *sipo = static_cast<SpaceGraph *>(area.spacedata.first);
       sipo->flag |= SIPO_SHOW_MARKERS;

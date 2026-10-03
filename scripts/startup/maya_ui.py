@@ -252,7 +252,10 @@ MENUS = {
         sub("Settings/Preferences", "MAYA_MT_preferences", 'PREFERENCES'),
         SEP,
         editor("Outliner", 'OUTLINER', 'OUTLINER'),
-        editor("Attribute Editor", 'PROPERTIES', 'PROPERTIES'),
+        op("Attribute Editor", "maya.dock_tab", 'PROPERTIES', tab='OBJECT'),
+        op("Channel Box / Layer Editor", "maya.dock_tab", 'ALIGN_JUSTIFY', tab='CHANNEL_BOX'),
+        op("Modeling Toolkit", "maya.dock_tab", 'EDITMODE_HLT', tab='MODELING_TOOLKIT'),
+        op("Tool Settings", "maya.dock_tab", 'TOOL_SETTINGS', tab='TOOL'),
         editor("Hypershade", 'ShaderNodeTree', 'NODE_MATERIAL'),
         editor("Graph Editor", 'FCURVES', 'GRAPH'),
         editor("Dope Sheet", 'DOPESHEET', 'ACTION'),
@@ -279,18 +282,18 @@ MENUS = {
         modifier("Triangulate", 'TRIANGULATE', 'MOD_TRIANGULATE'),
         op("Quadrangulate", "mesh.tris_convert_to_quads", modes=EDIT),
         SEP,
-        op("Fill Hole", "mesh.fill", modes=EDIT),
+        op("Fill Hole", "maya.fill_hole"),
         op("Cleanup (Merge by Distance)", "mesh.remove_doubles", modes=EDIT),
     ]),
     "MAYA_MT_edit_mesh": ("Edit Mesh", [
         op("Add Divisions", "mesh.subdivide"),
-        op("Bevel", "mesh.bevel", 'MOD_BEVEL'),
+        op("Bevel", "mesh.bevel", 'MOD_BEVEL', offset_type='PERCENT'),
         op("Bridge", "mesh.bridge_edge_loops"),
         op("Collapse", "mesh.merge", type='COLLAPSE'),
-        op("Connect", "mesh.vert_connect_path"),
+        op("Connect", "maya.connect"),
         op("Detach", "mesh.split"),
         op("Extrude", "view3d.edit_mesh_extrude_move_normal", 'FACESEL'),
-        op("Merge", "mesh.remove_doubles", 'AUTOMERGE_ON'),
+        op("Merge", "mesh.remove_doubles", 'AUTOMERGE_ON', threshold=0.001),
         op("Merge to Center", "mesh.merge", type='CENTER'),
         op("Symmetrize", "mesh.symmetrize"),
         op("Average Vertices", "mesh.vertices_smooth"),
@@ -500,7 +503,7 @@ MENUS = {
     "MAYA_MT_ui_elements": ("UI Elements", [
         prop("Shelf", "space_data.show_region_tool_header"),
         prop("Tool Box", "space_data.show_region_toolbar"),
-        prop("Channel Box", "space_data.show_region_ui"),
+        prop("Sidebar", "space_data.show_region_ui"),
         prop("Viewport Menu Bar", "space_data.show_region_header"),
         prop("Help Line", "screen.show_statusbar"),
     ]),
@@ -678,9 +681,7 @@ def draw_status_line(layout, context):
     row.operator("maya.open_editor", text="", icon='PROPERTIES').ui_type = 'PROPERTIES'
 
     row = layout.row(align=True)
-    o = row.operator("maya.call", text="", icon='MENU_PANEL')
-    o.idname, o.label = "wm.context_toggle", "Show/Hide Channel Box"
-    o.props = repr({"data_path": "space_data.show_region_ui"})
+    row.operator("maya.dock_tab", text="", icon='PROPERTIES').toggle = True
 
     layout.separator()
     layout.label(text="Workspace:")
@@ -723,7 +724,7 @@ SHELVES = {
         ("mesh.bevel", 'MOD_BEVEL', {}),
         ("mesh.loopcut_slide", 'MOD_EDGESPLIT', {}),
         ("mesh.knife_tool", 'MOD_SIMPLEDEFORM', {}),
-        ("mesh.fill", 'SNAP_FACE', {}),
+        ("maya.fill_hole", 'SNAP_FACE', {}),
         None,
         ("object.origin_set", 'PIVOT_BOUNDBOX', {"type": 'ORIGIN_GEOMETRY'}),
         ("object.transform_apply", 'FREEZE', {"location": True, "rotation": True, "scale": True}),

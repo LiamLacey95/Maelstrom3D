@@ -38,6 +38,8 @@ MAYA_OVERRIDES = {
         _kmi("screen.frame_jump", 'V', props={"end": False}, alt=True, shift=True),
         _kmi("screen.frame_offset", 'COMMA', props={"delta": -1}, alt=True, repeat=True),
         _kmi("screen.frame_offset", 'PERIOD', props={"delta": 1}, alt=True, repeat=True),
+        _kmi("screen.keyframe_jump", 'COMMA', props={"next": False}, repeat=True),
+        _kmi("screen.keyframe_jump", 'PERIOD', props={"next": True}, repeat=True),
         ("REMOVE", {"type": 'SPACE', "value": 'PRESS'}, None),
     ],
     "3D View": [
@@ -48,8 +50,14 @@ MAYA_OVERRIDES = {
         _shading('SEVEN', 'RENDERED'),
         _kmi("ed.undo", 'Z', repeat=True),
         _kmi("ed.redo", 'Z', shift=True, repeat=True),
-        _kmi("wm.context_toggle", 'A', props={"data_path": "space_data.show_region_ui"}, ctrl=True),
+        _kmi("maya.dock_tab", 'A', props={"toggle": True}, ctrl=True),
         _kmi("view3d.localview", 'ONE', ctrl=True),
+        # Hold X / C / V to snap to grid / curve / point.
+        *(_kmi("maya.snap_hold", k, v, props={"element": e, "enable": v == 'PRESS'})
+          for k, e in (('X', 'GRID'), ('C', 'EDGE'), ('V', 'VERTEX')) for v in ('PRESS', 'RELEASE')),
+        # , and . step between keys (Frames keymap), so drop the pivot / orientation pies.
+        ("REMOVE", {"type": 'COMMA', "value": 'PRESS'}, None),
+        ("REMOVE", {"type": 'PERIOD', "value": 'PRESS'}, None),
     ],
     "Object Non-modal": [
         ("REMOVE", {"type": 'FOUR', "value": 'PRESS'}, None),
@@ -65,7 +73,13 @@ MAYA_OVERRIDES = {
         _kmi("wm.context_toggle", 'D', props={"data_path": "tool_settings.use_transform_data_origin"}),
         _kmi("wm.context_toggle", 'D', 'RELEASE', props={"data_path": "tool_settings.use_transform_data_origin"}),
         _kmi("wm.context_toggle", 'INSERT', props={"data_path": "tool_settings.use_transform_data_origin"}),
+        _pie("MAYA_MT_create_pie", 'RIGHTMOUSE', shift=True),
+        # Pickwalk up / down the hierarchy.
+        _kmi("object.select_hierarchy", 'UP_ARROW', props={"direction": 'PARENT', "extend": False}),
+        _kmi("object.select_hierarchy", 'DOWN_ARROW', props={"direction": 'CHILD', "extend": False}),
+        _kmi("object.hide_view_clear", 'H', ctrl=True, shift=True),
         ("REMOVE", {"type": 'A', "value": 'PRESS', "ctrl": True}, None),
+        ("REMOVE", {"type": 'C', "value": 'PRESS'}, None),
     ],
     "Mesh": [
         _pie("MAYA_MT_marking_menu", 'RIGHTMOUSE'),
@@ -73,7 +87,17 @@ MAYA_OVERRIDES = {
         _kmi("object.editmode_toggle", 'F8'),
         *(_kmi("mesh.select_mode", k, props={"type": m}) for k, m in _SUBMODE),
         _smooth('ONE', 'OFF'), _smooth('TWO', 'CAGE'), _smooth('THREE', 'SMOOTH'),
+        _pie("MAYA_MT_convert_selection_pie", 'RIGHTMOUSE', ctrl=True),
+        # Ctrl+E / Ctrl+B run Extrude / Bevel right away (Industry Compatible only switches tools).
+        _kmi("view3d.edit_mesh_extrude_move_normal", 'E', ctrl=True),
+        _kmi("mesh.bevel", 'B', props={"offset_type": 'PERCENT'}, ctrl=True),
+        _kmi("maya.delete_components", 'DEL'),
+        _kmi("maya.delete_components", 'BACK_SPACE'),
+        _kmi("mesh.select_more", 'PERIOD', shift=True, repeat=True),
+        _kmi("mesh.select_less", 'COMMA', shift=True, repeat=True),
+        _kmi("mesh.reveal", 'H', ctrl=True, shift=True),
         ("REMOVE", {"type": 'A', "value": 'PRESS', "ctrl": True}, None),
+        ("REMOVE", {"type": 'C', "value": 'PRESS'}, None),
     ],
 }
 
@@ -82,6 +106,23 @@ _MODS = ("shift", "ctrl", "alt", "oskey", "any")
 
 def _key(args):
     return (args["type"], args["value"], *(bool(args.get(m)) for m in _MODS))
+
+
+def maya_selection_modifiers(keyconfig_data):
+    """Maya selection: Shift toggles, Ctrl deselects, Ctrl+Shift adds (click and drag)."""
+    drag_modes = {(True, False): 'XOR', (False, True): 'SUB', (True, True): 'ADD'}
+    click_props = {(False, True): [("deselect", True)], (True, True): [("extend", True)]}
+    for _km_name, _km_args, km_content in keyconfig_data:
+        for i, (idname, args, data) in enumerate(km_content["items"]):
+            mods = (bool(args.get("shift")), bool(args.get("ctrl")))
+            if args.get("alt") or not any(mods):
+                continue
+            if idname in {"view3d.select_box", "view3d.select_lasso"} and data and                     any(k == "mode" for k, _ in data.get("properties", ())):
+                props = [(k, v) for k, v in data["properties"] if k != "mode"] + [("mode", drag_modes[mods])]
+                km_content["items"][i] = (idname, args, {**data, "properties": props})
+            elif idname == "view3d.select" and args["type"] == 'LEFTMOUSE' and mods in click_props:
+                km_content["items"][i] = (idname, args, {"properties": click_props[mods]})
+    return keyconfig_data
 
 
 def apply_overrides(keyconfig_data, overrides):
@@ -104,6 +145,7 @@ def load():
     kc = bpy.context.window_manager.keyconfigs.new(IDNAME)
     params = industry_compatible.Params(use_mouse_emulate_3_button=prefs.inputs.use_mouse_emulate_3_button)
     keyconfig_data = apply_overrides(industry_compatible.generate_keymaps(params), MAYA_OVERRIDES)
+    keyconfig_data = maya_selection_modifiers(keyconfig_data)
 
     if platform == "darwin":
         from bl_keymap_utils.platform_helpers import keyconfig_data_oskey_from_ctrl_for_macos

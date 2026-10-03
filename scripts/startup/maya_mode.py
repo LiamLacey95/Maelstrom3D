@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 """
-Maya-style UI for MayaBlender: marking menus, polygon shelf, Channel Box,
-smooth mesh preview (1/2/3) and grouping (Ctrl+G).
+Maya-style tools for MayaBlender: Maya operators, marking menus and the right-hand dock
+(Channel Box / Layer Editor and Modeling Toolkit tabs of the Attribute Editor area).
 """
 
 import bpy
@@ -312,14 +312,142 @@ class MAYA_MT_poly_tools(Menu):
         pie.operator("mesh.dissolve_mode", text="Delete Edge/Vertex", icon='X')
 
 
-CHANNEL_BOX = "Channel Box / Layer Editor"
+class MAYA_OT_dock_tab(Operator):
+    """Show a tab of the right-hand dock (Channel Box, Attribute Editor, Modeling Toolkit)"""
+    bl_idname = "maya.dock_tab"
+    bl_label = "Dock Tab"
+
+    tab: bpy.props.StringProperty(default='CHANNEL_BOX')
+    toggle: bpy.props.BoolProperty(description="Ctrl+A: switch between Channel Box and Attribute Editor")
+
+    def execute(self, context):
+        docks = [a for a in context.screen.areas if a.type == 'PROPERTIES']
+        if not docks:
+            bpy.ops.maya.open_editor(ui_type='PROPERTIES')
+            return {'FINISHED'}
+        space = max(docks, key=lambda a: a.height).spaces.active
+        tab = self.tab
+        if self.toggle:
+            tab = 'OBJECT' if space.context == 'CHANNEL_BOX' else 'CHANNEL_BOX'
+        space.context = tab
+        return {'FINISHED'}
 
 
-class VIEW3D_PT_maya_channel_box(Panel):
+class MAYA_OT_delete_components(Operator):
+    """Maya Delete: faces are removed, edges and vertices are dissolved (the mesh stays closed)"""
+    bl_idname = "maya.delete_components"
+    bl_label = "Delete"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'EDIT_MESH'
+
+    def execute(self, context):
+        vert, edge, face = context.tool_settings.mesh_select_mode
+        if face:
+            bpy.ops.mesh.delete(type='FACE')
+        elif edge:
+            bpy.ops.mesh.dissolve_edges()
+        else:
+            bpy.ops.mesh.dissolve_verts()
+        return {'FINISHED'}
+
+
+class MAYA_OT_connect(Operator):
+    """Maya Connect: edges get a new edge loop through their midpoints, vertices get joined by an edge"""
+    bl_idname = "maya.connect"
+    bl_label = "Connect"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'EDIT_MESH'
+
+    def execute(self, context):
+        if context.tool_settings.mesh_select_mode[1]:
+            bpy.ops.mesh.subdivide_edgering(number_cuts=1)
+        else:
+            bpy.ops.mesh.vert_connect_path()
+        return {'FINISHED'}
+
+
+class MAYA_OT_fill_hole(Operator):
+    """Maya Fill Hole: fill the selected border, or every hole of the selected meshes"""
+    bl_idname = "maya.fill_hole"
+    bl_label = "Fill Hole"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'EDIT_MESH' or (context.active_object and context.active_object.type == 'MESH')
+
+    def execute(self, context):
+        if context.mode == 'EDIT_MESH':
+            bpy.ops.mesh.fill()
+            return {'FINISHED'}
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.mesh.fill_holes(sides=0)
+        bpy.ops.object.mode_set(mode='OBJECT')
+        return {'FINISHED'}
+
+
+class MAYA_OT_snap_hold(Operator):
+    """Maya hold-to-snap: X grid, C curve (edge), V point (vertex)"""
+    bl_idname = "maya.snap_hold"
+    bl_label = "Hold to Snap"
+    bl_options = {'INTERNAL'}
+
+    element: bpy.props.StringProperty(default='GRID')
+    enable: bpy.props.BoolProperty(default=True)
+
+    def execute(self, context):
+        ts = context.tool_settings
+        ts.use_snap = self.enable
+        if self.enable:
+            ts.snap_elements = {self.element}
+        return {'FINISHED'}
+
+
+class MAYA_MT_convert_selection_pie(Menu):
+    """Ctrl+right-click marking menu: convert the component selection"""
+    bl_label = "Convert Selection"
+
+    def draw(self, _context):
+        pie = self.layout.menu_pie()
+        # Pie order: W, E, S, N, NW, NE, SW, SE.
+        pie.operator("mesh.select_mode", text="To Vertices", icon='VERTEXSEL').type = 'VERT'
+        pie.operator("mesh.select_mode", text="To Faces", icon='FACESEL').type = 'FACE'
+        pie.operator("mesh.select_linked", text="To Shell", icon='MESH_DATA')
+        pie.operator("mesh.select_mode", text="To Edges", icon='EDGESEL').type = 'EDGE'
+        pie.operator("mesh.select_edge_loop_multi", text="To Edge Loop")
+        pie.operator("mesh.select_edge_ring_multi", text="To Edge Ring")
+        pie.operator("mesh.region_to_loop", text="To Border")
+        pie.operator("mesh.select_more", text="Grow", icon='ADD')
+
+
+class MAYA_MT_create_pie(Menu):
+    """Shift+right-click marking menu in object mode: create polygon primitives"""
+    bl_label = "Create"
+
+    def draw(self, _context):
+        pie = self.layout.menu_pie()
+        for kind, icon in (('SPHERE', 'MESH_UVSPHERE'), ('CUBE', 'MESH_CUBE'), ('CYLINDER', 'MESH_CYLINDER'),
+                           ('PLANE', 'MESH_PLANE'), ('CONE', 'MESH_CONE'), ('TORUS', 'MESH_TORUS')):
+            pie.operator("maya.add_primitive", text=kind.title(), icon=icon).kind = kind
+        pie.operator("object.camera_add", text="Camera", icon='CAMERA_DATA')
+        pie.menu("VIEW3D_MT_light_add", text="Lights", icon='LIGHT')
+
+
+class _MayaDockPanel:
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+
+
+class PROPERTIES_PT_maya_channel_box(_MayaDockPanel, Panel):
     """Maya Channel Box: transform channels, visibility and inputs (modifiers)"""
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = CHANNEL_BOX
+    bl_context = "channel_box"
     bl_label = "Channel Box"
 
     def draw(self, context):
@@ -347,17 +475,15 @@ class VIEW3D_PT_maya_channel_box(Panel):
                 row.label(text=mod.name)
 
 
-class VIEW3D_PT_maya_layer_editor(Panel):
+class PROPERTIES_PT_maya_layer_editor(_MayaDockPanel, Panel):
     """Maya Layer Editor: display layers are collections here"""
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = CHANNEL_BOX
+    bl_context = "channel_box"
     bl_label = "Layer Editor"
 
     def draw(self, context):
         layout = self.layout
-        o = layout.operator("object.move_to_collection", text="Create Layer from Selected", icon='COLLECTION_NEW')
-        o.collection_index, o.is_new, o.new_collection_name = 0, True, "layer1"
+        _button(layout, context, "Create Layer from Selected", "object.move_to_collection", 'COLLECTION_NEW',
+                    {"collection_index": 0, "is_new": True, "new_collection_name": "layer1"})
         col = layout.column(align=True)
         for lc in context.view_layer.layer_collection.children:
             row = col.row(align=True)
@@ -367,19 +493,36 @@ class VIEW3D_PT_maya_layer_editor(Panel):
             row.label(text=lc.name)
 
 
-def _buttons(layout, items, columns=2):
+def _button(layout, context, label, idname, icon, props, depress=False):
+    """Operator button; viewport-only commands run in the 3D Viewport through `maya.call`."""
+    from maya_ui import needs_view3d, _poll
+    in_view3d = context.area is not None and context.area.type == 'VIEW_3D'
+    if not in_view3d and (needs_view3d(idname) or not _poll(idname)):
+        o = layout.operator("maya.call", text=label, icon=icon, depress=depress)
+        o.idname, o.props, o.label = idname, repr(props), label
+        return o
+    o = layout.operator(idname, text=label, icon=icon, depress=depress)
+    for k, v in props.items():
+        setattr(o, k, v)
+    return o
+
+
+def _buttons(layout, context, items, columns=2):
     """Grid of Maya-style tool buttons: (label, idname, icon, props)."""
     grid = layout.grid_flow(columns=columns, even_columns=True, align=True)
     for label, idname, icon, props in items:
-        o = grid.operator(idname, text=label, icon=icon)
-        for k, v in props.items():
-            setattr(o, k, v)
+        _button(grid, context, label, idname, icon, props)
+
+
+def _view3d_space(context):
+    areas = [a for a in context.screen.areas if a.type == 'VIEW_3D']
+    return max(areas, key=lambda a: a.width * a.height).spaces.active if areas else None
 
 
 MTK_SELECT_TOOLS = (
     ("Marquee", "wm.tool_set_by_id", 'SELECT_SET', {"name": "builtin.select_box"}),
     ("Lasso", "wm.tool_set_by_id", 'MOD_CURVE', {"name": "builtin.select_lasso"}),
-    ("Paint", "wm.tool_set_by_id", 'BRUSH_DATA', {"name": "builtin.select_circle"}),
+    ("Drag (Paint)", "wm.tool_set_by_id", 'BRUSH_DATA', {"name": "builtin.select_circle"}),
     ("Tweak", "wm.tool_set_by_id", 'RESTRICT_SELECT_OFF', {"name": "builtin.select"}),
 )
 MTK_MESH = (
@@ -390,19 +533,19 @@ MTK_MESH = (
     ("Union", "maya.boolean", 'SELECT_EXTEND', {"operation": 'UNION'}),
     ("Difference", "maya.boolean", 'SELECT_SUBTRACT', {"operation": 'DIFFERENCE'}),
     ("Intersection", "maya.boolean", 'SELECT_INTERSECT', {"operation": 'INTERSECT'}),
-    ("Fill Hole", "mesh.fill", 'SNAP_FACE', {}),
+    ("Fill Hole", "maya.fill_hole", 'SNAP_FACE', {}),
 )
 MTK_COMPONENTS = (
     ("Extrude", "view3d.edit_mesh_extrude_move_normal", 'FACESEL', {}),
-    ("Bevel", "mesh.bevel", 'MOD_BEVEL', {}),
+    ("Bevel", "mesh.bevel", 'MOD_BEVEL', {"offset_type": 'PERCENT'}),
     ("Bridge", "mesh.bridge_edge_loops", 'MOD_LATTICE', {}),
-    ("Connect", "mesh.vert_connect_path", 'MOD_EDGESPLIT', {}),
-    ("Merge", "mesh.remove_doubles", 'AUTOMERGE_ON', {}),
+    ("Connect", "maya.connect", 'MOD_EDGESPLIT', {}),
+    ("Merge", "mesh.remove_doubles", 'AUTOMERGE_ON', {"threshold": 0.001}),
     ("Merge to Center", "mesh.merge", 'PIVOT_MEDIAN', {"type": 'CENTER'}),
     ("Collapse", "mesh.merge", 'FULLSCREEN_EXIT', {"type": 'COLLAPSE'}),
     ("Poke", "mesh.poke", 'DECORATE', {}),
     ("Detach", "mesh.split", 'MOD_EXPLODE', {}),
-    ("Chamfer Vertex", "mesh.bevel", 'VERTEXSEL', {"affect": 'VERTICES'}),
+    ("Chamfer Vertex", "mesh.bevel", 'VERTEXSEL', {"affect": 'VERTICES', "offset_type": 'PERCENT'}),
     ("Delete Edge/Vertex", "mesh.dissolve_mode", 'X', {}),
     ("Flip", "mesh.flip_normals", 'NORMALS_FACE', {}),
 )
@@ -418,35 +561,33 @@ MTK_TOOLS = (
 )
 
 
-class _MayaToolkitPanel:
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "Modeling Toolkit"
+class _MayaToolkitPanel(_MayaDockPanel):
+    bl_context = "modeling_toolkit"
 
 
-class VIEW3D_PT_maya_mtk_selection(_MayaToolkitPanel, Panel):
+class PROPERTIES_PT_maya_mtk_selection(_MayaToolkitPanel, Panel):
     bl_label = "Selection"
 
     def draw(self, context):
         layout = self.layout
         row = layout.row(align=True)
-        row.operator("object.mode_set", text="", icon='OBJECT_DATAMODE',
-                     depress=context.mode == 'OBJECT').mode = 'OBJECT'
+        _button(row, context, "", "object.mode_set", 'OBJECT_DATAMODE', {"mode": 'OBJECT'},
+                depress=context.mode == 'OBJECT')
         ob = context.active_object
         if ob is not None and ob.type == 'MESH':
             sel = tuple(context.tool_settings.mesh_select_mode) if context.mode == 'EDIT_MESH' else (False,) * 3
-            for i, (_label, mode, icon) in enumerate((("Vertex", 'VERT', 'VERTEXSEL'), ("Edge", 'EDGE', 'EDGESEL'),
-                                                     ("Face", 'FACE', 'FACESEL'))):
-                o = row.operator("object.mode_set_with_submode", text="", icon=icon,
-                                 depress=sel[i] and sum(sel) == 1)
-                o.mode, o.mesh_select_mode = 'EDIT', {mode}
-            o = row.operator("object.mode_set_with_submode", text="Multi", icon='MOD_WIREFRAME', depress=sum(sel) > 1)
-            o.mode, o.mesh_select_mode = 'EDIT', {'VERT', 'EDGE', 'FACE'}
-        _buttons(layout, MTK_SELECT_TOOLS)
-        layout.prop(context.space_data.shading, "show_xray", text="X-Ray (select through)")
+            for i, (mode, icon) in enumerate((('VERT', 'VERTEXSEL'), ('EDGE', 'EDGESEL'), ('FACE', 'FACESEL'))):
+                _button(row, context, "", "object.mode_set_with_submode", icon,
+                        {"mode": 'EDIT', "mesh_select_mode": {mode}}, depress=sel[i] and sum(sel) == 1)
+            _button(row, context, "Multi", "object.mode_set_with_submode", 'MOD_WIREFRAME',
+                    {"mode": 'EDIT', "mesh_select_mode": {'VERT', 'EDGE', 'FACE'}}, depress=sum(sel) > 1)
+        _buttons(layout, context, MTK_SELECT_TOOLS)
+        space = _view3d_space(context)
+        if space is not None:
+            layout.prop(space.shading, "show_xray", text="X-Ray (select through)")
 
 
-class VIEW3D_PT_maya_mtk_soft_selection(_MayaToolkitPanel, Panel):
+class PROPERTIES_PT_maya_mtk_soft_selection(_MayaToolkitPanel, Panel):
     bl_label = "Soft Selection"
 
     def draw_header(self, context):
@@ -462,7 +603,7 @@ class VIEW3D_PT_maya_mtk_soft_selection(_MayaToolkitPanel, Panel):
             col.prop(ts, "use_proportional_connected", text="Falloff Mode: Surface")
 
 
-class VIEW3D_PT_maya_mtk_symmetry(_MayaToolkitPanel, Panel):
+class PROPERTIES_PT_maya_mtk_symmetry(_MayaToolkitPanel, Panel):
     bl_label = "Symmetry"
 
     @classmethod
@@ -476,161 +617,33 @@ class VIEW3D_PT_maya_mtk_symmetry(_MayaToolkitPanel, Panel):
             row.prop(mesh, "use_mirror_" + axis, text=axis.upper(), toggle=True)
 
 
-class VIEW3D_PT_maya_mtk_mesh(_MayaToolkitPanel, Panel):
+class PROPERTIES_PT_maya_mtk_mesh(_MayaToolkitPanel, Panel):
     bl_label = "Mesh"
 
-    def draw(self, _context):
-        _buttons(self.layout, MTK_MESH)
+    def draw(self, context):
+        _buttons(self.layout, context, MTK_MESH)
 
 
-class VIEW3D_PT_maya_mtk_components(_MayaToolkitPanel, Panel):
+class PROPERTIES_PT_maya_mtk_components(_MayaToolkitPanel, Panel):
     bl_label = "Components"
 
     @classmethod
     def poll(cls, context):
         return context.mode == 'EDIT_MESH'
 
-    def draw(self, _context):
-        _buttons(self.layout, MTK_COMPONENTS)
+    def draw(self, context):
+        _buttons(self.layout, context, MTK_COMPONENTS)
 
 
-class VIEW3D_PT_maya_mtk_tools(_MayaToolkitPanel, Panel):
+class PROPERTIES_PT_maya_mtk_tools(_MayaToolkitPanel, Panel):
     bl_label = "Tools"
 
     @classmethod
     def poll(cls, context):
         return context.mode == 'EDIT_MESH'
 
-    def draw(self, _context):
-        _buttons(self.layout, MTK_TOOLS)
-
-
-class _MayaAttributePanel:
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "Attribute Editor"
-
-    @classmethod
-    def poll(cls, context):
-        return context.active_object is not None
-
-
-class VIEW3D_PT_maya_ae_transform(_MayaAttributePanel, Panel):
-    bl_label = "Transform Attributes"
-
-    @classmethod
-    def poll(cls, _context):
-        return True  # Keep the tab visible with nothing selected, like Maya.
-
     def draw(self, context):
-        layout = self.layout
-        ob = context.active_object
-        if ob is None:
-            layout.label(text="Nothing selected")
-            return
-        row = layout.row(align=True)
-        row.prop(ob, "name", text="transform")
-        row.operator("maya.open_editor", text="", icon='WINDOW').ui_type = 'PROPERTIES'
-        col = layout.column()
-        col.prop(ob, "location", text="Translate")
-        col.prop(ob, "rotation_euler", text="Rotate")
-        col.prop(ob, "rotation_mode", text="Rotate Order")
-        col.prop(ob, "scale", text="Scale")
-        col.prop(ob, "hide_viewport", text="Visibility", invert_checkbox=True)
-
-
-class VIEW3D_PT_maya_ae_display(_MayaAttributePanel, Panel):
-    bl_label = "Display"
-    bl_options = {'DEFAULT_CLOSED'}
-
-    def draw(self, context):
-        ob = context.active_object
-        col = self.layout.column()
-        col.prop(ob, "display_type", text="Display As")
-        col.prop(ob, "show_wire", text="Wireframe on Shaded")
-        col.prop(ob, "show_in_front", text="Always Draw on Top")
-        col.prop(ob, "show_axis", text="Display Local Axis")
-        col.prop(ob, "show_name", text="Display Name")
-        col.prop(ob, "color", text="Wireframe Color")
-
-
-class VIEW3D_PT_maya_ae_shape(_MayaAttributePanel, Panel):
-    bl_label = "Shape"
-
-    @classmethod
-    def poll(cls, context):
-        return context.active_object is not None and context.active_object.type == 'MESH'
-
-    def draw(self, context):
-        ob = context.active_object
-        mesh = ob.data
-        col = self.layout.column()
-        col.prop(mesh, "name", text="mesh")
-        col.label(text=f"Vertices: {len(mesh.vertices)}   Edges: {len(mesh.edges)}   Faces: {len(mesh.polygons)}")
-        for mod in ob.modifiers:
-            row = col.row(align=True)
-            row.prop(mod, "show_viewport", text="")
-            row.prop(mod, "name", text="")
-
-
-class VIEW3D_PT_maya_ae_material(_MayaAttributePanel, Panel):
-    bl_label = "Material"
-
-    def draw(self, context):
-        layout = self.layout
-        mat = context.active_object.active_material
-        if mat is None:
-            layout.operator("maya.assign_material", icon='MATERIAL')
-            return
-        layout.prop(mat, "name", text="shader")
-        bsdf = mat.node_tree and next((n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None)
-        if bsdf is None:
-            layout.prop(mat, "diffuse_color", text="Color")
-        else:
-            col = layout.column()
-            for name, label in (("Base Color", "Base Color"), ("Metallic", "Metalness"),
-                                ("Roughness", "Specular Roughness"), ("Emission Color", "Emission Color"),
-                                ("Emission Strength", "Emission Weight"), ("Alpha", "Opacity")):
-                sock = bsdf.inputs.get(name)
-                if sock is not None:
-                    col.prop(sock, "default_value", text=label)
-        layout.operator("maya.open_editor", text="Open Hypershade", icon='NODE_MATERIAL').ui_type = 'ShaderNodeTree'
-
-
-def _main_view3d_areas():
-    for screen in bpy.data.screens:
-        if screen.name in {"Maya Classic", "Modeling - Standard"}:
-            yield from (area for area in screen.areas if area.type == 'VIEW_3D')
-
-
-_tab_tries = 0
-
-
-def _select_channel_box_tab():
-    # Sidebar tabs only exist after the first redraw, so retry until they do.
-    global _tab_tries
-    pending = False
-    for area in _main_view3d_areas():
-        for region in area.regions:
-            if region.type == 'UI':
-                if region.is_property_readonly("active_panel_category"):
-                    pending = True
-                else:
-                    region.active_panel_category = CHANNEL_BOX
-    _tab_tries -= 1
-    return 0.25 if pending and _tab_tries > 0 else None
-
-
-@bpy.app.handlers.persistent
-def show_channel_box(*_args):
-    """Open the sidebar on the Channel Box tab in the main 3D views, like Maya's right-hand dock."""
-    if bpy.app.background:
-        return
-    for area in _main_view3d_areas():
-        area.spaces.active.show_region_ui = True
-    global _tab_tries
-    _tab_tries = 20
-    bpy.app.timers.register(_select_channel_box_tab, first_interval=0.25)
+        _buttons(self.layout, context, MTK_TOOLS)
 
 
 classes = (
@@ -645,30 +658,31 @@ classes = (
     MAYA_OT_separate,
     MAYA_OT_assign_material,
     MAYA_OT_lock_transforms,
+    MAYA_OT_dock_tab,
+    MAYA_OT_delete_components,
+    MAYA_OT_connect,
+    MAYA_OT_fill_hole,
+    MAYA_OT_snap_hold,
     MAYA_MT_marking_menu,
     MAYA_MT_poly_tools,
-    VIEW3D_PT_maya_channel_box,
-    VIEW3D_PT_maya_layer_editor,
-    VIEW3D_PT_maya_ae_transform,
-    VIEW3D_PT_maya_ae_display,
-    VIEW3D_PT_maya_ae_shape,
-    VIEW3D_PT_maya_ae_material,
-    VIEW3D_PT_maya_mtk_selection,
-    VIEW3D_PT_maya_mtk_soft_selection,
-    VIEW3D_PT_maya_mtk_symmetry,
-    VIEW3D_PT_maya_mtk_mesh,
-    VIEW3D_PT_maya_mtk_components,
-    VIEW3D_PT_maya_mtk_tools,
+    MAYA_MT_convert_selection_pie,
+    MAYA_MT_create_pie,
+    PROPERTIES_PT_maya_channel_box,
+    PROPERTIES_PT_maya_layer_editor,
+    PROPERTIES_PT_maya_mtk_selection,
+    PROPERTIES_PT_maya_mtk_soft_selection,
+    PROPERTIES_PT_maya_mtk_symmetry,
+    PROPERTIES_PT_maya_mtk_mesh,
+    PROPERTIES_PT_maya_mtk_components,
+    PROPERTIES_PT_maya_mtk_tools,
 )
 
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-    bpy.app.handlers.load_factory_startup_post.append(show_channel_box)
 
 
 def unregister():
-    bpy.app.handlers.load_factory_startup_post.remove(show_channel_box)
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

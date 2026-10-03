@@ -80,6 +80,14 @@ check(find("Object Mode", "maya.smooth_preview", "THREE"), "3 smooth")
 check(not find("Object Mode", "object.mode_set_with_submode", "ONE"), "1 still edit-mode")
 check(find("Object Mode", "maya.group", "G", ctrl=True), "ctrl g group")
 check(find("Mesh", "mesh.select_mode", "F10"), "F10 edge")
+check(find("3D View", "maya.dock_tab", "A", ctrl=True), "ctrl a dock toggle")
+check(find("Mesh", "maya.delete_components", "DEL"), "delete components")
+check(find("Mesh", "view3d.edit_mesh_extrude_move_normal", "E", ctrl=True), "ctrl e extrude")
+check(find("Frames", "screen.keyframe_jump", "PERIOD", shift=False, alt=False), ". next key")
+check(find("3D View", "maya.snap_hold", "V"), "hold v snap")
+ctrl_click = [k for k in kc.keymaps["3D View"].keymap_items if k.idname == "view3d.select" and k.type == 'LEFTMOUSE'
+              and k.ctrl and not k.shift and not k.alt]
+check(ctrl_click and ctrl_click[0].properties.deselect, "ctrl click deselects")
 
 # Operators.
 bpy.ops.maya.reset_transformations()
@@ -102,5 +110,20 @@ a, b = [o for o in bpy.data.objects if o.type == 'MESH'][:2]
 a.select_set(True); b.select_set(True); bpy.context.view_layer.objects.active = b
 bpy.ops.maya.boolean(operation='DIFFERENCE')
 check(any(m.type == 'BOOLEAN' and m.object == b for m in a.modifiers), "boolean A - B")
+# Maya Delete / Fill Hole on a cube.
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.maya.add_primitive(kind='CUBE')
+cube = bpy.context.active_object
+bpy.ops.object.mode_set(mode='EDIT')
+bpy.context.tool_settings.mesh_select_mode = (False, False, True)
+bpy.ops.mesh.select_all(action='DESELECT')
+import bmesh
+bm = bmesh.from_edit_mesh(cube.data); bm.faces.ensure_lookup_table(); bm.faces[0].select = True
+bmesh.update_edit_mesh(cube.data)
+bpy.ops.maya.delete_components()
+bpy.ops.object.mode_set(mode='OBJECT')
+check(len(cube.data.polygons) == 5, "delete face")
+bpy.ops.maya.fill_hole()
+check(len(cube.data.polygons) == 6, "fill hole")
 print("FAILS:", fails or "none")
 sys.exit(1 if fails else 0)
