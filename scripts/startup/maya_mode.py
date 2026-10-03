@@ -349,7 +349,8 @@ class MAYA_MT_marking_menu(Menu):
                 for k, v in props.items():
                     setattr(o, k, v)
         else:
-            pie.operator("maya.group", text="Group", icon='EMPTY_AXIS')
+            from maya_marking import draw_object_list
+            draw_object_list(pie.box().column(align=True))
         if is_mesh:
             _submode(pie, "Edge", {'EDGE'}, 'EDGESEL')
             _submode(pie, "Multi", {'VERT', 'EDGE', 'FACE'}, 'MOD_WIREFRAME')
@@ -365,22 +366,6 @@ class MAYA_MT_marking_menu(Menu):
         else:
             pie.menu("VIEW3D_MT_object_context_menu", text="More...", icon='COLLAPSEMENU')
             pie.operator("object.select_all", text="Select All", icon='SELECT_EXTEND').action = 'SELECT'
-
-
-class MAYA_MT_poly_tools(Menu):
-    """Shift+right-click polygon tools marking menu"""
-    bl_label = "Polygon Tools"
-
-    def draw(self, _context):
-        pie = self.layout.menu_pie()
-        pie.operator("view3d.edit_mesh_extrude_move_normal", text="Extrude", icon='FACESEL')
-        pie.operator("mesh.bevel", text="Bevel", icon='MOD_BEVEL')
-        pie.operator("mesh.remove_doubles", text="Merge", icon='AUTOMERGE_ON')
-        pie.operator("mesh.loopcut_slide", text="Insert Edge Loop", icon='MOD_EDGESPLIT')
-        pie.operator("mesh.bridge_edge_loops", text="Bridge", icon='MOD_LATTICE')
-        pie.operator("mesh.knife_tool", text="Multi-Cut", icon='MOD_SIMPLEDEFORM')
-        pie.operator("mesh.fill", text="Fill Hole", icon='SNAP_FACE')
-        pie.operator("mesh.dissolve_mode", text="Delete Edge/Vertex", icon='X')
 
 
 class MAYA_OT_dock_tab(Operator):
@@ -496,47 +481,6 @@ class MAYA_MT_convert_selection_pie(Menu):
         pie.operator("mesh.select_edge_ring_multi", text="To Edge Ring")
         pie.operator("mesh.region_to_loop", text="To Border")
         pie.operator("mesh.select_more", text="Grow", icon='ADD')
-
-
-class MAYA_MT_create_pie(Menu):
-    """Shift+right-click marking menu in object mode: create polygon primitives"""
-    bl_label = "Create"
-
-    def draw(self, _context):
-        pie = self.layout.menu_pie()
-        for kind, icon in (('SPHERE', 'MESH_UVSPHERE'), ('CUBE', 'MESH_CUBE'), ('CYLINDER', 'MESH_CYLINDER'),
-                           ('PLANE', 'MESH_PLANE'), ('CONE', 'MESH_CONE'), ('TORUS', 'MESH_TORUS')):
-            pie.operator("maya.add_primitive", text=kind.title(), icon=icon).kind = kind
-        pie.operator("object.camera_add", text="Camera", icon='CAMERA_DATA')
-        pie.menu("VIEW3D_MT_light_add", text="Lights", icon='LIGHT')
-
-
-class MAYA_OT_gizmo_extrude(Operator):
-    """Maya Shift+drag on the move manipulator: extrude the components along the dragged axis"""
-    bl_idname = "maya.gizmo_extrude"
-    bl_label = "Extrude (Shift+Drag)"
-    bl_options = {'INTERNAL'}
-
-    @classmethod
-    def poll(cls, context):
-        return context.mode == 'EDIT_MESH'
-
-    def invoke(self, context, _event):
-        gizmo_group = getattr(context, "gizmo_group", None)
-        gz = next((g for g in gizmo_group.gizmos if g.is_highlight), None) if gizmo_group else None
-        idname = getattr(gz, "bl_idname", "") if gz else ""
-        if "arrow" in idname:
-            constraint = (False, False, True)       # Arrow handle: along its axis.
-        elif "primitive" in idname:
-            constraint = (True, True, False)        # Plane handle: in its plane.
-        else:
-            return bpy.ops.view3d.edit_mesh_extrude_move_normal('INVOKE_DEFAULT')
-        return bpy.ops.mesh.extrude_context_move('INVOKE_DEFAULT', TRANSFORM_OT_translate={
-            "orient_type": 'GLOBAL',
-            "orient_matrix": gz.matrix_basis.to_3x3().normalized(),
-            "orient_matrix_type": 'GLOBAL',
-            "constraint_axis": constraint,
-        })
 
 
 class MAYA_OT_pivot_hold(Operator):
@@ -681,9 +625,14 @@ class PROPERTIES_PT_maya_channel_box(_MayaDockPanel, Panel):
             return
         layout.prop(ob, "name", text="")
         col = layout.column(align=True)
-        for label, attr in (("Translate", "location"), ("Rotate", "rotation_euler"), ("Scale", "scale")):
+        for label, attr, lock in (("Translate", "location", "lock_location"),
+                                  ("Rotate", "rotation_euler", "lock_rotation"), ("Scale", "scale", "lock_scale")):
             for i, axis in enumerate("XYZ"):
-                col.prop(ob, attr, index=i, text=f"{label} {axis}")
+                row = col.row(align=True)
+                sub = row.row(align=True)
+                sub.active = not getattr(ob, lock)[i]
+                sub.prop(ob, attr, index=i, text=f"{label} {axis}")
+                row.prop(ob, lock, index=i, text="", emboss=False, icon='DECORATE_UNLOCKED')
         col.prop(ob, "hide_viewport", text="Visibility", invert_checkbox=True, toggle=True)
 
         if ob.data is not None:
@@ -710,10 +659,11 @@ class PROPERTIES_PT_maya_layer_editor(_MayaDockPanel, Panel):
         col = layout.column(align=True)
         for lc in context.view_layer.layer_collection.children:
             row = col.row(align=True)
-            row.prop(lc, "exclude", text="", invert_checkbox=True)
-            row.prop(lc, "hide_viewport", text="", emboss=False)
-            row.prop(lc.collection, "hide_select", text="", emboss=False)
-            row.label(text=lc.name)
+            sub = row.row(align=True)
+            sub.scale_x = 0.5
+            sub.prop(lc, "hide_viewport", text="V", toggle=True, invert_checkbox=True)
+            sub.prop(lc.collection, "hide_select", text="R", toggle=True)
+            row.prop(lc.collection, "name", text="")
 
 
 def _button(layout, context, label, idname, icon, props, depress=False):
@@ -869,6 +819,22 @@ class PROPERTIES_PT_maya_mtk_tools(_MayaToolkitPanel, Panel):
         _buttons(self.layout, context, MTK_TOOLS)
 
 
+class MAYA_OT_command_language(Operator):
+    """Maya command line: switch between MEL and Python"""
+    bl_idname = "maya.command_language"
+    bl_label = "Command Line Language"
+
+    language: bpy.props.EnumProperty(items=(('mel', "MEL", ""), ('python', "Python", "")))
+
+    def execute(self, context):
+        for area in context.screen.areas:
+            if area.type == 'CONSOLE':
+                area.spaces.active.language = self.language
+                with context.temp_override(area=area, region=area.regions[-1]):
+                    bpy.ops.console.banner()
+        return {'FINISHED'}
+
+
 classes = (
     MAYA_OT_smooth_preview,
     MAYA_OT_group,
@@ -882,20 +848,18 @@ classes = (
     MAYA_OT_assign_material,
     MAYA_OT_lock_transforms,
     MAYA_OT_dock_tab,
+    MAYA_OT_command_language,
     MAYA_OT_delete_components,
     MAYA_OT_connect,
     MAYA_OT_fill_hole,
     MAYA_OT_snap_hold,
-    MAYA_OT_gizmo_extrude,
     MAYA_OT_pivot_hold,
     MAYA_OT_duplicate,
     MAYA_OT_smooth_levels,
     MAYA_OT_space_hotbox,
     MAYA_MT_hotbox,
     MAYA_MT_marking_menu,
-    MAYA_MT_poly_tools,
     MAYA_MT_convert_selection_pie,
-    MAYA_MT_create_pie,
     PROPERTIES_PT_maya_channel_box,
     PROPERTIES_PT_maya_layer_editor,
     PROPERTIES_PT_maya_mtk_selection,
@@ -908,21 +872,29 @@ classes = (
 
 
 @bpy.app.handlers.persistent
-def hide_viewport_sidebars(*_args):
-    """Maya keeps panels in the right-hand dock, so start with Blender's viewport sidebar closed."""
+def maya_startup_layout(*_args):
+    """Factory startup: viewport sidebar closed (panels live in the dock), Outliner shows objects only
+    (like Maya's DAG view), command lines use MEL."""
+    if bpy.app.background:
+        return  # No UI to set up (changing regions without a window leaks).
     for screen in bpy.data.screens:
         for area in screen.areas:
+            space = area.spaces.active
             if area.type == 'VIEW_3D':
-                area.spaces.active.show_region_ui = False
+                space.show_region_ui = False
+            elif area.type == 'OUTLINER':
+                space.use_filter_object_content = False
+            elif area.type == 'CONSOLE':
+                space.language = 'mel'
 
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-    bpy.app.handlers.load_factory_startup_post.append(hide_viewport_sidebars)
+    bpy.app.handlers.load_factory_startup_post.append(maya_startup_layout)
 
 
 def unregister():
-    bpy.app.handlers.load_factory_startup_post.remove(hide_viewport_sidebars)
+    bpy.app.handlers.load_factory_startup_post.remove(maya_startup_layout)
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

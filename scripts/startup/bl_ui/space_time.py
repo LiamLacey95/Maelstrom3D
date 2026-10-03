@@ -135,6 +135,10 @@ def playback_controls(layout, context):
             sub.prop(scene, "frame_preview_start", text="Start")
             sub.prop(scene, "frame_preview_end", text="End")
 
+        # MayaBlender: Maya range slider frame rate menu.
+        fps = scene.render.fps / scene.render.fps_base
+        layout.menu("RENDER_MT_framerate_presets", text="{:.4g} fps".format(fps))
+
 
 class TIME_MT_view(Menu):
     bl_label = "View"

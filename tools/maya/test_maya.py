@@ -7,7 +7,8 @@ def check(cond, msg):
 # Icons used in maya_mode exist.
 import re, maya_mode
 icons = set(bpy.types.UILayout.bl_rna.functions['operator'].parameters['icon'].enum_items.keys())
-src = open(maya_mode.__file__).read()
+import maya_marking, maya_ui as _maya_ui, maya_uv as _maya_uv
+src = "".join(open(m.__file__).read() for m in (maya_mode, maya_marking, _maya_ui, _maya_uv))
 for ic in set(re.findall(r"icon='([A-Z_0-9]+)'", src)):
     check(ic in icons, "missing icon " + ic)
 
@@ -93,8 +94,21 @@ check(find("3D View", "maya.space_hotbox", "SPACE", ctrl=False), "space hotbox")
 check(find("Object Mode", "maya.pivot_hold", "D", shift=False, ctrl=False), "d pivot object")
 check(find("Mesh", "maya.pivot_hold", "D", shift=False, ctrl=False), "d pivot mesh")
 check(find("Object Mode", "maya.duplicate", "D", shift=True), "shift d duplicate with transform")
-check(find("Generic Gizmo Maybe Drag", "maya.gizmo_extrude", "LEFTMOUSE", shift=True), "shift drag extrude")
-check(find("Window", "wm.context_set_enum", "F3"), "F3 modeling menu set")
+check(find("Generic Gizmo Maybe Drag", "maya.gizmo_shift_drag", "LEFTMOUSE", shift=True, ctrl=False),
+      "shift drag extrude/duplicate")
+check(find("Generic Gizmo Maybe Drag", "maya.gizmo_slide", "LEFTMOUSE", shift=True, ctrl=True), "ctrl shift drag slide")
+f2 = find("Window", "wm.context_set_enum", "F2")
+check(f2 and f2[0].properties.value == 'MODELING', "F2 = Modeling menu set (Maya 2025)")
+for km in ("Object Mode", "Mesh"):
+    for key, menu in (("Q", "MAYA_MT_select_mm"), ("W", "MAYA_MT_move_mm"), ("E", "MAYA_MT_rotate_mm"),
+                      ("R", "MAYA_MT_scale_mm")):
+        items = find(km, "maya.key_marking_menu", key, shift=False, ctrl=False)
+        check(items and items[0].properties.menu == menu and hasattr(bpy.types, menu), f"{km} {key}+LMB marking menu")
+check(find("Object Mode", "wm.call_menu_pie", "RIGHTMOUSE", shift=True), "shift rmb context menu")
+check(find("3D View", "wm.call_menu_pie", "RIGHTMOUSE", ctrl=True, shift=True), "ctrl shift rmb transform menu")
+check(find("3D View", "maya.view_history", "LEFT_BRACKET"), "[ view undo")
+check(find("Window", "ed.redo", "Y", ctrl=True), "ctrl y redo")
+check(find("Mesh", "mesh.knife_tool", "X", ctrl=True, shift=True), "ctrl shift x multi-cut")
 check(find("UV Editor", "wm.call_menu_pie", "RIGHTMOUSE", shift=False), "uv marking menu")
 check(find("Mesh", "mesh.select_mode", "F11", ctrl=True), "ctrl f11 convert to faces")
 ctrl_click = [k for k in kc.keymaps["3D View"].keymap_items if k.idname == "view3d.select" and k.type == 'LEFTMOUSE'
@@ -162,5 +176,22 @@ bpy.ops.maya.uv_checker()
 check(cube.data.materials[0].name == "mayaUVChecker", "checker on")
 bpy.ops.maya.uv_checker()
 check(len(cube.data.materials) == 0, "checker off restores materials")
+# maya.cmds and MEL in the command line.
+import maya.cmds as cmds, _console_mel
+bpy.ops.object.select_all(action='DESELECT')
+cube, node = cmds.polyCube(w=2, h=1, d=1, n="box")
+check(cube == "box" and node.startswith("polyCube"), "cmds.polyCube names")
+check(abs(bpy.data.objects["box"].dimensions.x - 2) < 1e-4, "cmds.polyCube width")
+cmds.move(0, 0, 3, cube)
+cmds.move(1, 0, 0, cube, r=True)
+check(tuple(cmds.xform(cube, q=True, t=True)) == (1.0, 0.0, 3.0), "cmds.move absolute + relative")
+cmds.setAttr(cube + ".rotateZ", 90)
+check(abs(cmds.getAttr(cube + ".rz") - 90) < 1e-4, "cmds.setAttr / getAttr degrees")
+grp = cmds.group(cube, n="grp1")
+check(bpy.data.objects[cube].parent.name == grp, "cmds.group")
+_console_mel.run("polySphere -r 2 -n ball; select -cl; select -add ball; move -r 0 0 1;")
+check(bpy.data.objects["ball"].location.z == 1 and cmds.ls(sl=True) == ["ball"], "MEL run")
+check(set(cmds.ls("b*")) >= {"box", "ball"}, "cmds.ls wildcard")
+
 print("FAILS:", fails or "none")
 sys.exit(1 if fails else 0)

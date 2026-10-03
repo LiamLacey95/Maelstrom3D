@@ -10,7 +10,7 @@ Menus are plain data (see `MENUS`) so `tools/maya/test_maya.py` can verify every
 """
 
 import bpy
-from bpy.types import Menu
+from bpy.types import Menu, Panel
 
 
 # -----------------------------------------------------------------------------
@@ -265,6 +265,8 @@ MENUS = {
         editor("UV Editor", 'UV', 'UV'),
         editor("Script Editor", 'TEXT_EDITOR', 'TEXT'),
         SEP,
+        op("Command Line: MEL", "maya.command_language", 'CONSOLE', language='mel'),
+        op("Command Line: Python", "maya.command_language", 'CONSOLE', language='python'),
         op("Toggle Full Screen", "wm.window_fullscreen_toggle", 'FULLSCREEN_ENTER'),
     ]),
     "MAYA_MT_help": ("Help", [
@@ -654,45 +656,111 @@ def draw_menu_bar(layout, context):
         layout.menu(idname)
 
 
+def _call(layout, idname, icon, label, depress=False, **props):
+    """Button that runs `idname` in the main 3D Viewport (the top bar has no viewport context)."""
+    o = layout.operator("maya.call", text="", icon=icon, depress=depress)
+    o.idname, o.props, o.label = idname, repr(props), label
+    return o
+
+
 def draw_status_line(layout, context):
-    """Maya status line: file, undo, selection mode, snapping, render, panels, workspace."""
+    """Maya Status Line, left to right: file, selection mode and masks, snapping, symmetry,
+    render, Hypershade, input box, sidebar buttons, workspace."""
+    from maya_mode import _view3d_space
     ts = context.tool_settings
+    space = _view3d_space(context)
+    ob = context.active_object
+
     row = layout.row(align=True)
     row.operator("wm.read_homefile", text="", icon='FILE_NEW').app_template = ""
     row.operator("wm.open_mainfile", text="", icon='FILE_FOLDER')
     row.operator("wm.save_mainfile", text="", icon='FILE_TICK')
-    row = layout.row(align=True)
-    row.operator("ed.undo", text="", icon='LOOP_BACK')
-    row.operator("ed.redo", text="", icon='LOOP_FORWARDS')
 
+    # Selection mode: object / component.
     row = layout.row(align=True)
-    o = row.operator("maya.call", text="", icon='OBJECT_DATAMODE', depress=context.mode == 'OBJECT')
-    o.idname, o.props, o.label = "object.mode_set", repr({"mode": 'OBJECT'}), "Select by Object"
-    for mode, icon in (('VERT', 'VERTEXSEL'), ('EDGE', 'EDGESEL'), ('FACE', 'FACESEL')):
-        o = row.operator("maya.call", text="", icon=icon)
-        o.idname, o.props = "object.mode_set_with_submode", repr({"mode": 'EDIT', "mesh_select_mode": {mode}})
-        o.label = "Select by Component: " + mode.title()
+    _call(row, "object.mode_set", 'OBJECT_DATAMODE', "Select by Object", depress=context.mode == 'OBJECT',
+          mode='OBJECT')
+    _call(row, "object.mode_set", 'EDITMODE_HLT', "Select by Component", depress=context.mode == 'EDIT_MESH',
+          mode='EDIT')
+    # Selection masks: which object types can be selected.
+    if space is not None:
+        row = layout.row(align=True)
+        for prop, icon in (("show_object_select_mesh", 'MESH_DATA'), ("show_object_select_curve", 'CURVE_DATA'),
+                           ("show_object_select_light", 'LIGHT'), ("show_object_select_camera", 'CAMERA_DATA'),
+                           ("show_object_select_empty", 'EMPTY_DATA'), ("show_object_select_armature", 'BONE_DATA')):
+            row.prop(space, prop, text="", icon=icon)
 
+    # Snapping: grid, curve, point, view plane / live surface.
     row = layout.row(align=True)
-    row.prop(ts, "use_snap", text="")
-    # Maya snap toggles: grid, curve (edge), point (vertex), view plane / surface (face).
     for item in ('GRID', 'EDGE', 'VERTEX', 'FACE'):
         row.prop_enum(ts, "snap_elements", item, text="")
-    row.prop(ts, "use_proportional_edit_objects", text="", icon='PROP_ON')
+    row.prop(ts, "use_snap", text="", icon='SNAP_ON' if ts.use_snap else 'SNAP_OFF')
 
+    # Symmetry (global, on the active mesh).
+    if ob is not None and ob.type == 'MESH':
+        layout.prop(ob.data, "use_mirror_x", text="", icon='MOD_MIRROR')
+
+    # Render: render view, render current frame, IPR, render settings; Hypershade.
     row = layout.row(align=True)
+    row.operator("render.view_show", text="", icon='IMAGE')
     row.operator("render.render", text="", icon='RENDER_STILL')
-    o = row.operator("maya.call", text="", icon='SHADING_RENDERED')
-    o.idname, o.label = "wm.context_set_enum", "IPR Render"
-    o.props = repr({"data_path": "space_data.shading.type", "value": 'RENDERED'})
-    row.operator("maya.open_editor", text="", icon='PROPERTIES').ui_type = 'PROPERTIES'
+    _call(row, "wm.context_set_enum", 'SHADING_RENDERED', "IPR Render",
+          data_path="space_data.shading.type", value='RENDERED')
+    row.operator("maya.dock_tab", text="", icon='SCENE').tab = 'RENDER'
+    row.operator("maya.open_editor", text="", icon='NODE_MATERIAL').ui_type = 'ShaderNodeTree'
 
+    # Input box: rename the selected object.
+    if ob is not None:
+        sub = layout.row()
+        sub.scale_x = 0.8
+        sub.prop(ob, "name", text="", icon='GREASEPENCIL')
+
+    # Sidebar buttons: Modeling Toolkit, Attribute Editor, Tool Settings, Channel Box / Layer Editor.
     row = layout.row(align=True)
-    row.operator("maya.dock_tab", text="", icon='PROPERTIES').toggle = True
+    for tab, icon in (('MODELING_TOOLKIT', 'EDITMODE_HLT'), ('OBJECT', 'PROPERTIES'), ('TOOL', 'TOOL_SETTINGS'),
+                      ('CHANNEL_BOX', 'ALIGN_JUSTIFY')):
+        row.operator("maya.dock_tab", text="", icon=icon).tab = tab
 
     layout.separator()
     layout.label(text="Workspace:")
     layout.template_ID(context.window, "workspace", new="workspace.add", unlink="workspace.delete")
+
+
+def draw_panel_toolbar(layout, context):
+    """Maya panel toolbar: camera, grid, shading and display toggles under the panel menus."""
+    space = context.space_data
+    shading, overlay = space.shading, space.overlay
+    row = layout.row(align=True)
+    row.operator("view3d.view_camera", text="", icon='CAMERA_DATA')
+    row.prop(overlay, "show_floor", text="", icon='GRID')
+    row = layout.row(align=True)
+    for value, icon in (('WIREFRAME', 'SHADING_WIRE'), ('SOLID', 'SHADING_SOLID'), ('MATERIAL', 'SHADING_TEXTURE'),
+                        ('RENDERED', 'SHADING_RENDERED')):
+        row.prop_enum(shading, "type", value, text="", icon=icon)
+    row = layout.row(align=True)
+    row.prop(overlay, "show_wireframes", text="", icon='MOD_WIREFRAME')
+    if shading.type == 'SOLID':
+        row.prop(shading, "show_shadows", text="", icon='LIGHT_SUN')
+        row.prop(shading, "show_cavity", text="", icon='SHADING_BBOX')
+    row.prop(shading, "show_xray", text="", icon='XRAY')
+    row.operator("view3d.localview", text="", icon='HIDE_OFF')
+
+
+class VIEW3D_PT_maya_quick_layouts(Panel):
+    """Maya Quick Layout buttons under the Tool Box"""
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'TOOLS'
+    bl_label = "Quick Layouts"
+    bl_options = {'HIDE_HEADER'}
+
+    def draw(self, context):
+        col = self.layout.column(align=True)
+        col.scale_y = 1.4
+        col.separator(factor=2.0)
+        col.operator("screen.region_quadview", text="", icon='MESH_PLANE' if context.space_data.region_quadviews
+                     else 'VIEW_PERSPECTIVE')
+        col.operator("screen.screen_full_area", text="", icon='FULLSCREEN_ENTER')
+        col.operator("maya.open_editor", text="", icon='OUTLINER').ui_type = 'OUTLINER'
 
 
 # Maya shelves: tab -> (idname, icon, props). Shown in the viewport's shelf row (tool header).
@@ -818,12 +886,15 @@ def draw_panel_menus(layout, context):
         layout.menu(idname)
     if context.mode in {'OBJECT', 'EDIT_MESH'}:
         layout.menu("MAYA_MT_blender_menus", text="", icon='COLLAPSEMENU')
+    layout.separator()
+    draw_panel_toolbar(layout, context)
 
 
 classes = (
     *(_make_menu(idname, label, entries) for idname, (label, entries) in MENUS.items()),
     MAYA_MT_workspaces,
     MAYA_MT_blender_menus,
+    VIEW3D_PT_maya_quick_layouts,
 )
 
 

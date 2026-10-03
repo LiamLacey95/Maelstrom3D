@@ -33,12 +33,30 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 | Space | — | Hotbox / Four View |
 | Ctrl+Space | — | Toggle Maximize Area (use_hide_panels=True) |
 | Shift+L | — | Local View |
+| Shift+F | Center View to Mouse | Frame Selected (use_all_regions=True) |
+| A | Frame All (center=False) | Hotkey Marking Menu (menu='MAYA_MT_io_mm', tool='', command='view3d.view_all') |
+| H | — | Hotkey Marking Menu (menu='MAYA_MT_menu_set_mm', tool='', command='') |
+| Ctrl+Shift+RMB | — | Menu: Transform Options |
+| Left Bracket | — | Undo View Change (step=-1) |
+| Right Bracket | — | Undo View Change (step=1) |
+| Alt+Up | — | Nudge (direction='UP') |
+| Alt+Down | — | Nudge (direction='DOWN') |
+| Alt+Left Arrow | — | Nudge (direction='LEFT') |
+| Alt+Right Arrow | — | Nudge (direction='RIGHT') |
+| Y | — | Last Tool |
+| Shift+G | — | Repeat Last |
+| Alt+B | — | Cycle Background |
+| Alt+1 | — | Toggle space data show object viewport curve |
+| Alt+2 | — | Toggle space data show object viewport mesh |
+| Alt+4 | — | Toggle space data show object viewport empty |
+| Alt+5 | — | Toggle shading type |
 | J | — | Hold to Snap (element='INCREMENT', enable=True) |
 | J (release) | — | Hold to Snap (element='INCREMENT', enable=False) |
 | = | — | Scale view gizmo size x1.15 |
 | - | — | Scale view gizmo size x0.87 |
 | Shift+M | — | Toggle space data show region header |
 | Ctrl+Shift+M | — | Toggle space data show region tool header |
+| F1 | View Axis (type='FRONT') | *(removed)* |
 | F2 | View Axis (type='RIGHT') | *(removed)* |
 | F3 | View Axis (type='TOP') | *(removed)* |
 | F4 | View Camera | *(removed)* |
@@ -64,24 +82,30 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 
 | Key | Before (Industry Compatible) | Now (Maya) |
 |---|---|---|
-| F2 | — | Set window manager maya menu set = ANIMATION |
-| F3 | — | Set window manager maya menu set = MODELING |
-| F4 | — | Set window manager maya menu set = RIGGING |
+| F2 | — | Set window manager maya menu set = MODELING |
+| F3 | — | Set window manager maya menu set = RIGGING |
+| F4 | — | Set window manager maya menu set = ANIMATION |
 | F5 | — | Set window manager maya menu set = FX |
 | F6 | — | Set window manager maya menu set = RENDERING |
 | Ctrl+R | — | Link |
+| Ctrl+Y | — | Redo |
+| F1 | — | Menu: Help |
+| Shift+Left Bracket | — | Cycle Workspace (direction='PREV') |
+| Shift+Right Bracket | — | Cycle Workspace (direction='NEXT') |
 
 ## Generic Gizmo Drag
 
 | Key | Before (Industry Compatible) | Now (Maya) |
 |---|---|---|
-| Shift+LMB drag | — | Extrude (Shift+Drag) |
+| Shift+LMB drag | — | Shift+Drag Manipulator |
+| Ctrl+Shift+LMB drag | — | Slide Components |
 
 ## Generic Gizmo Maybe Drag
 
 | Key | Before (Industry Compatible) | Now (Maya) |
 |---|---|---|
-| Shift+LMB drag | — | Extrude (Shift+Drag) |
+| Shift+LMB drag | — | Shift+Drag Manipulator |
+| Ctrl+Shift+LMB drag | — | Slide Components |
 
 ## Image
 
@@ -132,9 +156,26 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 | Page Up | — | Smooth Preview Divisions (delta=1) |
 | Page Down | — | Smooth Preview Divisions (delta=-1) |
 | Insert | — | Toggle tool settings use transform data origin |
-| Shift+RMB | — | Menu: Create |
-| Up | Select More | Select Hierarchy (direction='PARENT', extend=False) |
-| Down | Select Less | Select Hierarchy (direction='CHILD', extend=False) |
+| Shift+RMB | — | Menu: Polygon Tools |
+| Q | Tool: Select Box | Hotkey Marking Menu (menu='MAYA_MT_select_mm', tool='builtin.select_box', command='') |
+| W | Tool: Move | Hotkey Marking Menu (menu='MAYA_MT_move_mm', tool='builtin.move', command='') |
+| E | Tool: Rotate | Hotkey Marking Menu (menu='MAYA_MT_rotate_mm', tool='builtin.rotate', command='') |
+| R | Tool: Scale | Hotkey Marking Menu (menu='MAYA_MT_scale_mm', tool='builtin.scale', command='') |
+| Up | Select More | Pickwalk (direction='UP') |
+| Down | Select Less | Pickwalk (direction='DOWN') |
+| Left Arrow | Frame Offset (delta=-1) | Pickwalk (direction='LEFT') |
+| Right Arrow | Frame Offset (delta=1) | Pickwalk (direction='RIGHT') |
+| Shift+S | Insert Keyframe | Hotkey Marking Menu (menu='MAYA_MT_keyframe_mm', tool='', command='') |
+| Ctrl+Shift+W | — | Insert Keyframe (by name) (type='Location') |
+| Ctrl+Shift+E | — | Insert Keyframe (by name) (type='Rotation') |
+| Ctrl+Shift+R | — | Insert Keyframe (by name) (type='Scaling') |
+| Alt+I | — | Insert Keyframe |
+| Ctrl+T | — | Tool: Transform |
+| Ctrl+X | — | Cut |
+| F1 | — | *(removed)* |
+| B | Toggle tool settings use proportional edit objects | Soft Select Radius |
+| Left Bracket | Select Hierarchy (direction='PARENT', extend=False) | *(removed)* |
+| Right Bracket | Select Hierarchy (direction='CHILD', extend=False) | *(removed)* |
 | Ctrl+Shift+H | — | Show Hidden Objects |
 | Ctrl+A | (De)select All (action='SELECT') | *(removed)* |
 | C | Tool: Cursor | *(removed)* |
@@ -145,6 +186,15 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 |---|---|---|
 | RMB | Menu: VIEW3D_MT_edit_mesh_context_menu | Menu: Marking Menu |
 | Shift+RMB | — | Menu: Polygon Tools |
+| Q | Tool: Select Box | Hotkey Marking Menu (menu='MAYA_MT_select_mm', tool='builtin.select_box', command='') |
+| W | Tool: Move | Hotkey Marking Menu (menu='MAYA_MT_move_mm', tool='builtin.move', command='') |
+| E | Tool: Rotate | Hotkey Marking Menu (menu='MAYA_MT_rotate_mm', tool='builtin.rotate', command='') |
+| R | Tool: Scale | Hotkey Marking Menu (menu='MAYA_MT_scale_mm', tool='builtin.scale', command='') |
+| Ctrl+T | — | Tool: Transform |
+| B | Toggle tool settings use proportional edit | Soft Select Radius |
+| Ctrl+Shift+Q | — | Tool: Poly Build |
+| Ctrl+Shift+X | — | Knife Topology Tool |
+| Ctrl+MMB drag | — | Shrink/Fatten |
 | F8 | — | Edit Mode |
 | F9 | — | Select Mode (type='VERT') |
 | F10 | — | Select Mode (type='EDGE') |

@@ -159,6 +159,86 @@ def pivot_released():
 def space_tap():
     _win, area, _region = view3d()
     check(len(area.spaces.active.region_quadviews) != GIZMO["quad"], "Space tap did not toggle four view")
+    event('SPACE', 'PRESS', GIZMO["start"])   # Back to a single view for the next drags.
+    event('SPACE', 'RELEASE', GIZMO["start"])
+
+
+@step
+def object_shift_drag_setup():
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.wm.tool_set_by_id(name="builtin.move")
+    GIZMO["objects"] = len(bpy.data.objects)
+    event('MOUSEMOVE', xy=GIZMO["start"])
+
+
+@step
+def object_shift_drag_hover():
+    x, y = GIZMO["start"]
+    event('MOUSEMOVE', xy=(x + 1, y))
+    event('MOUSEMOVE', xy=(x, y))
+
+
+@step
+def object_shift_drag():
+    drag(shift=True)
+
+
+@step
+def object_shift_release():
+    event('LEFTMOUSE', 'RELEASE', GIZMO["end"], shift=True)
+    event('LEFT_SHIFT', 'RELEASE', GIZMO["end"])
+
+
+@step
+def object_shift_check():
+    check(len(bpy.data.objects) == GIZMO["objects"] + 1, "shift-drag on gizmo in object mode did not duplicate "
+          "(mode %s, ops %s, sel %s)" % (bpy.context.mode, [o.bl_idname for o in bpy.context.window_manager.operators][-3:],
+                                       [o.name for o in bpy.context.selected_objects]))
+    event('W', 'PRESS', GIZMO["start"])
+    event('LEFTMOUSE', 'PRESS', GIZMO["start"])
+
+
+@step
+def w_marking_menu():
+    import maya_marking
+    check(maya_marking.MAYA_OT_key_marking_menu.last_menu == "MAYA_MT_move_mm", "W + left click marking menu")
+    event('LEFTMOUSE', 'RELEASE', GIZMO["start"])
+    event('W', 'RELEASE', GIZMO["start"])
+    event('ESC', 'PRESS', GIZMO["start"])
+    GIZMO["soft"] = bpy.context.tool_settings.use_proportional_edit_objects
+    event('B', 'PRESS', GIZMO["start"])
+    event('B', 'RELEASE', GIZMO["start"])
+
+
+@step
+def b_tap():
+    check(bpy.context.tool_settings.use_proportional_edit_objects != GIZMO["soft"], "B tap did not toggle soft select")
+    _win, area, _region = view3d()
+    GIZMO["distance"] = area.spaces.active.region_3d.view_distance
+    area.spaces.active.region_3d.view_distance *= 2
+
+
+@step
+def view_changed():
+    pass  # Let the view watcher record the zoom.
+
+
+@step
+def view_undo():
+    event('LEFT_BRACKET', 'PRESS', GIZMO["start"])
+
+
+@step
+def view_undone():
+    _win, area, _region = view3d()
+    import maya_marking
+    check(abs(area.spaces.active.region_3d.view_distance - GIZMO["distance"]) < 1e-4,
+          "[ did not undo the view change (now %s, was %s, history %s)" % (
+              area.spaces.active.region_3d.view_distance, GIZMO["distance"],
+              {k: (len(v["stack"]), v["index"]) for k, v in maya_marking._view_history.items()}))
+    consoles = [a.spaces.active.language for a in bpy.data.screens["Maya Classic"].areas if a.type == 'CONSOLE']
+    check(consoles == ['mel'], "command line is not MEL: %r" % consoles)
 
 
 @step

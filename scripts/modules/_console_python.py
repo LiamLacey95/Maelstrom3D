@@ -111,6 +111,9 @@ def get_console(console_id):
         # weak! - but highly convenient
         namespace["C"] = bpy.context
         namespace["D"] = bpy.data
+        # MayaBlender: Maya-style commands, as after `import maya.cmds as cmds`.
+        import maya.cmds
+        namespace["cmds"] = maya.cmds
 
         replace_help(namespace)
 

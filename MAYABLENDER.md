@@ -4,6 +4,7 @@ Fork of Blender 5.2.2 LTS (git branch `maya`) that looks and behaves like Autode
 Run `dist\blender.exe`. Everything Maya-like is on by default; there is nothing to configure.
 
 - Full list of changed shortcuts: [MAYABLENDER_SHORTCUTS.md](MAYABLENDER_SHORTCUTS.md) (generated from the keymap).
+- Element-by-element comparison with Maya 2025 (interface, marking menus, every default hotkey): [MAYA_PARITY.md](MAYA_PARITY.md).
 - Self-checks: `tools/maya/test_maya.py` (background) and `tools/maya/gui_test.py` (real window, simulated input).
 
 ## Change log
@@ -15,6 +16,7 @@ Run `dist\blender.exe`. Everything Maya-like is on by default; there is nothing 
 | `30a49507` | 3. Dock (first try) | Channel Box / Attribute Editor / Modeling Toolkit as viewport sidebar tabs (replaced in round 4). |
 | `919428c5` | 4. Right-hand dock | Properties editor became Maya's right-hand dock (new Channel Box / Layer Editor and Modeling Toolkit tabs, tabs on the right edge, opens on Channel Box). Maya selection modifiers, Ctrl+E/Ctrl+B, Maya Delete, Ctrl+RMB convert menu, Shift+RMB create menu, X/C/V snapping, , . keys, pickwalk, > <. |
 | `9d4233db` | 5. Components, pivot, UVs | Right-click shows every tool for the selected component type, Shift+drag on the manipulator extrudes, D (hold) edits the pivot for objects and components, Space tap/hold = four view/hotbox, F2-F6 menu sets, Shift+D duplicate with transform, Ctrl+F9-F11 convert selection, Maya UV Editor workflow (UV Toolkit, UV marking menus, Cut/Sew/Unfold/Layout, checker map). |
+| (round 6) | 6. Maya parity pass | Researched Maya 2025's hotkey list, Status Line and marking menus. Fixed F2-F6 order, Maya Status Line (selection masks, symmetry, render settings, Hypershade, input box, sidebar buttons), panel toolbar, Quick Layout buttons, Channel Box locks, Layer Editor V/R, Maya Outliner, range-slider fps, Q/W/E/R/A/H/Shift+S + left click marking menus, context Shift+RMB, Ctrl+Shift+RMB transform menu, object RMB select/material items, Shift+drag duplicate (objects), Ctrl+Shift+drag slide, [ ] view undo, Alt+arrows nudge, pickwalk, Y, Ctrl+Y, Ctrl+T, Ctrl+X, Alt+B, Alt+1/2/4/5, B soft select radius, Ctrl+Shift+Q/X, Shift+{ }, F1, MEL command line + `maya.cmds`. |
 
 ## What changed vs. stock Blender
 
@@ -44,10 +46,21 @@ Run `dist\blender.exe`. Everything Maya-like is on by default; there is nothing 
 | RMB (hold) | Marking menu (see below) |
 | Shift+RMB | Object mode: create primitives. Component mode: polygon tools |
 | Ctrl+RMB | Convert selection (vertices, edges, faces, loop, ring, border, shell) |
-| Shift+drag manipulator | Extrude the selected components along that axis |
+| Shift+drag manipulator | Components: extrude along that axis. Objects: duplicate |
+| Ctrl+Shift+drag manipulator | Slide components along their edges |
+| Q / W / E / R / A / H (hold) + left click | Select / Move / Rotate / Scale / History / Menu set marking menus |
+| Shift+S (hold) + left click | Keyframe marking menu |
+| Ctrl+Shift+RMB | Transform options: symmetry, soft select, preserve UVs, tweak |
+| B (tap / hold + drag) | Toggle soft select / set its radius |
+| [ / ] | Undo / redo view change |
+| Alt+arrows, arrows | Nudge one pixel, pickwalk (up/down hierarchy, left/right siblings) |
+| Y, Ctrl+T | Last tool, universal manipulator |
+| Ctrl+Shift+Q / X | Quad Draw / Multi-Cut |
+| Alt+B, Alt+1/2/4/5 | Cycle background, toggle curves / meshes / image planes / wireframe |
+| Shift+{ / Shift+}, F1 | Previous / next workspace, help |
 | D (hold) / Insert | Edit pivot: objects move their origin; components move a custom pivot. Modify > Reset Pivot to go back |
 | Space tap / hold | Four view / hotbox (every menu) |
-| F2 / F3 / F4 / F5 / F6 | Menu set: Animation / Modeling / Rigging / FX / Rendering |
+| F2 / F3 / F4 / F5 / F6 | Menu set: Modeling / Rigging / Animation / FX / Rendering (Maya 2025) |
 | F8, F9, F10, F11, F12 | Object/component toggle, Vertex, Edge, Face, UV Editing |
 | Ctrl+F9 / F10 / F11 | Convert selection to vertices / edges / faces |
 | 1 / 2 / 3, Page Up / Down | Smooth preview off / cage / smooth, more / fewer divisions |
@@ -59,7 +72,7 @@ Run `dist\blender.exe`. Everything Maya-like is on by default; there is nothing 
 | X / C / V / J (hold) | Snap to grid / curve / point / increments |
 | > / < | Grow / shrink selection |
 | Up / Down | Pickwalk to parent / child |
-| Z, Shift+Z, G | Undo, redo, repeat last |
+| Z / Ctrl+Z, Shift+Z / Ctrl+Y, G | Undo, redo, repeat last |
 | Delete | Faces deleted; edges and vertices dissolved |
 | Ctrl+E, Ctrl+B | Extrude, bevel |
 | Ctrl+A | Channel Box / Attribute Editor |
@@ -68,7 +81,7 @@ Run `dist\blender.exe`. Everything Maya-like is on by default; there is nothing 
 | Alt+V, Alt+Shift+V | Play / stop, go to start |
 | = / - | Bigger / smaller manipulator |
 | Ctrl+Space, Shift+M, Ctrl+Shift+M | Maximize panel, panel menu bar, shelf row |
-| Ctrl+R | Create reference |
+| Ctrl+R, Ctrl+X | Create reference, cut |
 
 ## Right-click marking menu
 
@@ -113,30 +126,21 @@ Display layers = Collections (Layer Editor) · Blender is Z-up (Maya is Y-up); u
 - Blender's Item / Tool / View tabs still exist in the viewport sidebar (closed at startup; Ctrl+] or Display > UI Elements > Sidebar opens it).
 - The splash screen is still Blender-branded.
 
+## Command line (MEL and Python)
+
+The command line at the bottom of Maya Classic speaks MEL, like Maya's:
+`polyCube -w 2 -n box; move -r 0 0 1; setAttr box.rotateZ 45; select -cl;`.
+Windows > Command Line: Python switches to Python, where `cmds` is ready (`cmds.polyCube(w=2)`), and scripts can
+`import maya.cmds as cmds`. Supported commands: polyCube/Sphere/Cylinder/Cone/Plane/Torus, polySmooth, spaceLocator,
+group, parent, duplicate, delete, select, ls, move, rotate, scale, xform, setAttr, getAttr, rename, objExists, hide,
+showHidden, makeIdentity, currentTime, playbackOptions, setKeyframe, file, undo, redo. Blender is Z-up, so a cube's
+"height" runs along Z.
+
 ## Maya features to port next
 
-Researched against [Autodesk's Maya hotkey list](https://download.autodesk.com/global/docs/maya2014/en_US/files/PC_Maya_Hotkeys.htm).
-Ordered by how often a Maya user would notice them.
-
-| Feature | Maya | Plan in MayaBlender | Needs rebuild |
-|---|---|---|---|
-| Tool marking menus | Q/W/E/R + LMB hold: selection mask, move/rotate/scale options | Pie menus with orientation, pivot, snapping per tool | No |
-| Keyframe marking menu | Shift+S + LMB / MMB | Pie: set key, breakdown, tangents (interpolation) | No |
-| View undo | [ / ] undo/redo view change | Store view matrices per viewport, step through them | No |
-| Pickwalk left/right | Left/Right arrows walk siblings | Select next/previous sibling in hierarchy | No |
-| Nudge | Alt+arrows move one pixel | Small translate in screen space | No |
-| Last tool | Y repeats last non-QWER tool | Remember last tool id | No |
-| Brush radius drag | B + drag (soft select / sculpt radius) | Modal radius drag for proportional size and brushes | No |
-| Shift+H show selection | Show selected hidden objects | Reveal only selected in Outliner | No |
-| Custom shelves | Ctrl+Shift+click menu item adds it to the shelf; shelf editor | User shelf stored in preferences | No |
-| Hypershade browser | Material browser and node graph | Material grid panel + Shader Editor | No |
-| Render Settings window | Window > Rendering Editors > Render Settings | Open the Render tab in a floating window | No |
-| Set Project | scenes/, sourceimages/, images/ folders, relative paths | Create Maya project folders, set default paths | No |
-| Command line MEL | `polyCube`, `move`, `select` | Translate common MEL commands to Python in the command line | No |
-| Time slider / range slider | Maya range slider with playback start/end bar | Custom timeline header | No |
-| Maya splash and icons | Maya-like splash | Replace splash image and app icon | Yes |
-| Text dock tabs | Vertical text labels on the dock | Draw labels in the Properties tab bar | Yes |
-| Y-up | Y-up world, centimetres | Scene unit scale is easy; true Y-up needs deep core changes | Yes (large) |
+See [MAYA_PARITY.md](MAYA_PARITY.md) for the full gap list. Top items: live creation history for primitives
+(editable polyCube inputs), hotbox zones, the tangent marking menu and Graph Editor hotkeys, component pickwalk,
+and (with a rebuild) a Maya splash and text labels on the dock tabs.
 
 ## Build
 

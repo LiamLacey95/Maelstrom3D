@@ -25,6 +25,28 @@ def _pie(name, type, **mods):
     return _kmi("wm.call_menu_pie", type, props={"name": name}, **mods)
 
 
+def _mm(type, menu, tool="", command="", **mods):
+    """Tap: tool / command. Hold the key + left click: marking menu."""
+    return _kmi("maya.key_marking_menu", type, props={"menu": menu, "tool": tool, "command": command}, **mods)
+
+
+_QWER_MM = (
+    _mm('Q', "MAYA_MT_select_mm", tool="builtin.select_box"),
+    _mm('W', "MAYA_MT_move_mm", tool="builtin.move"),
+    _mm('E', "MAYA_MT_rotate_mm", tool="builtin.rotate"),
+    _mm('R', "MAYA_MT_scale_mm", tool="builtin.scale"),
+)
+_UNIVERSAL = _kmi("wm.tool_set_by_id", 'T', props={"name": "builtin.transform"}, ctrl=True)
+_PICKWALK = tuple(_kmi("maya.pickwalk", k + '_ARROW', props={"direction": k}) for k in ('UP', 'DOWN', 'LEFT', 'RIGHT'))
+_KEYS = (
+    _mm('S', "MAYA_MT_keyframe_mm", shift=True),
+    _kmi("anim.keyframe_insert_by_name", 'W', props={"type": 'Location'}, ctrl=True, shift=True),
+    _kmi("anim.keyframe_insert_by_name", 'E', props={"type": 'Rotation'}, ctrl=True, shift=True),
+    _kmi("anim.keyframe_insert_by_name", 'R', props={"type": 'Scaling'}, ctrl=True, shift=True),
+    _kmi("anim.keyframe_insert", 'I', alt=True),
+)
+
+
 def _smooth(type, level):
     return _kmi("maya.smooth_preview", type, props={"level": level})
 
@@ -46,6 +68,22 @@ MAYA_OVERRIDES = {
         _kmi("maya.space_hotbox", 'SPACE'),
         _kmi("screen.screen_full_area", 'SPACE', props={"use_hide_panels": True}, ctrl=True),
         _kmi("view3d.localview", 'L', shift=True),
+        _kmi("view3d.view_selected", 'F', props={"use_all_regions": True}, shift=True),
+        _mm('A', "MAYA_MT_io_mm", command="view3d.view_all"),
+        _mm('H', "MAYA_MT_menu_set_mm"),
+        _pie("MAYA_MT_transform_mm", 'RIGHTMOUSE', ctrl=True, shift=True),
+        _kmi("maya.view_history", 'LEFT_BRACKET', props={"step": -1}),
+        _kmi("maya.view_history", 'RIGHT_BRACKET', props={"step": 1}),
+        *(_kmi("maya.nudge", k + '_ARROW', props={"direction": k}, alt=True, repeat=True)
+          for k in ('UP', 'DOWN', 'LEFT', 'RIGHT')),
+        _kmi("maya.last_tool", 'Y'),
+        _kmi("screen.repeat_last", 'G', shift=True),
+        _kmi("maya.cycle_background", 'B', alt=True),
+        _kmi("wm.context_toggle", 'ONE', props={"data_path": "space_data.show_object_viewport_curve"}, alt=True),
+        _kmi("wm.context_toggle", 'TWO', props={"data_path": "space_data.show_object_viewport_mesh"}, alt=True),
+        _kmi("wm.context_toggle", 'FOUR', props={"data_path": "space_data.show_object_viewport_empty"}, alt=True),
+        _kmi("wm.context_toggle_enum", 'FIVE', props={"data_path": "space_data.shading.type",
+                                                       "value_1": 'WIREFRAME', "value_2": 'SOLID'}, alt=True),
         _kmi("maya.snap_hold", 'J', props={"element": 'INCREMENT', "enable": True}),
         _kmi("maya.snap_hold", 'J', 'RELEASE', props={"element": 'INCREMENT', "enable": False}),
         _kmi("wm.context_scale_int", 'EQUAL', props={"data_path": "preferences.view.gizmo_size", "value": 1.15}, repeat=True),
@@ -53,7 +91,7 @@ MAYA_OVERRIDES = {
         _kmi("wm.context_toggle", 'M', props={"data_path": "space_data.show_region_header"}, shift=True),
         _kmi("wm.context_toggle", 'M', props={"data_path": "space_data.show_region_tool_header"}, ctrl=True, shift=True),
         # F2-F5 switch Maya menu sets (Window keymap), not views.
-        *(("REMOVE", {"type": k, "value": 'PRESS'}, None) for k in ('F2', 'F3', 'F4', 'F5')),
+        *(("REMOVE", {"type": k, "value": 'PRESS'}, None) for k in ('F1', 'F2', 'F3', 'F4', 'F5')),
         _shading('FOUR', 'WIREFRAME'),
         _shading('FIVE', 'SOLID'),
         _shading('SIX', 'MATERIAL'),
@@ -71,12 +109,22 @@ MAYA_OVERRIDES = {
     ],
     "Window": [
         *(_kmi("wm.context_set_enum", k, props={"data_path": "window_manager.maya_menu_set", "value": v})
-          for k, v in (('F2', 'ANIMATION'), ('F3', 'MODELING'), ('F4', 'RIGGING'), ('F5', 'FX'), ('F6', 'RENDERING'))),
+          for k, v in (('F2', 'MODELING'), ('F3', 'RIGGING'), ('F4', 'ANIMATION'), ('F5', 'FX'), ('F6', 'RENDERING'))),
         _kmi("wm.link", 'R', ctrl=True),
+        _kmi("ed.redo", 'Y', ctrl=True, repeat=True),
+        _kmi("wm.call_menu", 'F1', props={"name": "TOPBAR_MT_help"}),
+        _kmi("screen.workspace_cycle", 'LEFT_BRACKET', props={"direction": 'PREV'}, shift=True),
+        _kmi("screen.workspace_cycle", 'RIGHT_BRACKET', props={"direction": 'NEXT'}, shift=True),
     ],
     # Shift+drag on the move manipulator extrudes (components only; objects keep box selection).
-    "Generic Gizmo Drag": [_kmi("maya.gizmo_extrude", 'LEFTMOUSE', 'CLICK_DRAG', shift=True)],
-    "Generic Gizmo Maybe Drag": [_kmi("maya.gizmo_extrude", 'LEFTMOUSE', 'CLICK_DRAG', shift=True)],
+    "Generic Gizmo Drag": [
+        _kmi("maya.gizmo_shift_drag", 'LEFTMOUSE', 'CLICK_DRAG', shift=True),
+        _kmi("maya.gizmo_slide", 'LEFTMOUSE', 'CLICK_DRAG', ctrl=True, shift=True),
+    ],
+    "Generic Gizmo Maybe Drag": [
+        _kmi("maya.gizmo_shift_drag", 'LEFTMOUSE', 'CLICK_DRAG', shift=True),
+        _kmi("maya.gizmo_slide", 'LEFTMOUSE', 'CLICK_DRAG', ctrl=True, shift=True),
+    ],
     "Image": [
         _kmi("ed.undo", 'Z', repeat=True),
         _kmi("ed.redo", 'Z', shift=True, repeat=True),
@@ -109,17 +157,25 @@ MAYA_OVERRIDES = {
         _kmi("maya.smooth_levels", 'PAGE_UP', props={"delta": 1}),
         _kmi("maya.smooth_levels", 'PAGE_DOWN', props={"delta": -1}),
         _kmi("wm.context_toggle", 'INSERT', props={"data_path": "tool_settings.use_transform_data_origin"}),
-        _pie("MAYA_MT_create_pie", 'RIGHTMOUSE', shift=True),
-        # Pickwalk up / down the hierarchy.
-        _kmi("object.select_hierarchy", 'UP_ARROW', props={"direction": 'PARENT', "extend": False}),
-        _kmi("object.select_hierarchy", 'DOWN_ARROW', props={"direction": 'CHILD', "extend": False}),
+        _pie("MAYA_MT_shift_rmb", 'RIGHTMOUSE', shift=True),
+        *_QWER_MM, *_PICKWALK, *_KEYS, _UNIVERSAL,
+        _kmi("maya.cut", 'X', ctrl=True),
+        ("REMOVE", {"type": 'F1', "value": 'PRESS'}, None),
+        _kmi("maya.soft_radius", 'B'),
+        ("REMOVE", {"type": 'LEFT_BRACKET', "value": 'PRESS'}, None),
+        ("REMOVE", {"type": 'RIGHT_BRACKET', "value": 'PRESS'}, None),
         _kmi("object.hide_view_clear", 'H', ctrl=True, shift=True),
         ("REMOVE", {"type": 'A', "value": 'PRESS', "ctrl": True}, None),
         ("REMOVE", {"type": 'C', "value": 'PRESS'}, None),
     ],
     "Mesh": [
         _pie("MAYA_MT_marking_menu", 'RIGHTMOUSE'),
-        _pie("MAYA_MT_poly_tools", 'RIGHTMOUSE', shift=True),
+        _pie("MAYA_MT_shift_rmb", 'RIGHTMOUSE', shift=True),
+        *_QWER_MM, _UNIVERSAL,
+        _kmi("maya.soft_radius", 'B'),
+        _kmi("wm.tool_set_by_id", 'Q', props={"name": "builtin.poly_build"}, ctrl=True, shift=True),
+        _kmi("mesh.knife_tool", 'X', ctrl=True, shift=True),
+        _kmi("transform.shrink_fatten", 'MIDDLEMOUSE', 'CLICK_DRAG', ctrl=True),
         _kmi("object.editmode_toggle", 'F8'),
         *(_kmi("mesh.select_mode", k, props={"type": m}) for k, m in _SUBMODE),
         _smooth('ONE', 'OFF'), _smooth('TWO', 'CAGE'), _smooth('THREE', 'SMOOTH'),
