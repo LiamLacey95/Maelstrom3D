@@ -37,6 +37,7 @@ class MAYA_OT_key_marking_menu(Operator):
     last_menu = ""
 
     menu: bpy.props.StringProperty()
+    menu_mmb: bpy.props.StringProperty(description="Marking menu for hold key + middle click")
     tool: bpy.props.StringProperty(description="Tool to activate on press")
     command: bpy.props.StringProperty(description="Operator to run on press")
 
@@ -60,10 +61,12 @@ class MAYA_OT_key_marking_menu(Operator):
     def modal(self, context, event):
         if event.type == self.key and event.value == 'RELEASE':
             return {'FINISHED', 'PASS_THROUGH'}
-        if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+        menu = {'LEFTMOUSE': self.menu, 'MIDDLEMOUSE': self.menu_mmb}.get(event.type) if event.value == 'PRESS' \
+            else None
+        if menu:
             with context.temp_override(area=self.area, region=self.region):
-                bpy.ops.wm.call_menu_pie(name=self.menu)
-            MAYA_OT_key_marking_menu.last_menu = self.menu  # Read by tools/maya/gui_test.py.
+                bpy.ops.wm.call_menu_pie(name=menu)
+            MAYA_OT_key_marking_menu.last_menu = menu  # Read by tools/maya/gui_test.py.
             return {'FINISHED'}
         return {'PASS_THROUGH'}
 
@@ -170,6 +173,81 @@ class MAYA_MT_keyframe_mm(Menu):
 
 # -----------------------------------------------------------------------------
 # Right click variants
+
+TANGENTS = (
+    ('SPLINE', "Spline", 'IPO_BEZIER'), ('LINEAR', "Linear", 'IPO_LINEAR'), ('CLAMPED', "Clamped", 'HANDLE_AUTOCLAMPED'),
+    ('FLAT', "Flat", 'IPO_CONSTANT'), ('STEPPED', "Stepped", 'IPO_CONSTANT'), ('PLATEAU', "Plateau", 'HANDLE_AUTOCLAMPED'),
+)
+
+
+class MAYA_OT_set_tangents(Operator):
+    """Maya tangents for the selected objects' keys (Spline, Linear, Clamped, Flat, Stepped, Plateau)"""
+    bl_idname = "maya.set_tangents"
+    bl_label = "Set Tangents"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    kind: bpy.props.EnumProperty(items=[(k, label, "") for k, label, _icon in TANGENTS])
+
+    def execute(self, context):
+        from bpy_extras.anim_utils import animdata_get_channelbag_for_assigned_slot
+        interpolation = {'LINEAR': 'LINEAR', 'STEPPED': 'CONSTANT'}.get(self.kind, 'BEZIER')
+        handle = {'SPLINE': 'AUTO', 'FLAT': 'ALIGNED'}.get(self.kind, 'AUTO_CLAMPED')
+        for ob in context.selected_objects:
+            bag = ob.animation_data and animdata_get_channelbag_for_assigned_slot(ob.animation_data)
+            for fcurve in (bag.fcurves if bag else ()):
+                for key in fcurve.keyframe_points:
+                    key.interpolation = interpolation
+                    key.handle_left_type = key.handle_right_type = handle
+                    if self.kind == 'FLAT':
+                        key.handle_left.y = key.handle_right.y = key.co.y
+                fcurve.update()
+        return {'FINISHED'}
+
+
+class MAYA_MT_tangent_mm(Menu):
+    """Shift+S + middle click: key tangents"""
+    bl_label = "Tangents"
+
+    def draw(self, _context):
+        pie = self.layout.menu_pie()
+        for kind, label, icon in TANGENTS:
+            _op(pie, "maya.set_tangents", label, icon, kind=kind)
+
+
+_last_hidden = []
+
+
+class MAYA_OT_hide_selection(Operator):
+    """Maya Ctrl+H: hide the selection (remembered for Ctrl+Shift+H)"""
+    bl_idname = "maya.hide_selection"
+    bl_label = "Hide Selection"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        _last_hidden[:] = [ob.name for ob in context.selected_objects]
+        for ob in context.selected_objects:
+            ob.hide_set(True)
+        return {'FINISHED'}
+
+
+class MAYA_OT_show_hidden(Operator):
+    """Maya Ctrl+Shift+H shows the last hidden objects; Shift+H shows hidden objects selected in the Outliner"""
+    bl_idname = "maya.show_hidden"
+    bl_label = "Show Hidden"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    which: bpy.props.EnumProperty(items=(('LAST', "Last Hidden", ""), ('SELECTED', "Selection", "")))
+
+    def execute(self, context):
+        if self.which == 'LAST':
+            obs = [context.view_layer.objects.get(name) for name in _last_hidden]
+        else:
+            obs = [ob for ob in context.view_layer.objects if ob.select_get()]
+        for ob in filter(None, obs):
+            ob.hide_set(False)
+            ob.select_set(True)
+        return {'FINISHED'}
+
 
 class MAYA_MT_shift_rmb(Menu):
     """Shift+right click: create (nothing selected), polygon tools (object), component tools (components)"""
@@ -561,6 +639,10 @@ classes = (
     MAYA_OT_view_history,
     MAYA_OT_last_tool,
     MAYA_OT_cut,
+    MAYA_OT_set_tangents,
+    MAYA_MT_tangent_mm,
+    MAYA_OT_hide_selection,
+    MAYA_OT_show_hidden,
     MAYA_OT_nudge,
     MAYA_OT_pickwalk,
     MAYA_OT_cycle_background,

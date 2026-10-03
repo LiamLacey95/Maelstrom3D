@@ -64,7 +64,7 @@ Status: **Done** works like Maya · **Close** same job, Blender mechanics differ
 | A + left click: history operations | Done |
 | H + left click: menu sets | Done |
 | Shift+S + left click: keyframe | Done |
-| Shift+S + middle click: tangents | Missing |
+| Shift+S + middle click: tangents | Done |
 | UV Editor right click / Shift+right click | Done |
 | Hypershade / Node Editor / Script Editor marking menus | Missing |
 
@@ -89,8 +89,8 @@ Status: **Done** works like Maya · **Close** same job, Blender mechanics differ
 | Ctrl+X, Ctrl+C, Ctrl+V | Done | |
 | Space tap / hold, Ctrl+Space | Done | |
 | Alt+M hotbox style | Missing | |
-| Ctrl+H, Alt+H, Ctrl+Shift+H, Ctrl+1, Shift+L | Done | Ctrl+Shift+H shows all hidden, not only the last |
-| Shift+H show selection | Missing | Hidden objects can't be selected in Blender's viewport |
+| Ctrl+H, Alt+H, Ctrl+Shift+H, Ctrl+1, Shift+L | Done | Ctrl+Shift+H shows the last hidden objects |
+| Shift+H show selection | Done | Select hidden objects in the Outliner, then Shift+H |
 | 1 2 3, 4 5 6 7, Page Up / Down | Done | 0 (NURBS quality) not applicable |
 | Alt+1 / 2 / 4 / 5 | Done | |
 | Ctrl+N, O, S, Shift+S, Q, R | Done | |
@@ -120,6 +120,6 @@ Status: **Done** works like Maya · **Close** same job, Blender mechanics differ
 
 1. Live creation history for primitives (editable polyCube width/subdivisions in the Channel Box), e.g. Geometry Nodes primitives.
 2. Hotbox zones (N/E/S/W marking menus around the hotbox).
-3. Shift+S + middle click tangent menu, Graph Editor hotkeys, time bookmarks via markers.
-4. Component pickwalk, Shift+H show selection via the Outliner.
+3. Graph Editor hotkeys, time bookmarks via markers.
+4. Component pickwalk.
 5. Maya splash / icon and text labels on dock tabs (C rebuild).

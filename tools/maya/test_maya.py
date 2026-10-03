@@ -193,5 +193,21 @@ _console_mel.run("polySphere -r 2 -n ball; select -cl; select -add ball; move -r
 check(bpy.data.objects["ball"].location.z == 1 and cmds.ls(sl=True) == ["ball"], "MEL run")
 check(set(cmds.ls("b*")) >= {"box", "ball"}, "cmds.ls wildcard")
 
+# Tangents, hide / show last hidden.
+bpy.ops.object.select_all(action='DESELECT')
+ball = bpy.data.objects["ball"]
+ball.select_set(True); bpy.context.view_layer.objects.active = ball
+ball.keyframe_insert("location", frame=1); ball.keyframe_insert("location", frame=10)
+bpy.ops.maya.set_tangents(kind='STEPPED')
+from bpy_extras.anim_utils import animdata_get_channelbag_for_assigned_slot
+bag = animdata_get_channelbag_for_assigned_slot(ball.animation_data)
+check(all(k.interpolation == 'CONSTANT' for fc in bag.fcurves for k in fc.keyframe_points), "stepped tangents")
+bpy.ops.maya.hide_selection()
+check(ball.hide_get(), "ctrl h hides")
+bpy.ops.maya.show_hidden(which='LAST')
+check(not ball.hide_get(), "ctrl shift h shows last hidden")
+check(find("Object Mode", "maya.key_marking_menu", "S", shift=True)[0].properties.menu_mmb == "MAYA_MT_tangent_mm",
+      "shift s middle click tangents")
+
 print("FAILS:", fails or "none")
 sys.exit(1 if fails else 0)

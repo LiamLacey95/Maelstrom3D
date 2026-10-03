@@ -25,9 +25,10 @@ def _pie(name, type, **mods):
     return _kmi("wm.call_menu_pie", type, props={"name": name}, **mods)
 
 
-def _mm(type, menu, tool="", command="", **mods):
-    """Tap: tool / command. Hold the key + left click: marking menu."""
-    return _kmi("maya.key_marking_menu", type, props={"menu": menu, "tool": tool, "command": command}, **mods)
+def _mm(type, menu, tool="", command="", menu_mmb="", **mods):
+    """Tap: tool / command. Hold the key + left (or middle) click: marking menu."""
+    return _kmi("maya.key_marking_menu", type,
+                props={"menu": menu, "menu_mmb": menu_mmb, "tool": tool, "command": command}, **mods)
 
 
 _QWER_MM = (
@@ -39,7 +40,10 @@ _QWER_MM = (
 _UNIVERSAL = _kmi("wm.tool_set_by_id", 'T', props={"name": "builtin.transform"}, ctrl=True)
 _PICKWALK = tuple(_kmi("maya.pickwalk", k + '_ARROW', props={"direction": k}) for k in ('UP', 'DOWN', 'LEFT', 'RIGHT'))
 _KEYS = (
-    _mm('S', "MAYA_MT_keyframe_mm", shift=True),
+    _mm('S', "MAYA_MT_keyframe_mm", menu_mmb="MAYA_MT_tangent_mm", shift=True),
+    _kmi("maya.hide_selection", 'H', ctrl=True),
+    _kmi("maya.show_hidden", 'H', props={"which": 'LAST'}, ctrl=True, shift=True),
+    _kmi("maya.show_hidden", 'H', props={"which": 'SELECTED'}, shift=True),
     _kmi("anim.keyframe_insert_by_name", 'W', props={"type": 'Location'}, ctrl=True, shift=True),
     _kmi("anim.keyframe_insert_by_name", 'E', props={"type": 'Rotation'}, ctrl=True, shift=True),
     _kmi("anim.keyframe_insert_by_name", 'R', props={"type": 'Scaling'}, ctrl=True, shift=True),
@@ -164,7 +168,6 @@ MAYA_OVERRIDES = {
         _kmi("maya.soft_radius", 'B'),
         ("REMOVE", {"type": 'LEFT_BRACKET', "value": 'PRESS'}, None),
         ("REMOVE", {"type": 'RIGHT_BRACKET', "value": 'PRESS'}, None),
-        _kmi("object.hide_view_clear", 'H', ctrl=True, shift=True),
         ("REMOVE", {"type": 'A', "value": 'PRESS', "ctrl": True}, None),
         ("REMOVE", {"type": 'C', "value": 'PRESS'}, None),
     ],
