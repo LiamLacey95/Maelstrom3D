@@ -191,7 +191,7 @@ void register_node_tree_type_sh()
   tt->type = NTREE_SHADER;
   tt->idname = "ShaderNodeTree"_ustr;
   tt->group_idname = "ShaderNodeGroup"_ustr;
-  tt->ui_name = N_("Shader Editor");
+  tt->ui_name = N_("Hypershade");
   tt->ui_icon = ICON_NODE_MATERIAL;
   tt->ui_description = N_("Edit materials, lights, and world shading using nodes");
   tt->asset_catalog_path_prefix = "Shading";

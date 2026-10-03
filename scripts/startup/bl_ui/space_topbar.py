@@ -30,35 +30,23 @@ class TOPBAR_HT_upper_bar(Header):
 
         TOPBAR_MT_editor_menus.draw_collapsible(context, layout)
 
-        layout.separator(type='LINE')
-
-        if not screen.show_fullscreen:
-            layout.template_ID_tabs(window, "workspace", new="workspace.add", menu="TOPBAR_MT_workspace_menu")
-        else:
+        # MayaBlender: workspaces are picked from the Maya-style "Workspace:" menu on the right.
+        if screen.show_fullscreen:
+            layout.separator(type='LINE')
             layout.operator("screen.back_to_previous", icon='SCREEN_BACK', text="Back to Previous")
 
     def draw_right(self, context):
         layout = self.layout
-
-        window = context.window
         screen = context.screen
-        scene = window.scene
 
         # If statusbar is hidden, still show messages at the top
         if not screen.show_statusbar:
             layout.template_reports_banner()
             layout.template_running_jobs()
 
-        # Active workspace view-layer is retrieved through window, not through workspace.
-        layout.template_ID(window, "scene", new="scene.new", unlink="scene.delete")
-
-        row = layout.row(align=True)
-        row.template_search(
-            window, "view_layer",
-            scene, "view_layers",
-            new="scene.view_layer_add",
-            unlink="scene.view_layer_remove",
-        )
+        # MayaBlender: Maya status line and workspace selector.
+        from maya_ui import draw_status_line
+        draw_status_line(layout, context)
 
 
 class TOPBAR_PT_tool_settings_extra(Panel):
@@ -108,21 +96,9 @@ class TOPBAR_MT_editor_menus(Menu):
     bl_label = ""
 
     def draw(self, context):
-        layout = self.layout
-
-        # Allow calling this menu directly (this might not be a header area).
-        if getattr(context.area, "show_menus", False):
-            layout.menu("TOPBAR_MT_blender", text="", icon='BLENDER')
-        else:
-            layout.menu("TOPBAR_MT_blender", text="Blender")
-
-        layout.menu("TOPBAR_MT_file")
-        layout.menu("TOPBAR_MT_edit")
-
-        layout.menu("TOPBAR_MT_render")
-
-        layout.menu("TOPBAR_MT_window")
-        layout.menu("TOPBAR_MT_help")
+        # MayaBlender: Maya main menu bar (menu set selector + menus).
+        from maya_ui import draw_menu_bar
+        draw_menu_bar(self.layout, context)
 
 
 class TOPBAR_MT_blender(Menu):

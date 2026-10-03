@@ -96,6 +96,166 @@ class MAYA_OT_add_primitive(Operator):
         }[self.kind]()
         return {'FINISHED'}
 
+    @classmethod
+    def description(cls, _context, props):
+        return "Polygon " + props.kind.title()
+
+
+class MAYA_OT_call(Operator):
+    """Run an operator in the 3D Viewport (used by top bar menus)"""
+    bl_idname = "maya.call"
+    bl_label = "Run in Viewport"
+    bl_options = {'INTERNAL'}
+
+    idname: bpy.props.StringProperty()
+    props: bpy.props.StringProperty(default="{}")
+    label: bpy.props.StringProperty()
+
+    @classmethod
+    def description(cls, _context, props):
+        return props.label or props.idname
+
+    def invoke(self, context, _event):
+        from ast import literal_eval
+        areas = [a for a in context.screen.areas if a.type == 'VIEW_3D']
+        if not areas:
+            self.report({'WARNING'}, "No 3D Viewport in this workspace")
+            return {'CANCELLED'}
+        area = max(areas, key=lambda a: a.width * a.height)
+        region = next(r for r in area.regions if r.type == 'WINDOW')
+        mod, name = self.idname.split(".")
+        try:
+            with context.temp_override(area=area, region=region, space_data=area.spaces.active):
+                getattr(getattr(bpy.ops, mod), name)('INVOKE_DEFAULT', **literal_eval(self.props))
+        except RuntimeError as err:
+            self.report({'WARNING'}, str(err).strip())
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+class MAYA_OT_open_editor(Operator):
+    """Open an editor in a new window (Maya Windows menu)"""
+    bl_idname = "maya.open_editor"
+    bl_label = "Open Editor Window"
+
+    ui_type: bpy.props.StringProperty()
+
+    @classmethod
+    def description(cls, _context, props):
+        return "Open " + props.ui_type + " window"
+
+    def execute(self, context):
+        bpy.ops.wm.window_new()
+        context.window_manager.windows[-1].screen.areas[0].ui_type = self.ui_type
+        return {'FINISHED'}
+
+
+class MAYA_OT_ungroup(Operator):
+    """Maya Ungroup: remove the selected group nodes, keeping their children in place"""
+    bl_idname = "maya.ungroup"
+    bl_label = "Ungroup"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return any(ob.type == 'EMPTY' and ob.children for ob in context.selected_objects)
+
+    def execute(self, context):
+        for group in [ob for ob in context.selected_objects if ob.type == 'EMPTY' and ob.children]:
+            for child in group.children:
+                world = child.matrix_world.copy()
+                child.parent = group.parent
+                child.matrix_world = world
+                child.select_set(True)
+            bpy.data.objects.remove(group)
+        return {'FINISHED'}
+
+
+class MAYA_OT_reset_transformations(Operator):
+    """Maya Reset Transformations: zero translate/rotate, unit scale"""
+    bl_idname = "maya.reset_transformations"
+    bl_label = "Reset Transformations"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        for ob in context.selected_objects:
+            ob.location = (0, 0, 0)
+            ob.rotation_euler = (0, 0, 0)
+            ob.scale = (1, 1, 1)
+        return {'FINISHED'}
+
+
+class MAYA_OT_boolean(Operator):
+    """Maya Boolean: select the base object first, the tool object last (A then B gives A - B)"""
+    bl_idname = "maya.boolean"
+    bl_label = "Boolean"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    operation: bpy.props.EnumProperty(items=(
+        ('UNION', "Union", ""), ('DIFFERENCE', "Difference", ""), ('INTERSECT', "Intersection", ""),
+    ))
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.active_object
+        return ob and ob.type == 'MESH' and len(context.selected_objects) > 1
+
+    def execute(self, context):
+        tool = context.active_object
+        for base in context.selected_objects:
+            if base is tool or base.type != 'MESH':
+                continue
+            mod = base.modifiers.new(tool.name, 'BOOLEAN')
+            mod.operation, mod.object = self.operation, tool
+        tool.display_type = 'WIRE'
+        tool.hide_render = True
+        tool.select_set(False)
+        return {'FINISHED'}
+
+
+class MAYA_OT_separate(Operator):
+    """Maya Separate: split a combined mesh into its separate shells"""
+    bl_idname = "maya.separate"
+    bl_label = "Separate"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'OBJECT' and context.active_object and context.active_object.type == 'MESH'
+
+    def execute(self, _context):
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.separate(type='LOOSE')
+        bpy.ops.object.mode_set(mode='OBJECT')
+        return {'FINISHED'}
+
+
+class MAYA_OT_assign_material(Operator):
+    """Maya Assign New Material: give the selection a new shader"""
+    bl_idname = "maya.assign_material"
+    bl_label = "Assign New Material"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        mat = bpy.data.materials.new("standardSurface1")
+        for ob in context.selected_objects:
+            if ob.type in {'MESH', 'CURVE', 'SURFACE', 'FONT', 'META'}:
+                ob.data.materials.clear()
+                ob.data.materials.append(mat)
+        return {'FINISHED'}
+
+
+class MAYA_OT_lock_transforms(Operator):
+    """Maya Lock and Hide: lock translate, rotate and scale of the selection"""
+    bl_idname = "maya.lock_transforms"
+    bl_label = "Lock Transforms"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        for ob in context.selected_objects:
+            ob.lock_location = ob.lock_rotation = ob.lock_scale = (True, True, True)
+        return {'FINISHED'}
+
 
 def _submode(layout, text, mode, icon):
     op = layout.operator("object.mode_set_with_submode", text=text, icon=icon)
@@ -185,38 +345,6 @@ class VIEW3D_PT_maya_channel_box(Panel):
                 row.label(text=mod.name)
 
 
-SHELF = (
-    ("maya.add_primitive", 'MESH_CUBE', {"kind": 'CUBE'}),
-    ("maya.add_primitive", 'MESH_UVSPHERE', {"kind": 'SPHERE'}),
-    ("maya.add_primitive", 'MESH_CYLINDER', {"kind": 'CYLINDER'}),
-    ("maya.add_primitive", 'MESH_CONE', {"kind": 'CONE'}),
-    ("maya.add_primitive", 'MESH_PLANE', {"kind": 'PLANE'}),
-    ("maya.add_primitive", 'MESH_TORUS', {"kind": 'TORUS'}),
-    None,
-    ("object.join", 'AUTOMERGE_ON', {}),                                      # Combine.
-    ("object.subdivision_set", 'MOD_SUBSURF', {"level": 1, "relative": False}),  # Smooth.
-    None,
-    ("object.origin_set", 'PIVOT_BOUNDBOX', {"type": 'ORIGIN_GEOMETRY'}),     # Center Pivot.
-    ("object.transform_apply", 'FREEZE', {"location": True, "rotation": True, "scale": True}),
-    ("object.convert", 'TRASH', {"target": 'MESH'}),                          # Delete History.
-)
-
-
-def draw_shelf(self, context):
-    if context.region.alignment != 'RIGHT':
-        return
-    row = self.layout.row(align=True)
-    for item in SHELF:
-        if item is None:
-            row.separator()
-            continue
-        idname, icon, props = item
-        op = row.operator(idname, text="", icon=icon)
-        for k, v in props.items():
-            setattr(op, k, v)
-    self.layout.separator(factor=2.0)
-
-
 def _main_view3d_areas():
     for screen in bpy.data.screens:
         if screen.name in {"Layout", "Modeling"}:
@@ -257,6 +385,14 @@ classes = (
     MAYA_OT_smooth_preview,
     MAYA_OT_group,
     MAYA_OT_add_primitive,
+    MAYA_OT_call,
+    MAYA_OT_open_editor,
+    MAYA_OT_ungroup,
+    MAYA_OT_reset_transformations,
+    MAYA_OT_boolean,
+    MAYA_OT_separate,
+    MAYA_OT_assign_material,
+    MAYA_OT_lock_transforms,
     MAYA_MT_marking_menu,
     MAYA_MT_poly_tools,
     VIEW3D_PT_maya_channel_box,
@@ -266,12 +402,10 @@ classes = (
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-    bpy.types.TOPBAR_HT_upper_bar.prepend(draw_shelf)
     bpy.app.handlers.load_factory_startup_post.append(show_channel_box)
 
 
 def unregister():
     bpy.app.handlers.load_factory_startup_post.remove(show_channel_box)
-    bpy.types.TOPBAR_HT_upper_bar.remove(draw_shelf)
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

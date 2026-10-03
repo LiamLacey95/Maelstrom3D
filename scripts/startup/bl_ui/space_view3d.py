@@ -62,6 +62,13 @@ class VIEW3D_HT_tool_header(Header):
     def draw(self, context):
         layout = self.layout
 
+        # MayaBlender: the tool header is the Maya shelf, except in sculpt/paint modes
+        # where brush settings are needed (Maya keeps those in tool settings too).
+        if context.mode in {'OBJECT', 'EDIT_MESH', 'EDIT_CURVE', 'EDIT_SURFACE', 'EDIT_ARMATURE', 'POSE'}:
+            from maya_ui import draw_shelf
+            draw_shelf(layout, context)
+            return
+
         self.draw_tool_settings(context)
 
         layout.separator_spacer()
@@ -1144,6 +1151,14 @@ class VIEW3D_MT_editor_menus(Menu):
     bl_label = ""
 
     def draw(self, context):
+        # MayaBlender: Maya panel menus. Blender's own menus stay inline for sculpt/paint
+        # modes and are tucked into the "..." menu otherwise.
+        from maya_ui import draw_panel_menus
+        draw_panel_menus(self.layout, context)
+        if context.mode not in {'OBJECT', 'EDIT_MESH'}:
+            self.draw_blender(context)
+
+    def draw_blender(self, context):
         layout = self.layout
         obj = context.active_object
         mode_string = context.mode
