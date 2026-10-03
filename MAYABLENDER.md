@@ -11,7 +11,7 @@ Run `dist\blender.exe`. Everything Maya-like is on by default; there is nothing 
 
 | Commit | Round | What changed |
 |---|---|---|
-| `5876761b` | 1. Look and controls | Maya keymap as default, Maya theme (C default theme), empty startup scene, 35 mm lens, right-click marking menus, Channel Box, polygon shelf, smooth preview (1/2/3), Group (Ctrl+G), window title. |
+| `5876761b` | 1. Look and controls | Maya keymap as default, Maya theme (C default theme), empty startup scene, Maya camera field of view, right-click marking menus, Channel Box, polygon shelf, smooth preview (1/2/3), Group (Ctrl+G), window title. |
 | `38e1f7bc` | 2. Interface | Maya menu bar with menu sets, status line, Workspace selector, shelf tabs, viewport panel menus, Maya Classic layout (startup.blend), Maya workspace names, Maya editor names. |
 | `30a49507` | 3. Dock (first try) | Channel Box / Attribute Editor / Modeling Toolkit as viewport sidebar tabs (replaced in round 4). |
 | `919428c5` | 4. Right-hand dock | Properties editor became Maya's right-hand dock (new Channel Box / Layer Editor and Modeling Toolkit tabs, tabs on the right edge, opens on Channel Box). Maya selection modifiers, Ctrl+E/Ctrl+B, Maya Delete, Ctrl+RMB convert menu, Shift+RMB create menu, X/C/V snapping, , . keys, pickwalk, > <. |
@@ -24,7 +24,7 @@ Run `dist\blender.exe`. Everything Maya-like is on by default; there is nothing 
 |---|---|---|
 | Keymap | Default keymap is **Maya** (Industry Compatible base + Maya overrides) | `scripts/presets/keyconfig/Maya.py`, `DNA_userdef_types.h` |
 | Theme | Maya greys, `#5285a6` highlight, steel-blue to black viewport gradient, green lead / white selection, magenta verts, yellow/orange selected components, red playhead | `release/datafiles/userdef/userdef_default_theme.c` (from `tools/maya/maya_theme.py`) |
-| Startup | Empty scene, 35 mm viewport lens, dock opens on Channel Box | `versioning_defaults.cc` |
+| Startup | Empty scene, Maya's default camera field of view (35 mm on a 36 mm film back), dock opens on Channel Box | `versioning_defaults.cc` |
 | Layout | Maya Classic: Outliner left, Attribute Editor dock right, Time Slider and Command Line bottom. Workspaces: Maya Classic, Modeling - Standard, Sculpting, UV Editing, Rigging, Animation, Hypershade, Rendering, 3D Paint, Node Editor, Script Editor | `release/datafiles/startup.blend` (from `tools/maya/build_startup.py`) |
 | Menu bar | Menu set dropdown (Modeling, Rigging, Animation, FX, Rendering), File/Edit/Create/Select/Modify/Display/Windows + menu-set menus + Help; status line; "Workspace:" dropdown | `scripts/startup/maya_ui.py`, `bl_ui/space_topbar.py` |
 | Shelf | Shelf tabs (Curves/Surfaces, Poly Modeling, Sculpting, Rigging, Animation, Rendering, FX) in the viewport's second row | `maya_ui.py`, `bl_ui/space_view3d.py` |
@@ -150,6 +150,7 @@ start "" /wait /belownormal /affinity F make.bat 2026 builddir <build-dir>
 blender -b --factory-startup --python-exit-code 1 --python tools/maya/test_maya.py
 blender --factory-startup --enable-event-simulate --python tools/maya/gui_test.py -- <result-file>
 blender -b --factory-startup --python tools/maya/shortcuts_doc.py -- MAYABLENDER_SHORTCUTS.md
+python tools/maya/demo/record.py <blender.exe> [scenario ...]    # README videos -> docs/media (keep off the PC)
 tools\maya\regen_theme.sh <blender.exe>     # after editing tools/maya/maya_theme.py
 set BLENDER_USER_RESOURCES=<empty dir> && blender --factory-startup --python tools/maya/build_startup.py -- release/datafiles/startup.blend
 ```

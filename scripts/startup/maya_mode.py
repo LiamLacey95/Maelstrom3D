@@ -271,7 +271,7 @@ COMPONENT_TOOLS = {
         ("Connect", "maya.connect", 'MOD_EDGESPLIT', {}),
         ("Merge", "mesh.remove_doubles", 'AUTOMERGE_ON', {"threshold": 0.001}),
         ("Merge to Center", "mesh.merge", 'PIVOT_MEDIAN', {"type": 'CENTER'}),
-        ("Target Weld (to last selected)", "mesh.merge", 'AUTOMERGE_OFF', {"type": 'LAST'}),
+        ("Target Weld", "maya.target_weld", 'AUTOMERGE_OFF', {}),
         ("Average Vertices", "mesh.vertices_smooth", 'MOD_SMOOTH', {}),
         ("Slide", "transform.vert_slide", 'ARROW_LEFTRIGHT', {}),
         ("Detach (Rip)", "mesh.rip_move", 'MOD_EXPLODE', {}),
@@ -386,6 +386,26 @@ class MAYA_OT_dock_tab(Operator):
         if self.toggle:
             tab = 'OBJECT' if space.context == 'CHANNEL_BOX' else 'CHANNEL_BOX'
         space.context = tab
+        return {'FINISHED'}
+
+
+class MAYA_OT_target_weld(Operator):
+    """Maya Target Weld: merge the selected vertices onto the last one selected"""
+    bl_idname = "maya.target_weld"
+    bl_label = "Target Weld"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'EDIT_MESH'
+
+    def execute(self, context):
+        import bmesh
+        bm = bmesh.from_edit_mesh(context.edit_object.data)
+        if not isinstance(bm.select_history.active, bmesh.types.BMVert):
+            self.report({'WARNING'}, "Click the vertices to weld, the target last")
+            return {'CANCELLED'}
+        bpy.ops.mesh.merge(type='LAST')
         return {'FINISHED'}
 
 
@@ -728,7 +748,7 @@ MTK_TOOLS = (
     ("Insert Edge Loop", "mesh.loopcut_slide", 'MOD_EDGESPLIT', {}),
     ("Offset Edge Loop", "mesh.offset_edge_loops_slide", 'SNAP_EDGE', {}),
     ("Slide", "transform.edge_slide", 'ARROW_LEFTRIGHT', {}),
-    ("Target Weld", "mesh.merge", 'AUTOMERGE_OFF', {"type": 'LAST'}),
+    ("Target Weld", "maya.target_weld", 'AUTOMERGE_OFF', {}),
     ("Create Polygon", "mesh.edge_face_add", 'SNAP_FACE', {}),
     ("Crease", "transform.edge_crease", 'MOD_SMOOTH', {}),
 )
@@ -849,6 +869,7 @@ classes = (
     MAYA_OT_lock_transforms,
     MAYA_OT_dock_tab,
     MAYA_OT_command_language,
+    MAYA_OT_target_weld,
     MAYA_OT_delete_components,
     MAYA_OT_connect,
     MAYA_OT_fill_hole,
@@ -882,6 +903,9 @@ def maya_startup_layout(*_args):
             space = area.spaces.active
             if area.type == 'VIEW_3D':
                 space.show_region_ui = False
+                # Maya's default 35 mm camera on a 36 mm film back: Blender's viewport lens assumes a 72 mm
+                # sensor, so the matching field of view is 70 mm.
+                space.lens = 70.0
             elif area.type == 'OUTLINER':
                 space.use_filter_object_content = False
             elif area.type == 'CONSOLE':

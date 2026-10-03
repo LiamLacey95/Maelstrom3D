@@ -242,8 +242,9 @@ static void blo_update_defaults_screen(bScreen *screen,
       v3d->overlay.gpencil_vertex_paint_opacity = 1.0f;
       /* Always use theme color for wireframe by default. */
       v3d->shading.wire_color_type = V3D_SHADING_SINGLE_COLOR;
-      /* MayaBlender: match Maya's default perspective camera focal length. */
-      v3d->lens = 35.0f;
+      /* MayaBlender: match Maya's default perspective camera (35 mm on a 36 mm film back). The viewport lens
+       * assumes a 72 mm sensor, so the same field of view is 70 mm. */
+      v3d->lens = 70.0f;
 
       /* Level out the 3D Viewport camera rotation, see: #113751. */
       constexpr float viewports_to_level[][4] = {

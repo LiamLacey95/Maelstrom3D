@@ -242,10 +242,39 @@ def view_undone():
 
 
 @step
+def dock_tabs_object():
+    # Draw every Maya dock tab (draw errors show up as tracebacks in Blender's output).
+    GIZMO["dock"] = [a for a in bpy.data.screens["Maya Classic"].areas if a.type == 'PROPERTIES'][0].spaces.active
+    GIZMO["dock"].context = 'MODELING_TOOLKIT'
+
+
+@step
+def dock_tabs_edit():
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.object.mode_set(mode='EDIT')
+
+
+@step
+def dock_tabs_tool():
+    GIZMO["dock"].context = 'TOOL'
+
+
+@step
+def dock_tabs_back():
+    GIZMO["dock"].context = 'CHANNEL_BOX'
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+
+@step
 def startup_panels():
     viewport_sidebars = [a.spaces.active.show_region_ui for a in bpy.data.screens["Maya Classic"].areas
                          if a.type == 'VIEW_3D']
     check(not any(viewport_sidebars), "viewport sidebar open at startup")
+    lenses = {a.spaces.active.lens for a in bpy.data.screens["Maya Classic"].areas if a.type == 'VIEW_3D'}
+    check(lenses == {70.0}, "viewport lens is not Maya's field of view: %r" % lenses)
     uv = [a for a in bpy.data.screens["UV Editing"].areas if a.type == 'IMAGE_EDITOR']
     check(uv and uv[0].spaces.active.show_region_ui, "UV Toolkit not docked in the UV Editor")
 

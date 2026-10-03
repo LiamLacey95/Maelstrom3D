@@ -323,7 +323,7 @@ MENUS = {
         op("Offset Edge Loop", "mesh.offset_edge_loops_slide"),
         op("Quad Draw", "wm.tool_set_by_id", name="builtin.poly_build"),
         op("Slide Edge", "transform.edge_slide"),
-        op("Target Weld", "mesh.merge", type='LAST'),
+        op("Target Weld", "maya.target_weld"),
     ]),
     "MAYA_MT_mesh_display": ("Mesh Display", [
         op("Reverse", "mesh.flip_normals", modes=EDIT),
