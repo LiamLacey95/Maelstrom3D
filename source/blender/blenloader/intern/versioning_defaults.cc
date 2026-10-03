@@ -232,6 +232,8 @@ static void blo_update_defaults_screen(bScreen *screen,
       v3d->overlay.gpencil_vertex_paint_opacity = 1.0f;
       /* Always use theme color for wireframe by default. */
       v3d->shading.wire_color_type = V3D_SHADING_SINGLE_COLOR;
+      /* MayaBlender: match Maya's default perspective camera focal length. */
+      v3d->lens = 35.0f;
 
       /* Level out the 3D Viewport camera rotation, see: #113751. */
       constexpr float viewports_to_level[][4] = {
@@ -743,6 +745,17 @@ void BLO_update_defaults_startup_blend(Main *bmain, const char *app_template)
     if (app_template && STREQ(app_template, "2D_Animation")) {
       ToolSettings *ts = scene.toolsettings;
       ts->gpencil_selectmode_edit = GP_SELECTMODE_STROKE;
+    }
+  }
+
+  /* MayaBlender: start from an empty scene like Maya (camera and light are kept for rendering). */
+  if (app_template == nullptr) {
+    if (Object *cube = static_cast<Object *>(
+            BLI_findstring(&bmain->objects, "Cube", offsetof(ID, name) + 2)))
+    {
+      ID *cube_data = static_cast<ID *>(cube->data);
+      BKE_id_delete(bmain, cube);
+      BKE_id_delete(bmain, cube_data);
     }
   }
 

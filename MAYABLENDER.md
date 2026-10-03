@@ -1,0 +1,64 @@
+# MayaBlender
+
+Fork of Blender 5.2.2 LTS (branch `maya`) that looks and behaves like Autodesk Maya.
+
+## Run
+
+`dist\blender.exe` (built app). Everything Maya-like is on by default; nothing to configure.
+
+## What changed vs. stock Blender
+
+| Area | Change | Where |
+|---|---|---|
+| Keymap | Default keymap is **Maya** (Industry Compatible + Maya hotkeys below) | `scripts/presets/keyconfig/Maya.py`, `DNA_userdef_types.h` |
+| Theme | Maya greys, `#5285a6` highlight, steel-blue→black viewport gradient, green lead / white selection, magenta verts, yellow/orange selected components, red playhead | `release/datafiles/userdef/userdef_default_theme.c` (generated from `tools/maya/maya_theme.py`) |
+| Startup | Empty scene (no default cube), 35 mm viewport lens, Channel Box open | `versioning_defaults.cc`, `scripts/startup/maya_mode.py` |
+| UI | Marking menus, Poly shelf (top bar, right), Channel Box sidebar tab | `scripts/startup/maya_mode.py` |
+| Title | Window title says MayaBlender | `wm_window.cc` |
+
+## Maya hotkeys
+
+| Key | Action |
+|---|---|
+| Alt+LMB / Alt+MMB / Alt+RMB | Tumble / Track / Dolly |
+| F / A | Frame selected / Frame all |
+| Q W E R T | Select / Move / Rotate / Scale / Transform |
+| RMB (hold) | Marking menu: Vertex, Edge, Face, Multi, Object Mode, Select All, More... |
+| Shift+RMB (component mode) | Poly tools: Extrude, Bevel, Merge, Insert Edge Loop, Bridge, Multi-Cut, Fill Hole, Delete Edge/Vertex |
+| F8 | Object / component mode toggle |
+| F9 / F10 / F11 | Vertex / Edge / Face |
+| 1 / 2 / 3 | Smooth mesh preview off / cage + smooth / smooth |
+| 4 / 5 / 6 / 7 | Wireframe / Shaded / Textured / Lighting (rendered) |
+| Space | Toggle four-view |
+| Ctrl+1 | Isolate select |
+| Ctrl+A | Toggle Channel Box / Attribute sidebar |
+| Ctrl+D | Duplicate |
+| Ctrl+G | Group (parent under new empty) |
+| P / Shift+P | Parent / Unparent |
+| D (hold) or Insert | Edit pivot (move origin only) |
+| G | Repeat last |
+| Z / Ctrl+Z, Shift+Z | Undo, Redo |
+| S, Shift+W/E/R | Set key, key Translate/Rotate/Scale |
+| Alt+V, Alt+Shift+V | Play / go to start |
+| Alt+, / Alt+. | Previous / next frame |
+| Ctrl+E, Ctrl+B | Extrude, Bevel |
+| Ctrl+H, Alt+H | Hide, show |
+
+## Shelf (top bar)
+
+Cube, Sphere, Cylinder, Cone, Plane, Torus (Maya sizes, at origin) · Combine · Smooth · Center Pivot · Freeze Transformations · Delete History.
+
+## Maya → Blender terms
+
+Attribute Editor = Properties editor (right) · Outliner = Outliner · Hypershade = Shading workspace / Shader Editor ·
+Construction history = Modifier stack ("INPUTS" in Channel Box) · Freeze = Apply Transforms · Group node = Empty.
+
+Blender is Z-up (Maya is Y-up). Units are metres.
+
+## Build
+
+```
+make.bat 2026 builddir <build-dir>
+tools\maya\regen_theme.sh <blender.exe>        # after editing tools/maya/maya_theme.py
+blender -b --factory-startup --python-exit-code 1 --python tools/maya/test_maya.py
+```

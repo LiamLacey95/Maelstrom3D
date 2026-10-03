@@ -1060,7 +1060,7 @@ struct UserDef {
   ListBaseT<bUserExtensionRepo> extension_repos = {nullptr, nullptr};
   ListBaseT<bUserAssetShelfSettings> asset_shelves_settings = {nullptr, nullptr};
 
-  char keyconfigstr[64] = "Blender";
+  char keyconfigstr[64] = "Maya";
 
   /** Index of the extension repo in the Preferences UI. */
   short active_extension_repo = 0;
