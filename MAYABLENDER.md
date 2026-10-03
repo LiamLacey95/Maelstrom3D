@@ -14,7 +14,7 @@ Run `dist\blender.exe`. Everything Maya-like is on by default; there is nothing 
 | `38e1f7bc` | 2. Interface | Maya menu bar with menu sets, status line, Workspace selector, shelf tabs, viewport panel menus, Maya Classic layout (startup.blend), Maya workspace names, Maya editor names. |
 | `30a49507` | 3. Dock (first try) | Channel Box / Attribute Editor / Modeling Toolkit as viewport sidebar tabs (replaced in round 4). |
 | `919428c5` | 4. Right-hand dock | Properties editor became Maya's right-hand dock (new Channel Box / Layer Editor and Modeling Toolkit tabs, tabs on the right edge, opens on Channel Box). Maya selection modifiers, Ctrl+E/Ctrl+B, Maya Delete, Ctrl+RMB convert menu, Shift+RMB create menu, X/C/V snapping, , . keys, pickwalk, > <. |
-| (this round) | 5. Components, pivot, UVs | Right-click shows every tool for the selected component type, Shift+drag on the manipulator extrudes, D (hold) edits the pivot for objects and components, Space tap/hold = four view/hotbox, F2-F6 menu sets, Shift+D duplicate with transform, Ctrl+F9-F11 convert selection, Maya UV Editor workflow (UV Toolkit, UV marking menus, Cut/Sew/Unfold/Layout, checker map). |
+| `9d4233db` | 5. Components, pivot, UVs | Right-click shows every tool for the selected component type, Shift+drag on the manipulator extrudes, D (hold) edits the pivot for objects and components, Space tap/hold = four view/hotbox, F2-F6 menu sets, Shift+D duplicate with transform, Ctrl+F9-F11 convert selection, Maya UV Editor workflow (UV Toolkit, UV marking menus, Cut/Sew/Unfold/Layout, checker map). |
 
 ## What changed vs. stock Blender
 
