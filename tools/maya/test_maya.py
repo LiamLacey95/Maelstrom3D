@@ -60,6 +60,11 @@ for tab, (label, items) in maya_ui.SHELVES.items():
         check(op_ok(it[0], it[2]), "bad shelf op %s %s" % (tab, it[0]))
         check(it[1] in icons, "bad shelf icon %s %s" % (tab, it[1]))
 
+for group in (maya_mode.MTK_SELECT_TOOLS, maya_mode.MTK_MESH, maya_mode.MTK_COMPONENTS, maya_mode.MTK_TOOLS):
+    for label, idname, icon, props in group:
+        check(op_ok(idname, props), "bad toolkit op %s %s" % (label, idname))
+        check(icon in icons, "bad toolkit icon %s %s" % (label, icon))
+
 # Keymap loads and overrides land.
 bpy.utils.keyconfig_set(bpy.utils.preset_find("Maya", "keyconfig"))
 kc = bpy.context.window_manager.keyconfigs["Maya"]
