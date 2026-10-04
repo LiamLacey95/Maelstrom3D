@@ -847,18 +847,22 @@ class VIEW3D_HT_header(Header):
         # Note: Tried to add an accessor to get translated UI strings instead of manual call
         #       to pgettext_iface below, but this fails because translated enum-items
         #       are always dynamically allocated.
+        # MayaBlender: in object and component (mesh) mode the header is Maya's panel menu bar + panel toolbar;
+        # the mode menu lives in the Status Line and Blender's transform / gizmo buttons are dropped.
+        maya_header = object_mode in {'OBJECT', 'EDIT'} and (obj is None or obj.type == 'MESH')
+
         act_mode_item = bpy.types.Object.bl_rna.properties["mode"].enum_items[object_mode]
         act_mode_i18n_context = bpy.types.Object.bl_rna.properties["mode"].translation_context
 
-        sub = row.row(align=True)
-        sub.operator_menu_enum(
-            "object.mode_set", "mode",
-            text=iface_(act_mode_item.name, act_mode_i18n_context),
-            icon=act_mode_item.icon,
-        )
+        if not maya_header:
+            sub = row.row(align=True)
+            sub.operator_menu_enum(
+                "object.mode_set", "mode",
+                text=iface_(act_mode_item.name, act_mode_i18n_context),
+                icon=act_mode_item.icon,
+            )
+            layout.template_header_3D_mode()
         del act_mode_item
-
-        layout.template_header_3D_mode()
 
         # Contains buttons like Mode, Pivot, Layer, Mesh Select Mode...
         if obj:
@@ -1043,11 +1047,21 @@ class VIEW3D_HT_header(Header):
                 icon=VIEW3D_HT_header._texture_mask_icon(tool_settings.image_paint),
                 text="",
             )
-        else:
+        elif not maya_header:
             # Transform settings depending on tool header visibility
             VIEW3D_HT_header.draw_xform_template(layout, context)
 
         layout.separator_spacer()
+
+        if maya_header:
+            # Viewport settings and shading options stay reachable as two compact popovers.
+            row = layout.row(align=True)
+            row.prop(overlay, "show_overlays", icon='OVERLAY', text="")
+            row.popover(panel="VIEW3D_PT_overlay", text="")
+            if mode_string == 'EDIT_MESH':
+                row.popover(panel="VIEW3D_PT_overlay_edit_mesh", text="", icon='EDITMODE_HLT')
+            layout.popover(panel="VIEW3D_PT_shading", text="", icon='SHADING_SOLID')
+            return
 
         # Viewport Settings
         layout.popover(

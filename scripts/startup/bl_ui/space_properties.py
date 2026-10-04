@@ -49,6 +49,11 @@ class PROPERTIES_HT_header(Header):
 
         layout.template_header()
 
+        # MayaBlender: Attribute Editor node tabs, like Maya's pCube1 | pCubeShape1 | polyCube1 | lambert1.
+        from maya_ui import draw_node_tabs
+        if draw_node_tabs(layout, context):
+            return
+
         layout.separator_spacer()
 
         if self._search_poll(context.space_data):

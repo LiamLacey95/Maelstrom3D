@@ -682,6 +682,9 @@ def draw_status_line(layout, context):
           mode='OBJECT')
     _call(row, "object.mode_set", 'EDITMODE_HLT', "Select by Component", depress=context.mode == 'EDIT_MESH',
           mode='EDIT')
+    if ob is not None:
+        # Other modes (sculpt, paint, pose...) live here; Maya has no mode menu in the viewport.
+        row.operator_menu_enum("object.mode_set", "mode", text="", icon='DOWNARROW_HLT')
     # Selection masks: which object types can be selected.
     if space is not None:
         row = layout.row(align=True)
@@ -724,6 +727,30 @@ def draw_status_line(layout, context):
     layout.separator()
     layout.label(text="Workspace:")
     layout.template_ID(context.window, "workspace", new="workspace.add", unlink="workspace.delete")
+
+
+NODE_TAB_CONTEXTS = {'OBJECT', 'DATA', 'MODIFIER', 'MATERIAL', 'CONSTRAINT', 'PHYSICS', 'PARTICLES',
+                     'SHADERFX', 'BONE', 'BONE_CONSTRAINT'}
+
+
+def draw_node_tabs(layout, context):
+    """Maya Attribute Editor tabs: transform node, shape node, inputs (modifiers), material."""
+    space = context.space_data
+    ob = context.active_object
+    if ob is None or space.context not in NODE_TAB_CONTEXTS:
+        return False
+    tabs = [("OBJECT", ob.name, 'OBJECT_DATAMODE')]
+    if ob.data is not None:
+        tabs.append(("DATA", ob.data.name, 'MESH_DATA' if ob.type == 'MESH' else 'OBJECT_DATA'))
+    if ob.type == 'MESH':
+        tabs.append(("MODIFIER", ob.modifiers[-1].name if ob.modifiers else "inputs", 'MODIFIER'))
+    if ob.active_material is not None:
+        tabs.append(("MATERIAL", ob.active_material.name, 'MATERIAL'))
+    row = layout.row(align=True)
+    for tab, label, icon in tabs:
+        o = row.operator("wm.context_set_enum", text=label, icon=icon, depress=space.context == tab)
+        o.data_path, o.value = "space_data.context", tab
+    return True
 
 
 def draw_panel_toolbar(layout, context):

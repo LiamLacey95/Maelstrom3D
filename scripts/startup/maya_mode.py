@@ -839,6 +839,31 @@ class PROPERTIES_PT_maya_mtk_tools(_MayaToolkitPanel, Panel):
         _buttons(self.layout, context, MTK_TOOLS)
 
 
+@bpy.app.handlers.persistent
+def maya_startup_scene(*_args):
+    """New scene like Maya's: the default camera is "persp" and nothing shows in the viewport."""
+    camera = bpy.data.objects.get("Camera")
+    if camera is not None:
+        camera.name = "persp"
+    for ob in bpy.data.objects:
+        if ob.type in {'CAMERA', 'LIGHT'}:
+            ob.hide_set(True)
+
+
+@bpy.app.handlers.persistent
+def maya_preferences(*_args):
+    """First run / factory preferences: Maya-like UI defaults (solid tool and dock strips, no splash,
+    no Blender navigation buttons, Segoe UI like Maya on Windows)."""
+    import os
+    prefs = bpy.context.preferences
+    prefs.system.use_region_overlap = False
+    prefs.view.show_splash = False
+    prefs.view.show_navigate_ui = False
+    segoe = os.path.join(os.environ.get("WINDIR", "C:/Windows"), "Fonts", "segoeui.ttf")
+    if not prefs.view.font_path_ui and os.path.exists(segoe):
+        prefs.view.font_path_ui = segoe
+
+
 class MAYA_OT_command_language(Operator):
     """Maya command line: switch between MEL and Python"""
     bl_idname = "maya.command_language"
@@ -906,8 +931,10 @@ def maya_startup_layout(*_args):
                 # Maya's default 35 mm camera on a 36 mm film back: Blender's viewport lens assumes a 72 mm
                 # sensor, so the matching field of view is 70 mm.
                 space.lens = 70.0
+                space.overlay.show_text = False  # Maya HUD (maya_hud.py) shows the camera name instead.
             elif area.type == 'OUTLINER':
                 space.use_filter_object_content = False
+                space.use_filter_collection = False  # Flat object list, like Maya's Outliner.
             elif area.type == 'CONSOLE':
                 space.language = 'mel'
 
@@ -916,9 +943,13 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.app.handlers.load_factory_startup_post.append(maya_startup_layout)
+    bpy.app.handlers.load_factory_startup_post.append(maya_startup_scene)
+    bpy.app.handlers.load_factory_preferences_post.append(maya_preferences)
 
 
 def unregister():
     bpy.app.handlers.load_factory_startup_post.remove(maya_startup_layout)
+    bpy.app.handlers.load_factory_startup_post.remove(maya_startup_scene)
+    bpy.app.handlers.load_factory_preferences_post.remove(maya_preferences)
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
