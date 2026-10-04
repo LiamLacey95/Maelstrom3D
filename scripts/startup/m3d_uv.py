@@ -13,7 +13,7 @@ import bpy
 from bpy.types import Menu, Operator, Panel
 
 UV_TOOLKIT = "UV Toolkit"
-CHECKER = "mayaUVChecker"
+CHECKER = "m3dUVChecker"
 
 
 def _in_uv_editor(context):

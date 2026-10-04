@@ -304,6 +304,34 @@ def startup_panels():
 
 
 @step
+def options_box_run():
+    # Running a tool opens its options box (redo panel) expanded, next to the cursor.
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+    km = bpy.context.window_manager.keyconfigs.user.keymaps["Mesh"]
+    km.keymap_items.new("mesh.subdivide", 'F19', 'PRESS')
+    bpy.context.window_manager.keyconfigs.update()
+    GIZMO["cursor"] = (region.x + region.width * 2 // 3, region.y + region.height * 2 // 3)
+    event('MOUSEMOVE', xy=GIZMO["cursor"])
+    event('F19', 'PRESS', GIZMO["cursor"])
+    event('F19', 'RELEASE', GIZMO["cursor"])
+
+
+@step
+def options_box_check():
+    _win, area, _region = view3d()
+    hud = next((r for r in area.regions if r.type == 'HUD'), None)
+    x, y = GIZMO["cursor"]
+    check(hud is not None and hud.height > 60, "options box not open (%s)" % (hud and (hud.width, hud.height),))
+    check(hud is not None and abs(hud.x - x) < 80 and hud.y < y < hud.y + hud.height + 80,
+          "options box not at the cursor (box %s, cursor %s)" % (hud and (hud.x, hud.y, hud.height), (x, y)))
+    km = bpy.context.window_manager.keyconfigs.user.keymaps["Mesh"]
+    km.keymap_items.remove(next(k for k in km.keymap_items if k.type == 'F19'))
+
+
+@step
 def finish():
     with open(OUT, "w") as fh:
         fh.write("FAILS: %r\n" % (fails or "none"))

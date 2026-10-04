@@ -436,13 +436,22 @@ class M3D_OT_connect(Operator):
     bl_label = "Connect"
     bl_options = {'REGISTER', 'UNDO'}
 
+    divisions: bpy.props.IntProperty(name="Divisions", description="Edge loops added across the selected edges",
+                                     default=1, min=1, max=64)
+    smoothness: bpy.props.FloatProperty(name="Smoothness", default=0.0, min=0.0, max=1.0, subtype='FACTOR')
+
     @classmethod
     def poll(cls, context):
         return context.mode == 'EDIT_MESH'
 
+    def draw(self, context):
+        if context.tool_settings.mesh_select_mode[1]:
+            self.layout.prop(self, "divisions")
+            self.layout.prop(self, "smoothness")
+
     def execute(self, context):
         if context.tool_settings.mesh_select_mode[1]:
-            bpy.ops.mesh.subdivide_edgering(number_cuts=1)
+            bpy.ops.mesh.subdivide_edgering(number_cuts=self.divisions, smoothness=self.smoothness)
         else:
             bpy.ops.mesh.vert_connect_path()
         return {'FINISHED'}

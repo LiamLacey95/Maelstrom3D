@@ -16,12 +16,14 @@
 #include "DNA_userdef_types.h"
 
 #include "BLI_listbase.h"
+#include "BLI_math_base.h"
 #include "BLI_rect.h"
 #include "BLI_string_utf8.h"
 #include "BLI_utildefines.h"
 
 #include "BKE_context.hh"
 #include "BKE_screen.hh"
+#include "BKE_wm_runtime.hh"
 
 #include "WM_api.hh"
 #include "WM_types.hh"
@@ -103,6 +105,12 @@ struct HudRegionData {
    * so in this case use the first region.
    */
   int region_index_hint;
+  /**
+   * Maelstrom3D: like an In-View Editor the redo panel opens at the cursor, top-left corner at
+   * `anchor_x` / `anchor_top` (window coordinates). Kept inside the main region as it resizes.
+   */
+  bool anchored;
+  int anchor_x, anchor_top;
 };
 
 static bool last_redo_poll(const bContext *C, short region_type, int region_index_hint)
@@ -194,7 +202,7 @@ static void hud_panels_register(ARegionType *art, int space_type, int region_typ
   pt->poll = hud_panel_operator_redo_poll;
   pt->space_type = space_type;
   pt->region_type = region_type;
-  pt->flag |= PANEL_TYPE_DEFAULT_CLOSED;
+  /* Maelstrom3D: open by default, the operator's options are the point of the box. */
   BLI_addtail(&art->paneltypes, pt);
 }
 
@@ -222,6 +230,33 @@ static void hud_region_free(ARegion *region)
     MEM_delete(static_cast<HudRegionData *>(region->regiondata));
     region->regiondata = nullptr;
   }
+}
+
+static bool hrd_anchored(const ARegion *region)
+{
+  const HudRegionData *hrd = static_cast<const HudRegionData *>(region->regiondata);
+  return hrd && hrd->anchored;
+}
+
+/** Maelstrom3D: place the panel at its cursor anchor, clamped inside the area's main region. */
+static void hud_region_apply_anchor(const ScrArea *area, ARegion *region)
+{
+  const HudRegionData *hrd = static_cast<const HudRegionData *>(region->regiondata);
+  const ARegion *region_win = BKE_area_find_region_type(area, RGN_TYPE_WINDOW);
+  if (hrd == nullptr || !hrd->anchored || region_win == nullptr) {
+    return;
+  }
+  const rcti &bounds = region_win->winrct;
+  const int pad = UI_UNIT_X / 2;
+  const int x = max_ii(bounds.xmin + pad,
+                       min_ii(hrd->anchor_x, bounds.xmax - region->winx - pad));
+  const int y = max_ii(bounds.ymin + pad,
+                       min_ii(hrd->anchor_top - region->winy, bounds.ymax - region->winy - pad));
+  /* Same origin as the #RGN_ALIGN_FLOAT placement in `area.cc`. */
+  region->runtime->offset_x = x - (bounds.xmin + UI_UNIT_X / 4);
+  region->runtime->offset_y = y - (bounds.ymin + UI_UNIT_Y / 4);
+  region->winrct.xmin = x;
+  region->winrct.ymin = y;
 }
 
 static void hud_region_layout(const bContext *C, ARegion *region)
@@ -254,6 +289,7 @@ static void hud_region_layout(const bContext *C, ARegion *region)
 
     region->winx = winx_new;
     region->winy = winy_new;
+    hud_region_apply_anchor(area, region);
 
     region->winrct.xmax = (region->winrct.xmin + region->winx) - 1;
     region->winrct.ymax = (region->winrct.ymin + region->winy) - 1;
@@ -415,6 +451,15 @@ void ED_area_type_hud_ensure(bContext *C, ScrArea *area)
       hrd = MEM_new_zeroed<HudRegionData>(__func__);
       region->regiondata = hrd;
     }
+    /* Maelstrom3D: anchor at the cursor when the operator ran from inside the main region. */
+    const wmWindow *win = CTX_wm_window(C);
+    const ARegion *region_main = BKE_area_find_region_type(area, RGN_TYPE_WINDOW);
+    hrd->anchored = win && win->runtime->eventstate && region_main &&
+                    BLI_rcti_isect_pt_v(&region_main->winrct, win->runtime->eventstate->xy);
+    if (hrd->anchored) {
+      hrd->anchor_x = win->runtime->eventstate->xy[0] + UI_UNIT_X;
+      hrd->anchor_top = win->runtime->eventstate->xy[1] - UI_UNIT_Y;
+    }
     if (region_op) {
       hrd->regionid = region_op->regiontype;
       hrd->region_index_hint = region_index_hint;
@@ -466,6 +511,10 @@ void ED_area_type_hud_ensure(bContext *C, ScrArea *area)
       region->v2d.cur = region->v2d.tot = reset_rect;
     }
     CTX_wm_region_set(C, region_prev);
+    if (hrd_anchored(region)) {
+      hud_region_apply_anchor(area, region);
+      ED_area_tag_region_size_update(area, region);
+    }
   }
 
   region->runtime->visible = !((region->flag & RGN_FLAG_HIDDEN) ||
