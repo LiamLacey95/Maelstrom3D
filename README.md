@@ -9,7 +9,12 @@ Artists who learned on Autodesk® Maya® will find the hotkeys and layout famili
 Maelstrom3D is a fork of [Blender](https://www.blender.org) (branch `maelstrom3d`, based on the `v5.2.2` LTS
 release). Everything is set up out of the box.
 
-**Download (Windows x64):** see [Releases](../../releases). Unzip and run `Maelstrom3D.exe`.
+**Download (Windows x64)** from [Releases](../../releases):
+- **Installer** (`...-setup.exe`): installs for your user (no admin needed), adds a Start menu entry and an uninstaller.
+- **Portable** (`...-portable.zip`): unzip anywhere (a USB stick works) and run `Maelstrom3D.exe`; settings stay in its
+  `portable` folder.
+
+Maelstrom3D keeps its settings apart from Blender's (`%APPDATA%\Maelstrom3D`), so both can be installed side by side.
 
 | | |
 |---|---|

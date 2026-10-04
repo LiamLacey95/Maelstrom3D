@@ -220,8 +220,7 @@ void BKE_appdir_folder_caches(char *path, const size_t path_maxncpy)
   BLI_path_join(path,
                 path_maxncpy,
                 caches_root_path->c_str(),
-                "Blender Foundation",
-                "Blender",
+                "Maelstrom3D", /* Maelstrom3D: apart from Blender's cache. */
                 "Cache",
                 SEP_STR);
 #elif defined(__APPLE__)
