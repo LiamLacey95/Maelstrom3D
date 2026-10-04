@@ -394,7 +394,8 @@ class M3D_OT_gizmo_shift_drag(Operator):
         constraint = _drag_constraint(gz)
         translate = {} if constraint is None else {
             "orient_type": 'GLOBAL',
-            "orient_matrix": gz.matrix_basis.to_3x3().normalized(),
+            # The transform gizmo keeps each axis direction in matrix_offset, so matrix_basis is always +Z.
+            "orient_matrix": gz.matrix_world.to_3x3().normalized(),
             "orient_matrix_type": 'GLOBAL',
             "constraint_axis": constraint,
         }

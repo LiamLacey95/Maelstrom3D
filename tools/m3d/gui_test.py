@@ -9,9 +9,10 @@ Writes "FAILS: [...]" to <result-file> and quits.
 
 import sys
 
+import bmesh
 import bpy
 from bpy_extras.view3d_utils import location_3d_to_region_2d
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 OUT = sys.argv[sys.argv.index("--") + 1]
 fails = []
@@ -58,18 +59,26 @@ def setup():
 GIZMO = {}
 
 
-@step
-def hover_z_arrow():
+def aim_x_arrow():
+    """Point GIZMO start/end along the manipulator's X arrow (selection centre, or the object origin)."""
     _win, area, region = view3d()
     rv3d = area.spaces.active.region_3d
     ob = bpy.context.active_object
     center = ob.matrix_world.translation
+    if ob.mode == 'EDIT':
+        verts = [v.co for v in bmesh.from_edit_mesh(ob.data).verts if v.select]
+        center = ob.matrix_world @ (sum(verts, Vector()) / len(verts))
     p0 = location_3d_to_region_2d(region, rv3d, center)
-    p1 = location_3d_to_region_2d(region, rv3d, center + Vector((0, 0, 1)))
+    p1 = location_3d_to_region_2d(region, rv3d, center + Vector((1, 0, 0)))
     direction = (p1 - p0).normalized()
     GIZMO["start"] = to_window(region, p0 + direction * 45)
     GIZMO["end"] = to_window(region, p0 + direction * 120)
-    GIZMO["faces"] = len(ob.data.polygons)
+
+
+@step
+def hover_x_arrow():
+    aim_x_arrow()
+    GIZMO["faces"] = len(bpy.context.active_object.data.polygons)
     event('MOUSEMOVE', xy=GIZMO["start"])
 
 
@@ -92,6 +101,7 @@ def plain_release():
 
 @step
 def hover_back():
+    aim_x_arrow()   # The plain drag moved the manipulator.
     event('MOUSEMOVE', xy=GIZMO["start"])
 
 
@@ -118,6 +128,15 @@ def shift_drag():
 
 
 @step
+def shift_drag_more():
+    x0, y0 = GIZMO["start"]
+    x1, y1 = GIZMO["end"]
+    for i in range(1, 6):
+        event('MOUSEMOVE', xy=(x1 + (x1 - x0) * i // 5, y1 + (y1 - y0) * i // 5), shift=True)
+    GIZMO["end"] = (2 * x1 - x0, 2 * y1 - y0)
+
+
+@step
 def release():
     event('LEFTMOUSE', 'RELEASE', GIZMO["end"], shift=True)
     event('LEFT_SHIFT', 'RELEASE', GIZMO["end"])
@@ -131,6 +150,10 @@ def check_extrude():
     check(len(ob.data.polygons) > GIZMO["faces"],
           "shift-drag on gizmo did not extrude (ops: %s, gizmo %s, tool %s)" % (
               ops[-3:], GIZMO, bpy.context.workspace.tools.from_space_view3d_mode('EDIT_MESH').idname))
+    # Dragging the X arrow must extrude along X (it used to always follow Z).
+    translate = [o for o in bpy.context.window_manager.operators if o.bl_idname == "MESH_OT_extrude_context_move"]
+    axis = Matrix(translate[-1].properties.TRANSFORM_OT_translate.orient_matrix).col[2] if translate else None
+    check(axis is not None and abs(axis.x) > 0.99, "shift-drag on X arrow did not extrude along X (axis %s)" % (axis,))
 
 
 @step
@@ -169,6 +192,7 @@ def object_shift_drag_setup():
     with bpy.context.temp_override(window=win, area=area, region=region):
         bpy.ops.wm.tool_set_by_id(name="builtin.move")
     GIZMO["objects"] = len(bpy.data.objects)
+    aim_x_arrow()
     event('MOUSEMOVE', xy=GIZMO["start"])
 
 
