@@ -282,6 +282,14 @@ def s_modeling():
     event('RIGHTMOUSE', 'RELEASE')
     state["pressed"] = False
     yield from key('ESC')
+    caption("Toolkit tools apply on the click and open their options box (Bevel)")
+    yield from move(to_window(region, location_3d_to_region_2d(region, area.spaces.active.region_3d,
+                                                               selection_center(ob))), 0.5)
+    with bpy.context.temp_override(window=win(), area=area, region=region):
+        bpy.ops.m3d.tool('INVOKE_DEFAULT', True, idname="mesh.bevel", props="{'offset_type': 'PERCENT'}",
+                         label="Bevel")
+    _redraw()
+    yield 3.0
     caption("3 = smooth mesh preview, 1 = off")
     yield from key('THREE')
     yield 1.4

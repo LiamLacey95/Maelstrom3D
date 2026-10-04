@@ -14,7 +14,7 @@ release). Everything is set up out of the box.
 | | |
 |---|---|
 | ![Interface](docs/media/interface.gif) | ![Modeling](docs/media/modeling.gif) |
-| **Interface:** Classic layout, menu sets (F2-F6), shelf tabs, Space for four view. [MP4](docs/media/interface.mp4) | **Modeling:** Shift+drag the manipulator to extrude, right-click for every tool on the selected faces, 1/2/3 smooth preview. [MP4](docs/media/modeling.mp4) |
+| **Interface:** Classic layout, menu sets (F2-F6), shelf tabs, Space for four view. [MP4](docs/media/interface.mp4) | **Modeling:** Shift+drag the manipulator to extrude, right-click for every tool on the selected faces, toolkit tools open an options box on the click, 1/2/3 smooth preview. [MP4](docs/media/modeling.mp4) |
 | ![Marking menus](docs/media/marking_menus.gif) | ![Dock](docs/media/dock.gif) |
 | **Marking menus:** W + left click, Shift / Ctrl+Shift right-click, Space hotbox. [MP4](docs/media/marking_menus.mp4) | **Right-hand dock:** Channel Box / Layer Editor, Attribute Editor (Ctrl+A), Modeling Toolkit. [MP4](docs/media/dock.mp4) |
 | ![UV editing](docs/media/uv.gif) | ![MEL](docs/media/mel.gif) |
@@ -27,6 +27,7 @@ release). Everything is set up out of the box.
   Outliner on the left; Time Slider; MEL / Python command line; Classic, Modeling, Sculpting, UV Editing, Rigging,
   Animation and Rendering workspaces.
 - **Right-hand dock:** Channel Box / Layer Editor, Modeling Toolkit, Tool Settings and the Attribute Editor.
+  Modeling Toolkit tools (Bevel, Extrude, Connect, ...) apply on the click and open an options box beside it.
 - **Hotkeys:** QWERT, Alt+mouse tumble / track / dolly, F / A framing, F8-F12, 1-7, D pivot, Ctrl+D / Shift+D,
   Ctrl+G, P, X / C / V snapping, Z undo, G repeat, [ ] view undo, pickwalk, Ctrl+A, Space hotbox and more.
 - **Marking menus:** right-click, Shift / Ctrl / Ctrl+Shift right-click, Q / W / E / R / A / H + left click,
