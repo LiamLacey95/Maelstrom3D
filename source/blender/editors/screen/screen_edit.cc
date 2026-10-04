@@ -1294,7 +1294,10 @@ static void screen_global_topbar_ensure_maya_rows(ScrArea *area)
     return;
   }
   ARegion *after = last_header;
-  for (const short type : {short(RGN_TYPE_TOOL_HEADER), short(RGN_TYPE_FOOTER)}) {
+  for (const eRegion_Type type : {RGN_TYPE_TOOL_HEADER, RGN_TYPE_FOOTER}) {
+    if (type == RGN_TYPE_TOOL_HEADER ? has_tool_header : has_footer) {
+      continue;
+    }
     ARegion *region = BKE_area_region_new();
     region->regiontype = type;
     region->alignment = RGN_ALIGN_TOP;
