@@ -154,6 +154,8 @@ def check_extrude():
     translate = [o for o in bpy.context.window_manager.operators if o.bl_idname == "MESH_OT_extrude_context_move"]
     axis = Matrix(translate[-1].properties.TRANSFORM_OT_translate.orient_matrix).col[2] if translate else None
     check(axis is not None and abs(axis.x) > 0.99, "shift-drag on X arrow did not extrude along X (axis %s)" % (axis,))
+    hud = hud_region()
+    check(hud is None or hud.height <= 1, "options box opened for Shift+drag extrude")
 
 
 @step
@@ -303,15 +305,22 @@ def startup_panels():
     check(uv and uv[0].spaces.active.show_region_ui, "UV Toolkit not docked in the UV Editor")
 
 
+def hud_region():
+    return next((r for r in view3d()[1].regions if r.type == 'HUD'), None)
+
+
 @step
-def options_box_run():
-    # Running a tool opens its options box (redo panel) expanded, next to the cursor.
+def options_box_shortcut():
+    # A shortcut (quick command) never opens the options box.
     win, area, region = view3d()
     with bpy.context.temp_override(window=win, area=area, region=region):
         bpy.ops.object.mode_set(mode='EDIT')
         bpy.ops.mesh.select_all(action='SELECT')
     km = bpy.context.window_manager.keyconfigs.user.keymaps["Mesh"]
     km.keymap_items.new("mesh.subdivide", 'F19', 'PRESS')
+    kmi = km.keymap_items.new("m3d.tool", 'F18', 'PRESS')
+    kmi.properties.idname = "mesh.bevel"
+    kmi.properties.props = "{'offset_type': 'PERCENT'}"
     bpy.context.window_manager.keyconfigs.update()
     GIZMO["cursor"] = (region.x + region.width * 2 // 3, region.y + region.height * 2 // 3)
     event('MOUSEMOVE', xy=GIZMO["cursor"])
@@ -320,15 +329,31 @@ def options_box_run():
 
 
 @step
+def options_box_toolkit():
+    hud = hud_region()
+    check(hud is None or hud.height <= 1, "options box opened for a shortcut (%s)" % (hud and hud.height,))
+    ob = bpy.context.active_object
+    ob.update_from_editmode()
+    GIZMO["faces"] = len(ob.data.polygons)
+    # A Modeling Toolkit button (here Bevel through m3d.tool) applies on the click and opens the box there.
+    event('F18', 'PRESS', GIZMO["cursor"])
+    event('F18', 'RELEASE', GIZMO["cursor"])
+
+
+@step
 def options_box_check():
-    _win, area, _region = view3d()
-    hud = next((r for r in area.regions if r.type == 'HUD'), None)
+    hud = hud_region()
     x, y = GIZMO["cursor"]
     check(hud is not None and hud.height > 60, "options box not open (%s)" % (hud and (hud.width, hud.height),))
     check(hud is not None and abs(hud.x - x) < 80 and hud.y < y < hud.y + hud.height + 80,
           "options box not at the cursor (box %s, cursor %s)" % (hud and (hud.x, hud.y, hud.height), (x, y)))
+    ob = bpy.context.active_object
+    ob.update_from_editmode()
+    check(len(ob.data.polygons) > GIZMO["faces"], "toolkit Bevel did not apply on the click")
+    check("m3d_options_box" not in bpy.context.window_manager, "options box flag left set")
     km = bpy.context.window_manager.keyconfigs.user.keymaps["Mesh"]
-    km.keymap_items.remove(next(k for k in km.keymap_items if k.type == 'F19'))
+    for key in ('F19', 'F18'):
+        km.keymap_items.remove(next(k for k in km.keymap_items if k.type == key))
 
 
 @step

@@ -133,6 +133,91 @@ class M3D_OT_call(Operator):
         return {'FINISHED'}
 
 
+# Modeling Toolkit tools that are picked or dragged in the viewport: no options box, run as usual.
+INTERACTIVE_TOOLS = {"mesh.knife_tool", "wm.tool_set_by_id", "mesh.loopcut_slide", "mesh.offset_edge_loops_slide",
+                     "transform.edge_slide", "transform.vert_slide", "transform.edge_crease", "mesh.rip_move"}
+# Tools that are modal when invoked: run them straight away so the options box opens on the click.
+EXEC_TOOLS = {"mesh.bevel", "mesh.inset", "mesh.extrude_region_shrink_fatten", "mesh.extrude_edges_move",
+              "mesh.extrude_vertices_move", "mesh.duplicate_move"}
+# Starting values while the user has never changed them (Blender's are 0, which does nothing).
+FIRST_VALUES = {"mesh.bevel": {"offset_pct": 25.0}, "mesh.inset": {"thickness": 0.1}}
+
+
+def _box_xy(context, event, area, region):
+    """Window position for the options box: the click, or next to the selection when run from the dock."""
+    if region.x <= event.mouse_x < region.x + region.width and region.y <= event.mouse_y < region.y + region.height:
+        return event.mouse_x, event.mouse_y
+    from bpy_extras.view3d_utils import location_3d_to_region_2d
+    from mathutils import Vector
+    ob = context.active_object
+    center = ob.matrix_world.translation if ob is not None else None
+    if ob is not None and ob.mode == 'EDIT' and ob.type == 'MESH':
+        import bmesh
+        verts = [v.co for v in bmesh.from_edit_mesh(ob.data).verts if v.select]
+        if verts:
+            center = ob.matrix_world @ (sum(verts, Vector()) / len(verts))
+    p = location_3d_to_region_2d(region, area.spaces.active.region_3d, center) if center is not None else None
+    if p is None:
+        return region.x + region.width // 2, region.y + region.height // 2
+    return region.x + int(p.x) + 40, region.y + int(p.y)
+
+
+class M3D_OT_tool(Operator):
+    """Modeling Toolkit tool: runs on the click and opens its options box next to it"""
+    bl_idname = "m3d.tool"
+    bl_label = "Modeling Toolkit Tool"
+    bl_options = {'INTERNAL'}
+
+    idname: bpy.props.StringProperty()
+    props: bpy.props.StringProperty(default="{}")
+    label: bpy.props.StringProperty()
+
+    @classmethod
+    def description(cls, _context, props):
+        return props.label or props.idname
+
+    def invoke(self, context, event):
+        from ast import literal_eval
+        if context.area is not None and context.area.type == 'VIEW_3D':
+            area = context.area
+        else:
+            areas = [a for a in context.screen.areas if a.type == 'VIEW_3D']
+            if not areas:
+                self.report({'WARNING'}, "No 3D Viewport in this workspace")
+                return {'CANCELLED'}
+            area = max(areas, key=lambda a: a.width * a.height)
+        region = context.region if context.region is not None and context.region.type == 'WINDOW' and \
+            context.area == area else next(r for r in area.regions if r.type == 'WINDOW')
+        props = literal_eval(self.props)
+        wm = context.window_manager
+        last = wm.operator_properties_last(self.idname)
+        for key, value in FIRST_VALUES.get(self.idname, {}).items():
+            if key not in props and getattr(last, key) == last.bl_rna.properties[key].default:
+                props[key] = value
+        mod, name = self.idname.split(".")
+        mode = 'EXEC_DEFAULT' if self.idname in EXEC_TOOLS else 'INVOKE_DEFAULT'
+        # The C options box opens only while this is set (see interface_region_hud.cc).
+        wm["m3d_options_box"] = _box_xy(context, event, area, region)
+        try:
+            with context.temp_override(area=area, region=region, space_data=area.spaces.active):
+                getattr(getattr(bpy.ops, mod), name)(mode, True, **props)
+        except RuntimeError as err:
+            self.report({'WARNING'}, str(err).strip())
+            return {'CANCELLED'}
+        finally:
+            del wm["m3d_options_box"]
+        return {'FINISHED'}
+
+
+def tool_button(layout, context, label, idname, icon, props):
+    """Toolkit button: picked/dragged tools run as usual, the rest through `m3d.tool` (options box)."""
+    if idname in INTERACTIVE_TOOLS:
+        return _button(layout, context, label, idname, icon, props)
+    o = layout.operator("m3d.tool", text=label, icon=icon)
+    o.idname, o.props, o.label = idname, repr(props), label
+    return o
+
+
 class M3D_OT_open_editor(Operator):
     """Open an editor in a new window (Windows menu)"""
     bl_idname = "m3d.open_editor"
@@ -298,7 +383,7 @@ COMPONENT_TOOLS = {
         ("Delete Edge", "mesh.dissolve_edges", 'X', {}),
     )),
     'FACE': ("Face Tools", (
-        ("Extrude Face", "view3d.edit_mesh_extrude_move_normal", 'FACESEL', {}),
+        ("Extrude Face", "mesh.extrude_region_shrink_fatten", 'FACESEL', {}),
         ("Extrude Offset (Inset)", "mesh.inset", 'MOD_SOLIDIFY', {}),
         ("Bevel", "mesh.bevel", 'MOD_BEVEL', {"offset_type": 'PERCENT'}),
         ("Bridge", "mesh.bridge_edge_loops", 'MOD_LATTICE', {}),
@@ -345,9 +430,7 @@ class M3D_MT_marking_menu(Menu):
             box = pie.box().column(align=True)
             box.label(text=label)
             for label, idname, icon, props in tools:
-                o = box.operator(idname, text=label, icon=icon)
-                for k, v in props.items():
-                    setattr(o, k, v)
+                tool_button(box, context, label, idname, icon, props)
         else:
             from m3d_marking import draw_object_list
             draw_object_list(pie.box().column(align=True))
@@ -709,11 +792,11 @@ def _button(layout, context, label, idname, icon, props, depress=False):
     return o
 
 
-def _buttons(layout, context, items, columns=2):
-    """Grid of classic-style tool buttons: (label, idname, icon, props)."""
+def _buttons(layout, context, items, columns=2, options_box=False):
+    """Grid of classic-style tool buttons: (label, idname, icon, props). Toolkit tools open the options box."""
     grid = layout.grid_flow(columns=columns, even_columns=True, align=True)
     for label, idname, icon, props in items:
-        _button(grid, context, label, idname, icon, props)
+        (tool_button if options_box else _button)(grid, context, label, idname, icon, props)
 
 
 def _view3d_space(context):
@@ -738,7 +821,7 @@ MTK_MESH = (
     ("Fill Hole", "m3d.fill_hole", 'SNAP_FACE', {}),
 )
 MTK_COMPONENTS = (
-    ("Extrude", "view3d.edit_mesh_extrude_move_normal", 'FACESEL', {}),
+    ("Extrude", "mesh.extrude_region_shrink_fatten", 'FACESEL', {}),
     ("Bevel", "mesh.bevel", 'MOD_BEVEL', {"offset_type": 'PERCENT'}),
     ("Bridge", "mesh.bridge_edge_loops", 'MOD_LATTICE', {}),
     ("Connect", "m3d.connect", 'MOD_EDGESPLIT', {}),
@@ -823,7 +906,7 @@ class PROPERTIES_PT_m3d_mtk_mesh(_ToolkitPanel, Panel):
     bl_label = "Mesh"
 
     def draw(self, context):
-        _buttons(self.layout, context, MTK_MESH)
+        _buttons(self.layout, context, MTK_MESH, options_box=True)
 
 
 class PROPERTIES_PT_m3d_mtk_components(_ToolkitPanel, Panel):
@@ -834,7 +917,7 @@ class PROPERTIES_PT_m3d_mtk_components(_ToolkitPanel, Panel):
         return context.mode == 'EDIT_MESH'
 
     def draw(self, context):
-        _buttons(self.layout, context, MTK_COMPONENTS)
+        _buttons(self.layout, context, MTK_COMPONENTS, options_box=True)
 
 
 class PROPERTIES_PT_m3d_mtk_tools(_ToolkitPanel, Panel):
@@ -845,7 +928,7 @@ class PROPERTIES_PT_m3d_mtk_tools(_ToolkitPanel, Panel):
         return context.mode == 'EDIT_MESH'
 
     def draw(self, context):
-        _buttons(self.layout, context, MTK_TOOLS)
+        _buttons(self.layout, context, MTK_TOOLS, options_box=True)
 
 
 @bpy.app.handlers.persistent
@@ -894,6 +977,7 @@ classes = (
     M3D_OT_group,
     M3D_OT_add_primitive,
     M3D_OT_call,
+    M3D_OT_tool,
     M3D_OT_open_editor,
     M3D_OT_ungroup,
     M3D_OT_reset_transformations,

@@ -22,8 +22,8 @@
 #include "BLI_utildefines.h"
 
 #include "BKE_context.hh"
+#include "BKE_idprop.hh"
 #include "BKE_screen.hh"
-#include "BKE_wm_runtime.hh"
 
 #include "WM_api.hh"
 #include "WM_types.hh"
@@ -407,6 +407,20 @@ void ED_area_type_hud_ensure(bContext *C, ScrArea *area)
 
   ARegion *region = BKE_area_find_region_type(area, RGN_TYPE_HUD);
 
+  /* Maelstrom3D: the options box only opens for Modeling Toolkit tools. Their buttons set the
+   * window manager property `m3d_options_box` (window x, y for the box) while the tool runs;
+   * shortcuts, gizmo drags and menu commands don't, so they get no box. */
+  const IDProperty *box_xy = wm->id.properties ? IDP_GetPropertyTypeFromGroup(
+                                                     wm->id.properties, "m3d_options_box", IDP_ARRAY) :
+                                                 nullptr;
+  if (box_xy == nullptr || box_xy->subtype != IDP_INT || box_xy->len != 2) {
+    if (region) {
+      ED_region_tag_redraw(region);
+      hud_region_hide(region);
+    }
+    return;
+  }
+
   if (region && (region->flag & RGN_FLAG_HIDDEN_BY_USER)) {
     /* The region is intentionally hidden by the user, don't show it. */
     hud_region_hide(region);
@@ -451,15 +465,10 @@ void ED_area_type_hud_ensure(bContext *C, ScrArea *area)
       hrd = MEM_new_zeroed<HudRegionData>(__func__);
       region->regiondata = hrd;
     }
-    /* Maelstrom3D: anchor at the cursor when the operator ran from inside the main region. */
-    const wmWindow *win = CTX_wm_window(C);
-    const ARegion *region_main = BKE_area_find_region_type(area, RGN_TYPE_WINDOW);
-    hrd->anchored = win && win->runtime->eventstate && region_main &&
-                    BLI_rcti_isect_pt_v(&region_main->winrct, win->runtime->eventstate->xy);
-    if (hrd->anchored) {
-      hrd->anchor_x = win->runtime->eventstate->xy[0] + UI_UNIT_X;
-      hrd->anchor_top = win->runtime->eventstate->xy[1] - UI_UNIT_Y;
-    }
+    /* Maelstrom3D: top-left corner just right of / below the point the toolkit asked for. */
+    hrd->anchored = true;
+    hrd->anchor_x = IDP_array_int_get(box_xy)[0] + UI_UNIT_X;
+    hrd->anchor_top = IDP_array_int_get(box_xy)[1] - UI_UNIT_Y;
     if (region_op) {
       hrd->regionid = region_op->regiontype;
       hrd->region_index_hint = region_index_hint;
