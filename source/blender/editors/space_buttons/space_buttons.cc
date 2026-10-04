@@ -88,7 +88,7 @@ static SpaceLink *buttons_create(const ScrArea * /*area*/, const Scene * /*scene
 
   BLI_addtail(&sbuts->regionbase, region);
   region->regiontype = RGN_TYPE_NAV_BAR;
-  /* MayaBlender: tabs on the right edge, like Maya's dock. */
+  /* Maelstrom3D: tabs on the right edge, like Maya's dock. */
   region->alignment = RGN_ALIGN_RIGHT;
 
 #if 0
@@ -217,7 +217,7 @@ Vector<eSpaceButtons_Context> ED_buttons_tabs_list(const SpaceProperties *sbuts,
     }
   };
 
-  /* MayaBlender: Maya dock tabs first, then the Attribute Editor tabs. */
+  /* Maelstrom3D: Maya dock tabs first, then the Attribute Editor tabs. */
   add_tab(BCONTEXT_CHANNEL_BOX);
   add_tab(BCONTEXT_MODELING_TOOLKIT);
   add_tab(BCONTEXT_TOOL);
@@ -721,7 +721,7 @@ static void buttons_area_redraw(ScrArea *area, short buttons)
   SpaceProperties *sbuts = static_cast<SpaceProperties *>(area->spacedata.first);
 
   /* if the area's current button set is equal to the one to redraw.
-   * MayaBlender: the Maya tabs show selection, transforms and modes, so they follow every update. */
+   * Maelstrom3D: the Maya tabs show selection, transforms and modes, so they follow every update. */
   if (sbuts->mainb == buttons ||
       ELEM(sbuts->mainb, BCONTEXT_CHANNEL_BOX, BCONTEXT_MODELING_TOOLKIT))
   {

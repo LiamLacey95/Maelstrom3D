@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-Apply the MayaBlender (Autodesk Maya look-alike) theme to the running Blender preferences.
+Apply the Maelstrom3D (Autodesk Maya look-alike) theme to the running Blender preferences.
 
-Source of truth for 'release/datafiles/userdef/userdef_default_theme.c'. Regenerate with:
+Source of truth for 'release/datafiles/userdef/userdef_default_theme.c'. The grey remap is relative, so run it
+on a *stock* Blender of the same version (a Maelstrom3D build already has these colours and would lighten
+them twice). Regenerate with:
 
-    tools/maya/regen_theme.sh <path-to-blender.exe>
+    tools/m3d/regen_theme.sh <path-to-blender.exe>
 """
 
 import bpy
@@ -71,13 +73,13 @@ def apply(theme=None):
         w = getattr(ui, wname, None)
         if w is None:
             continue
-        w.roundness = 0.15
+        w.roundness = 0.05  # Maya widgets: near-square corners.
         if wname in {"wcol_regular", "wcol_tool", "wcol_radio", "wcol_toggle", "wcol_num", "wcol_numslider"}:
             w.inner = (0.365, 0.365, 0.365, 1.0)
             w.outline = (0.235, 0.235, 0.235, 1.0)
     ui.wcol_text.inner = (0.169, 0.169, 0.169, 1.0)
-    ui.wcol_text.roundness = 0.15
-    ui.panel_roundness = 0.1
+    ui.wcol_text.roundness = 0.05
+    ui.panel_roundness = 0.0
 
     v3d = t.view_3d
     # Maya default viewport: steel-blue to near-black gradient.

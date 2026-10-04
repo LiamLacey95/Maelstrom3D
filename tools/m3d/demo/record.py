@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-Record the MayaBlender README videos (Windows): runs each scenario in tools/maya/demo/scenarios.py,
+Record the Maelstrom3D README videos (Windows): runs each scenario in tools/m3d/demo/scenarios.py,
 captures the Blender window with ffmpeg, writes docs/media/<name>.mp4 and docs/media/<name>.gif.
 
-    python tools/maya/demo/record.py <blender.exe> [scenario ...]
+    python tools/m3d/demo/record.py <blender.exe> [scenario ...]
 
 Don't use the PC while it records: the Blender window must stay in front.
 """

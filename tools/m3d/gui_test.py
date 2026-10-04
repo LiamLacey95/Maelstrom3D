@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-Interactive self-check for MayaBlender behaviour that needs a real window (gizmo drags, held keys).
+Interactive self-check for Maelstrom3D behaviour that needs a real window (gizmo drags, held keys).
 
-    blender --factory-startup --enable-event-simulate --python tools/maya/gui_test.py -- <result-file>
+    blender --factory-startup --enable-event-simulate --python tools/m3d/gui_test.py -- <result-file>
 
 Writes "FAILS: [...]" to <result-file> and quits.
 """
@@ -49,7 +49,7 @@ def step(fn):
 def setup():
     win, area, region = view3d()
     with bpy.context.temp_override(window=win, area=area, region=region):
-        bpy.ops.maya.add_primitive(kind='CUBE')
+        bpy.ops.m3d.add_primitive(kind='CUBE')
         bpy.ops.object.mode_set_with_submode(mode='EDIT', mesh_select_mode={'FACE'})
         bpy.ops.wm.tool_set_by_id(name="builtin.move")
         bpy.ops.view3d.view_all(center=True)
@@ -201,8 +201,8 @@ def object_shift_check():
 
 @step
 def w_marking_menu():
-    import maya_marking
-    check(maya_marking.MAYA_OT_key_marking_menu.last_menu == "MAYA_MT_move_mm", "W + left click marking menu")
+    import m3d_marking
+    check(m3d_marking.M3D_OT_key_marking_menu.last_menu == "M3D_MT_move_mm", "W + left click marking menu")
     event('LEFTMOUSE', 'RELEASE', GIZMO["start"])
     event('W', 'RELEASE', GIZMO["start"])
     event('ESC', 'PRESS', GIZMO["start"])
@@ -232,19 +232,19 @@ def view_undo():
 @step
 def view_undone():
     _win, area, _region = view3d()
-    import maya_marking
+    import m3d_marking
     check(abs(area.spaces.active.region_3d.view_distance - GIZMO["distance"]) < 1e-4,
           "[ did not undo the view change (now %s, was %s, history %s)" % (
               area.spaces.active.region_3d.view_distance, GIZMO["distance"],
-              {k: (len(v["stack"]), v["index"]) for k, v in maya_marking._view_history.items()}))
-    consoles = [a.spaces.active.language for a in bpy.data.screens["Maya Classic"].areas if a.type == 'CONSOLE']
+              {k: (len(v["stack"]), v["index"]) for k, v in m3d_marking._view_history.items()}))
+    consoles = [a.spaces.active.language for a in bpy.data.screens["Classic"].areas if a.type == 'CONSOLE']
     check(consoles == ['mel'], "command line is not MEL: %r" % consoles)
 
 
 @step
 def dock_tabs_object():
     # Draw every Maya dock tab (draw errors show up as tracebacks in Blender's output).
-    GIZMO["dock"] = [a for a in bpy.data.screens["Maya Classic"].areas if a.type == 'PROPERTIES'][0].spaces.active
+    GIZMO["dock"] = [a for a in bpy.data.screens["Classic"].areas if a.type == 'PROPERTIES'][0].spaces.active
     GIZMO["dock"].context = 'MODELING_TOOLKIT'
 
 
@@ -270,10 +270,10 @@ def dock_tabs_back():
 
 @step
 def startup_panels():
-    viewport_sidebars = [a.spaces.active.show_region_ui for a in bpy.data.screens["Maya Classic"].areas
+    viewport_sidebars = [a.spaces.active.show_region_ui for a in bpy.data.screens["Classic"].areas
                          if a.type == 'VIEW_3D']
     check(not any(viewport_sidebars), "viewport sidebar open at startup")
-    lenses = {a.spaces.active.lens for a in bpy.data.screens["Maya Classic"].areas if a.type == 'VIEW_3D'}
+    lenses = {a.spaces.active.lens for a in bpy.data.screens["Classic"].areas if a.type == 'VIEW_3D'}
     check(lenses == {70.0}, "viewport lens is not Maya's field of view: %r" % lenses)
     uv = [a for a in bpy.data.screens["UV Editing"].areas if a.type == 'IMAGE_EDITOR']
     check(uv and uv[0].spaces.active.show_region_ui, "UV Toolkit not docked in the UV Editor")

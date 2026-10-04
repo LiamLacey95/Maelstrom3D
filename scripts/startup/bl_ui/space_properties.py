@@ -49,8 +49,8 @@ class PROPERTIES_HT_header(Header):
 
         layout.template_header()
 
-        # MayaBlender: Attribute Editor node tabs, like Maya's pCube1 | pCubeShape1 | polyCube1 | lambert1.
-        from maya_ui import draw_node_tabs
+        # Maelstrom3D: Attribute Editor node tabs, like Maya's pCube1 | pCubeShape1 | polyCube1 | lambert1.
+        from m3d_ui import draw_node_tabs
         if draw_node_tabs(layout, context):
             return
 

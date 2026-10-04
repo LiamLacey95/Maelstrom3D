@@ -175,7 +175,7 @@ static void blo_update_defaults_screen(bScreen *screen,
       }
     }
     else if (area.spacetype == SPACE_PROPERTIES) {
-      /* MayaBlender: the right-hand dock opens on the Channel Box, tabs on the right edge. */
+      /* Maelstrom3D: the right-hand dock opens on the Channel Box, tabs on the right edge. */
       SpaceProperties *sbuts = static_cast<SpaceProperties *>(area.spacedata.first);
       sbuts->mainb = sbuts->mainbo = sbuts->mainbuser = BCONTEXT_CHANNEL_BOX;
       for (ARegion &region : area.regionbase) {
@@ -242,7 +242,7 @@ static void blo_update_defaults_screen(bScreen *screen,
       v3d->overlay.gpencil_vertex_paint_opacity = 1.0f;
       /* Always use theme color for wireframe by default. */
       v3d->shading.wire_color_type = V3D_SHADING_SINGLE_COLOR;
-      /* MayaBlender: match Maya's default perspective camera (35 mm on a 36 mm film back). The viewport lens
+      /* Maelstrom3D: match Maya's default perspective camera (35 mm on a 36 mm film back). The viewport lens
        * assumes a 72 mm sensor, so the same field of view is 70 mm. */
       v3d->lens = 70.0f;
 
@@ -759,7 +759,7 @@ void BLO_update_defaults_startup_blend(Main *bmain, const char *app_template)
     }
   }
 
-  /* MayaBlender: start from an empty scene like Maya (camera and light are kept for rendering). */
+  /* Maelstrom3D: start from an empty scene like Maya (camera and light are kept for rendering). */
   if (app_template == nullptr) {
     if (Object *cube = static_cast<Object *>(
             BLI_findstring(&bmain->objects, "Cube", offsetof(ID, name) + 2)))

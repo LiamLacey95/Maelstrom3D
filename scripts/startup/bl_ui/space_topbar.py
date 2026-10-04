@@ -30,7 +30,7 @@ class TOPBAR_HT_upper_bar(Header):
 
         TOPBAR_MT_editor_menus.draw_collapsible(context, layout)
 
-        # MayaBlender: workspaces are picked from the Maya-style "Workspace:" menu on the right.
+        # Maelstrom3D: workspaces are picked from the classic-style "Workspace:" menu on the right.
         if screen.show_fullscreen:
             layout.separator(type='LINE')
             layout.operator("screen.back_to_previous", icon='SCREEN_BACK', text="Back to Previous")
@@ -44,9 +44,6 @@ class TOPBAR_HT_upper_bar(Header):
             layout.template_reports_banner()
             layout.template_running_jobs()
 
-        # MayaBlender: Maya status line and workspace selector.
-        from maya_ui import draw_status_line
-        draw_status_line(layout, context)
 
 
 class TOPBAR_PT_tool_settings_extra(Panel):
@@ -96,8 +93,8 @@ class TOPBAR_MT_editor_menus(Menu):
     bl_label = ""
 
     def draw(self, context):
-        # MayaBlender: Maya main menu bar (menu set selector + menus).
-        from maya_ui import draw_menu_bar
+        # Maelstrom3D: Maya main menu bar (menu set selector + menus).
+        from m3d_ui import draw_menu_bar
         draw_menu_bar(self.layout, context)
 
 

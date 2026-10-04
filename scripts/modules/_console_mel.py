@@ -1,9 +1,9 @@
-# SPDX-FileCopyrightText: 2026 MayaBlender
+# SPDX-FileCopyrightText: 2026 Maelstrom3D
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 """
-MEL for the MayaBlender command line: `polyCube -w 2 -n box; move -r 0 0 1;` runs the matching
+MEL for the Maelstrom3D command line: `polyCube -w 2 -n box; move -r 0 0 1;` runs the matching
 `maya.cmds` command. `python("...")` runs Python with `cmds` available.
 """
 
@@ -80,7 +80,7 @@ def parse(statement):
 
 def run(text):
     """Run MEL text, return the last result."""
-    import maya.cmds as cmds
+    import m3d.cmds as cmds
     result = None
     for statement in text.split(";"):
         statement = statement.split("//")[0].strip()
@@ -122,7 +122,7 @@ def execute(context, _is_interactive):
 
 
 def autocomplete(context):
-    import maya.cmds as cmds
+    import m3d.cmds as cmds
     sc = context.space_data
     line = sc.history[-1]
     word = line.body[:line.current_character].split(";")[-1].strip()

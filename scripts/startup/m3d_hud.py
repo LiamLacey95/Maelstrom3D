@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 MayaBlender
+# SPDX-FileCopyrightText: 2026 Maelstrom3D
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -20,7 +20,7 @@ ORTHO_NAMES = (((0, 0, 1), "top"), ((0, 0, -1), "bottom"), ((0, -1, 0), "front")
 
 
 def camera_name(context, rv3d):
-    """Maya panel camera: persp, top / front / side for orthographic views, or the camera looked through."""
+    """Panel camera: persp, top / front / side for orthographic views, or the camera looked through."""
     if rv3d.view_perspective == 'CAMERA':
         return context.scene.camera.name if context.scene.camera else "camera"
     if rv3d.view_perspective == 'PERSP':

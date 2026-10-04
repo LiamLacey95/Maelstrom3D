@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-Build MayaBlender's factory startup file (Maya workspaces and Maya Classic layout).
+Build Maelstrom3D's factory startup file (workspaces and Classic layout).
 
 Run in the GUI (screen operators need a window), it saves and quits by itself:
 
     set BLENDER_USER_RESOURCES=<empty temp dir>
-    blender --factory-startup --python tools/maya/build_startup.py -- release/datafiles/startup.blend
+    blender --factory-startup --python tools/m3d/build_startup.py -- release/datafiles/startup.blend
 """
 
 import os
@@ -18,11 +18,10 @@ OUT = os.path.abspath(sys.argv[sys.argv.index("--") + 1])
 
 # Blender workspace -> Maya workspace name.
 RENAME = {
-    "Layout": "Maya Classic",
+    "Layout": "Classic",
     "Modeling": "Modeling - Standard",
     "Texture Paint": "3D Paint",
-    "Shading": "Hypershade",
-    "Geometry Nodes": "Node Editor",
+        "Geometry Nodes": "Node Editor",
     "Scripting": "Script Editor",
 }
 
@@ -71,8 +70,8 @@ def step_rigging():
     for screen in bpy.data.screens:
         for area in screen.areas:
             if area.type == 'VIEW_3D':
-                area.spaces.active.show_region_tool_header = True  # Maya shelf row.
-    win.workspace = bpy.data.workspaces["Maya Classic"]
+                area.spaces.active.show_region_tool_header = True  # Shelf row.
+    win.workspace = bpy.data.workspaces["Classic"]
     bpy.app.timers.register(step_save, first_interval=1.0)
 
 

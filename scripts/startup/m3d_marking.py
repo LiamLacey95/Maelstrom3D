@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 MayaBlender
+# SPDX-FileCopyrightText: 2026 Maelstrom3D
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -28,9 +28,9 @@ def _orient(layout, text, value, icon='NONE'):
 # -----------------------------------------------------------------------------
 # Hold key + left click marking menus
 
-class MAYA_OT_key_marking_menu(Operator):
-    """Maya hotkey: tap runs the tool or command, hold the key and left click for its marking menu"""
-    bl_idname = "maya.key_marking_menu"
+class M3D_OT_key_marking_menu(Operator):
+    """Hotkey: tap runs the tool or command, hold the key and left click for its marking menu"""
+    bl_idname = "m3d.key_marking_menu"
     bl_label = "Hotkey Marking Menu"
     bl_options = {'INTERNAL'}
 
@@ -66,12 +66,12 @@ class MAYA_OT_key_marking_menu(Operator):
         if menu:
             with context.temp_override(area=self.area, region=self.region):
                 bpy.ops.wm.call_menu_pie(name=menu)
-            MAYA_OT_key_marking_menu.last_menu = menu  # Read by tools/maya/gui_test.py.
+            M3D_OT_key_marking_menu.last_menu = menu  # Read by tools/m3d/gui_test.py.
             return {'FINISHED'}
         return {'PASS_THROUGH'}
 
 
-class MAYA_MT_select_mm(Menu):
+class M3D_MT_select_mm(Menu):
     """Q + left click: selection tools"""
     bl_label = "Select Tool"
 
@@ -106,7 +106,7 @@ def _transform_mm(pie, context, tool_label, snap_prop):
     _orient(pie, "Custom (Cursor)", 'CURSOR', 'ORIENTATION_CURSOR')
 
 
-class MAYA_MT_move_mm(Menu):
+class M3D_MT_move_mm(Menu):
     """W + left click: move tool orientation and options"""
     bl_label = "Move Tool"
 
@@ -114,7 +114,7 @@ class MAYA_MT_move_mm(Menu):
         _transform_mm(self.layout.menu_pie(), context, "Move Options", "translate")
 
 
-class MAYA_MT_rotate_mm(Menu):
+class M3D_MT_rotate_mm(Menu):
     """E + left click: rotate tool orientation and options"""
     bl_label = "Rotate Tool"
 
@@ -122,7 +122,7 @@ class MAYA_MT_rotate_mm(Menu):
         _transform_mm(self.layout.menu_pie(), context, "Rotate Options", "rotate")
 
 
-class MAYA_MT_scale_mm(Menu):
+class M3D_MT_scale_mm(Menu):
     """R + left click: scale tool orientation and options"""
     bl_label = "Scale Tool"
 
@@ -130,7 +130,7 @@ class MAYA_MT_scale_mm(Menu):
         _transform_mm(self.layout.menu_pie(), context, "Scale Options", "scale")
 
 
-class MAYA_MT_io_mm(Menu):
+class M3D_MT_io_mm(Menu):
     """A + left click: inputs / outputs (history)"""
     bl_label = "History Operations"
 
@@ -140,11 +140,11 @@ class MAYA_MT_io_mm(Menu):
         _op(pie, "object.transform_apply", "Freeze Transformations", 'FREEZE',
             location=True, rotation=True, scale=True)
         _op(pie, "object.origin_set", "Center Pivot", 'PIVOT_BOUNDBOX', type='ORIGIN_GEOMETRY')
-        _op(pie, "maya.reset_transformations", "Reset Transformations", 'LOOP_BACK')
-        _op(pie, "maya.dock_tab", "Show Inputs (Attribute Editor)", 'MODIFIER', tab='MODIFIER')
+        _op(pie, "m3d.reset_transformations", "Reset Transformations", 'LOOP_BACK')
+        _op(pie, "m3d.dock_tab", "Show Inputs (Attribute Editor)", 'MODIFIER', tab='MODIFIER')
 
 
-class MAYA_MT_menu_set_mm(Menu):
+class M3D_MT_menu_set_mm(Menu):
     """H + left click: menu sets"""
     bl_label = "Menu Sets"
 
@@ -152,10 +152,10 @@ class MAYA_MT_menu_set_mm(Menu):
         pie = self.layout.menu_pie()
         for value, label in (('MODELING', "Modeling"), ('RIGGING', "Rigging"), ('ANIMATION', "Animation"),
                              ('FX', "FX"), ('RENDERING', "Rendering")):
-            _op(pie, "wm.context_set_enum", label, data_path="window_manager.maya_menu_set", value=value)
+            _op(pie, "wm.context_set_enum", label, data_path="window_manager.m3d_menu_set", value=value)
 
 
-class MAYA_MT_keyframe_mm(Menu):
+class M3D_MT_keyframe_mm(Menu):
     """Shift+S + left click: keyframe marking menu"""
     bl_label = "Keyframe"
 
@@ -167,8 +167,8 @@ class MAYA_MT_keyframe_mm(Menu):
         _op(pie, "anim.keyframe_insert_by_name", "Key Translate", 'CON_LOCLIKE', type='Location')
         _op(pie, "anim.keyframe_insert_by_name", "Key Scale", 'CON_SIZELIKE', type='Scaling')
         pie.prop(context.tool_settings, "use_keyframe_insert_auto", text="Auto Key")
-        _op(pie, "maya.open_editor", "Graph Editor", 'GRAPH', ui_type='FCURVES')
-        _op(pie, "maya.open_editor", "Dope Sheet", 'ACTION', ui_type='DOPESHEET')
+        _op(pie, "m3d.open_editor", "Graph Editor", 'GRAPH', ui_type='FCURVES')
+        _op(pie, "m3d.open_editor", "Dope Sheet", 'ACTION', ui_type='DOPESHEET')
 
 
 # -----------------------------------------------------------------------------
@@ -180,9 +180,9 @@ TANGENTS = (
 )
 
 
-class MAYA_OT_set_tangents(Operator):
-    """Maya tangents for the selected objects' keys (Spline, Linear, Clamped, Flat, Stepped, Plateau)"""
-    bl_idname = "maya.set_tangents"
+class M3D_OT_set_tangents(Operator):
+    """Tangents for the selected objects' keys (Spline, Linear, Clamped, Flat, Stepped, Plateau)"""
+    bl_idname = "m3d.set_tangents"
     bl_label = "Set Tangents"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -204,22 +204,22 @@ class MAYA_OT_set_tangents(Operator):
         return {'FINISHED'}
 
 
-class MAYA_MT_tangent_mm(Menu):
+class M3D_MT_tangent_mm(Menu):
     """Shift+S + middle click: key tangents"""
     bl_label = "Tangents"
 
     def draw(self, _context):
         pie = self.layout.menu_pie()
         for kind, label, icon in TANGENTS:
-            _op(pie, "maya.set_tangents", label, icon, kind=kind)
+            _op(pie, "m3d.set_tangents", label, icon, kind=kind)
 
 
 _last_hidden = []
 
 
-class MAYA_OT_hide_selection(Operator):
-    """Maya Ctrl+H: hide the selection (remembered for Ctrl+Shift+H)"""
-    bl_idname = "maya.hide_selection"
+class M3D_OT_hide_selection(Operator):
+    """Ctrl+H: hide the selection (remembered for Ctrl+Shift+H)"""
+    bl_idname = "m3d.hide_selection"
     bl_label = "Hide Selection"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -230,9 +230,9 @@ class MAYA_OT_hide_selection(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_show_hidden(Operator):
-    """Maya Ctrl+Shift+H shows the last hidden objects; Shift+H shows hidden objects selected in the Outliner"""
-    bl_idname = "maya.show_hidden"
+class M3D_OT_show_hidden(Operator):
+    """Ctrl+Shift+H shows the last hidden objects; Shift+H shows hidden objects selected in the Outliner"""
+    bl_idname = "m3d.show_hidden"
     bl_label = "Show Hidden"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -249,14 +249,14 @@ class MAYA_OT_show_hidden(Operator):
         return {'FINISHED'}
 
 
-class MAYA_MT_shift_rmb(Menu):
+class M3D_MT_shift_rmb(Menu):
     """Shift+right click: create (nothing selected), polygon tools (object), component tools (components)"""
     bl_label = "Polygon Tools"
 
     def draw(self, context):
         pie = self.layout.menu_pie()
         if context.mode == 'EDIT_MESH':
-            from maya_mode import COMPONENT_TOOLS, _component_kind
+            from m3d_mode import COMPONENT_TOOLS, _component_kind
             label, tools = COMPONENT_TOOLS[_component_kind(context)]
             # Common component items around the pie (W, E, S, N, NW, NE, SW, SE).
             _op(pie, "view3d.edit_mesh_extrude_move_normal", "Extrude", 'FACESEL')
@@ -266,26 +266,26 @@ class MAYA_MT_shift_rmb(Menu):
             for item_label, idname, icon, props in tools:
                 _op(box, idname, item_label, icon, **props)
             _op(pie, "mesh.knife_tool", "Multi-Cut", 'MOD_SIMPLEDEFORM')
-            _op(pie, "maya.connect", "Connect Components", 'MOD_EDGESPLIT')
-            _op(pie, "maya.delete_components", "Delete", 'X')
+            _op(pie, "m3d.connect", "Connect Components", 'MOD_EDGESPLIT')
+            _op(pie, "m3d.delete_components", "Delete", 'X')
             _op(pie, "mesh.split", "Detach Components", 'MOD_EXPLODE')
             _op(pie, "transform.edge_crease", "Crease Tool", 'MOD_SMOOTH')
         elif context.selected_objects:
             _op(pie, "object.join", "Combine", 'AUTOMERGE_ON')
-            _op(pie, "maya.separate", "Separate", 'MOD_EXPLODE')
+            _op(pie, "m3d.separate", "Separate", 'MOD_EXPLODE')
             box = pie.box().column(align=True)
             box.label(text="Polygon Tools")
             for item_label, idname, icon, props in POLY_OBJECT_TOOLS:
                 _op(box, idname, item_label, icon, **props)
             _op(pie, "object.subdivision_set", "Smooth", 'MOD_SUBSURF', level=1, relative=False)
-            _op(pie, "maya.boolean", "Booleans: Union", 'SELECT_EXTEND', operation='UNION')
-            _op(pie, "maya.boolean", "Booleans: Difference", 'SELECT_SUBTRACT', operation='DIFFERENCE')
+            _op(pie, "m3d.boolean", "Booleans: Union", 'SELECT_EXTEND', operation='UNION')
+            _op(pie, "m3d.boolean", "Booleans: Difference", 'SELECT_SUBTRACT', operation='DIFFERENCE')
             _op(pie, "object.modifier_add", "Mirror", 'MOD_MIRROR', type='MIRROR')
-            _op(pie, "maya.fill_hole", "Fill Hole", 'SNAP_FACE')
+            _op(pie, "m3d.fill_hole", "Fill Hole", 'SNAP_FACE')
         else:
             for kind, icon in (('SPHERE', 'MESH_UVSPHERE'), ('CUBE', 'MESH_CUBE'), ('CYLINDER', 'MESH_CYLINDER'),
                                ('PLANE', 'MESH_PLANE'), ('CONE', 'MESH_CONE'), ('TORUS', 'MESH_TORUS')):
-                _op(pie, "maya.add_primitive", kind.title(), icon, kind=kind)
+                _op(pie, "m3d.add_primitive", kind.title(), icon, kind=kind)
             _op(pie, "object.camera_add", "Camera", 'CAMERA_DATA')
             pie.menu("VIEW3D_MT_light_add", text="Lights", icon='LIGHT')
 
@@ -294,7 +294,7 @@ POLY_OBJECT_TOOLS = (
     ("Triangulate", "object.modifier_add", 'MOD_TRIANGULATE', {"type": 'TRIANGULATE'}),
     ("Reduce", "object.modifier_add", 'MOD_DECIM', {"type": 'DECIMATE'}),
     ("Remesh", "object.modifier_add", 'MOD_REMESH', {"type": 'REMESH'}),
-    ("Booleans: Intersection", "maya.boolean", 'SELECT_INTERSECT', {"operation": 'INTERSECT'}),
+    ("Booleans: Intersection", "m3d.boolean", 'SELECT_INTERSECT', {"operation": 'INTERSECT'}),
     ("Smooth Shading", "object.shade_smooth", 'SHADING_SOLID', {}),
     ("Soften/Harden by Angle", "object.shade_smooth_by_angle", 'MOD_SMOOTH', {}),
     ("Center Pivot", "object.origin_set", 'PIVOT_BOUNDBOX', {"type": 'ORIGIN_GEOMETRY'}),
@@ -312,14 +312,14 @@ def draw_object_list(layout):
     _op(layout, "object.select_all", "Invert Selection", 'SELECT_DIFFERENCE', action='INVERT')
     layout.operator_menu_enum("object.select_grouped", "type", text="Select Similar")
     layout.separator()
-    _op(layout, "maya.group", "Group", 'EMPTY_AXIS')
-    _op(layout, "maya.assign_material", "Assign New Material", 'MATERIAL')
-    layout.operator_menu_enum("maya.assign_existing_material", "material", text="Assign Existing Material")
+    _op(layout, "m3d.group", "Group", 'EMPTY_AXIS')
+    _op(layout, "m3d.assign_material", "Assign New Material", 'MATERIAL')
+    layout.operator_menu_enum("m3d.assign_existing_material", "material", text="Assign Existing Material")
 
 
-class MAYA_OT_assign_existing_material(Operator):
+class M3D_OT_assign_existing_material(Operator):
     """Assign an existing material to the selection"""
-    bl_idname = "maya.assign_existing_material"
+    bl_idname = "m3d.assign_existing_material"
     bl_label = "Assign Existing Material"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -335,7 +335,7 @@ class MAYA_OT_assign_existing_material(Operator):
         return {'FINISHED'}
 
 
-class MAYA_MT_transform_mm(Menu):
+class M3D_MT_transform_mm(Menu):
     """Ctrl+Shift+right click: transform options (symmetry, soft select, selection)"""
     bl_label = "Transform Options"
 
@@ -379,9 +379,9 @@ def _drag_constraint(gz):
     return None
 
 
-class MAYA_OT_gizmo_shift_drag(Operator):
-    """Maya Shift+drag on the manipulator: extrude components, duplicate objects"""
-    bl_idname = "maya.gizmo_shift_drag"
+class M3D_OT_gizmo_shift_drag(Operator):
+    """Shift+drag on the manipulator: extrude components, duplicate objects"""
+    bl_idname = "m3d.gizmo_shift_drag"
     bl_label = "Shift+Drag Manipulator"
     bl_options = {'INTERNAL'}
 
@@ -405,9 +405,9 @@ class MAYA_OT_gizmo_shift_drag(Operator):
         return bpy.ops.mesh.extrude_context_move('INVOKE_DEFAULT', TRANSFORM_OT_translate=translate)
 
 
-class MAYA_OT_gizmo_slide(Operator):
-    """Maya Ctrl+Shift+drag on the manipulator: slide the components along their edges"""
-    bl_idname = "maya.gizmo_slide"
+class M3D_OT_gizmo_slide(Operator):
+    """Ctrl+Shift+drag on the manipulator: slide the components along their edges"""
+    bl_idname = "m3d.gizmo_slide"
     bl_label = "Slide Components"
     bl_options = {'INTERNAL'}
 
@@ -457,9 +457,9 @@ def _watch():
     return 0.3
 
 
-class MAYA_OT_view_history(Operator):
-    """Maya [ / ]: undo / redo view changes"""
-    bl_idname = "maya.view_history"
+class M3D_OT_view_history(Operator):
+    """[ / ]: undo / redo view changes"""
+    bl_idname = "m3d.view_history"
     bl_label = "Undo View Change"
 
     step: bpy.props.IntProperty(default=-1)
@@ -481,9 +481,9 @@ class MAYA_OT_view_history(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_last_tool(Operator):
-    """Maya Y: reactivate the last tool that was not Select / Move / Rotate / Scale"""
-    bl_idname = "maya.last_tool"
+class M3D_OT_last_tool(Operator):
+    """Y: reactivate the last tool that was not Select / Move / Rotate / Scale"""
+    bl_idname = "m3d.last_tool"
     bl_label = "Last Tool"
 
     def execute(self, context):
@@ -497,9 +497,9 @@ class MAYA_OT_last_tool(Operator):
 # -----------------------------------------------------------------------------
 # Nudge, pickwalk, background, soft select radius
 
-class MAYA_OT_cut(Operator):
-    """Maya Ctrl+X: copy the selected objects to the clipboard buffer and delete them"""
-    bl_idname = "maya.cut"
+class M3D_OT_cut(Operator):
+    """Ctrl+X: copy the selected objects to the clipboard buffer and delete them"""
+    bl_idname = "m3d.cut"
     bl_label = "Cut"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -513,9 +513,9 @@ class MAYA_OT_cut(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_nudge(Operator):
-    """Maya Alt+arrow: move the selection one pixel"""
-    bl_idname = "maya.nudge"
+class M3D_OT_nudge(Operator):
+    """Alt+arrow: move the selection one pixel"""
+    bl_idname = "m3d.nudge"
     bl_label = "Nudge"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -535,9 +535,9 @@ class MAYA_OT_nudge(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_pickwalk(Operator):
-    """Maya pickwalk: arrows walk up / down the hierarchy and left / right between siblings"""
-    bl_idname = "maya.pickwalk"
+class M3D_OT_pickwalk(Operator):
+    """Pickwalk: arrows walk up / down the hierarchy and left / right between siblings"""
+    bl_idname = "m3d.pickwalk"
     bl_label = "Pickwalk"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -569,9 +569,9 @@ class MAYA_OT_pickwalk(Operator):
 BACKGROUNDS = (None, (0.0, 0.0, 0.0), (0.24, 0.24, 0.24), (0.63, 0.63, 0.63))
 
 
-class MAYA_OT_cycle_background(Operator):
-    """Maya Alt+B: cycle the viewport background (gradient, black, dark grey, light grey)"""
-    bl_idname = "maya.cycle_background"
+class M3D_OT_cycle_background(Operator):
+    """Alt+B: cycle the viewport background (gradient, black, dark grey, light grey)"""
+    bl_idname = "m3d.cycle_background"
     bl_label = "Cycle Background"
 
     def execute(self, context):
@@ -590,9 +590,9 @@ class MAYA_OT_cycle_background(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_soft_radius(Operator):
-    """Maya B: tap toggles soft selection, hold B and drag to change its radius"""
-    bl_idname = "maya.soft_radius"
+class M3D_OT_soft_radius(Operator):
+    """B: tap toggles soft selection, hold B and drag to change its radius"""
+    bl_idname = "m3d.soft_radius"
     bl_label = "Soft Select Radius"
     bl_options = {'INTERNAL'}
 
@@ -623,30 +623,30 @@ class MAYA_OT_soft_radius(Operator):
 
 
 classes = (
-    MAYA_OT_key_marking_menu,
-    MAYA_MT_select_mm,
-    MAYA_MT_move_mm,
-    MAYA_MT_rotate_mm,
-    MAYA_MT_scale_mm,
-    MAYA_MT_io_mm,
-    MAYA_MT_menu_set_mm,
-    MAYA_MT_keyframe_mm,
-    MAYA_MT_shift_rmb,
-    MAYA_OT_assign_existing_material,
-    MAYA_MT_transform_mm,
-    MAYA_OT_gizmo_shift_drag,
-    MAYA_OT_gizmo_slide,
-    MAYA_OT_view_history,
-    MAYA_OT_last_tool,
-    MAYA_OT_cut,
-    MAYA_OT_set_tangents,
-    MAYA_MT_tangent_mm,
-    MAYA_OT_hide_selection,
-    MAYA_OT_show_hidden,
-    MAYA_OT_nudge,
-    MAYA_OT_pickwalk,
-    MAYA_OT_cycle_background,
-    MAYA_OT_soft_radius,
+    M3D_OT_key_marking_menu,
+    M3D_MT_select_mm,
+    M3D_MT_move_mm,
+    M3D_MT_rotate_mm,
+    M3D_MT_scale_mm,
+    M3D_MT_io_mm,
+    M3D_MT_menu_set_mm,
+    M3D_MT_keyframe_mm,
+    M3D_MT_shift_rmb,
+    M3D_OT_assign_existing_material,
+    M3D_MT_transform_mm,
+    M3D_OT_gizmo_shift_drag,
+    M3D_OT_gizmo_slide,
+    M3D_OT_view_history,
+    M3D_OT_last_tool,
+    M3D_OT_cut,
+    M3D_OT_set_tangents,
+    M3D_MT_tangent_mm,
+    M3D_OT_hide_selection,
+    M3D_OT_show_hidden,
+    M3D_OT_nudge,
+    M3D_OT_pickwalk,
+    M3D_OT_cycle_background,
+    M3D_OT_soft_radius,
 )
 
 

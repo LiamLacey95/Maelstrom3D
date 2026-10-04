@@ -1,9 +1,9 @@
-# SPDX-FileCopyrightText: 2026 MayaBlender
+# SPDX-FileCopyrightText: 2026 Maelstrom3D
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 """
-Maya-style UV editing for MayaBlender: UV Toolkit panel, UV marking menus,
+classic-style UV editing for Maelstrom3D: UV Toolkit panel, UV marking menus,
 Cut / Sew / Unfold / Layout workflow and the checker map.
 """
 
@@ -21,9 +21,9 @@ def _in_uv_editor(context):
     return space is not None and space.type == 'IMAGE_EDITOR'
 
 
-class MAYA_OT_uv_cut(Operator):
-    """Maya Cut: split UVs along the selected edges (marks them as seams for Unfold)"""
-    bl_idname = "maya.uv_cut"
+class M3D_OT_uv_cut(Operator):
+    """Cut: split UVs along the selected edges (marks them as seams for Unfold)"""
+    bl_idname = "m3d.uv_cut"
     bl_label = "Cut UVs"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -39,9 +39,9 @@ class MAYA_OT_uv_cut(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_uv_sew(Operator):
-    """Maya Sew: join UVs along the selected edges"""
-    bl_idname = "maya.uv_sew"
+class M3D_OT_uv_sew(Operator):
+    """Sew: join UVs along the selected edges"""
+    bl_idname = "m3d.uv_sew"
     bl_label = "Sew UVs"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -58,9 +58,9 @@ class MAYA_OT_uv_sew(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_uv_unfold(Operator):
-    """Maya Unfold: flatten the selected UV shells along their cuts, keeping pinned UVs"""
-    bl_idname = "maya.uv_unfold"
+class M3D_OT_uv_unfold(Operator):
+    """Unfold: flatten the selected UV shells along their cuts, keeping pinned UVs"""
+    bl_idname = "m3d.uv_unfold"
     bl_label = "Unfold"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -73,9 +73,9 @@ class MAYA_OT_uv_unfold(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_uv_rotate(Operator):
+class M3D_OT_uv_rotate(Operator):
     """Rotate the selected UVs by 90 degrees"""
-    bl_idname = "maya.uv_rotate"
+    bl_idname = "m3d.uv_rotate"
     bl_label = "Rotate UVs 90"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -90,9 +90,9 @@ class MAYA_OT_uv_rotate(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_uv_flip(Operator):
-    """Maya Flip: mirror the selected UVs in U or V"""
-    bl_idname = "maya.uv_flip"
+class M3D_OT_uv_flip(Operator):
+    """Flip: mirror the selected UVs in U or V"""
+    bl_idname = "m3d.uv_flip"
     bl_label = "Flip UVs"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -107,9 +107,9 @@ class MAYA_OT_uv_flip(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_uv_checker(Operator):
-    """Maya checker map: show a UV checker texture on the selected meshes (toggle)"""
-    bl_idname = "maya.uv_checker"
+class M3D_OT_uv_checker(Operator):
+    """Checker map: show a UV checker texture on the selected meshes (toggle)"""
+    bl_idname = "m3d.uv_checker"
     bl_label = "Checker Map"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -163,10 +163,10 @@ UVTK_PIN = (
     ("Unpin", "uv.pin", 'UNPINNED', {"clear": True}),
 )
 UVTK_TRANSFORM = (
-    ("Flip U", "maya.uv_flip", 'MOD_MIRROR', {"axis": 'U'}),
-    ("Flip V", "maya.uv_flip", 'MOD_MIRROR', {"axis": 'V'}),
-    ("Rotate 90 CW", "maya.uv_rotate", 'LOOP_FORWARDS', {"clockwise": True}),
-    ("Rotate 90 CCW", "maya.uv_rotate", 'LOOP_BACK', {"clockwise": False}),
+    ("Flip U", "m3d.uv_flip", 'MOD_MIRROR', {"axis": 'U'}),
+    ("Flip V", "m3d.uv_flip", 'MOD_MIRROR', {"axis": 'V'}),
+    ("Rotate 90 CW", "m3d.uv_rotate", 'LOOP_FORWARDS', {"clockwise": True}),
+    ("Rotate 90 CCW", "m3d.uv_rotate", 'LOOP_BACK', {"clockwise": False}),
     ("Align U", "uv.align", 'ALIGN_CENTER', {"axis": 'ALIGN_X'}),
     ("Align V", "uv.align", 'ALIGN_MIDDLE', {"axis": 'ALIGN_Y'}),
     ("Straighten", "uv.align", 'IPO_LINEAR', {"axis": 'ALIGN_S'}),
@@ -181,14 +181,14 @@ UVTK_CREATE = (
     ("Cube (Box)", "uv.cube_project", 'MESH_CUBE', {}),
 )
 UVTK_CUT_SEW = (
-    ("Cut", "maya.uv_cut", 'SCULPTMODE_HLT', {}),
-    ("Sew", "maya.uv_sew", 'AUTOMERGE_ON', {}),
+    ("Cut", "m3d.uv_cut", 'SCULPTMODE_HLT', {}),
+    ("Sew", "m3d.uv_sew", 'AUTOMERGE_ON', {}),
     ("Split", "uv.select_split", 'UNLINKED', {}),
     ("Merge", "uv.remove_doubles", 'AUTOMERGE_OFF', {}),
     ("Auto Seams (from shells)", "uv.seams_from_islands", 'UV_ISLANDSEL', {}),
 )
 UVTK_UNFOLD = (
-    ("Unfold", "maya.uv_unfold", 'UV', {}),
+    ("Unfold", "m3d.uv_unfold", 'UV', {}),
     ("Optimize", "uv.minimize_stretch", 'MOD_SMOOTH', {}),
     ("Layout", "uv.pack_islands", 'STICKY_UVS_DISABLE', {"margin": 0.01}),
     ("Orient Shells", "uv.align_rotation", 'ORIENTATION_GIMBAL', {"method": 'AUTO'}),
@@ -202,7 +202,7 @@ UV_TOOLKIT_SECTIONS = (
 
 
 def _uv_buttons(layout, context, items):
-    from maya_mode import _buttons
+    from m3d_mode import _buttons
     _buttons(layout, context, items)
 
 
@@ -216,7 +216,7 @@ class _UVToolkitPanel:
         return context.space_data.show_uvedit
 
 
-class IMAGE_PT_maya_uvtk_selection(_UVToolkitPanel, Panel):
+class IMAGE_PT_m3d_uvtk_selection(_UVToolkitPanel, Panel):
     bl_label = "Selection"
 
     def draw(self, context):
@@ -238,17 +238,17 @@ def _section_panel(idname, label, items, closed=False):
     return type(idname, (_UVToolkitPanel, Panel), attrs)
 
 
-class IMAGE_PT_maya_uvtk_display(_UVToolkitPanel, Panel):
+class IMAGE_PT_m3d_uvtk_display(_UVToolkitPanel, Panel):
     bl_label = "Display"
 
     def draw(self, context):
         layout = self.layout
-        layout.operator("maya.uv_checker", icon='TEXTURE')
+        layout.operator("m3d.uv_checker", icon='TEXTURE')
         layout.prop(context.space_data.uv_editor, "show_stretch", text="Distortion")
         layout.prop(context.space_data.uv_editor, "show_faces", text="Shaded UVs")
 
 
-class MAYA_MT_uv_marking_menu(Menu):
+class M3D_MT_uv_marking_menu(Menu):
     """UV Editor right-click marking menu: UV component modes"""
     bl_label = "UV Marking Menu"
 
@@ -266,17 +266,17 @@ class MAYA_MT_uv_marking_menu(Menu):
         pie.operator("uv.select_linked", text="Select Shell", icon='UV_ISLANDSEL')
 
 
-class MAYA_MT_uv_tools(Menu):
+class M3D_MT_uv_tools(Menu):
     """UV Editor Shift+right-click marking menu: the UV workflow"""
     bl_label = "UV Tools"
 
     def draw(self, context):
         pie = self.layout.menu_pie()
         for label, idname, icon, props in (
-            ("Cut", "maya.uv_cut", 'SCULPTMODE_HLT', {}),
-            ("Sew", "maya.uv_sew", 'AUTOMERGE_ON', {}),
+            ("Cut", "m3d.uv_cut", 'SCULPTMODE_HLT', {}),
+            ("Sew", "m3d.uv_sew", 'AUTOMERGE_ON', {}),
             ("Layout", "uv.pack_islands", 'STICKY_UVS_DISABLE', {"margin": 0.01}),
-            ("Unfold", "maya.uv_unfold", 'UV', {}),
+            ("Unfold", "m3d.uv_unfold", 'UV', {}),
             ("Straighten", "uv.align", 'IPO_LINEAR', {"axis": 'ALIGN_S'}),
             ("Orient Shells", "uv.align_rotation", 'ORIENTATION_GIMBAL', {"method": 'AUTO'}),
             ("Optimize", "uv.minimize_stretch", 'MOD_SMOOTH', {}),
@@ -323,18 +323,18 @@ def show_uv_toolkit(*_args):
 
 
 classes = (
-    MAYA_OT_uv_cut,
-    MAYA_OT_uv_sew,
-    MAYA_OT_uv_unfold,
-    MAYA_OT_uv_rotate,
-    MAYA_OT_uv_flip,
-    MAYA_OT_uv_checker,
-    MAYA_MT_uv_marking_menu,
-    MAYA_MT_uv_tools,
-    IMAGE_PT_maya_uvtk_selection,
-    *(_section_panel("IMAGE_PT_maya_uvtk_" + label.lower().replace(" ", "_"), label, items)
+    M3D_OT_uv_cut,
+    M3D_OT_uv_sew,
+    M3D_OT_uv_unfold,
+    M3D_OT_uv_rotate,
+    M3D_OT_uv_flip,
+    M3D_OT_uv_checker,
+    M3D_MT_uv_marking_menu,
+    M3D_MT_uv_tools,
+    IMAGE_PT_m3d_uvtk_selection,
+    *(_section_panel("IMAGE_PT_m3d_uvtk_" + label.lower().replace(" ", "_"), label, items)
       for label, items in UV_TOOLKIT_SECTIONS[1:]),
-    IMAGE_PT_maya_uvtk_display,
+    IMAGE_PT_m3d_uvtk_display,
 )
 
 

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-MayaBlender demo scenarios for the README videos. Run by tools/maya/demo/record.py:
+Maelstrom3D demo scenarios for the README videos. Run by tools/m3d/demo/record.py:
 
     blender --factory-startup --enable-event-simulate --python scenarios.py -- <name> <status-dir>
 
@@ -178,7 +178,7 @@ def object_point(ob, offset=(0, 0, 0)):
 
 
 def frame_selected(margin=1.8):
-    """Frame the selection like Maya's F, with some room around it."""
+    """Frame the selection (F), with some room around it."""
     run_op(bpy.ops.view3d.view_selected)
     area, _region = view3d()
     area.spaces.active.region_3d.view_distance *= margin
@@ -225,20 +225,20 @@ def type_command(text, seconds_per_char=0.05):
 # Scenarios
 
 def s_interface():
-    caption("MayaBlender: Blender 5.2 that looks and works like Maya")
+    caption("Maelstrom3D: a Blender 5.2 based 3D suite with a classic studio workflow")
     yield from move(viewport_point(0.5, 0.55), 1.0)
     yield 1.5
-    caption("Maya Classic layout: Outliner, viewport, Channel Box dock, Time Slider, Command Line")
+    caption("Classic layout: Outliner, viewport, Channel Box dock, Time Slider, Command Line")
     for p in ((0.05, 0.9), (0.95, 0.9), (0.5, 0.08), (0.5, 0.55)):
         yield from move(viewport_point(*p), 0.7)
         yield 0.3
-    caption("Menu sets like Maya: F2 Modeling  F3 Rigging  F4 Animation  F6 Rendering")
+    caption("Menu sets: F2 Modeling  F3 Rigging  F4 Animation  F6 Rendering")
     for k in ('F3', 'F4', 'F6', 'F2'):
         yield from key(k)
         yield 0.9
     caption("Shelf tabs: Poly Modeling, Rigging, Animation, Rendering ...")
     for shelf in ('RIGGING', 'ANIMATION', 'RENDERING', 'POLY'):
-        bpy.context.window_manager.maya_shelf = shelf
+        bpy.context.window_manager.m3d_shelf = shelf
         _redraw()
         yield 0.9
     caption("Space: tap for four view, tap again for one")
@@ -249,9 +249,9 @@ def s_interface():
 
 
 def s_modeling():
-    caption("Shelf: Maya-sized polygon cube at the origin")
+    caption("Shelf: standard-size polygon cube at the origin")
     yield from move(viewport_point(0.5, 0.5), 0.6)
-    run_op(bpy.ops.maya.add_primitive, kind='CUBE')
+    run_op(bpy.ops.m3d.add_primitive, kind='CUBE')
     frame_selected(2.4)
     yield 1.2
     caption("F11 face mode, W move tool, click the top face")
@@ -263,7 +263,7 @@ def s_modeling():
     yield from move(to_window(region, top), 0.6)
     yield from click()
     yield 0.6
-    caption("Shift+drag the manipulator to extrude (like Maya)")
+    caption("Shift+drag the manipulator to extrude")
     for _ in range(2):
         start, d = gizmo_arrow(ob)
         yield from move(start, 0.6)
@@ -290,7 +290,7 @@ def s_modeling():
 
 
 def s_marking_menus():
-    run_op(bpy.ops.maya.add_primitive, kind='TORUS')
+    run_op(bpy.ops.m3d.add_primitive, kind='TORUS')
     frame_selected()
     yield from move(viewport_point(0.5, 0.5), 0.6)
     caption("Hold W + left click: Move tool marking menu")
@@ -326,7 +326,7 @@ def s_marking_menus():
 
 
 def s_dock():
-    run_op(bpy.ops.maya.add_primitive, kind='CYLINDER')
+    run_op(bpy.ops.m3d.add_primitive, kind='CYLINDER')
     frame_selected()
     props_area, props_region = area_of('PROPERTIES')
     caption("Right-hand dock: Channel Box / Layer Editor")
@@ -351,7 +351,7 @@ def s_dock():
 
 
 def s_uv():
-    run_op(bpy.ops.maya.add_primitive, kind='CUBE')
+    run_op(bpy.ops.m3d.add_primitive, kind='CUBE')
     yield from move(viewport_point(0.5, 0.5), 0.6)
     caption("F12 (component mode): UV Editing workspace with the UV Toolkit")
     yield from key('F11')
@@ -363,23 +363,23 @@ def s_uv():
     run_op(bpy.ops.mesh.select_all, action='SELECT')
     run_op(bpy.ops.uv.smart_project)
     yield 1.6
-    caption("Layout (Maya's Unfold / Layout workflow)")
+    caption("Layout (Cut / Unfold / Layout workflow)")
     run_op(bpy.ops.uv.pack_islands, area_kind='IMAGE_EDITOR', margin=0.02)
     yield 1.6
     caption("Checker map")
-    run_op(bpy.ops.maya.uv_checker)
+    run_op(bpy.ops.m3d.uv_checker)
     yield 2.2
 
 
 def s_mel():
-    caption("The command line speaks MEL, like Maya's")
+    caption("The command line speaks MEL")
     area, region = area_of('CONSOLE')
     yield from move((region.x + region.width * 0.3, region.y + region.height * 0.5), 0.8)
     yield 0.5
     yield from type_command("polyCube -w 3 -h 0.3 -d 3 -n floor;")
     yield from type_command("polySphere -r 0.7 -n ball; move -r 0 0 1;")
     yield from type_command("polyTorus -r 1 -sr 0.15 -n ring; rotate 90 0 0 ring; move 0 0 1 ring;")
-    caption("Python mode has maya.cmds: cmds.polyCube(), cmds.move(), cmds.setAttr() ...")
+    caption("Python mode has cmds: cmds.polyCube(), cmds.move(), cmds.setAttr() ...")
     run_op(bpy.ops.view3d.view_all, center=True)
     yield 2.4
 

@@ -1,9 +1,9 @@
-# SPDX-FileCopyrightText: 2026 MayaBlender
+# SPDX-FileCopyrightText: 2026 Maelstrom3D
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 """
-Maya-style tools for MayaBlender: Maya operators, marking menus and the right-hand dock
+classic-style tools for Maelstrom3D: Maya operators, marking menus and the right-hand dock
 (Channel Box / Layer Editor and Modeling Toolkit tabs of the Attribute Editor area).
 """
 
@@ -11,12 +11,12 @@ import bpy
 from bpy.types import Menu, Operator, Panel
 from mathutils import Vector
 
-SMOOTH_MOD = "MayaSmoothPreview"
+SMOOTH_MOD = "SmoothPreview"
 
 
-class MAYA_OT_smooth_preview(Operator):
-    """Maya smooth mesh preview: 1 off, 2 cage + smooth, 3 smooth"""
-    bl_idname = "maya.smooth_preview"
+class M3D_OT_smooth_preview(Operator):
+    """Smooth mesh preview: 1 off, 2 cage + smooth, 3 smooth"""
+    bl_idname = "m3d.smooth_preview"
     bl_label = "Smooth Mesh Preview"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -45,9 +45,9 @@ class MAYA_OT_smooth_preview(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_group(Operator):
-    """Maya Group: parent the selection under a new empty at its center"""
-    bl_idname = "maya.group"
+class M3D_OT_group(Operator):
+    """Group: parent the selection under a new empty at its center"""
+    bl_idname = "m3d.group"
     bl_label = "Group"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -71,9 +71,9 @@ class MAYA_OT_group(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_add_primitive(Operator):
-    """Create a Maya-sized polygon primitive at the origin"""
-    bl_idname = "maya.add_primitive"
+class M3D_OT_add_primitive(Operator):
+    """Create a standard-size polygon primitive at the origin"""
+    bl_idname = "m3d.add_primitive"
     bl_label = "Polygon Primitive"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -101,9 +101,9 @@ class MAYA_OT_add_primitive(Operator):
         return "Polygon " + props.kind.title()
 
 
-class MAYA_OT_call(Operator):
+class M3D_OT_call(Operator):
     """Run an operator in the 3D Viewport (used by top bar menus)"""
-    bl_idname = "maya.call"
+    bl_idname = "m3d.call"
     bl_label = "Run in Viewport"
     bl_options = {'INTERNAL'}
 
@@ -133,9 +133,9 @@ class MAYA_OT_call(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_open_editor(Operator):
-    """Open an editor in a new window (Maya Windows menu)"""
-    bl_idname = "maya.open_editor"
+class M3D_OT_open_editor(Operator):
+    """Open an editor in a new window (Windows menu)"""
+    bl_idname = "m3d.open_editor"
     bl_label = "Open Editor Window"
 
     ui_type: bpy.props.StringProperty()
@@ -150,9 +150,9 @@ class MAYA_OT_open_editor(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_ungroup(Operator):
-    """Maya Ungroup: remove the selected group nodes, keeping their children in place"""
-    bl_idname = "maya.ungroup"
+class M3D_OT_ungroup(Operator):
+    """Ungroup: remove the selected group nodes, keeping their children in place"""
+    bl_idname = "m3d.ungroup"
     bl_label = "Ungroup"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -171,9 +171,9 @@ class MAYA_OT_ungroup(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_reset_transformations(Operator):
-    """Maya Reset Transformations: zero translate/rotate, unit scale"""
-    bl_idname = "maya.reset_transformations"
+class M3D_OT_reset_transformations(Operator):
+    """Reset Transformations: zero translate/rotate, unit scale"""
+    bl_idname = "m3d.reset_transformations"
     bl_label = "Reset Transformations"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -185,9 +185,9 @@ class MAYA_OT_reset_transformations(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_boolean(Operator):
-    """Maya Boolean: select the base object first, the tool object last (A then B gives A - B)"""
-    bl_idname = "maya.boolean"
+class M3D_OT_boolean(Operator):
+    """Boolean: select the base object first, the tool object last (A then B gives A - B)"""
+    bl_idname = "m3d.boolean"
     bl_label = "Boolean"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -213,9 +213,9 @@ class MAYA_OT_boolean(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_separate(Operator):
-    """Maya Separate: split a combined mesh into its separate shells"""
-    bl_idname = "maya.separate"
+class M3D_OT_separate(Operator):
+    """Separate: split a combined mesh into its separate shells"""
+    bl_idname = "m3d.separate"
     bl_label = "Separate"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -230,9 +230,9 @@ class MAYA_OT_separate(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_assign_material(Operator):
-    """Maya Assign New Material: give the selection a new shader"""
-    bl_idname = "maya.assign_material"
+class M3D_OT_assign_material(Operator):
+    """Assign New Material: give the selection a new shader"""
+    bl_idname = "m3d.assign_material"
     bl_label = "Assign New Material"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -245,9 +245,9 @@ class MAYA_OT_assign_material(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_lock_transforms(Operator):
-    """Maya Lock and Hide: lock translate, rotate and scale of the selection"""
-    bl_idname = "maya.lock_transforms"
+class M3D_OT_lock_transforms(Operator):
+    """Lock and Hide: lock translate, rotate and scale of the selection"""
+    bl_idname = "m3d.lock_transforms"
     bl_label = "Lock Transforms"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -268,10 +268,10 @@ COMPONENT_TOOLS = {
     'VERT': ("Vertex Tools", (
         ("Extrude Vertex", "mesh.extrude_vertices_move", 'VERTEXSEL', {}),
         ("Chamfer Vertex", "mesh.bevel", 'MOD_BEVEL', {"affect": 'VERTICES', "offset_type": 'PERCENT'}),
-        ("Connect", "maya.connect", 'MOD_EDGESPLIT', {}),
+        ("Connect", "m3d.connect", 'MOD_EDGESPLIT', {}),
         ("Merge", "mesh.remove_doubles", 'AUTOMERGE_ON', {"threshold": 0.001}),
         ("Merge to Center", "mesh.merge", 'PIVOT_MEDIAN', {"type": 'CENTER'}),
-        ("Target Weld", "maya.target_weld", 'AUTOMERGE_OFF', {}),
+        ("Target Weld", "m3d.target_weld", 'AUTOMERGE_OFF', {}),
         ("Average Vertices", "mesh.vertices_smooth", 'MOD_SMOOTH', {}),
         ("Slide", "transform.vert_slide", 'ARROW_LEFTRIGHT', {}),
         ("Detach (Rip)", "mesh.rip_move", 'MOD_EXPLODE', {}),
@@ -282,13 +282,13 @@ COMPONENT_TOOLS = {
         ("Extrude Edge", "mesh.extrude_edges_move", 'EDGESEL', {}),
         ("Bevel", "mesh.bevel", 'MOD_BEVEL', {"offset_type": 'PERCENT'}),
         ("Bridge", "mesh.bridge_edge_loops", 'MOD_LATTICE', {}),
-        ("Connect", "maya.connect", 'MOD_EDGESPLIT', {}),
+        ("Connect", "m3d.connect", 'MOD_EDGESPLIT', {}),
         ("Insert Edge Loop", "mesh.loopcut_slide", 'MOD_EDGESPLIT', {}),
         ("Offset Edge Loop", "mesh.offset_edge_loops_slide", 'SNAP_EDGE', {}),
         ("Slide Edge", "transform.edge_slide", 'ARROW_LEFTRIGHT', {}),
         ("Collapse", "mesh.merge", 'FULLSCREEN_EXIT', {"type": 'COLLAPSE'}),
         ("Merge to Center", "mesh.merge", 'PIVOT_MEDIAN', {"type": 'CENTER'}),
-        ("Fill Hole", "maya.fill_hole", 'SNAP_FACE', {}),
+        ("Fill Hole", "m3d.fill_hole", 'SNAP_FACE', {}),
         ("Spin Edge", "mesh.edge_rotate", 'FILE_REFRESH', {}),
         ("Crease", "transform.edge_crease", 'MOD_SMOOTH', {}),
         ("Soften Edge", "mesh.mark_sharp", 'SHADING_SOLID', {"clear": True}),
@@ -324,7 +324,7 @@ def _component_kind(context):
     return 'FACE' if face else 'EDGE' if edge else 'VERT'
 
 
-class MAYA_MT_marking_menu(Menu):
+class M3D_MT_marking_menu(Menu):
     """Right-click marking menu: component modes, plus every tool for the selected component type"""
     bl_label = "Marking Menu"
 
@@ -349,7 +349,7 @@ class MAYA_MT_marking_menu(Menu):
                 for k, v in props.items():
                     setattr(o, k, v)
         else:
-            from maya_marking import draw_object_list
+            from m3d_marking import draw_object_list
             draw_object_list(pie.box().column(align=True))
         if is_mesh:
             _submode(pie, "Edge", {'EDGE'}, 'EDGESEL')
@@ -368,9 +368,9 @@ class MAYA_MT_marking_menu(Menu):
             pie.operator("object.select_all", text="Select All", icon='SELECT_EXTEND').action = 'SELECT'
 
 
-class MAYA_OT_dock_tab(Operator):
+class M3D_OT_dock_tab(Operator):
     """Show a tab of the right-hand dock (Channel Box, Attribute Editor, Modeling Toolkit)"""
-    bl_idname = "maya.dock_tab"
+    bl_idname = "m3d.dock_tab"
     bl_label = "Dock Tab"
 
     tab: bpy.props.StringProperty(default='CHANNEL_BOX')
@@ -379,7 +379,7 @@ class MAYA_OT_dock_tab(Operator):
     def execute(self, context):
         docks = [a for a in context.screen.areas if a.type == 'PROPERTIES']
         if not docks:
-            bpy.ops.maya.open_editor(ui_type='PROPERTIES')
+            bpy.ops.m3d.open_editor(ui_type='PROPERTIES')
             return {'FINISHED'}
         space = max(docks, key=lambda a: a.height).spaces.active
         tab = self.tab
@@ -389,9 +389,9 @@ class MAYA_OT_dock_tab(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_target_weld(Operator):
-    """Maya Target Weld: merge the selected vertices onto the last one selected"""
-    bl_idname = "maya.target_weld"
+class M3D_OT_target_weld(Operator):
+    """Target Weld: merge the selected vertices onto the last one selected"""
+    bl_idname = "m3d.target_weld"
     bl_label = "Target Weld"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -409,9 +409,9 @@ class MAYA_OT_target_weld(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_delete_components(Operator):
-    """Maya Delete: faces are removed, edges and vertices are dissolved (the mesh stays closed)"""
-    bl_idname = "maya.delete_components"
+class M3D_OT_delete_components(Operator):
+    """Delete: faces are removed, edges and vertices are dissolved (the mesh stays closed)"""
+    bl_idname = "m3d.delete_components"
     bl_label = "Delete"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -430,9 +430,9 @@ class MAYA_OT_delete_components(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_connect(Operator):
-    """Maya Connect: edges get a new edge loop through their midpoints, vertices get joined by an edge"""
-    bl_idname = "maya.connect"
+class M3D_OT_connect(Operator):
+    """Connect: edges get a new edge loop through their midpoints, vertices get joined by an edge"""
+    bl_idname = "m3d.connect"
     bl_label = "Connect"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -448,9 +448,9 @@ class MAYA_OT_connect(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_fill_hole(Operator):
-    """Maya Fill Hole: fill the selected border, or every hole of the selected meshes"""
-    bl_idname = "maya.fill_hole"
+class M3D_OT_fill_hole(Operator):
+    """Fill Hole: fill the selected border, or every hole of the selected meshes"""
+    bl_idname = "m3d.fill_hole"
     bl_label = "Fill Hole"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -469,9 +469,9 @@ class MAYA_OT_fill_hole(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_snap_hold(Operator):
-    """Maya hold-to-snap: X grid, C curve (edge), V point (vertex)"""
-    bl_idname = "maya.snap_hold"
+class M3D_OT_snap_hold(Operator):
+    """Hold-to-snap: X grid, C curve (edge), V point (vertex)"""
+    bl_idname = "m3d.snap_hold"
     bl_label = "Hold to Snap"
     bl_options = {'INTERNAL'}
 
@@ -486,7 +486,7 @@ class MAYA_OT_snap_hold(Operator):
         return {'FINISHED'}
 
 
-class MAYA_MT_convert_selection_pie(Menu):
+class M3D_MT_convert_selection_pie(Menu):
     """Ctrl+right-click marking menu: convert the component selection"""
     bl_label = "Convert Selection"
 
@@ -503,9 +503,9 @@ class MAYA_MT_convert_selection_pie(Menu):
         pie.operator("mesh.select_more", text="Grow", icon='ADD')
 
 
-class MAYA_OT_pivot_hold(Operator):
-    """Maya D (hold): edit the pivot. Objects move their origin only; components move a custom pivot"""
-    bl_idname = "maya.pivot_hold"
+class M3D_OT_pivot_hold(Operator):
+    """D (hold): edit the pivot. Objects move their origin only; components move a custom pivot"""
+    bl_idname = "m3d.pivot_hold"
     bl_label = "Edit Pivot (hold)"
     bl_options = {'INTERNAL'}
 
@@ -534,9 +534,9 @@ class MAYA_OT_pivot_hold(Operator):
         return {'FINISHED'}
 
 
-class MAYA_OT_duplicate(Operator):
-    """Maya Duplicate: Ctrl+D copies in place, Shift+D also repeats the last duplicate's move/rotate/scale"""
-    bl_idname = "maya.duplicate"
+class M3D_OT_duplicate(Operator):
+    """Duplicate: Ctrl+D copies in place, Shift+D also repeats the last duplicate's move/rotate/scale"""
+    bl_idname = "m3d.duplicate"
     bl_label = "Duplicate"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -550,16 +550,16 @@ class MAYA_OT_duplicate(Operator):
         sources = list(context.selected_objects)
         bpy.ops.object.duplicate()
         for src, new in zip(sources, context.selected_objects):
-            prev = bpy.data.objects.get(src.get("maya_duplicate_of", ""))
+            prev = bpy.data.objects.get(src.get("m3d_duplicate_of", ""))
             if self.with_transform and prev is not None:
                 new.matrix_world = src.matrix_world @ prev.matrix_world.inverted() @ src.matrix_world
-            new["maya_duplicate_of"] = src.name
+            new["m3d_duplicate_of"] = src.name
         return {'FINISHED'}
 
 
-class MAYA_OT_smooth_levels(Operator):
-    """Maya Page Up / Page Down: more or fewer smooth mesh preview divisions"""
-    bl_idname = "maya.smooth_levels"
+class M3D_OT_smooth_levels(Operator):
+    """Page Up / Page Down: more or fewer smooth mesh preview divisions"""
+    bl_idname = "m3d.smooth_levels"
     bl_label = "Smooth Preview Divisions"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -573,16 +573,16 @@ class MAYA_OT_smooth_levels(Operator):
         return {'FINISHED'}
 
 
-class MAYA_MT_hotbox(Menu):
-    """Maya hotbox: every menu in one place"""
+class M3D_MT_hotbox(Menu):
+    """Hotbox: every menu in one place"""
     bl_label = "Hotbox"
 
     def draw(self, context):
-        from maya_ui import COMMON_MENUS, MENU_SETS, MENUS
+        from m3d_ui import COMMON_MENUS, MENU_SETS, MENUS
         row = self.layout.row()
         col = row.column()
         col.label(text="Common")
-        for idname in COMMON_MENUS + ["MAYA_MT_help"]:
+        for idname in COMMON_MENUS + ["M3D_MT_help"]:
             col.menu(idname)
         for _key, (label, menus) in MENU_SETS.items():
             col = row.column()
@@ -593,12 +593,12 @@ class MAYA_MT_hotbox(Menu):
         col.label(text="Panels")
         col.operator("screen.region_quadview", text="Four View / Single", icon='VIEW_PERSPECTIVE')
         col.operator("screen.screen_full_area", text="Maximize Panel", icon='FULLSCREEN_ENTER')
-        col.menu("MAYA_MT_workspaces")
+        col.menu("M3D_MT_workspaces")
 
 
-class MAYA_OT_space_hotbox(Operator):
-    """Maya Space: tap toggles four views, hold shows the hotbox"""
-    bl_idname = "maya.space_hotbox"
+class M3D_OT_space_hotbox(Operator):
+    """Space: tap toggles four views, hold shows the hotbox"""
+    bl_idname = "m3d.space_hotbox"
     bl_label = "Hotbox / Four View"
     bl_options = {'INTERNAL'}
 
@@ -619,7 +619,7 @@ class MAYA_OT_space_hotbox(Operator):
         if event.type == 'TIMER':
             self.finish(context)
             with context.temp_override(area=self.area, region=self.region):
-                bpy.ops.wm.call_menu(name="MAYA_MT_hotbox")
+                bpy.ops.wm.call_menu(name="M3D_MT_hotbox")
             return {'FINISHED'}
         return {'RUNNING_MODAL'}
 
@@ -627,13 +627,13 @@ class MAYA_OT_space_hotbox(Operator):
         context.window_manager.event_timer_remove(self.timer)
 
 
-class _MayaDockPanel:
+class _DockPanel:
     bl_space_type = 'PROPERTIES'
     bl_region_type = 'WINDOW'
 
 
-class PROPERTIES_PT_maya_channel_box(_MayaDockPanel, Panel):
-    """Maya Channel Box: transform channels, visibility and inputs (modifiers)"""
+class PROPERTIES_PT_m3d_channel_box(_DockPanel, Panel):
+    """Channel Box: transform channels, visibility and inputs (modifiers)"""
     bl_context = "channel_box"
     bl_label = "Channel Box"
 
@@ -667,8 +667,8 @@ class PROPERTIES_PT_maya_channel_box(_MayaDockPanel, Panel):
                 row.label(text=mod.name)
 
 
-class PROPERTIES_PT_maya_layer_editor(_MayaDockPanel, Panel):
-    """Maya Layer Editor: display layers are collections here"""
+class PROPERTIES_PT_m3d_layer_editor(_DockPanel, Panel):
+    """Layer Editor: display layers are collections here"""
     bl_context = "channel_box"
     bl_label = "Layer Editor"
 
@@ -687,11 +687,11 @@ class PROPERTIES_PT_maya_layer_editor(_MayaDockPanel, Panel):
 
 
 def _button(layout, context, label, idname, icon, props, depress=False):
-    """Operator button; viewport-only commands run in the 3D Viewport through `maya.call`."""
-    from maya_ui import needs_view3d, _poll
+    """Operator button; viewport-only commands run in the 3D Viewport through `m3d.call`."""
+    from m3d_ui import needs_view3d, _poll
     in_view3d = context.area is not None and context.area.type == 'VIEW_3D'
     if not in_view3d and (needs_view3d(idname) or not _poll(idname)):
-        o = layout.operator("maya.call", text=label, icon=icon, depress=depress)
+        o = layout.operator("m3d.call", text=label, icon=icon, depress=depress)
         o.idname, o.props, o.label = idname, repr(props), label
         return o
     o = layout.operator(idname, text=label, icon=icon, depress=depress)
@@ -701,7 +701,7 @@ def _button(layout, context, label, idname, icon, props, depress=False):
 
 
 def _buttons(layout, context, items, columns=2):
-    """Grid of Maya-style tool buttons: (label, idname, icon, props)."""
+    """Grid of classic-style tool buttons: (label, idname, icon, props)."""
     grid = layout.grid_flow(columns=columns, even_columns=True, align=True)
     for label, idname, icon, props in items:
         _button(grid, context, label, idname, icon, props)
@@ -720,19 +720,19 @@ MTK_SELECT_TOOLS = (
 )
 MTK_MESH = (
     ("Combine", "object.join", 'AUTOMERGE_ON', {}),
-    ("Separate", "maya.separate", 'MOD_EXPLODE', {}),
+    ("Separate", "m3d.separate", 'MOD_EXPLODE', {}),
     ("Smooth", "object.subdivision_set", 'MOD_SUBSURF', {"level": 1, "relative": False}),
     ("Mirror", "object.modifier_add", 'MOD_MIRROR', {"type": 'MIRROR'}),
-    ("Union", "maya.boolean", 'SELECT_EXTEND', {"operation": 'UNION'}),
-    ("Difference", "maya.boolean", 'SELECT_SUBTRACT', {"operation": 'DIFFERENCE'}),
-    ("Intersection", "maya.boolean", 'SELECT_INTERSECT', {"operation": 'INTERSECT'}),
-    ("Fill Hole", "maya.fill_hole", 'SNAP_FACE', {}),
+    ("Union", "m3d.boolean", 'SELECT_EXTEND', {"operation": 'UNION'}),
+    ("Difference", "m3d.boolean", 'SELECT_SUBTRACT', {"operation": 'DIFFERENCE'}),
+    ("Intersection", "m3d.boolean", 'SELECT_INTERSECT', {"operation": 'INTERSECT'}),
+    ("Fill Hole", "m3d.fill_hole", 'SNAP_FACE', {}),
 )
 MTK_COMPONENTS = (
     ("Extrude", "view3d.edit_mesh_extrude_move_normal", 'FACESEL', {}),
     ("Bevel", "mesh.bevel", 'MOD_BEVEL', {"offset_type": 'PERCENT'}),
     ("Bridge", "mesh.bridge_edge_loops", 'MOD_LATTICE', {}),
-    ("Connect", "maya.connect", 'MOD_EDGESPLIT', {}),
+    ("Connect", "m3d.connect", 'MOD_EDGESPLIT', {}),
     ("Merge", "mesh.remove_doubles", 'AUTOMERGE_ON', {"threshold": 0.001}),
     ("Merge to Center", "mesh.merge", 'PIVOT_MEDIAN', {"type": 'CENTER'}),
     ("Collapse", "mesh.merge", 'FULLSCREEN_EXIT', {"type": 'COLLAPSE'}),
@@ -748,17 +748,17 @@ MTK_TOOLS = (
     ("Insert Edge Loop", "mesh.loopcut_slide", 'MOD_EDGESPLIT', {}),
     ("Offset Edge Loop", "mesh.offset_edge_loops_slide", 'SNAP_EDGE', {}),
     ("Slide", "transform.edge_slide", 'ARROW_LEFTRIGHT', {}),
-    ("Target Weld", "maya.target_weld", 'AUTOMERGE_OFF', {}),
+    ("Target Weld", "m3d.target_weld", 'AUTOMERGE_OFF', {}),
     ("Create Polygon", "mesh.edge_face_add", 'SNAP_FACE', {}),
     ("Crease", "transform.edge_crease", 'MOD_SMOOTH', {}),
 )
 
 
-class _MayaToolkitPanel(_MayaDockPanel):
+class _ToolkitPanel(_DockPanel):
     bl_context = "modeling_toolkit"
 
 
-class PROPERTIES_PT_maya_mtk_selection(_MayaToolkitPanel, Panel):
+class PROPERTIES_PT_m3d_mtk_selection(_ToolkitPanel, Panel):
     bl_label = "Selection"
 
     def draw(self, context):
@@ -780,7 +780,7 @@ class PROPERTIES_PT_maya_mtk_selection(_MayaToolkitPanel, Panel):
             layout.prop(space.shading, "show_xray", text="X-Ray (select through)")
 
 
-class PROPERTIES_PT_maya_mtk_soft_selection(_MayaToolkitPanel, Panel):
+class PROPERTIES_PT_m3d_mtk_soft_selection(_ToolkitPanel, Panel):
     bl_label = "Soft Selection"
 
     def draw_header(self, context):
@@ -796,7 +796,7 @@ class PROPERTIES_PT_maya_mtk_soft_selection(_MayaToolkitPanel, Panel):
             col.prop(ts, "use_proportional_connected", text="Falloff Mode: Surface")
 
 
-class PROPERTIES_PT_maya_mtk_symmetry(_MayaToolkitPanel, Panel):
+class PROPERTIES_PT_m3d_mtk_symmetry(_ToolkitPanel, Panel):
     bl_label = "Symmetry"
 
     @classmethod
@@ -810,14 +810,14 @@ class PROPERTIES_PT_maya_mtk_symmetry(_MayaToolkitPanel, Panel):
             row.prop(mesh, "use_mirror_" + axis, text=axis.upper(), toggle=True)
 
 
-class PROPERTIES_PT_maya_mtk_mesh(_MayaToolkitPanel, Panel):
+class PROPERTIES_PT_m3d_mtk_mesh(_ToolkitPanel, Panel):
     bl_label = "Mesh"
 
     def draw(self, context):
         _buttons(self.layout, context, MTK_MESH)
 
 
-class PROPERTIES_PT_maya_mtk_components(_MayaToolkitPanel, Panel):
+class PROPERTIES_PT_m3d_mtk_components(_ToolkitPanel, Panel):
     bl_label = "Components"
 
     @classmethod
@@ -828,7 +828,7 @@ class PROPERTIES_PT_maya_mtk_components(_MayaToolkitPanel, Panel):
         _buttons(self.layout, context, MTK_COMPONENTS)
 
 
-class PROPERTIES_PT_maya_mtk_tools(_MayaToolkitPanel, Panel):
+class PROPERTIES_PT_m3d_mtk_tools(_ToolkitPanel, Panel):
     bl_label = "Tools"
 
     @classmethod
@@ -840,7 +840,7 @@ class PROPERTIES_PT_maya_mtk_tools(_MayaToolkitPanel, Panel):
 
 
 @bpy.app.handlers.persistent
-def maya_startup_scene(*_args):
+def m3d_startup_scene(*_args):
     """New scene like Maya's: the default camera is "persp" and nothing shows in the viewport."""
     camera = bpy.data.objects.get("Camera")
     if camera is not None:
@@ -851,8 +851,8 @@ def maya_startup_scene(*_args):
 
 
 @bpy.app.handlers.persistent
-def maya_preferences(*_args):
-    """First run / factory preferences: Maya-like UI defaults (solid tool and dock strips, no splash,
+def m3d_preferences(*_args):
+    """First run / factory preferences: classic UI defaults (solid tool and dock strips, no splash,
     no Blender navigation buttons, Segoe UI like Maya on Windows)."""
     import os
     prefs = bpy.context.preferences
@@ -864,9 +864,9 @@ def maya_preferences(*_args):
         prefs.view.font_path_ui = segoe
 
 
-class MAYA_OT_command_language(Operator):
-    """Maya command line: switch between MEL and Python"""
-    bl_idname = "maya.command_language"
+class M3D_OT_command_language(Operator):
+    """Command line: switch between MEL and Python"""
+    bl_idname = "m3d.command_language"
     bl_label = "Command Line Language"
 
     language: bpy.props.EnumProperty(items=(('mel', "MEL", ""), ('python', "Python", "")))
@@ -881,44 +881,57 @@ class MAYA_OT_command_language(Operator):
 
 
 classes = (
-    MAYA_OT_smooth_preview,
-    MAYA_OT_group,
-    MAYA_OT_add_primitive,
-    MAYA_OT_call,
-    MAYA_OT_open_editor,
-    MAYA_OT_ungroup,
-    MAYA_OT_reset_transformations,
-    MAYA_OT_boolean,
-    MAYA_OT_separate,
-    MAYA_OT_assign_material,
-    MAYA_OT_lock_transforms,
-    MAYA_OT_dock_tab,
-    MAYA_OT_command_language,
-    MAYA_OT_target_weld,
-    MAYA_OT_delete_components,
-    MAYA_OT_connect,
-    MAYA_OT_fill_hole,
-    MAYA_OT_snap_hold,
-    MAYA_OT_pivot_hold,
-    MAYA_OT_duplicate,
-    MAYA_OT_smooth_levels,
-    MAYA_OT_space_hotbox,
-    MAYA_MT_hotbox,
-    MAYA_MT_marking_menu,
-    MAYA_MT_convert_selection_pie,
-    PROPERTIES_PT_maya_channel_box,
-    PROPERTIES_PT_maya_layer_editor,
-    PROPERTIES_PT_maya_mtk_selection,
-    PROPERTIES_PT_maya_mtk_soft_selection,
-    PROPERTIES_PT_maya_mtk_symmetry,
-    PROPERTIES_PT_maya_mtk_mesh,
-    PROPERTIES_PT_maya_mtk_components,
-    PROPERTIES_PT_maya_mtk_tools,
+    M3D_OT_smooth_preview,
+    M3D_OT_group,
+    M3D_OT_add_primitive,
+    M3D_OT_call,
+    M3D_OT_open_editor,
+    M3D_OT_ungroup,
+    M3D_OT_reset_transformations,
+    M3D_OT_boolean,
+    M3D_OT_separate,
+    M3D_OT_assign_material,
+    M3D_OT_lock_transforms,
+    M3D_OT_dock_tab,
+    M3D_OT_command_language,
+    M3D_OT_target_weld,
+    M3D_OT_delete_components,
+    M3D_OT_connect,
+    M3D_OT_fill_hole,
+    M3D_OT_snap_hold,
+    M3D_OT_pivot_hold,
+    M3D_OT_duplicate,
+    M3D_OT_smooth_levels,
+    M3D_OT_space_hotbox,
+    M3D_MT_hotbox,
+    M3D_MT_marking_menu,
+    M3D_MT_convert_selection_pie,
+    PROPERTIES_PT_m3d_channel_box,
+    PROPERTIES_PT_m3d_layer_editor,
+    PROPERTIES_PT_m3d_mtk_selection,
+    PROPERTIES_PT_m3d_mtk_soft_selection,
+    PROPERTIES_PT_m3d_mtk_symmetry,
+    PROPERTIES_PT_m3d_mtk_mesh,
+    PROPERTIES_PT_m3d_mtk_components,
+    PROPERTIES_PT_m3d_mtk_tools,
 )
 
 
+# Workspace names in the built-in startup file -> current names.
+WORKSPACE_NAMES = {"Maya Classic": "Classic", "Hypershade": "Shading"}
+
+
 @bpy.app.handlers.persistent
-def maya_startup_layout(*_args):
+def m3d_workspace_names(*_args):
+    for old, new in WORKSPACE_NAMES.items():
+        for collection in (bpy.data.workspaces, bpy.data.screens):
+            item = collection.get(old)
+            if item is not None:
+                item.name = new
+
+
+@bpy.app.handlers.persistent
+def m3d_startup_layout(*_args):
     """Factory startup: viewport sidebar closed (panels live in the dock), Outliner shows objects only
     (like Maya's DAG view), command lines use MEL."""
     if bpy.app.background:
@@ -928,28 +941,43 @@ def maya_startup_layout(*_args):
             space = area.spaces.active
             if area.type == 'VIEW_3D':
                 space.show_region_ui = False
+                space.show_region_tool_header = screen.name in {"Sculpting", "3D Paint"}
                 # Maya's default 35 mm camera on a 36 mm film back: Blender's viewport lens assumes a 72 mm
                 # sensor, so the matching field of view is 70 mm.
                 space.lens = 70.0
-                space.overlay.show_text = False  # Maya HUD (maya_hud.py) shows the camera name instead.
+                space.overlay.show_text = False  # Maya HUD (m3d_hud.py) shows the camera name instead.
             elif area.type == 'OUTLINER':
                 space.use_filter_object_content = False
                 space.use_filter_collection = False  # Flat object list, like Maya's Outliner.
             elif area.type == 'CONSOLE':
                 space.language = 'mel'
+    bpy.app.timers.register(_timeline_controls_below, first_interval=0.3)
+
+
+def _timeline_controls_below():
+    """Maya: the time slider sits above its playback / range controls, so flip the timeline header down."""
+    win = bpy.context.window_manager.windows[0]
+    for area in win.screen.areas:
+        if area.type == 'DOPESHEET_EDITOR' and area.spaces.active.mode == 'TIMELINE':
+            header = next((r for r in area.regions if r.type == 'HEADER'), None)
+            if header is not None and header.alignment == 'TOP':
+                with bpy.context.temp_override(window=win, area=area, region=header):
+                    bpy.ops.screen.region_flip()
 
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-    bpy.app.handlers.load_factory_startup_post.append(maya_startup_layout)
-    bpy.app.handlers.load_factory_startup_post.append(maya_startup_scene)
-    bpy.app.handlers.load_factory_preferences_post.append(maya_preferences)
+    bpy.app.handlers.load_factory_startup_post.append(m3d_workspace_names)
+    bpy.app.handlers.load_factory_startup_post.append(m3d_startup_layout)
+    bpy.app.handlers.load_factory_startup_post.append(m3d_startup_scene)
+    bpy.app.handlers.load_factory_preferences_post.append(m3d_preferences)
 
 
 def unregister():
-    bpy.app.handlers.load_factory_startup_post.remove(maya_startup_layout)
-    bpy.app.handlers.load_factory_startup_post.remove(maya_startup_scene)
-    bpy.app.handlers.load_factory_preferences_post.remove(maya_preferences)
+    bpy.app.handlers.load_factory_startup_post.remove(m3d_workspace_names)
+    bpy.app.handlers.load_factory_startup_post.remove(m3d_startup_layout)
+    bpy.app.handlers.load_factory_startup_post.remove(m3d_startup_scene)
+    bpy.app.handlers.load_factory_preferences_post.remove(m3d_preferences)
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

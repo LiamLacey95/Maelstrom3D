@@ -62,13 +62,6 @@ class VIEW3D_HT_tool_header(Header):
     def draw(self, context):
         layout = self.layout
 
-        # MayaBlender: the tool header is the Maya shelf, except in sculpt/paint modes
-        # where brush settings are needed (Maya keeps those in tool settings too).
-        if context.mode in {'OBJECT', 'EDIT_MESH', 'EDIT_CURVE', 'EDIT_SURFACE', 'EDIT_ARMATURE', 'POSE'}:
-            from maya_ui import draw_shelf
-            draw_shelf(layout, context)
-            return
-
         self.draw_tool_settings(context)
 
         layout.separator_spacer()
@@ -847,14 +840,14 @@ class VIEW3D_HT_header(Header):
         # Note: Tried to add an accessor to get translated UI strings instead of manual call
         #       to pgettext_iface below, but this fails because translated enum-items
         #       are always dynamically allocated.
-        # MayaBlender: in object and component (mesh) mode the header is Maya's panel menu bar + panel toolbar;
+        # Maelstrom3D: in object and component (mesh) mode the header is Maya's panel menu bar + panel toolbar;
         # the mode menu lives in the Status Line and Blender's transform / gizmo buttons are dropped.
-        maya_header = object_mode in {'OBJECT', 'EDIT'} and (obj is None or obj.type == 'MESH')
+        classic_header = object_mode in {'OBJECT', 'EDIT'} and (obj is None or obj.type == 'MESH')
 
         act_mode_item = bpy.types.Object.bl_rna.properties["mode"].enum_items[object_mode]
         act_mode_i18n_context = bpy.types.Object.bl_rna.properties["mode"].translation_context
 
-        if not maya_header:
+        if not classic_header:
             sub = row.row(align=True)
             sub.operator_menu_enum(
                 "object.mode_set", "mode",
@@ -1047,13 +1040,13 @@ class VIEW3D_HT_header(Header):
                 icon=VIEW3D_HT_header._texture_mask_icon(tool_settings.image_paint),
                 text="",
             )
-        elif not maya_header:
+        elif not classic_header:
             # Transform settings depending on tool header visibility
             VIEW3D_HT_header.draw_xform_template(layout, context)
 
         layout.separator_spacer()
 
-        if maya_header:
+        if classic_header:
             # Viewport settings and shading options stay reachable as two compact popovers.
             row = layout.row(align=True)
             row.prop(overlay, "show_overlays", icon='OVERLAY', text="")
@@ -1165,9 +1158,9 @@ class VIEW3D_MT_editor_menus(Menu):
     bl_label = ""
 
     def draw(self, context):
-        # MayaBlender: Maya panel menus. Blender's own menus stay inline for sculpt/paint
+        # Maelstrom3D: Maya panel menus. Blender's own menus stay inline for sculpt/paint
         # modes and are tucked into the "..." menu otherwise.
-        from maya_ui import draw_panel_menus
+        from m3d_ui import draw_panel_menus
         draw_panel_menus(self.layout, context)
         if context.mode not in {'OBJECT', 'EDIT_MESH'}:
             self.draw_blender(context)

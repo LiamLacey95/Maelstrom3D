@@ -1273,9 +1273,39 @@ static int screen_global_header_size()
   return int(ceilf(ED_area_headersize() / UI_SCALE_FAC));
 }
 
+/**
+ * Maelstrom3D: the top bar stacks Maya's rows: menu bar (header), Status Line (tool header),
+ * shelf tabs (footer) and the shelf itself (main region, a little taller for bigger icons).
+ */
+static constexpr float MAYA_TOPBAR_ROWS = 4.5f;
+
+static void screen_global_topbar_ensure_maya_rows(ScrArea *area)
+{
+  ARegion *last_header = nullptr;
+  bool has_tool_header = false, has_footer = false;
+  for (ARegion &region : area->regionbase) {
+    if (region.regiontype == RGN_TYPE_HEADER) {
+      last_header = &region;
+    }
+    has_tool_header |= region.regiontype == RGN_TYPE_TOOL_HEADER;
+    has_footer |= region.regiontype == RGN_TYPE_FOOTER;
+  }
+  if (last_header == nullptr || (has_tool_header && has_footer)) {
+    return;
+  }
+  ARegion *after = last_header;
+  for (const short type : {short(RGN_TYPE_TOOL_HEADER), short(RGN_TYPE_FOOTER)}) {
+    ARegion *region = BKE_area_region_new();
+    region->regiontype = type;
+    region->alignment = RGN_ALIGN_TOP;
+    BLI_insertlinkafter(&area->regionbase, after, region);
+    after = region;
+  }
+}
+
 static void screen_global_topbar_area_refresh(wmWindow *win, bScreen *screen)
 {
-  const short size = screen_global_header_size();
+  const short size = short(screen_global_header_size() * MAYA_TOPBAR_ROWS);
   rcti rect;
 
   /* Use content rect to account for CSD, converted to inclusive bounds for area geometry. */
@@ -1286,6 +1316,12 @@ static void screen_global_topbar_area_refresh(wmWindow *win, bScreen *screen)
 
   screen_global_area_refresh(
       win, screen, SPACE_TOPBAR, GLOBAL_AREA_ALIGN_TOP, &rect, size, size, size);
+
+  for (ScrArea &area : win->global_areas.areabase) {
+    if (area.spacetype == SPACE_TOPBAR) {
+      screen_global_topbar_ensure_maya_rows(&area);
+    }
+  }
 }
 
 static void screen_global_statusbar_area_refresh(wmWindow *win, bScreen *screen)

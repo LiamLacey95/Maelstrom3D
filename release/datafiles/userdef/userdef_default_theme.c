@@ -27,7 +27,7 @@ const bTheme U_theme_default = {
       .item = RGBA(0x2f2f2f80),
       .text = RGBA(0xc8c8c8ff),
       .text_sel = RGBA(0xffffffff),
-      .roundness = 0.075f,
+      .roundness = 0.025f,
     },
     .wcol_tool = {
       .outline = RGBA(0x3c3c3cff),
@@ -37,7 +37,7 @@ const bTheme U_theme_default = {
       .item = RGBA(0xffffffff),
       .text = RGBA(0xc8c8c8ff),
       .text_sel = RGBA(0xffffffff),
-      .roundness = 0.075f,
+      .roundness = 0.025f,
     },
     .wcol_toolbar_item = {
       .outline = RGBA(0x525252ff),
@@ -57,7 +57,7 @@ const bTheme U_theme_default = {
       .item = RGBA(0xffffff33),
       .text = RGBA(0xc8c8c8ff),
       .text_sel = RGBA(0xffffffff),
-      .roundness = 0.075f,
+      .roundness = 0.025f,
     },
     .wcol_radio = {
       .outline = RGBA(0x3c3c3cff),
@@ -67,7 +67,7 @@ const bTheme U_theme_default = {
       .item = RGBA(0x383838ff),
       .text = RGBA(0xc8c8c8ff),
       .text_sel = RGBA(0xffffffff),
-      .roundness = 0.075f,
+      .roundness = 0.025f,
     },
     .wcol_option = {
       .outline = RGBA(0x525252ff),
@@ -77,7 +77,7 @@ const bTheme U_theme_default = {
       .item = RGBA(0xffffffff),
       .text = RGBA(0xc8c8c8ff),
       .text_sel = RGBA(0xffffffff),
-      .roundness = 0.075f,
+      .roundness = 0.025f,
     },
     .wcol_toggle = {
       .outline = RGBA(0x3c3c3cff),
@@ -87,7 +87,7 @@ const bTheme U_theme_default = {
       .item = RGBA(0x383838ff),
       .text = RGBA(0xc8c8c8ff),
       .text_sel = RGBA(0xffffffff),
-      .roundness = 0.075f,
+      .roundness = 0.025f,
     },
     .wcol_num = {
       .outline = RGBA(0x3c3c3cff),
@@ -97,7 +97,7 @@ const bTheme U_theme_default = {
       .item = RGBA(0x5285a6ff),
       .text = RGBA(0xc8c8c8ff),
       .text_sel = RGBA(0xffffffff),
-      .roundness = 0.075f,
+      .roundness = 0.025f,
     },
     .wcol_numslider = {
       .outline = RGBA(0x3c3c3cff),
@@ -107,7 +107,7 @@ const bTheme U_theme_default = {
       .item = RGBA(0x5285a6ff),
       .text = RGBA(0xc8c8c8ff),
       .text_sel = RGBA(0xffffffff),
-      .roundness = 0.075f,
+      .roundness = 0.025f,
     },
     .wcol_tab = {
       .outline = RGBA(0x2f2f2fff),
@@ -137,7 +137,7 @@ const bTheme U_theme_default = {
       .item = RGBA(0xd9d9d9ff),
       .text = RGBA(0xc8c8c8ff),
       .text_sel = RGBA(0xffffffff),
-      .roundness = 0.075f,
+      .roundness = 0.025f,
     },
     .wcol_pulldown = {
       .outline = RGBA(0x52525200),
@@ -147,7 +147,7 @@ const bTheme U_theme_default = {
       .item = RGBA(0xffffff8f),
       .text = RGBA(0xbdbdbdff),
       .text_sel = RGBA(0xffffffff),
-      .roundness = 0.075f,
+      .roundness = 0.025f,
     },
     .wcol_menu_back = {
       .outline = RGBA(0x373737ff),
@@ -187,7 +187,7 @@ const bTheme U_theme_default = {
       .item = RGBA(0x2b2b2bff),
       .text = RGBA(0xc8c8c8ff),
       .text_sel = RGBA(0xffffffff),
-      .roundness = 0.075f,
+      .roundness = 0.025f,
     },
     .wcol_scroll = {
       .outline = RGBA(0x525252ff),
@@ -277,7 +277,7 @@ const bTheme U_theme_default = {
     .icon_shading = RGBA(0xcc6670ff),
     .icon_folder = RGBA(0xccad63ff),
     .icon_autokey = RGBA(0xab3c48ff),
-    .panel_roundness = 0.1f,
+    .panel_roundness = 0.0f,
     .panel_header = RGBA(0x525252ff),
     .panel_back = RGBA(0x525252ff),
     .panel_sub_back = RGBA(0x0000001f),

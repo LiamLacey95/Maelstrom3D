@@ -1,6 +1,8 @@
-# Maya parity report
+# Parity report
 
-How close MayaBlender is to Autodesk Maya, element by element. Sources:
+*Autodesk and Maya are registered trademarks of Autodesk, Inc. Maelstrom3D is not affiliated with Autodesk; Maya is named here only to describe compatibility.*
+
+How closely Maelstrom3D follows the Autodesk Maya workflow, element by element. Sources:
 
 - Autodesk, [All Maya Hotkeys (Maya 2025)](https://help.autodesk.com/cloudhelp/2025/ENU/Maya-KeyboardShortcuts/files/GUID-30CACC9D-8FBE-4B85-8A8F-C5ADF32DDD4E.htm)
 - Autodesk, [Status line (Maya 2026)](https://help.autodesk.com/cloudhelp/2026/ENU/Maya-Basics/files/GUID-86E5CEDA-4100-40AE-8F95-346206CF8456.htm)
@@ -11,10 +13,11 @@ Status: **Done** works like Maya · **Close** same job, Blender mechanics differ
 
 ## Interface
 
-| Maya element | Status | In MayaBlender |
+| Maya element | Status | In Maelstrom3D |
 |---|---|---|
 | Menu bar with menu sets (Modeling, Rigging, Animation, FX, Rendering) | Done | Top bar; menu set dropdown on the left |
-| Status Line: menu set, New/Open/Save | Done | Top bar, right |
+| Menu bar, Status Line, shelf tabs, shelf as stacked rows | Done | Four rows across the top, like Maya |
+| Status Line: menu set, New/Open/Save | Done | Second row of the top bar |
 | Status Line: selection mode (object / component) | Done | |
 | Status Line: selection masks | Done | Mesh, curve, light, camera, locator, joint selectable toggles |
 | Status Line: selection lock, highlight selection | Missing | No Blender equivalent for lock |
@@ -25,29 +28,34 @@ Status: **Done** works like Maya · **Close** same job, Blender mechanics differ
 | Status Line: Hypershade button | Done | Opens the Hypershade (Shader Editor) window |
 | Status Line: input box | Close | Rename only (no absolute/relative transform entry) |
 | Status Line: sidebar buttons (Modeling Toolkit, Attribute Editor, Tool Settings, Channel Box) | Done | HumanIK missing (no HumanIK in Blender) |
-| Shelf with tabs | Done | Curves/Surfaces, Poly Modeling, Sculpting, Rigging, Animation, Rendering, FX |
-| Tool Box (select, lasso, paint, move, rotate, scale) | Close | Blender toolbar, which also lists extra Blender tools |
+| Shelf with tabs | Done | Full-width tab row and a row of large buttons: Curves/Surfaces, Poly Modeling, Sculpting, Rigging, Animation, Rendering, FX |
+| Tool Box (select, lasso, paint, move, rotate, scale) | Close | Solid strip like Maya's; still lists extra Blender tools |
 | Quick Layout buttons + Outliner button | Done | Under the toolbox: four view / single, maximize, Outliner |
-| Viewport panel menus (View, Shading, Lighting, Show, Renderer, Panels) | Done | |
+| Viewport panel menus (View, Shading, Lighting, Show, Renderer, Panels) | Done | Blender's mode / transform / gizmo buttons removed from the panel bar |
+| Viewport HUD: camera name, view axis | Done | `persp` / `top` / `front` / `side` bottom centre, axis triad bottom left |
 | Panel toolbar icons | Done | Camera, grid, wireframe/shaded/textured/lit, wireframe on shaded, shadows, AO, X-ray, isolate |
 | Channel Box (Translate/Rotate/Scale/Visibility, SHAPES, INPUTS) | Done | Lock toggle per channel; right-click a channel to key it |
 | Channel Box: INPUTS editable (polyCube1 width, subdivisions) | Missing | Blender primitives have no live creation history |
 | Layer Editor (V, P, T/R, create from selection) | Close | V and R (collections); no P (playback) |
-| Attribute Editor | Done | Right-hand dock tabs: Object, Modifiers, Material, ... |
+| Attribute Editor | Done | Node tabs (transform, shape, inputs, material) across its header |
+| Dock tabs | Close | Text tabs in the dock header (Channel Box / Layer Editor, Modeling Toolkit, Tool Settings, Attribute Editor) plus icon tabs on the right edge; Maya's are vertical text |
 | Modeling Toolkit (selection, soft select, symmetry, mesh, components, tools) | Done | Dock tab |
 | Tool Settings | Done | Dock tab |
-| Outliner (DAG objects only) | Done | Object contents hidden at startup |
-| Time Slider with playback controls, current frame | Done | |
+| Outliner (DAG objects only) | Done | Flat object list; default camera is `persp`; new scene shows nothing |
+| Time Slider with playback controls, current frame | Done | Controls below the slider, like Maya |
 | Range Slider (playback range, fps, auto key) | Close | Start/end, preview range, fps menu, auto key; no separate animation-range bar |
 | Command Line (MEL / Python) | Done | MEL by default (`polyCube -w 2;`), Python with `cmds`; Windows menu switches |
 | Help Line | Done | Status bar |
 | Hotbox (Space) | Close | Every menu in one popup; no N/E/S/W zone marking menus |
-| Workspaces (Maya Classic, Modeling, Sculpting, UV Editing, Rigging, Animation, Rendering...) | Done | |
-| UV Editor + UV Toolkit | Done | See MAYABLENDER.md |
+| Workspaces (Classic, Modeling, Sculpting, UV Editing, Rigging, Animation, Rendering...) | Done | |
+| UV Editor + UV Toolkit | Done | See MAELSTROM3D.md |
 | Hypershade | Close | Shader Editor (node graph) without the material browser |
 | Script Editor | Close | Text editor + Command History |
 | Y-up world, centimetres | Missing | Blender is Z-up; changing it needs deep core changes |
-| Maya splash / app icon | Missing | Needs a rebuild |
+| Splash screen | Done | None at startup, like Maya |
+| Square, flat widgets | Done | Near-square corners, Segoe UI font on Windows |
+| Maya-style icon set | Missing | Autodesk's icons can't be copied; needs original artwork |
+| App icon | Missing | Still Blender's |
 
 ## Marking menus
 
@@ -122,4 +130,4 @@ Status: **Done** works like Maya · **Close** same job, Blender mechanics differ
 2. Hotbox zones (N/E/S/W marking menus around the hotbox).
 3. Graph Editor hotkeys, time bookmarks via markers.
 4. Component pickwalk.
-5. Maya splash / icon and text labels on dock tabs (C rebuild).
+5. Original Maya-style icon set and app icon; vertical text dock tabs (C rebuild).

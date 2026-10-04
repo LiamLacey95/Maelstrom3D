@@ -1,12 +1,12 @@
-# SPDX-FileCopyrightText: 2026 MayaBlender
+# SPDX-FileCopyrightText: 2026 Maelstrom3D
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 """
-Maya-style interface for MayaBlender:
+classic-style interface for Maelstrom3D:
 main menu bar with menu sets, status line, shelf tabs and viewport panel menus.
 
-Menus are plain data (see `MENUS`) so `tools/maya/test_maya.py` can verify every command exists.
+Menus are plain data (see `MENUS`) so `tools/m3d/test_m3d.py` can verify every command exists.
 """
 
 import bpy
@@ -42,7 +42,7 @@ def constraint(label, type, icon='CONSTRAINT'):
 
 
 def editor(label, ui_type, icon='NONE'):
-    return op(label, "maya.open_editor", icon, ui_type=ui_type)
+    return op(label, "m3d.open_editor", icon, ui_type=ui_type)
 
 
 def shading(label, type, icon='NONE'):
@@ -53,7 +53,7 @@ SEP = {"kind": 'SEP', "modes": None}
 EDIT = {'EDIT_MESH'}
 OBJECT = {'OBJECT'}
 
-# Operators that need a 3D Viewport context: from the top bar they run through `maya.call`.
+# Operators that need a 3D Viewport context: from the top bar they run through `m3d.call`.
 _VIEW3D_PREFIXES = (
     "view3d.", "transform.", "wm.context_", "wm.tool_set_by_id", "screen.region_quadview",
     "mesh.loopcut_slide", "mesh.knife_tool", "mesh.bevel", "mesh.offset_edge_loops_slide",
@@ -97,10 +97,10 @@ def draw_entries(layout, context, entries):
             if owner is not None:
                 layout.prop(owner, attr, text=e["label"])
             elif not in_view3d:
-                o = layout.operator("maya.call", text=e["label"])
+                o = layout.operator("m3d.call", text=e["label"])
                 o.idname, o.props = "wm.context_toggle", repr({"data_path": e["path"]})
         elif not in_view3d and (needs_view3d(e["idname"]) or not _poll(e["idname"])):
-            o = layout.operator("maya.call", text=e["label"], icon=e["icon"])
+            o = layout.operator("m3d.call", text=e["label"], icon=e["icon"])
             o.idname, o.props, o.label = e["idname"], repr(e["props"]), e["label"]
         else:
             o = layout.operator(e["idname"], text=e["label"], icon=e["icon"])
@@ -112,19 +112,19 @@ def draw_entries(layout, context, entries):
 # Main menu bar (always visible) and menu sets
 
 POLY_PRIMITIVES = [
-    op("Sphere", "maya.add_primitive", 'MESH_UVSPHERE', kind='SPHERE'),
-    op("Cube", "maya.add_primitive", 'MESH_CUBE', kind='CUBE'),
-    op("Cylinder", "maya.add_primitive", 'MESH_CYLINDER', kind='CYLINDER'),
-    op("Cone", "maya.add_primitive", 'MESH_CONE', kind='CONE'),
-    op("Torus", "maya.add_primitive", 'MESH_TORUS', kind='TORUS'),
-    op("Plane", "maya.add_primitive", 'MESH_PLANE', kind='PLANE'),
+    op("Sphere", "m3d.add_primitive", 'MESH_UVSPHERE', kind='SPHERE'),
+    op("Cube", "m3d.add_primitive", 'MESH_CUBE', kind='CUBE'),
+    op("Cylinder", "m3d.add_primitive", 'MESH_CYLINDER', kind='CYLINDER'),
+    op("Cone", "m3d.add_primitive", 'MESH_CONE', kind='CONE'),
+    op("Torus", "m3d.add_primitive", 'MESH_TORUS', kind='TORUS'),
+    op("Plane", "m3d.add_primitive", 'MESH_PLANE', kind='PLANE'),
     SEP,
     sub("More Primitives", "VIEW3D_MT_mesh_add", 'ADD'),
 ]
 
 MENUS = {
     # Common menus.
-    "MAYA_MT_file": ("File", [
+    "M3D_MT_file": ("File", [
         op("New Scene", "wm.read_homefile", 'FILE_NEW', app_template=""),
         op("Open Scene...", "wm.open_mainfile", 'FILE_FOLDER'),
         sub("Recent Files", "TOPBAR_MT_file_open_recent"),
@@ -143,7 +143,7 @@ MENUS = {
         SEP,
         op("Exit", "wm.quit_blender", 'QUIT'),
     ]),
-    "MAYA_MT_edit": ("Edit", [
+    "M3D_MT_edit": ("Edit", [
         op("Undo", "ed.undo", 'LOOP_BACK'),
         op("Redo", "ed.redo", 'LOOP_FORWARDS'),
         op("Repeat", "screen.repeat_last"),
@@ -154,20 +154,20 @@ MENUS = {
         SEP,
         op("Delete", "object.delete", 'X', modes=OBJECT),
         op("Delete All History", "object.convert", modes=OBJECT, target='MESH'),
-        op("Duplicate", "maya.duplicate", 'DUPLICATE', modes=OBJECT),
-        op("Duplicate with Transform", "maya.duplicate", modes=OBJECT, with_transform=True),
+        op("Duplicate", "m3d.duplicate", 'DUPLICATE', modes=OBJECT),
+        op("Duplicate with Transform", "m3d.duplicate", modes=OBJECT, with_transform=True),
         op("Duplicate Special (Instance)", "object.duplicate_move_linked", modes=OBJECT),
         op("Duplicate", "mesh.duplicate_move", 'DUPLICATE', modes=EDIT),
         SEP,
-        op("Group", "maya.group", 'EMPTY_AXIS', modes=OBJECT),
-        op("Ungroup", "maya.ungroup", modes=OBJECT),
+        op("Group", "m3d.group", 'EMPTY_AXIS', modes=OBJECT),
+        op("Ungroup", "m3d.ungroup", modes=OBJECT),
         op("Parent", "object.parent_set", modes=OBJECT),
         op("Unparent", "object.parent_clear", modes=OBJECT, type='CLEAR_KEEP_TRANSFORM'),
         SEP,
         op("Search Command...", "wm.search_menu", 'VIEWZOOM'),
     ]),
-    "MAYA_MT_create": ("Create", [
-        sub("Polygon Primitives", "MAYA_MT_poly_primitives", 'MESH_CUBE'),
+    "M3D_MT_create": ("Create", [
+        sub("Polygon Primitives", "M3D_MT_poly_primitives", 'MESH_CUBE'),
         sub("NURBS Primitives", "VIEW3D_MT_surface_add", 'SURFACE_NSURFACE'),
         sub("Curve Tools", "VIEW3D_MT_curve_add", 'CURVE_BEZCURVE'),
         SEP,
@@ -184,7 +184,7 @@ MENUS = {
         SEP,
         sub("Everything", "VIEW3D_MT_add", 'ADD'),
     ]),
-    "MAYA_MT_select": ("Select", [
+    "M3D_MT_select": ("Select", [
         op("Object/Component", "object.editmode_toggle"),
         SEP,
         op("All", "object.select_all", modes=OBJECT, action='SELECT'),
@@ -206,7 +206,7 @@ MENUS = {
         enum("Similar", "mesh.select_similar", "type", modes=EDIT),
         op("Select Non-Manifold", "mesh.select_non_manifold", modes=EDIT),
         op("Select Random", "mesh.select_random", modes=EDIT),
-        sub("Convert Selection", "MAYA_MT_convert_selection", modes=EDIT),
+        sub("Convert Selection", "M3D_MT_convert_selection", modes=EDIT),
         SEP,
         op("Select Tool", "wm.tool_set_by_id", 'RESTRICT_SELECT_OFF', name="builtin.select_box"),
         op("Lasso Tool", "wm.tool_set_by_id", name="builtin.select_lasso"),
@@ -215,9 +215,9 @@ MENUS = {
         sub("More", "VIEW3D_MT_select_object", modes=OBJECT),
         sub("More", "VIEW3D_MT_select_edit_mesh", modes=EDIT),
     ]),
-    "MAYA_MT_modify": ("Modify", [
-        sub("Transformation Tools", "MAYA_MT_transform_tools"),
-        op("Reset Transformations", "maya.reset_transformations", modes=OBJECT),
+    "M3D_MT_modify": ("Modify", [
+        sub("Transformation Tools", "M3D_MT_transform_tools"),
+        op("Reset Transformations", "m3d.reset_transformations", modes=OBJECT),
         op("Freeze Transformations", "object.transform_apply", 'FREEZE', modes=OBJECT,
            location=True, rotation=True, scale=True),
         op("Center Pivot", "object.origin_set", 'PIVOT_BOUNDBOX', modes=OBJECT, type='ORIGIN_GEOMETRY'),
@@ -231,10 +231,10 @@ MENUS = {
         sub("More", "VIEW3D_MT_object", modes=OBJECT),
         sub("More", "VIEW3D_MT_edit_mesh", modes=EDIT),
     ]),
-    "MAYA_MT_display": ("Display", [
+    "M3D_MT_display": ("Display", [
         prop("Grid", "space_data.overlay.show_floor"),
-        sub("Heads Up Display", "MAYA_MT_hud"),
-        sub("UI Elements", "MAYA_MT_ui_elements"),
+        sub("Heads Up Display", "M3D_MT_hud"),
+        sub("UI Elements", "M3D_MT_ui_elements"),
         SEP,
         op("Hide Selection", "object.hide_view_set", modes=OBJECT, unselected=False),
         op("Hide Unselected", "object.hide_view_set", modes=OBJECT, unselected=True),
@@ -249,36 +249,36 @@ MENUS = {
         prop("Wireframe on Shaded", "space_data.overlay.show_wireframes"),
         prop("X-Ray", "space_data.shading.show_xray"),
     ]),
-    "MAYA_MT_windows": ("Windows", [
-        sub("Workspaces", "MAYA_MT_workspaces", 'WORKSPACE'),
-        sub("General Editors", "MAYA_MT_general_editors", 'WINDOW'),
-        sub("Settings/Preferences", "MAYA_MT_preferences", 'PREFERENCES'),
+    "M3D_MT_windows": ("Windows", [
+        sub("Workspaces", "M3D_MT_workspaces", 'WORKSPACE'),
+        sub("General Editors", "M3D_MT_general_editors", 'WINDOW'),
+        sub("Settings/Preferences", "M3D_MT_preferences", 'PREFERENCES'),
         SEP,
         editor("Outliner", 'OUTLINER', 'OUTLINER'),
-        op("Attribute Editor", "maya.dock_tab", 'PROPERTIES', tab='OBJECT'),
-        op("Channel Box / Layer Editor", "maya.dock_tab", 'ALIGN_JUSTIFY', tab='CHANNEL_BOX'),
-        op("Modeling Toolkit", "maya.dock_tab", 'EDITMODE_HLT', tab='MODELING_TOOLKIT'),
-        op("Tool Settings", "maya.dock_tab", 'TOOL_SETTINGS', tab='TOOL'),
-        editor("Hypershade", 'ShaderNodeTree', 'NODE_MATERIAL'),
+        op("Attribute Editor", "m3d.dock_tab", 'PROPERTIES', tab='OBJECT'),
+        op("Channel Box / Layer Editor", "m3d.dock_tab", 'ALIGN_JUSTIFY', tab='CHANNEL_BOX'),
+        op("Modeling Toolkit", "m3d.dock_tab", 'EDITMODE_HLT', tab='MODELING_TOOLKIT'),
+        op("Tool Settings", "m3d.dock_tab", 'TOOL_SETTINGS', tab='TOOL'),
+        editor("Shader Editor", 'ShaderNodeTree', 'NODE_MATERIAL'),
         editor("Graph Editor", 'FCURVES', 'GRAPH'),
         editor("Dope Sheet", 'DOPESHEET', 'ACTION'),
         editor("UV Editor", 'UV', 'UV'),
         editor("Script Editor", 'TEXT_EDITOR', 'TEXT'),
         SEP,
-        op("Command Line: MEL", "maya.command_language", 'CONSOLE', language='mel'),
-        op("Command Line: Python", "maya.command_language", 'CONSOLE', language='python'),
+        op("Command Line: MEL", "m3d.command_language", 'CONSOLE', language='mel'),
+        op("Command Line: Python", "m3d.command_language", 'CONSOLE', language='python'),
         op("Toggle Full Screen", "wm.window_fullscreen_toggle", 'FULLSCREEN_ENTER'),
     ]),
-    "MAYA_MT_help": ("Help", [
+    "M3D_MT_help": ("Help", [
         sub("Help", "TOPBAR_MT_help", 'HELP'),
         op("Hotkey Editor", "screen.userpref_show", 'KEYINGSET', section='KEYMAP'),
     ]),
 
     # Modeling menu set.
-    "MAYA_MT_mesh": ("Mesh", [
-        sub("Booleans", "MAYA_MT_booleans", 'MOD_BOOLEAN'),
+    "M3D_MT_mesh": ("Mesh", [
+        sub("Booleans", "M3D_MT_booleans", 'MOD_BOOLEAN'),
         op("Combine", "object.join", 'AUTOMERGE_ON', modes=OBJECT),
-        op("Separate", "maya.separate", modes=OBJECT),
+        op("Separate", "m3d.separate", modes=OBJECT),
         SEP,
         modifier("Mirror", 'MIRROR', 'MOD_MIRROR'),
         op("Smooth", "object.subdivision_set", 'MOD_SUBSURF', level=1, relative=False),
@@ -287,15 +287,15 @@ MENUS = {
         modifier("Triangulate", 'TRIANGULATE', 'MOD_TRIANGULATE'),
         op("Quadrangulate", "mesh.tris_convert_to_quads", modes=EDIT),
         SEP,
-        op("Fill Hole", "maya.fill_hole"),
+        op("Fill Hole", "m3d.fill_hole"),
         op("Cleanup (Merge by Distance)", "mesh.remove_doubles", modes=EDIT),
     ]),
-    "MAYA_MT_edit_mesh": ("Edit Mesh", [
+    "M3D_MT_edit_mesh": ("Edit Mesh", [
         op("Add Divisions", "mesh.subdivide"),
         op("Bevel", "mesh.bevel", 'MOD_BEVEL', offset_type='PERCENT'),
         op("Bridge", "mesh.bridge_edge_loops"),
         op("Collapse", "mesh.merge", type='COLLAPSE'),
-        op("Connect", "maya.connect"),
+        op("Connect", "m3d.connect"),
         op("Detach", "mesh.split"),
         op("Extrude", "view3d.edit_mesh_extrude_move_normal", 'FACESEL'),
         op("Merge", "mesh.remove_doubles", 'AUTOMERGE_ON', threshold=0.001),
@@ -315,7 +315,7 @@ MENUS = {
         sub("Edge", "VIEW3D_MT_edit_mesh_edges", 'EDGESEL'),
         sub("Face", "VIEW3D_MT_edit_mesh_faces", 'FACESEL'),
     ]),
-    "MAYA_MT_mesh_tools": ("Mesh Tools", [
+    "M3D_MT_mesh_tools": ("Mesh Tools", [
         op("Create Polygon", "mesh.edge_face_add"),
         op("Crease Tool", "transform.edge_crease"),
         op("Insert Edge Loop", "mesh.loopcut_slide", 'MOD_EDGESPLIT'),
@@ -323,9 +323,9 @@ MENUS = {
         op("Offset Edge Loop", "mesh.offset_edge_loops_slide"),
         op("Quad Draw", "wm.tool_set_by_id", name="builtin.poly_build"),
         op("Slide Edge", "transform.edge_slide"),
-        op("Target Weld", "maya.target_weld"),
+        op("Target Weld", "m3d.target_weld"),
     ]),
-    "MAYA_MT_mesh_display": ("Mesh Display", [
+    "M3D_MT_mesh_display": ("Mesh Display", [
         op("Reverse", "mesh.flip_normals", modes=EDIT),
         op("Conform", "mesh.normals_make_consistent", modes=EDIT),
         op("Set to Face", "mesh.set_normals_from_faces", modes=EDIT),
@@ -339,7 +339,7 @@ MENUS = {
         prop("Vertex Normals", "space_data.overlay.show_vertex_normals"),
         prop("Backface Culling", "space_data.shading.show_backface_culling"),
     ]),
-    "MAYA_MT_curves": ("Curves", [
+    "M3D_MT_curves": ("Curves", [
         sub("Create Curve", "VIEW3D_MT_curve_add", 'CURVE_BEZCURVE'),
         op("Open/Close", "curve.cyclic_toggle", modes={'EDIT_CURVE'}),
         op("Reverse Direction", "curve.switch_direction", modes={'EDIT_CURVE'}),
@@ -347,12 +347,12 @@ MENUS = {
         op("Subdivide", "curve.subdivide", modes={'EDIT_CURVE'}),
         op("Draw Curve", "wm.tool_set_by_id", modes={'EDIT_CURVE'}, name="builtin.draw"),
     ]),
-    "MAYA_MT_surfaces": ("Surfaces", [
+    "M3D_MT_surfaces": ("Surfaces", [
         sub("NURBS Primitives", "VIEW3D_MT_surface_add", 'SURFACE_NSURFACE'),
         modifier("Revolve", 'SCREW', 'MOD_SCREW'),
         modifier("Extrude (Solidify)", 'SOLIDIFY', 'MOD_SOLIDIFY'),
     ]),
-    "MAYA_MT_deform": ("Deform", [
+    "M3D_MT_deform": ("Deform", [
         op("Blend Shape", "object.shape_key_add", 'SHAPEKEY_DATA', from_mix=False),
         modifier("Lattice", 'LATTICE', 'MOD_LATTICE'),
         modifier("Wrap", 'SURFACE_DEFORM', 'MOD_MESHDEFORM'),
@@ -366,10 +366,10 @@ MENUS = {
         prop("Soft Selection", "tool_settings.use_proportional_edit_objects", modes=OBJECT),
         prop("Soft Selection", "tool_settings.use_proportional_edit", modes=EDIT),
     ]),
-    "MAYA_MT_uv": ("UV", [
+    "M3D_MT_uv": ("UV", [
         editor("UV Editor", 'UV', 'UV'),
         op("UV Editing Workspace", "wm.context_set_id", 'WORKSPACE', data_path="window.workspace", value="UV Editing"),
-        op("Checker Map", "maya.uv_checker", 'TEXTURE'),
+        op("Checker Map", "m3d.uv_checker", 'TEXTURE'),
         SEP,
         op("Automatic", "uv.smart_project", modes=EDIT),
         op("Planar", "uv.project_from_view", modes=EDIT),
@@ -377,14 +377,14 @@ MENUS = {
         op("Spherical", "uv.sphere_project", modes=EDIT),
         op("Unfold", "uv.unwrap", modes=EDIT),
         SEP,
-        op("Cut", "maya.uv_cut", modes=EDIT),
-        op("Sew", "maya.uv_sew", modes=EDIT),
-        op("Unfold", "maya.uv_unfold", modes=EDIT),
+        op("Cut", "m3d.uv_cut", modes=EDIT),
+        op("Sew", "m3d.uv_sew", modes=EDIT),
+        op("Unfold", "m3d.uv_unfold", modes=EDIT),
         op("Layout", "uv.pack_islands", modes=EDIT, margin=0.01),
     ]),
 
     # Rigging menu set.
-    "MAYA_MT_skeleton": ("Skeleton", [
+    "M3D_MT_skeleton": ("Skeleton", [
         op("Create Joints", "object.armature_add", 'BONE_DATA'),
         op("Insert Joint", "armature.bone_primitive_add", modes={'EDIT_ARMATURE'}),
         op("Mirror Joints", "armature.symmetrize", modes={'EDIT_ARMATURE'}),
@@ -392,14 +392,14 @@ MENUS = {
         op("Create IK Handle", "pose.ik_add", modes={'POSE'}),
         op("Pose Mode", "object.posemode_toggle", 'POSE_HLT'),
     ]),
-    "MAYA_MT_skin": ("Skin", [
+    "M3D_MT_skin": ("Skin", [
         op("Bind Skin", "object.parent_set", 'ARMATURE_DATA', modes=OBJECT, type='ARMATURE_AUTO'),
         op("Unbind Skin", "object.parent_clear", modes=OBJECT, type='CLEAR_KEEP_TRANSFORM'),
         op("Paint Skin Weights", "object.mode_set", 'WPAINT_HLT', mode='WEIGHT_PAINT'),
         op("Mirror Skin Weights", "object.vertex_group_mirror", modes={'WEIGHT_PAINT'}),
         op("Normalize Weights", "object.vertex_group_normalize_all", modes={'WEIGHT_PAINT'}),
     ]),
-    "MAYA_MT_constrain": ("Constrain", [
+    "M3D_MT_constrain": ("Constrain", [
         constraint("Parent", 'CHILD_OF'),
         constraint("Point", 'COPY_LOCATION'),
         constraint("Orient", 'COPY_ROTATION'),
@@ -411,14 +411,14 @@ MENUS = {
         SEP,
         op("Remove Constraints", "object.constraints_clear"),
     ]),
-    "MAYA_MT_control": ("Control", [
+    "M3D_MT_control": ("Control", [
         op("Locator", "object.empty_add", 'EMPTY_AXIS', type='PLAIN_AXES'),
         op("Circle Control", "curve.primitive_bezier_circle_add", 'CURVE_BEZCIRCLE'),
-        op("Lock and Hide Attributes", "maya.lock_transforms", 'LOCKED'),
+        op("Lock and Hide Attributes", "m3d.lock_transforms", 'LOCKED'),
     ]),
 
     # Animation menu set.
-    "MAYA_MT_key": ("Key", [
+    "M3D_MT_key": ("Key", [
         op("Set Key", "anim.keyframe_insert", 'KEY_HLT'),
         op("Key Translate", "anim.keyframe_insert_by_name", type='Location'),
         op("Key Rotate", "anim.keyframe_insert_by_name", type='Rotation'),
@@ -431,7 +431,7 @@ MENUS = {
         editor("Graph Editor", 'FCURVES', 'GRAPH'),
         editor("Dope Sheet", 'DOPESHEET', 'ACTION'),
     ]),
-    "MAYA_MT_playback": ("Playback", [
+    "M3D_MT_playback": ("Playback", [
         op("Play/Stop", "screen.animation_play", 'PLAY'),
         op("Go to Start", "screen.frame_jump", 'REW', end=False),
         op("Go to End", "screen.frame_jump", 'FF', end=True),
@@ -440,43 +440,43 @@ MENUS = {
         op("Next Key", "screen.keyframe_jump", 'NEXT_KEYFRAME', next=True),
         op("Previous Key", "screen.keyframe_jump", 'PREV_KEYFRAME', next=False),
     ]),
-    "MAYA_MT_visualize": ("Visualize", [
+    "M3D_MT_visualize": ("Visualize", [
         op("Create Motion Trail", "object.paths_calculate", modes=OBJECT),
         op("Delete Motion Trail", "object.paths_clear", modes=OBJECT),
         prop("Ghosting (Onion Skin)", "space_data.overlay.show_motion_paths"),
     ]),
 
     # FX menu set.
-    "MAYA_MT_nparticles": ("nParticles", [
+    "M3D_MT_nparticles": ("nParticles", [
         op("Create Emitter", "object.particle_system_add", 'PARTICLES'),
         op("Quick Explode", "object.quick_explode", 'MOD_EXPLODE'),
     ]),
-    "MAYA_MT_fluids": ("Fluids", [
+    "M3D_MT_fluids": ("Fluids", [
         op("Smoke/Fire", "object.quick_smoke", 'MOD_FLUIDSIM'),
         op("Liquid", "object.quick_liquid", 'MOD_FLUIDSIM'),
     ]),
-    "MAYA_MT_ncloth": ("nCloth", [
+    "M3D_MT_ncloth": ("nCloth", [
         modifier("Create nCloth", 'CLOTH', 'MOD_CLOTH'),
         modifier("Create Passive Collider", 'COLLISION', 'MOD_PHYSICS'),
         modifier("Soft Body", 'SOFT_BODY', 'MOD_SOFT'),
     ]),
-    "MAYA_MT_fields": ("Fields/Solvers", [
+    "M3D_MT_fields": ("Fields/Solvers", [
         enum("Create Field", "object.effector_add", "type", 'FORCE_FORCE'),
         op("Rigid Body (Active)", "rigidbody.object_add", 'RIGID_BODY', type='ACTIVE'),
         op("Rigid Body (Passive)", "rigidbody.object_add", 'RIGID_BODY_CONSTRAINT', type='PASSIVE'),
     ]),
 
     # Rendering menu set.
-    "MAYA_MT_lighting_shading": ("Lighting/Shading", [
-        op("Assign New Material", "maya.assign_material", 'MATERIAL'),
-        editor("Hypershade", 'ShaderNodeTree', 'NODE_MATERIAL'),
+    "M3D_MT_lighting_shading": ("Lighting/Shading", [
+        op("Assign New Material", "m3d.assign_material", 'MATERIAL'),
+        editor("Shader Editor", 'ShaderNodeTree', 'NODE_MATERIAL'),
         sub("Lights", "VIEW3D_MT_light_add", 'LIGHT'),
     ]),
-    "MAYA_MT_texturing": ("Texturing", [
+    "M3D_MT_texturing": ("Texturing", [
         editor("UV Editor", 'UV', 'UV'),
         op("3D Paint Tool", "object.mode_set", 'TPAINT_HLT', mode='TEXTURE_PAINT'),
     ]),
-    "MAYA_MT_render": ("Render", [
+    "M3D_MT_render": ("Render", [
         op("Render Current Frame", "render.render", 'RENDER_STILL'),
         op("Render Sequence", "render.render", 'RENDER_ANIMATION', animation=True),
         op("IPR Render (Viewport)", "wm.context_set_enum", 'SHADING_RENDERED',
@@ -487,40 +487,40 @@ MENUS = {
     ]),
 
     # Sub menus.
-    "MAYA_MT_poly_primitives": ("Polygon Primitives", POLY_PRIMITIVES),
-    "MAYA_MT_booleans": ("Booleans", [
-        op("Union", "maya.boolean", operation='UNION'),
-        op("Difference", "maya.boolean", operation='DIFFERENCE'),
-        op("Intersection", "maya.boolean", operation='INTERSECT'),
+    "M3D_MT_poly_primitives": ("Polygon Primitives", POLY_PRIMITIVES),
+    "M3D_MT_booleans": ("Booleans", [
+        op("Union", "m3d.boolean", operation='UNION'),
+        op("Difference", "m3d.boolean", operation='DIFFERENCE'),
+        op("Intersection", "m3d.boolean", operation='INTERSECT'),
     ]),
-    "MAYA_MT_convert_selection": ("Convert Selection", [
+    "M3D_MT_convert_selection": ("Convert Selection", [
         op("To Vertices", "mesh.select_mode", 'VERTEXSEL', type='VERT', use_expand=True),
         op("To Edges", "mesh.select_mode", 'EDGESEL', type='EDGE', use_expand=True),
         op("To Faces", "mesh.select_mode", 'FACESEL', type='FACE', use_expand=True),
     ]),
-    "MAYA_MT_transform_tools": ("Transformation Tools", [
+    "M3D_MT_transform_tools": ("Transformation Tools", [
         op("Move Tool", "wm.tool_set_by_id", 'EMPTY_ARROWS', name="builtin.move"),
         op("Rotate Tool", "wm.tool_set_by_id", 'ORIENTATION_GIMBAL', name="builtin.rotate"),
         op("Scale Tool", "wm.tool_set_by_id", 'FULLSCREEN_ENTER', name="builtin.scale"),
         op("Universal Manipulator", "wm.tool_set_by_id", name="builtin.transform"),
     ]),
-    "MAYA_MT_hud": ("Heads Up Display", [
+    "M3D_MT_hud": ("Heads Up Display", [
         prop("Poly Count", "space_data.overlay.show_stats"),
         prop("View Axis", "space_data.show_gizmo_navigate"),
         prop("Camera Names / Info", "space_data.overlay.show_text"),
     ]),
-    "MAYA_MT_ui_elements": ("UI Elements", [
+    "M3D_MT_ui_elements": ("UI Elements", [
         prop("Shelf", "space_data.show_region_tool_header"),
         prop("Tool Box", "space_data.show_region_toolbar"),
         prop("Sidebar", "space_data.show_region_ui"),
         prop("Viewport Menu Bar", "space_data.show_region_header"),
         prop("Help Line", "screen.show_statusbar"),
     ]),
-    "MAYA_MT_general_editors": ("General Editors", [
+    "M3D_MT_general_editors": ("General Editors", [
         editor("Outliner", 'OUTLINER', 'OUTLINER'),
         editor("Attribute Editor", 'PROPERTIES', 'PROPERTIES'),
         editor("Node Editor", 'GeometryNodeTree', 'NODETREE'),
-        editor("Hypershade", 'ShaderNodeTree', 'NODE_MATERIAL'),
+        editor("Shader Editor", 'ShaderNodeTree', 'NODE_MATERIAL'),
         editor("Graph Editor", 'FCURVES', 'GRAPH'),
         editor("Dope Sheet", 'DOPESHEET', 'ACTION'),
         editor("Trax Editor (NLA)", 'NLA_EDITOR', 'NLA'),
@@ -530,7 +530,7 @@ MENUS = {
         editor("Spreadsheet", 'SPREADSHEET', 'SPREADSHEET'),
         editor("File Browser", 'FILES', 'FILEBROWSER'),
     ]),
-    "MAYA_MT_preferences": ("Settings/Preferences", [
+    "M3D_MT_preferences": ("Settings/Preferences", [
         op("Preferences", "screen.userpref_show", 'PREFERENCES'),
         op("Hotkey Editor", "screen.userpref_show", section='KEYMAP'),
         op("Color Settings", "screen.userpref_show", section='THEMES'),
@@ -538,7 +538,7 @@ MENUS = {
     ]),
 
     # Viewport panel menus.
-    "MAYA_MT_panel_view": ("View", [
+    "M3D_MT_panel_view": ("View", [
         op("Frame All", "view3d.view_all", center=False),
         op("Frame Selection", "view3d.view_selected"),
         op("Default Home", "view3d.view_all", center=True),
@@ -555,7 +555,7 @@ MENUS = {
         sub("Image Plane", "VIEW3D_MT_image_add", 'IMAGE_DATA'),
         sub("More", "VIEW3D_MT_view"),
     ]),
-    "MAYA_MT_panel_shading": ("Shading", [
+    "M3D_MT_panel_shading": ("Shading", [
         shading("Wireframe", 'WIREFRAME', 'SHADING_WIRE'),
         shading("Smooth Shade All", 'SOLID', 'SHADING_SOLID'),
         shading("Textured", 'MATERIAL', 'SHADING_TEXTURE'),
@@ -565,7 +565,7 @@ MENUS = {
         prop("X-Ray", "space_data.shading.show_xray"),
         prop("Backface Culling", "space_data.shading.show_backface_culling"),
     ]),
-    "MAYA_MT_panel_lighting": ("Lighting", [
+    "M3D_MT_panel_lighting": ("Lighting", [
         op("Use Default Lighting", "wm.context_set_enum", data_path="space_data.shading.light", value='STUDIO'),
         op("Use Flat Lighting", "wm.context_set_enum", data_path="space_data.shading.light", value='FLAT'),
         op("Use All Lights", "wm.context_set_enum", data_path="space_data.shading.type", value='MATERIAL'),
@@ -573,7 +573,7 @@ MENUS = {
         prop("Shadows", "space_data.shading.show_shadows"),
         prop("Ambient Occlusion (Cavity)", "space_data.shading.show_cavity"),
     ]),
-    "MAYA_MT_panel_show": ("Show", [
+    "M3D_MT_panel_show": ("Show", [
         prop("All Overlays", "space_data.overlay.show_overlays"),
         SEP,
         prop("Grid", "space_data.overlay.show_floor"),
@@ -588,13 +588,13 @@ MENUS = {
         SEP,
         op("Isolate Select", "view3d.localview"),
     ]),
-    "MAYA_MT_panel_renderer": ("Renderer", [
+    "M3D_MT_panel_renderer": ("Renderer", [
         prop("Render Engine", "scene.render.engine"),
         shading("Viewport (Solid)", 'SOLID', 'SHADING_SOLID'),
         shading("Viewport (Material Preview)", 'MATERIAL', 'SHADING_TEXTURE'),
         shading("Viewport (Rendered)", 'RENDERED', 'SHADING_RENDERED'),
     ]),
-    "MAYA_MT_panel_panels": ("Panels", [
+    "M3D_MT_panel_panels": ("Panels", [
         op("Single / Four View", "screen.region_quadview", 'VIEW_PERSPECTIVE'),
         op("Tear Off Copy", "screen.area_dupli", 'WINDOW'),
         op("Maximize Panel", "screen.screen_full_area", 'FULLSCREEN_ENTER'),
@@ -604,24 +604,24 @@ MENUS = {
 }
 
 MENU_SETS = {
-    'MODELING': ("Modeling", ["MAYA_MT_mesh", "MAYA_MT_edit_mesh", "MAYA_MT_mesh_tools", "MAYA_MT_mesh_display",
-                              "MAYA_MT_curves", "MAYA_MT_surfaces", "MAYA_MT_deform", "MAYA_MT_uv"]),
-    'RIGGING': ("Rigging", ["MAYA_MT_skeleton", "MAYA_MT_skin", "MAYA_MT_deform", "MAYA_MT_constrain",
-                            "MAYA_MT_control"]),
-    'ANIMATION': ("Animation", ["MAYA_MT_key", "MAYA_MT_playback", "MAYA_MT_visualize", "MAYA_MT_deform",
-                                "MAYA_MT_constrain"]),
-    'FX': ("FX", ["MAYA_MT_nparticles", "MAYA_MT_fluids", "MAYA_MT_ncloth", "MAYA_MT_fields"]),
-    'RENDERING': ("Rendering", ["MAYA_MT_lighting_shading", "MAYA_MT_texturing", "MAYA_MT_render"]),
+    'MODELING': ("Modeling", ["M3D_MT_mesh", "M3D_MT_edit_mesh", "M3D_MT_mesh_tools", "M3D_MT_mesh_display",
+                              "M3D_MT_curves", "M3D_MT_surfaces", "M3D_MT_deform", "M3D_MT_uv"]),
+    'RIGGING': ("Rigging", ["M3D_MT_skeleton", "M3D_MT_skin", "M3D_MT_deform", "M3D_MT_constrain",
+                            "M3D_MT_control"]),
+    'ANIMATION': ("Animation", ["M3D_MT_key", "M3D_MT_playback", "M3D_MT_visualize", "M3D_MT_deform",
+                                "M3D_MT_constrain"]),
+    'FX': ("FX", ["M3D_MT_nparticles", "M3D_MT_fluids", "M3D_MT_ncloth", "M3D_MT_fields"]),
+    'RENDERING': ("Rendering", ["M3D_MT_lighting_shading", "M3D_MT_texturing", "M3D_MT_render"]),
 }
 
-COMMON_MENUS = ["MAYA_MT_file", "MAYA_MT_edit", "MAYA_MT_create", "MAYA_MT_select", "MAYA_MT_modify",
-                "MAYA_MT_display", "MAYA_MT_windows"]
+COMMON_MENUS = ["M3D_MT_file", "M3D_MT_edit", "M3D_MT_create", "M3D_MT_select", "M3D_MT_modify",
+                "M3D_MT_display", "M3D_MT_windows"]
 
-PANEL_MENUS = ["MAYA_MT_panel_view", "MAYA_MT_panel_shading", "MAYA_MT_panel_lighting", "MAYA_MT_panel_show",
-               "MAYA_MT_panel_renderer", "MAYA_MT_panel_panels"]
+PANEL_MENUS = ["M3D_MT_panel_view", "M3D_MT_panel_shading", "M3D_MT_panel_lighting", "M3D_MT_panel_show",
+               "M3D_MT_panel_renderer", "M3D_MT_panel_panels"]
 
 
-class MAYA_MT_workspaces(Menu):
+class M3D_MT_workspaces(Menu):
     bl_label = "Workspaces"
 
     def draw(self, context):
@@ -631,7 +631,7 @@ class MAYA_MT_workspaces(Menu):
             o.data_path, o.value = "window.workspace", ws.name
 
 
-class MAYA_MT_blender_menus(Menu):
+class M3D_MT_blender_menus(Menu):
     """Blender's original viewport menus"""
     bl_label = "Blender Menus"
 
@@ -649,24 +649,24 @@ def _make_menu(idname, label, entries):
 # Header drawing (called from bl_ui/space_topbar.py and bl_ui/space_view3d.py)
 
 def draw_menu_bar(layout, context):
-    """Maya main menu bar: menu set selector, common menus, menu set menus, Help."""
+    """Main menu bar: menu set selector, common menus, menu set menus, Help."""
     wm = context.window_manager
-    layout.prop(wm, "maya_menu_set", text="")
-    for idname in COMMON_MENUS + MENU_SETS[wm.maya_menu_set][1] + ["MAYA_MT_help"]:
+    layout.prop(wm, "m3d_menu_set", text="")
+    for idname in COMMON_MENUS + MENU_SETS[wm.m3d_menu_set][1] + ["M3D_MT_help"]:
         layout.menu(idname)
 
 
 def _call(layout, idname, icon, label, depress=False, **props):
     """Button that runs `idname` in the main 3D Viewport (the top bar has no viewport context)."""
-    o = layout.operator("maya.call", text="", icon=icon, depress=depress)
+    o = layout.operator("m3d.call", text="", icon=icon, depress=depress)
     o.idname, o.props, o.label = idname, repr(props), label
     return o
 
 
 def draw_status_line(layout, context):
-    """Maya Status Line, left to right: file, selection mode and masks, snapping, symmetry,
-    render, Hypershade, input box, sidebar buttons, workspace."""
-    from maya_mode import _view3d_space
+    """Status Line, left to right: file, selection mode and masks, snapping, symmetry,
+    render, shader editor, input box, sidebar buttons, workspace."""
+    from m3d_mode import _view3d_space
     ts = context.tool_settings
     space = _view3d_space(context)
     ob = context.active_object
@@ -703,14 +703,14 @@ def draw_status_line(layout, context):
     if ob is not None and ob.type == 'MESH':
         layout.prop(ob.data, "use_mirror_x", text="", icon='MOD_MIRROR')
 
-    # Render: render view, render current frame, IPR, render settings; Hypershade.
+    # Render: render view, render current frame, IPR, render settings; shader editor.
     row = layout.row(align=True)
     row.operator("render.view_show", text="", icon='IMAGE')
     row.operator("render.render", text="", icon='RENDER_STILL')
     _call(row, "wm.context_set_enum", 'SHADING_RENDERED', "IPR Render",
           data_path="space_data.shading.type", value='RENDERED')
-    row.operator("maya.dock_tab", text="", icon='SCENE').tab = 'RENDER'
-    row.operator("maya.open_editor", text="", icon='NODE_MATERIAL').ui_type = 'ShaderNodeTree'
+    row.operator("m3d.dock_tab", text="", icon='SCENE').tab = 'RENDER'
+    row.operator("m3d.open_editor", text="", icon='NODE_MATERIAL').ui_type = 'ShaderNodeTree'
 
     # Input box: rename the selected object.
     if ob is not None:
@@ -722,9 +722,9 @@ def draw_status_line(layout, context):
     row = layout.row(align=True)
     for tab, icon in (('MODELING_TOOLKIT', 'EDITMODE_HLT'), ('OBJECT', 'PROPERTIES'), ('TOOL', 'TOOL_SETTINGS'),
                       ('CHANNEL_BOX', 'ALIGN_JUSTIFY')):
-        row.operator("maya.dock_tab", text="", icon=icon).tab = tab
+        row.operator("m3d.dock_tab", text="", icon=icon).tab = tab
 
-    layout.separator()
+    layout.separator_spacer()
     layout.label(text="Workspace:")
     layout.template_ID(context.window, "workspace", new="workspace.add", unlink="workspace.delete")
 
@@ -733,9 +733,22 @@ NODE_TAB_CONTEXTS = {'OBJECT', 'DATA', 'MODIFIER', 'MATERIAL', 'CONSTRAINT', 'PH
                      'SHADERFX', 'BONE', 'BONE_CONSTRAINT'}
 
 
+DOCK_TABS = (('CHANNEL_BOX', "Channel Box / Layer Editor"), ('MODELING_TOOLKIT', "Modeling Toolkit"),
+             ('TOOL', "Tool Settings"))
+
+
 def draw_node_tabs(layout, context):
-    """Maya Attribute Editor tabs: transform node, shape node, inputs (modifiers), material."""
+    """Dock header: the dock's own tabs (Channel Box, Modeling Toolkit, Tool Settings) as text, and in the
+    Attribute Editor its node tabs: transform node, shape node, inputs (modifiers), material."""
     space = context.space_data
+    if space.context in {tab for tab, _label in DOCK_TABS}:
+        row = layout.row(align=True)
+        for tab, label in DOCK_TABS:
+            o = row.operator("wm.context_set_enum", text=label, depress=space.context == tab)
+            o.data_path, o.value = "space_data.context", tab
+        o = row.operator("wm.context_set_enum", text="Attribute Editor")
+        o.data_path, o.value = "space_data.context", 'OBJECT'
+        return True
     ob = context.active_object
     if ob is None or space.context not in NODE_TAB_CONTEXTS:
         return False
@@ -754,7 +767,7 @@ def draw_node_tabs(layout, context):
 
 
 def draw_panel_toolbar(layout, context):
-    """Maya panel toolbar: camera, grid, shading and display toggles under the panel menus."""
+    """Panel toolbar: camera, grid, shading and display toggles under the panel menus."""
     space = context.space_data
     shading, overlay = space.shading, space.overlay
     row = layout.row(align=True)
@@ -773,8 +786,8 @@ def draw_panel_toolbar(layout, context):
     row.operator("view3d.localview", text="", icon='HIDE_OFF')
 
 
-class VIEW3D_PT_maya_quick_layouts(Panel):
-    """Maya Quick Layout buttons under the Tool Box"""
+class VIEW3D_PT_m3d_quick_layouts(Panel):
+    """Quick Layout buttons under the Tool Box"""
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'TOOLS'
     bl_label = "Quick Layouts"
@@ -787,7 +800,7 @@ class VIEW3D_PT_maya_quick_layouts(Panel):
         col.operator("screen.region_quadview", text="", icon='MESH_PLANE' if context.space_data.region_quadviews
                      else 'VIEW_PERSPECTIVE')
         col.operator("screen.screen_full_area", text="", icon='FULLSCREEN_ENTER')
-        col.operator("maya.open_editor", text="", icon='OUTLINER').ui_type = 'OUTLINER'
+        col.operator("m3d.open_editor", text="", icon='OUTLINER').ui_type = 'OUTLINER'
 
 
 # Maya shelves: tab -> (idname, icon, props). Shown in the viewport's shelf row (tool header).
@@ -806,18 +819,18 @@ SHELVES = {
         ("object.modifier_add", 'MOD_SCREW', {"type": 'SCREW'}),
     ]),
     'POLY': ("Poly Modeling", [
-        ("maya.add_primitive", 'MESH_UVSPHERE', {"kind": 'SPHERE'}),
-        ("maya.add_primitive", 'MESH_CUBE', {"kind": 'CUBE'}),
-        ("maya.add_primitive", 'MESH_CYLINDER', {"kind": 'CYLINDER'}),
-        ("maya.add_primitive", 'MESH_CONE', {"kind": 'CONE'}),
-        ("maya.add_primitive", 'MESH_TORUS', {"kind": 'TORUS'}),
-        ("maya.add_primitive", 'MESH_PLANE', {"kind": 'PLANE'}),
+        ("m3d.add_primitive", 'MESH_UVSPHERE', {"kind": 'SPHERE'}),
+        ("m3d.add_primitive", 'MESH_CUBE', {"kind": 'CUBE'}),
+        ("m3d.add_primitive", 'MESH_CYLINDER', {"kind": 'CYLINDER'}),
+        ("m3d.add_primitive", 'MESH_CONE', {"kind": 'CONE'}),
+        ("m3d.add_primitive", 'MESH_TORUS', {"kind": 'TORUS'}),
+        ("m3d.add_primitive", 'MESH_PLANE', {"kind": 'PLANE'}),
         None,
         ("object.join", 'AUTOMERGE_ON', {}),
-        ("maya.separate", 'MOD_EXPLODE', {}),
-        ("maya.boolean", 'SELECT_EXTEND', {"operation": 'UNION'}),
-        ("maya.boolean", 'SELECT_SUBTRACT', {"operation": 'DIFFERENCE'}),
-        ("maya.boolean", 'SELECT_INTERSECT', {"operation": 'INTERSECT'}),
+        ("m3d.separate", 'MOD_EXPLODE', {}),
+        ("m3d.boolean", 'SELECT_EXTEND', {"operation": 'UNION'}),
+        ("m3d.boolean", 'SELECT_SUBTRACT', {"operation": 'DIFFERENCE'}),
+        ("m3d.boolean", 'SELECT_INTERSECT', {"operation": 'INTERSECT'}),
         ("object.subdivision_set", 'MOD_SUBSURF', {"level": 1, "relative": False}),
         ("object.modifier_add", 'MOD_MIRROR', {"type": 'MIRROR'}),
         None,
@@ -826,7 +839,7 @@ SHELVES = {
         ("mesh.bevel", 'MOD_BEVEL', {}),
         ("mesh.loopcut_slide", 'MOD_EDGESPLIT', {}),
         ("mesh.knife_tool", 'MOD_SIMPLEDEFORM', {}),
-        ("maya.fill_hole", 'SNAP_FACE', {}),
+        ("m3d.fill_hole", 'SNAP_FACE', {}),
         None,
         ("object.origin_set", 'PIVOT_BOUNDBOX', {"type": 'ORIGIN_GEOMETRY'}),
         ("object.transform_apply", 'FREEZE', {"location": True, "rotation": True, "scale": True}),
@@ -860,8 +873,8 @@ SHELVES = {
         ("anim.keyframe_delete_v3d", 'KEY_DEHLT', {}),
         None,
         ("screen.animation_play", 'PLAY', {}),
-        ("maya.open_editor", 'GRAPH', {"ui_type": 'FCURVES'}),
-        ("maya.open_editor", 'ACTION', {"ui_type": 'DOPESHEET'}),
+        ("m3d.open_editor", 'GRAPH', {"ui_type": 'FCURVES'}),
+        ("m3d.open_editor", 'ACTION', {"ui_type": 'DOPESHEET'}),
         ("object.paths_calculate", 'ANIM_DATA', {}),
     ]),
     'RENDERING': ("Rendering", [
@@ -871,8 +884,8 @@ SHELVES = {
         ("object.light_add", 'LIGHT_AREA', {"type": 'AREA'}),
         ("object.light_add", 'LIGHT_SUN', {"type": 'SUN'}),
         None,
-        ("maya.assign_material", 'MATERIAL', {}),
-        ("maya.open_editor", 'NODE_MATERIAL', {"ui_type": 'ShaderNodeTree'}),
+        ("m3d.assign_material", 'MATERIAL', {}),
+        ("m3d.open_editor", 'NODE_MATERIAL', {"ui_type": 'ShaderNodeTree'}),
         None,
         ("render.render", 'RENDER_STILL', {}),
         ("render.render", 'RENDER_ANIMATION', {"animation": True}),
@@ -893,35 +906,62 @@ SHELVES = {
 
 
 def draw_shelf(layout, context):
-    """Maya shelf: tab strip plus the active shelf's buttons."""
-    wm = context.window_manager
-    layout.prop(wm, "maya_shelf", expand=True)
-    layout.separator()
+    """Shelf: the active shelf's buttons, large large (the tabs are the row above)."""
+    from m3d_mode import _button
     row = layout.row(align=True)
-    for item in SHELVES[wm.maya_shelf][1]:
+    row.scale_x = row.scale_y = 1.5
+    for item in SHELVES[context.window_manager.m3d_shelf][1]:
         if item is None:
-            row.separator()
+            row.separator(factor=0.5)
             continue
         idname, icon, props = item
-        o = row.operator(idname, text="", icon=icon)
-        for k, v in props.items():
-            setattr(o, k, v)
+        _button(row, context, "", idname, icon, props)
+
+
+class TOPBAR_HT_m3d_status_line(bpy.types.Header):
+    """Status Line: the second row of the top bar"""
+    bl_space_type = 'TOPBAR'
+    bl_region_type = 'TOOL_HEADER'
+
+    def draw(self, context):
+        draw_status_line(self.layout, context)
+
+
+class TOPBAR_HT_m3d_shelf_tabs(bpy.types.Header):
+    """Shelf tabs: the third row of the top bar"""
+    bl_space_type = 'TOPBAR'
+    bl_region_type = 'FOOTER'
+
+    def draw(self, context):
+        self.layout.prop(context.window_manager, "m3d_shelf", expand=True)
+
+
+class TOPBAR_HT_m3d_shelf(bpy.types.Header):
+    """Shelf buttons: the bottom row of the top bar"""
+    bl_space_type = 'TOPBAR'
+    bl_region_type = 'WINDOW'
+
+    def draw(self, context):
+        draw_shelf(self.layout, context)
 
 
 def draw_panel_menus(layout, context):
     for idname in PANEL_MENUS:
         layout.menu(idname)
     if context.mode in {'OBJECT', 'EDIT_MESH'}:
-        layout.menu("MAYA_MT_blender_menus", text="", icon='COLLAPSEMENU')
+        layout.menu("M3D_MT_blender_menus", text="", icon='COLLAPSEMENU')
     layout.separator()
     draw_panel_toolbar(layout, context)
 
 
 classes = (
     *(_make_menu(idname, label, entries) for idname, (label, entries) in MENUS.items()),
-    MAYA_MT_workspaces,
-    MAYA_MT_blender_menus,
-    VIEW3D_PT_maya_quick_layouts,
+    M3D_MT_workspaces,
+    M3D_MT_blender_menus,
+    VIEW3D_PT_m3d_quick_layouts,
+    TOPBAR_HT_m3d_status_line,
+    TOPBAR_HT_m3d_shelf_tabs,
+    TOPBAR_HT_m3d_shelf,
 )
 
 
@@ -929,16 +969,16 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     wm = bpy.types.WindowManager
-    wm.maya_menu_set = bpy.props.EnumProperty(
-        name="Menu Set", description="Maya menu set: which menus the main menu bar shows",
+    wm.m3d_menu_set = bpy.props.EnumProperty(
+        name="Menu Set", description="Menu set: which menus the main menu bar shows",
         items=[(k, label, "") for k, (label, _) in MENU_SETS.items()])
-    wm.maya_shelf = bpy.props.EnumProperty(
-        name="Shelf", description="Maya shelf tab",
+    wm.m3d_shelf = bpy.props.EnumProperty(
+        name="Shelf", description="Shelf tab",
         items=[(k, label, "") for k, (label, _) in SHELVES.items()], default='POLY')
 
 
 def unregister():
-    del bpy.types.WindowManager.maya_shelf
-    del bpy.types.WindowManager.maya_menu_set
+    del bpy.types.WindowManager.m3d_shelf
+    del bpy.types.WindowManager.m3d_menu_set
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

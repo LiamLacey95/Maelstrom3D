@@ -110,33 +110,23 @@ static void topbar_header_region_init(wmWindowManager * /*wm*/, ARegion *region)
   ED_region_header_init(region);
 }
 
-static void topbar_main_region_listener(const wmRegionListenerParams *params)
+/* Maelstrom3D: the Status Line and shelf rows show selection, modes and tool state, so they follow every
+ * scene / object / window-manager change. */
+static void topbar_maya_row_listener(const wmRegionListenerParams *params)
 {
-  ARegion *region = params->region;
-  const wmNotifier *wmn = params->notifier;
-
-  /* context changes */
-  switch (wmn->category) {
-    case NC_WM:
-      if (wmn->data == ND_HISTORY) {
-        ED_region_tag_redraw(region);
-      }
-      break;
-    case NC_SCENE:
-      if (wmn->data == ND_MODE) {
-        ED_region_tag_redraw(region);
-      }
-      break;
-    case NC_SPACE:
-      if (wmn->data == ND_SPACE_VIEW3D) {
-        ED_region_tag_redraw(region);
-      }
-      break;
-    case NC_GPENCIL:
-      if (wmn->data == ND_DATA) {
-        ED_region_tag_redraw(region);
-      }
-      break;
+  if (ELEM(params->notifier->category,
+           NC_WM,
+           NC_WINDOW,
+           NC_WORKSPACE,
+           NC_SPACE,
+           NC_SCREEN,
+           NC_SCENE,
+           NC_OBJECT,
+           NC_GEOM,
+           NC_MATERIAL,
+           NC_GPENCIL))
+  {
+    ED_region_tag_redraw(params->region);
   }
 }
 
@@ -308,7 +298,7 @@ void ED_spacetype_topbar()
   art->init = topbar_main_region_init;
   art->layout = ED_region_header_layout;
   art->draw = ED_region_header_draw;
-  art->listener = topbar_main_region_listener;
+  art->listener = topbar_maya_row_listener; /* Maelstrom3D: the main region is the shelf. */
   art->prefsizex = UI_UNIT_X * 5; /* Mainly to avoid glitches */
   art->keymapflag = ED_KEYMAP_UI | ED_KEYMAP_VIEW2D | ED_KEYMAP_HEADER;
 
@@ -327,6 +317,20 @@ void ED_spacetype_topbar()
   art->draw = ED_region_header_draw;
 
   BLI_addhead(&st->regiontypes, art);
+
+  /* Maelstrom3D: Status Line (tool header) and shelf tabs (footer) rows. */
+  for (const short type : {short(RGN_TYPE_TOOL_HEADER), short(RGN_TYPE_FOOTER)}) {
+    art = MEM_new_zeroed<ARegionType>("spacetype topbar maya row region");
+    art->regionid = type;
+    art->prefsizey = HEADERY;
+    art->prefsizex = UI_UNIT_X * 5;
+    art->keymapflag = ED_KEYMAP_UI | ED_KEYMAP_VIEW2D | ED_KEYMAP_HEADER;
+    art->listener = topbar_maya_row_listener;
+    art->init = topbar_header_region_init;
+    art->layout = ED_region_header_layout;
+    art->draw = ED_region_header_draw;
+    BLI_addhead(&st->regiontypes, art);
+  }
 
   recent_files_menu_register();
   undo_history_menu_register();
