@@ -17,9 +17,9 @@ named here only to describe compatibility.*
 | Keymap | Default keymap is **Maelstrom3D** (Blender's Industry Compatible keymap plus classic studio-style overrides) | `scripts/presets/keyconfig/Maelstrom3D.py`, `DNA_userdef_types.h` |
 | Theme | Mid greys, `#5285a6` highlight, steel-blue to black viewport gradient, green lead / white selection, magenta verts, yellow/orange selected components, red playhead | `release/datafiles/userdef/userdef_default_theme.c` (from `tools/m3d/theme.py`) |
 | Startup | Empty scene (camera `persp` and light hidden), a 35 mm-equivalent default camera field of view, dock opens on Channel Box, no splash, solid toolbox/dock strips, Segoe UI font | `versioning_defaults.cc`, `m3d_mode.py` (factory startup / preferences handlers) |
-| Layout | Classic: Outliner left, Attribute Editor dock right, Time Slider and Command Line bottom. Workspaces: Classic, Modeling - Standard, Sculpting, UV Editing, Rigging, Animation, Hypershade, Rendering, 3D Paint, Node Editor, Script Editor | `release/datafiles/startup.blend` (from `tools/m3d/build_startup.py`) |
+| Layout | Modeling: Outliner left, Attribute Editor dock right, Time Slider and Command Line bottom. Workspaces (F1-F7 are the first seven): Modeling, Sculpt, UV, Texture, Rigging, Animation, Rendering, Shading, Compositing, Node Editor, Script Editor | `release/datafiles/startup.blend` (from `tools/m3d/build_startup.py`) |
 | Top rows | Four stacked rows: menu bar (menu set dropdown + File/Edit/Create/Select/Modify/Display/Windows + menu-set menus + Help), Status Line (with "Workspace:"), shelf tabs, shelf buttons | `screen_edit.cc`, `space_topbar.cc` (extra top-bar rows), `m3d_ui.py`, `bl_ui/space_topbar.py` |
-| Shelf | Shelf tabs (Curves/Surfaces, Poly Modeling, Sculpting, Rigging, Animation, Rendering, FX) and large buttons in the top rows | `m3d_ui.py` |
+| Shelf | Shelf tabs (Curves/Surfaces, Poly Modeling, Sculpting, Rigging, Animation, Rendering, FX, Custom) and large buttons in the top rows; every workspace has a Custom tab (right-click any button, Add to Shelf) | `m3d_ui.py`, `m3d_user.py` |
 | Viewport | Panel menus (View, Shading, Lighting, Show, Renderer, Panels) and panel toolbar only (Blender's menus under "..."), viewport HUD (camera name, axis triad) | `m3d_ui.py`, `m3d_hud.py`, `bl_ui/space_view3d.py` |
 | Right-hand dock | Tabs on the right edge: Channel Box / Layer Editor, Modeling Toolkit, Tool Settings, then the Attribute Editor tabs (Object, Modifiers, Material, ...) | `space_buttons.cc`, `buttons_context.cc`, `DNA_space_enums.h`, `rna_space.cc`, `m3d_mode.py` |
 | Editor names | Attribute Editor, Shader Editor, Script Editor, Command Line, Command History, Time Editor | `rna_space.cc`, `node_shader_tree.cc` |
@@ -49,11 +49,11 @@ named here only to describe compatibility.*
 | Y, Ctrl+T | Last tool, universal manipulator |
 | Ctrl+Shift+Q / X | Quad Draw / Multi-Cut |
 | Alt+B, Alt+1/2/4/5 | Cycle background, toggle curves / meshes / image planes / wireframe |
-| Shift+{ / Shift+}, F1 | Previous / next workspace, help |
+| Shift+{ / Shift+} | Previous / next workspace |
 | D (hold) / Insert | Edit pivot: objects move their origin; components move a custom pivot. Modify > Reset Pivot to go back |
 | Space tap / hold | Four view / hotbox (every menu) |
-| F2 / F3 / F4 / F5 / F6 | Menu set: Modeling / Rigging / Animation / FX / Rendering (Maya 2025) |
-| F8, F9, F10, F11, F12 | Object/component toggle, Vertex, Edge, Face, UV Editing |
+| F1 / F2 / F3 / F4 / F5 / F6 / F7 | Workspace (and its menu set): Modeling / Sculpt / UV / Texture / Rigging / Animation / Rendering. The menu set dropdown also offers FX |
+| F8, F9, F10, F11, F12 | Object/component toggle, Vertex, Edge, Face, UV workspace |
 | Ctrl+F9 / F10 / F11 | Convert selection to vertices / edges / faces |
 | 1 / 2 / 3, Page Up / Down | Smooth preview off / cage / smooth, more / fewer divisions |
 | 4 / 5 / 6 / 7 | Wireframe / Shaded / Textured / Lighting |
@@ -85,7 +85,7 @@ named here only to describe compatibility.*
 
 ## UV editing 
 
-F12 in component mode (or UV > UV Editing Workspace) opens the UV Editing workspace. The UV Toolkit sits on the right of
+F3, or F12 in component mode (or UV > UV Workspace), opens the UV workspace. The UV Toolkit sits on the right of
 the UV Editor, like Maya's:
 
 | Section | Tools |
@@ -119,7 +119,7 @@ Display layers = Collections (Layer Editor) · Blender is Z-up (Maya is Y-up); u
 
 ## Command line (MEL and Python)
 
-The command line at the bottom of Classic speaks MEL, like Maya's:
+The command line at the bottom of Modeling speaks MEL, like Maya's:
 `polyCube -w 2 -n box; move -r 0 0 1; setAttr box.rotateZ 45; select -cl;`.
 Windows > Command Line: Python switches to Python, where `cmds` is ready (`cmds.polyCube(w=2)`), and scripts can
 `import m3d.cmds as cmds`. Supported commands: polyCube/Sphere/Cylinder/Cone/Plane/Torus, polySmooth, spaceLocator,

@@ -300,14 +300,17 @@ def _select_uv_toolkit_tab():
                 if region.is_property_readonly("active_panel_category"):
                     pending = True
                 else:
-                    region.active_panel_category = UV_TOOLKIT
+                    try:
+                        region.active_panel_category = UV_TOOLKIT
+                    except TypeError:
+                        pass  # The Toolkit tab only exists while a mesh is in Edit Mode.
     _tab_tries -= 1
     return 0.25 if pending and _tab_tries > 0 else None
 
 
 def _uv_editor_areas():
-    screen = bpy.data.screens.get("UV Editing")
-    return [a for a in screen.areas if a.type == 'IMAGE_EDITOR'] if screen else []
+    from m3d_workspace import workspace_screens
+    return [a for screen in workspace_screens('UV') for a in screen.areas if a.type == 'IMAGE_EDITOR']
 
 
 @bpy.app.handlers.persistent

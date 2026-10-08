@@ -228,12 +228,12 @@ def s_interface():
     caption("Maelstrom3D: a Blender 5.2 based 3D suite with a classic studio workflow")
     yield from move(viewport_point(0.5, 0.55), 1.0)
     yield 1.5
-    caption("Classic layout: Outliner, viewport, Channel Box dock, Time Slider, Command Line")
+    caption("Modeling layout: Outliner, viewport, Channel Box dock, Time Slider, Command Line")
     for p in ((0.05, 0.9), (0.95, 0.9), (0.5, 0.08), (0.5, 0.55)):
         yield from move(viewport_point(*p), 0.7)
         yield 0.3
-    caption("Menu sets: F2 Modeling  F3 Rigging  F4 Animation  F6 Rendering")
-    for k in ('F3', 'F4', 'F6', 'F2'):
+    caption("Workspaces: F2 Sculpt  F5 Rigging  F6 Animation  F1 Modeling")
+    for k in ('F2', 'F5', 'F6', 'F1'):
         yield from key(k)
         yield 0.9
     caption("Shelf tabs: Poly Modeling, Rigging, Animation, Rendering ...")
@@ -361,7 +361,7 @@ def s_dock():
 def s_uv():
     run_op(bpy.ops.m3d.add_primitive, kind='CUBE')
     yield from move(viewport_point(0.5, 0.5), 0.6)
-    caption("F12 (component mode): UV Editing workspace with the UV Toolkit")
+    caption("F12 (component mode): UV workspace with the UV Toolkit")
     yield from key('F11')
     yield from key('F12')
     yield 1.5

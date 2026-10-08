@@ -1,29 +1,34 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-Build Maelstrom3D's factory startup file (workspaces and Classic layout).
+Build Maelstrom3D's factory startup file (workspaces and their layouts).
+
+Runs on Maelstrom3D's own build: it loads the current factory startup file and applies only the edits of each
+phase, so running it again changes nothing (it does not re-split areas). One function per phase, listed in
+PHASES; a function is a generator, `yield seconds` waits for the window to catch up (workspace switches
+happen on the next event). Later phases add their own layout steps (new workspaces, areas, tabs) the same way.
 
 Run in the GUI (screen operators need a window), it saves and quits by itself:
 
     set BLENDER_USER_RESOURCES=<empty temp dir>
     blender --factory-startup --python tools/m3d/build_startup.py -- release/datafiles/startup.blend
+
+The build also installs startup.blend as datafiles/m3d_factory_layout.blend (read by Reset Workspace).
 """
 
 import os
 import shutil
 import sys
+import traceback
 
 import bpy
 
+import m3d_workspace as mw
+
 OUT = os.path.abspath(sys.argv[sys.argv.index("--") + 1])
 
-# Blender workspace -> Maya workspace name.
-RENAME = {
-    "Layout": "Classic",
-    "Modeling": "Modeling - Standard",
-    "Texture Paint": "3D Paint",
-        "Geometry Nodes": "Node Editor",
-    "Scripting": "Script Editor",
-}
+
+def window():
+    return bpy.context.window_manager.windows[0]
 
 
 def areas(screen, type):
@@ -31,60 +36,97 @@ def areas(screen, type):
 
 
 def run(op, area, **props):
-    win = bpy.context.window_manager.windows[0]
+    """Run a screen operator in an area's main region (for later phases that split or close areas)."""
     region = next(r for r in area.regions if r.type == 'WINDOW')
-    print("MAYA STEP", op.idname(), area.type, flush=True)
-    with bpy.context.temp_override(window=win, screen=win.screen, area=area, region=region):
+    print("M3D STEP", op.idname(), area.type, flush=True)
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=area, region=region):
         op(**props)
 
 
-def maya_classic_layout():
-    """Outliner docked left, viewport centre, Attribute Editor right, command line at the bottom."""
-    screen = bpy.context.window_manager.windows[0].screen
-    outliner_top_right = areas(screen, 'OUTLINER')[0]
-    run(bpy.ops.screen.area_close, outliner_top_right)  # Properties (Attribute Editor) takes the column.
-
-    run(bpy.ops.screen.area_split, areas(screen, 'VIEW_3D')[0], direction='VERTICAL', factor=0.14)
-    areas(screen, 'VIEW_3D')[0].ui_type = 'OUTLINER'
-
-    run(bpy.ops.screen.area_split, areas(screen, 'DOPESHEET_EDITOR')[0], direction='HORIZONTAL', factor=0.35)
-    command_line = min(areas(screen, 'DOPESHEET_EDITOR'), key=lambda a: a.y)
-    command_line.ui_type = 'CONSOLE'
+def show(ws):
+    """Make `ws` the window's workspace (takes effect on the next event: `yield` after this)."""
+    window().workspace = ws
 
 
-def step_layout():
-    maya_classic_layout()
-    win = bpy.context.window_manager.windows[0]
-    win.workspace = bpy.data.workspaces["Animation"]
-    bpy.app.timers.register(step_rigging, first_interval=1.0)
+def phase0_workspaces():
+    """Names, kinds, entry modes, order; drops Blender's spare Modeling workspace."""
+    data = bpy.data
+    for old, new in mw.WORKSPACE_NAMES.items():
+        for collection in (data.workspaces, data.screens):
+            if old in collection and new not in collection:
+                collection[old].name = new
+
+    spare = data.workspaces.get("Modeling - Standard")
+    if spare is not None:
+        show(data.workspaces["Modeling"])
+        yield 0.6
+        screens = list(spare.screens)
+        data.batch_remove({spare})
+        data.batch_remove({s for s in screens if s.users == 0})
+
+    for kind, (name, _key, mode, _menu_set) in mw.KINDS.items():
+        ws = data.workspaces[name]
+        ws.m3d_kind = kind
+        ws.object_mode = mode
+
+    # The tab order is a number on each workspace. "Reorder to Back" gives the moved one the same number as the
+    # last one moved, so it lands in front of those: move them in reverse.
+    for name in reversed(mw.WORKSPACE_ORDER):
+        show(data.workspaces[name])
+        yield 0.5
+        with bpy.context.temp_override(window=window()):
+            bpy.ops.workspace.reorder_to_back()
+        yield 0.2
+    # The order is a hidden number on each workspace (not in Python's collection order): check by cycling.
+    show(data.workspaces["Modeling"])
+    yield 0.5
+    seen = ["Modeling"]
+    for _ in mw.WORKSPACE_ORDER[1:]:
+        with bpy.context.temp_override(window=window()):
+            bpy.ops.screen.workspace_cycle('INVOKE_DEFAULT', direction='NEXT')
+        yield 0.4
+        seen.append(window().workspace.name)
+    assert seen == mw.WORKSPACE_ORDER, seen
 
 
-def step_rigging():
-    # Maya ships a Rigging workspace; start it from the animation layout.
-    win = bpy.context.window_manager.windows[0]
-    with bpy.context.temp_override(window=win):
-        bpy.ops.workspace.duplicate()
-    bpy.data.workspaces["Animation.001"].name = "Rigging"
-    for old, new in RENAME.items():
-        bpy.data.workspaces[old].name = new
-    for screen in bpy.data.screens:
-        for area in screen.areas:
-            if area.type == 'VIEW_3D':
-                area.spaces.active.show_region_tool_header = True  # Shelf row.
-    win.workspace = bpy.data.workspaces["Classic"]
-    bpy.app.timers.register(step_save, first_interval=1.0)
+PHASES = [phase0_workspaces]
 
 
-def step_save():
-    # Hide the command line's header now that it has been drawn (doing it right after the split crashes).
-    for area in areas(bpy.context.window_manager.windows[0].screen, 'CONSOLE'):
-        area.spaces.active.show_region_header = False
+def save():
+    """Hide the command line's header now that it has been drawn (doing it right after the split crashes),
+    save, copy to the output paths and quit."""
+    wm = bpy.context.window_manager
+    wm.m3d_menu_set, wm.m3d_shelf = 'MODELING', 'POLY'
+    for screen in bpy.data.workspaces["Modeling"].screens:
+        for area in areas(screen, 'CONSOLE'):
+            area.spaces.active.show_region_header = False
     bpy.context.preferences.filepaths.use_file_compression = True
     bpy.ops.wm.save_homefile()
     saved = os.path.join(bpy.utils.resource_path('USER'), "config", "startup.blend")
     shutil.copyfile(saved, OUT)
-    print("MAYA STARTUP SAVED", OUT, [w.name for w in bpy.data.workspaces])
+    print("M3D STARTUP SAVED", OUT, [w.name for w in bpy.data.workspaces], flush=True)
     bpy.ops.wm.quit_blender()
 
 
-bpy.app.timers.register(step_layout, first_interval=1.0)
+def driver():
+    """Timer: run the phases one after the other, then save."""
+    global steps
+    if steps is None:
+        def all_phases():
+            for phase in PHASES:
+                yield from phase()
+            show(bpy.data.workspaces["Modeling"])
+            yield 0.6
+            save()
+        steps = all_phases()
+    try:
+        return next(steps)
+    except StopIteration:
+        return None
+    except Exception:  # Report and quit rather than leave a window hanging.
+        traceback.print_exc()
+        bpy.ops.wm.quit_blender()
+
+
+steps = None
+bpy.app.timers.register(driver, first_interval=1.5)

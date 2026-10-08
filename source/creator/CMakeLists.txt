@@ -577,6 +577,13 @@ install(
   DIRECTORY ${CMAKE_SOURCE_DIR}/release/datafiles/colormanagement
   DESTINATION ${TARGETDIR_VER}/datafiles
 )
+
+# Maelstrom3D: the factory layouts as a file too, read by Reset Workspace (`m3d_workspace.py`).
+install(
+  FILES ${CMAKE_SOURCE_DIR}/release/datafiles/startup.blend
+  DESTINATION ${TARGETDIR_VER}/datafiles
+  RENAME m3d_factory_layout.blend
+)
 if(WIN32)
   if(EXISTS ${LIBDIR}/osl/lib/python${PYTHON_VERSION}/site-packages/oslquery) # 4.4+
     install(

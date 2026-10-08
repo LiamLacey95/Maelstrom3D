@@ -1,0 +1,339 @@
+# SPDX-FileCopyrightText: 2026 Maelstrom3D
+#
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+"""
+Task workspaces for Maelstrom3D: workspace kinds, F1-F7 switching, per-kind dock tabs and pages,
+Reset Workspace. Per-user choices (hidden tabs, Custom shelf) are in m3d_user.py.
+"""
+
+import os
+from collections import namedtuple
+
+import bpy
+from bpy.types import Menu, Operator
+
+# kind -> (workspace name, key, object mode on entry, menu set)
+KINDS = {
+    'MODEL': ("Modeling", 'F1', 'OBJECT', 'MODELING'),
+    'SCULPT': ("Sculpt", 'F2', 'SCULPT', 'SCULPTING'),
+    'UV': ("UV", 'F3', 'EDIT', 'UV'),
+    'TEXTURE': ("Texture", 'F4', 'TEXTURE_PAINT', 'TEXTURING'),
+    'RIG': ("Rigging", 'F5', 'OBJECT', 'RIGGING'),
+    'ANIM': ("Animation", 'F6', 'POSE', 'ANIMATION'),
+    'RENDER': ("Rendering", 'F7', 'OBJECT', 'RENDERING'),
+}
+# Workspace order in the startup file: the seven kinds, then the extras.
+WORKSPACE_ORDER = [v[0] for v in KINDS.values()] + ["Shading", "Compositing", "Node Editor", "Script Editor"]
+
+# Names in older startup files -> current names (an old factory startup is renamed on load).
+WORKSPACE_NAMES = {"Maya Classic": "Modeling", "Classic": "Modeling", "Sculpting": "Sculpt", "UV Editing": "UV",
+                   "3D Paint": "Texture", "Hypershade": "Shading"}
+# Kind from the name when a file has no `m3d_kind`. Blender's spare Modeling workspace counts as Modeling, last.
+_KIND_BY_NAME = {v[0]: k for k, v in KINDS.items()}
+_KIND_BY_NAME.update({old: _KIND_BY_NAME[new] for old, new in WORKSPACE_NAMES.items() if new in _KIND_BY_NAME})
+_KIND_BY_NAME["Modeling - Standard"] = 'MODEL'
+
+
+def _base_name(name):
+    """"Modeling.001" -> "Modeling"."""
+    head, dot, tail = name.rpartition(".")
+    return head if dot and tail.isdigit() else name
+
+
+def workspace_kind(ws):
+    """Kind of a workspace: its saved `m3d_kind`, else the one for its (current or older) name; None for
+    other workspaces (Shading, Compositing, user-made ones)."""
+    if ws is None:
+        return None
+    kind = ws.m3d_kind
+    return kind if kind in KINDS else _KIND_BY_NAME.get(_base_name(ws.name))
+
+
+def current_kind(context):
+    """Kind that decides what the top bar and dock show. Other workspaces look like Modeling."""
+    return workspace_kind(context.workspace) or 'MODEL'
+
+
+def find_workspace(kind):
+    """The workspace for a kind: the one with the factory name, then ones with a saved kind, then older names."""
+    def rank(ws):
+        return (ws.name != KINDS[kind][0], ws.m3d_kind != kind, list(_KIND_BY_NAME).index(_base_name(ws.name))
+                if _base_name(ws.name) in _KIND_BY_NAME else 0)
+    found = [ws for ws in bpy.data.workspaces if workspace_kind(ws) == kind]
+    return min(found, key=rank) if found else None
+
+
+def workspace_screens(kind):
+    ws = find_workspace(kind)
+    return list(ws.screens) if ws else []
+
+
+class M3D_OT_workspace(Operator):
+    """Switch to a task workspace (F1 Modeling ... F7 Rendering) and its menu set"""
+    bl_idname = "m3d.workspace"
+    bl_label = "Switch Workspace"
+
+    kind: bpy.props.EnumProperty(items=[(k, v[0], "") for k, v in KINDS.items()])
+
+    @classmethod
+    def description(cls, _context, props):
+        return "Switch to the %s workspace (%s)" % (KINDS[props.kind][0], KINDS[props.kind][1])
+
+    def execute(self, context):
+        ws = find_workspace(self.kind)
+        if ws is None:
+            self.report({'WARNING'}, "No %s workspace in this file" % KINDS[self.kind][0])
+            return {'CANCELLED'}
+        wm = context.window_manager
+        win = context.window or (wm.windows[0] if wm.windows else None)
+        if win is not None:
+            win.workspace = ws
+        wm.m3d_menu_set = KINDS[self.kind][3]
+        return {'FINISHED'}
+
+
+# The menu set and shelf follow the window's workspace, however it was switched (menu, F-key, Shift+[ ]).
+_state = {"kind": None}
+
+
+def workspace_changed(wm, ws):
+    """Menu set and shelf tab for the workspace `ws` (called when the window's workspace changes)."""
+    from m3d_ui import restore_shelf
+    kind = workspace_kind(ws) or 'MODEL'
+    prev, _state["kind"] = _state["kind"], kind
+    if prev is None or prev == kind:
+        return
+    wm.m3d_menu_set = KINDS[kind][3]
+    restore_shelf(wm, prev, kind)
+
+
+def _follow_workspace():
+    wm = bpy.context.window_manager
+    if wm.windows:
+        workspace_changed(wm, wm.windows[0].workspace)
+    return 0.25
+
+
+# -----------------------------------------------------------------------------
+# Dock tabs and pages
+
+# A dock tab shows a native Properties context, or a page: panels with bl_context "modeling_toolkit" whose
+# page id is the active one for that workspace and side.
+Tab = namedtuple("Tab", "id label context page")
+_CHANNEL_BOX = Tab("channel_box", "Channel Box / Layer Editor", 'CHANNEL_BOX', None)
+_TOOLKIT = Tab("modeling_toolkit", "Modeling Toolkit", 'MODELING_TOOLKIT', "modeling_toolkit")
+_TOOL = Tab("tool", "Tool Settings", 'TOOL', None)
+
+# kind -> side -> tabs (an empty side uses the right-hand tabs). Phases 1-6 replace the entries of their kind.
+DOCK_TABS = {kind: {'RIGHT': (_CHANNEL_BOX, _TOOLKIT, _TOOL), 'LEFT': ()} for kind in KINDS}
+# The last tab of every row: the stock Properties tabs.
+ALL_SETTINGS = {'MODEL': "Attribute Editor"}
+DOCK_CONTEXTS = {'CHANNEL_BOX', 'MODELING_TOOLKIT', 'TOOL'}
+
+
+def side_of_area(area_x, area_width, window_width):
+    return 'LEFT' if area_x + area_width / 2 < window_width / 2 else 'RIGHT'
+
+
+def side_of(context):
+    """LEFT when the Properties editor sits in the left half of the window (the left tray), else RIGHT."""
+    area, win = context.area, context.window
+    if area is None or win is None:
+        return 'RIGHT'
+    return side_of_area(area.x, area.width, win.width)
+
+
+def dock_tabs(kind, side):
+    tabs = DOCK_TABS.get(kind, DOCK_TABS['MODEL'])
+    return tabs[side] or tabs['RIGHT']
+
+
+def active_page(context):
+    """Page shown in the Properties editor under the mouse: the one stored on the workspace for its side
+    when the kind has it, else the kind's first page, else the Modeling Toolkit."""
+    side = side_of(context)
+    pages = [t.page for t in dock_tabs(current_kind(context), side) if t.page]
+    stored = getattr(context.workspace, "m3d_page_" + side.lower(), "")
+    return stored if stored in pages else pages[0] if pages else "modeling_toolkit"
+
+
+class _PagePanel:
+    """Panel of a dock page: shown in the page's own Properties editor tab only."""
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = "modeling_toolkit"
+    page = ""
+
+    @classmethod
+    def poll(cls, context):
+        return active_page(context) == cls.page and cls.page_poll(context)
+
+    @classmethod
+    def page_poll(cls, _context):
+        return True
+
+
+def draw_dock_tabs(layout, context):
+    """Dock header: the tabs of this workspace's kind (hidden ones left out), All Settings, tab menu.
+    False when the dock shows one of the stock tabs instead."""
+    from m3d_user import hidden_tabs
+    space = context.space_data
+    kind, side = current_kind(context), side_of(context)
+    tabs = dock_tabs(kind, side)
+    if space.context not in {t.context for t in tabs} | DOCK_CONTEXTS:
+        return False
+    hidden, page = hidden_tabs(kind), active_page(context)
+    row = layout.row(align=True)
+    for tab in tabs:
+        if tab.id not in hidden:
+            on = space.context == tab.context and tab.page in {None, page}
+            row.operator("m3d.dock_page", text=tab.label, depress=on).tab = tab.id
+    o = row.operator("wm.context_set_enum", text=ALL_SETTINGS.get(kind, "All Settings"))
+    o.data_path, o.value = "space_data.context", 'OBJECT'
+    row.menu("M3D_MT_dock_tabs", text="", icon='DOWNARROW_HLT')
+    return True
+
+
+class M3D_OT_dock_page(Operator):
+    """Show a tab of this dock"""
+    bl_idname = "m3d.dock_page"
+    bl_label = "Dock Tab"
+    bl_options = {'INTERNAL'}
+
+    tab: bpy.props.StringProperty()
+
+    @classmethod
+    def description(cls, _context, props):
+        return "Show this tab"
+
+    def execute(self, context):
+        space = context.space_data
+        side = side_of(context)
+        tab = next((t for t in dock_tabs(current_kind(context), side) if t.id == self.tab), None)
+        if tab is None or space is None or space.type != 'PROPERTIES':
+            return {'CANCELLED'}
+        space.context = tab.context
+        if tab.page:
+            setattr(context.workspace, "m3d_page_" + side.lower(), tab.page)
+        return {'FINISHED'}
+
+
+class M3D_OT_dock_tab_toggle(Operator):
+    """Show or hide a dock tab for this kind of workspace"""
+    bl_idname = "m3d.dock_tab_toggle"
+    bl_label = "Show / Hide Tab"
+    bl_options = {'INTERNAL'}
+
+    tab: bpy.props.StringProperty()
+
+    def execute(self, context):
+        from m3d_user import toggle_tab
+        toggle_tab(current_kind(context), self.tab)
+        for area in context.screen.areas:
+            area.tag_redraw()
+        return {'FINISHED'}
+
+
+class M3D_MT_dock_tabs(Menu):
+    """Dock tabs: show or hide them, reset the workspace"""
+    bl_label = "Dock Tabs"
+
+    def draw(self, context):
+        from m3d_user import hidden_tabs
+        layout = self.layout
+        kind = current_kind(context)
+        hidden = hidden_tabs(kind)
+        layout.label(text="Tabs")
+        for tab in dock_tabs(kind, side_of(context)):
+            o = layout.operator("m3d.dock_tab_toggle", text=tab.label,
+                                icon='CHECKBOX_DEHLT' if tab.id in hidden else 'CHECKBOX_HLT')
+            o.tab = tab.id
+        layout.separator()
+        layout.operator("m3d.workspace_reset", icon='FILE_REFRESH')
+
+
+# -----------------------------------------------------------------------------
+# Reset Workspace
+
+def factory_file():
+    """The factory layouts: a copy of the built-in startup file, installed by the build."""
+    return os.path.join(bpy.utils.system_resource('DATAFILES'), "m3d_factory_layout.blend")
+
+
+class M3D_OT_workspace_reset(Operator):
+    """Replace this workspace by its factory layout (docks, shelves and tabs you changed are reset)"""
+    bl_idname = "m3d.workspace_reset"
+    bl_label = "Reset Workspace"
+
+    def execute(self, context):
+        ws = context.workspace
+        name = WORKSPACE_NAMES.get(_base_name(ws.name), _base_name(ws.name))
+        path = factory_file()
+        if not os.path.exists(path):
+            self.report({'ERROR'}, "Factory layouts file not found: " + path)
+            return {'CANCELLED'}
+        with bpy.data.libraries.load(path) as (src, _dst):
+            known = name in src.workspaces
+        if not known:
+            self.report({'WARNING'}, "\"%s\" has no factory layout" % ws.name)
+            return {'CANCELLED'}
+        before = {w.name for w in bpy.data.workspaces}
+        try:
+            bpy.ops.workspace.append_activate(idname=name, filepath=path)
+        except RuntimeError as err:
+            self.report({'ERROR'}, str(err).strip())
+            return {'CANCELLED'}
+        fresh = [w for w in bpy.data.workspaces if w.name not in before]
+        if not fresh:
+            return {'CANCELLED'}
+        # The window switches to the appended workspace on the next event; then the old one can go.
+        bpy.app.timers.register(lambda: _finish_reset(ws.name, fresh[0].name, name), first_interval=0.3)
+        return {'FINISHED'}
+
+
+def _finish_reset(old_name, new_name, name):
+    old, new = bpy.data.workspaces.get(old_name), bpy.data.workspaces.get(new_name)
+    win = bpy.context.window_manager.windows[0]
+    if old is None or new is None:
+        return None
+    if win.workspace == old:
+        return 0.3
+    screens = list(old.screens)
+    bpy.data.batch_remove({old})
+    bpy.data.batch_remove({s for s in screens if s.users == 0})
+    new.name = old_name
+    for screen in new.screens:
+        if screen.name != new.name and screen.name.startswith(_base_name(old_name)):
+            screen.name = new.name
+    from m3d_mode import m3d_startup_layout
+    m3d_startup_layout(screens=list(new.screens))
+    return None
+
+
+classes = (
+    M3D_OT_workspace,
+    M3D_OT_dock_page,
+    M3D_OT_dock_tab_toggle,
+    M3D_MT_dock_tabs,
+    M3D_OT_workspace_reset,
+)
+
+
+def register():
+    for cls in classes:
+        bpy.utils.register_class(cls)
+    ws = bpy.types.WorkSpace
+    ws.m3d_kind = bpy.props.StringProperty(name="Kind", description="Maelstrom3D workspace kind (MODEL, SCULPT, ...)")
+    ws.m3d_page_right = bpy.props.StringProperty(description="Active page of the right-hand dock")
+    ws.m3d_page_left = bpy.props.StringProperty(description="Active page of the left tray")
+    bpy.app.timers.register(_follow_workspace, first_interval=0.5, persistent=True)
+
+
+def unregister():
+    if bpy.app.timers.is_registered(_follow_workspace):
+        bpy.app.timers.unregister(_follow_workspace)
+    ws = bpy.types.WorkSpace
+    del ws.m3d_page_left, ws.m3d_page_right, ws.m3d_kind
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)

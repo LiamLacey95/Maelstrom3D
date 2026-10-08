@@ -19,18 +19,18 @@ Maelstrom3D keeps its settings apart from Blender's (`%APPDATA%\Maelstrom3D`), s
 | | |
 |---|---|
 | ![Interface](docs/media/interface.gif) | ![Modeling](docs/media/modeling.gif) |
-| **Interface:** Classic layout, menu sets (F2-F6), shelf tabs, Space for four view. [MP4](docs/media/interface.mp4) | **Modeling:** Shift+drag the manipulator to extrude, right-click for every tool on the selected faces, toolkit tools open an options box on the click, 1/2/3 smooth preview. [MP4](docs/media/modeling.mp4) |
+| **Interface:** Modeling layout, workspaces on F1-F7 with their menu sets, shelf tabs, Space for four view. [MP4](docs/media/interface.mp4) | **Modeling:** Shift+drag the manipulator to extrude, right-click for every tool on the selected faces, toolkit tools open an options box on the click, 1/2/3 smooth preview. [MP4](docs/media/modeling.mp4) |
 | ![Marking menus](docs/media/marking_menus.gif) | ![Dock](docs/media/dock.gif) |
 | **Marking menus:** W + left click, Shift / Ctrl+Shift right-click, Space hotbox. [MP4](docs/media/marking_menus.mp4) | **Right-hand dock:** Channel Box / Layer Editor, Attribute Editor (Ctrl+A), Modeling Toolkit. [MP4](docs/media/dock.mp4) |
 | ![UV editing](docs/media/uv.gif) | ![MEL](docs/media/mel.gif) |
-| **UV editing:** F12, UV Toolkit, Automatic / Layout, checker map. [MP4](docs/media/uv.mp4) | **MEL command line:** `polyCube -w 3 -n floor;`, plus `cmds` in Python. [MP4](docs/media/mel.mp4) |
+| **UV editing:** F3 / F12, UV Toolkit, Automatic / Layout, checker map. [MP4](docs/media/uv.mp4) | **MEL command line:** `polyCube -w 3 -n floor;`, plus `cmds` in Python. [MP4](docs/media/mel.mp4) |
 
 ## What you get
 
-- **Interface:** menu bar with menu sets (Modeling, Rigging, Animation, FX, Rendering), Status Line, shelf tabs and
+- **Interface:** menu bar with menu sets (Modeling, Sculpting, UV, Texturing, Rigging, Animation, FX, Rendering), Status Line, shelf tabs and
   shelf as rows across the top; viewport panel menus and toolbar, camera name and axis HUD; Quick Layout buttons;
-  Outliner on the left; Time Slider; MEL / Python command line; Classic, Modeling, Sculpting, UV Editing, Rigging,
-  Animation and Rendering workspaces.
+  Outliner on the left; Time Slider; MEL / Python command line; Modeling, Sculpt, UV, Texture, Rigging,
+  Animation and Rendering workspaces on F1-F7.
 - **Right-hand dock:** Channel Box / Layer Editor, Modeling Toolkit, Tool Settings and the Attribute Editor.
   Modeling Toolkit tools (Bevel, Extrude, Connect, ...) apply on the click and open an options box beside it.
 - **Hotkeys:** QWERT, Alt+mouse tumble / track / dolly, F / A framing, F8-F12, 1-7, D pivot, Ctrl+D / Shift+D,

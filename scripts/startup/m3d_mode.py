@@ -11,6 +11,8 @@ import bpy
 from bpy.types import Menu, Operator, Panel
 from mathutils import Vector
 
+from m3d_workspace import _PagePanel
+
 SMOOTH_MOD = "SmoothPreview"
 
 
@@ -846,8 +848,9 @@ MTK_TOOLS = (
 )
 
 
-class _ToolkitPanel(_DockPanel):
-    bl_context = "modeling_toolkit"
+class _ToolkitPanel(_PagePanel):
+    """Panel of the "modeling_toolkit" dock page."""
+    page = "modeling_toolkit"
 
 
 class PROPERTIES_PT_m3d_mtk_selection(_ToolkitPanel, Panel):
@@ -892,7 +895,7 @@ class PROPERTIES_PT_m3d_mtk_symmetry(_ToolkitPanel, Panel):
     bl_label = "Symmetry"
 
     @classmethod
-    def poll(cls, context):
+    def page_poll(cls, context):
         return context.active_object is not None and context.active_object.type == 'MESH'
 
     def draw(self, context):
@@ -913,7 +916,7 @@ class PROPERTIES_PT_m3d_mtk_components(_ToolkitPanel, Panel):
     bl_label = "Components"
 
     @classmethod
-    def poll(cls, context):
+    def page_poll(cls, context):
         return context.mode == 'EDIT_MESH'
 
     def draw(self, context):
@@ -924,7 +927,7 @@ class PROPERTIES_PT_m3d_mtk_tools(_ToolkitPanel, Panel):
     bl_label = "Tools"
 
     @classmethod
-    def poll(cls, context):
+    def page_poll(cls, context):
         return context.mode == 'EDIT_MESH'
 
     def draw(self, context):
@@ -1010,31 +1013,32 @@ classes = (
 )
 
 
-# Workspace names in the built-in startup file -> current names.
-WORKSPACE_NAMES = {"Maya Classic": "Classic", "Hypershade": "Shading"}
-
-
 @bpy.app.handlers.persistent
 def m3d_workspace_names(*_args):
+    """An older factory startup file: give its workspaces the current names."""
+    from m3d_workspace import WORKSPACE_NAMES
     for old, new in WORKSPACE_NAMES.items():
         for collection in (bpy.data.workspaces, bpy.data.screens):
             item = collection.get(old)
-            if item is not None:
+            if item is not None and new not in collection:
                 item.name = new
 
 
 @bpy.app.handlers.persistent
-def m3d_startup_layout(*_args):
+def m3d_startup_layout(*_args, screens=None):
     """Factory startup: viewport sidebar closed (panels live in the dock), Outliner shows objects only
-    (like Maya's DAG view), command lines use MEL."""
+    (like Maya's DAG view), command lines use MEL. `screens`: only these (a workspace that was just reset)."""
     if bpy.app.background:
         return  # No UI to set up (changing regions without a window leaks).
-    for screen in bpy.data.screens:
+    from m3d_workspace import workspace_kind
+    tool_header = {s.name for ws in bpy.data.workspaces if workspace_kind(ws) in {'SCULPT', 'TEXTURE'}
+                   for s in ws.screens}
+    for screen in screens or bpy.data.screens:
         for area in screen.areas:
             space = area.spaces.active
             if area.type == 'VIEW_3D':
                 space.show_region_ui = False
-                space.show_region_tool_header = screen.name in {"Sculpting", "3D Paint"}
+                space.show_region_tool_header = screen.name in tool_header
                 # Maya's default 35 mm camera on a 36 mm film back: Blender's viewport lens assumes a 72 mm
                 # sensor, so the matching field of view is 70 mm.
                 space.lens = 70.0

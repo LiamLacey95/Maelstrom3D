@@ -12,6 +12,9 @@ Menus are plain data (see `MENUS`) so `tools/m3d/test_m3d.py` can verify every c
 import bpy
 from bpy.types import Menu, Panel
 
+from m3d_uv import UVTK_CREATE, UVTK_CUT_SEW, UVTK_PIN, UVTK_SELECT, UVTK_UNFOLD
+from m3d_workspace import KINDS, current_kind
+
 
 # -----------------------------------------------------------------------------
 # Menu entry helpers
@@ -27,6 +30,16 @@ def sub(label, menu, icon='NONE', modes=None):
 def prop(label, path, modes=None):
     """Toggle a property given as a context path, e.g. `space_data.overlay.show_floor`."""
     return {"kind": 'PROP', "label": label, "path": path, "modes": modes}
+
+
+def stock(idname):
+    """Contents of one of Blender's menus drawn in place (a menu bar menu that is Blender's own)."""
+    return {"kind": 'STOCK', "label": idname, "idname": idname, "modes": None}
+
+
+def ops(items):
+    """(label, idname, icon, props) tuples as menu entries."""
+    return [op(label, idname, icon, **props) for label, idname, icon, props in items]
 
 
 def enum(label, idname, prop_name, icon='NONE', modes=None):
@@ -90,6 +103,8 @@ def draw_entries(layout, context, entries):
             layout.separator()
         elif kind == 'MENU':
             layout.menu(e["idname"], text=e["label"], icon=e["icon"])
+        elif kind == 'STOCK':
+            layout.menu_contents(e["idname"])
         elif kind == 'ENUM':
             layout.operator_menu_enum(e["idname"], e["prop"], text=e["label"], icon=e["icon"])
         elif kind == 'PROP':
@@ -368,7 +383,7 @@ MENUS = {
     ]),
     "M3D_MT_uv": ("UV", [
         editor("UV Editor", 'UV', 'UV'),
-        op("UV Editing Workspace", "wm.context_set_id", 'WORKSPACE', data_path="window.workspace", value="UV Editing"),
+        op("UV Workspace", "m3d.workspace", 'WORKSPACE', kind='UV'),
         op("Checker Map", "m3d.uv_checker", 'TEXTURE'),
         SEP,
         op("Automatic", "uv.smart_project", modes=EDIT),
@@ -381,6 +396,47 @@ MENUS = {
         op("Sew", "m3d.uv_sew", modes=EDIT),
         op("Unfold", "m3d.uv_unfold", modes=EDIT),
         op("Layout", "uv.pack_islands", modes=EDIT, margin=0.01),
+    ]),
+
+    # Sculpting menu set (Blender's own Sculpt, Mask and Face Sets menus).
+    "M3D_MT_sculpt": ("Sculpt", [stock("VIEW3D_MT_sculpt")]),
+    "M3D_MT_mask": ("Mask", [stock("VIEW3D_MT_mask")]),
+    "M3D_MT_face_sets": ("Face Sets", [stock("VIEW3D_MT_face_sets")]),
+    "M3D_MT_remesh": ("Remesh", [
+        op("Voxel Remesh", "object.voxel_remesh", 'MOD_REMESH', modes={'SCULPT', 'OBJECT'}),
+        op("QuadriFlow Remesh", "object.quadriflow_remesh", 'MOD_REMESH'),
+        modifier("Multires", 'MULTIRES', 'MOD_MULTIRES'),
+        SEP,
+        op("Dynamic Topology", "sculpt.dynamic_topology_toggle", 'MOD_DYNAMICPAINT', modes={'SCULPT'}),
+        op("Symmetrize", "sculpt.symmetrize", 'MOD_MIRROR', modes={'SCULPT'}),
+        op("Sample Detail Size", "sculpt.sample_detail_size", 'EYEDROPPER', modes={'SCULPT'}),
+    ]),
+
+    # UV menu set (the UV Toolkit's tools).
+    "M3D_MT_uv_edit": ("UV Edit", [*ops(UVTK_CUT_SEW), SEP, *ops(UVTK_UNFOLD), SEP, *ops(UVTK_PIN)]),
+    "M3D_MT_uv_select": ("UV Select", ops(UVTK_SELECT)),
+    "M3D_MT_uv_create": ("UV Create", ops(UVTK_CREATE)),
+
+    # Texturing menu set.
+    "M3D_MT_paint": ("Paint", [
+        op("Texture Paint Mode", "object.mode_set", 'TPAINT_HLT', mode='TEXTURE_PAINT'),
+        op("Object Mode", "object.mode_set", 'OBJECT_DATAMODE', mode='OBJECT'),
+        SEP,
+        op("Project from View", "paint.project_image", 'IMAGE_DATA'),
+        op("Swap Colors", "paint.brush_colors_flip", 'ARROW_LEFTRIGHT'),
+        op("Add Simple UVs", "paint.add_simple_uvs", 'UV'),
+    ]),
+    "M3D_MT_layers": ("Layers", [
+        op("Add Paint Slot", "paint.add_texture_paint_slot", 'ADD'),
+        op("New Image", "image.new", 'FILE_NEW'),
+    ]),
+    "M3D_MT_bake": ("Bake", [
+        op("Bake", "object.bake", 'RENDER_STILL'),
+        op("Apply Baked Image", "object.bake_image", 'IMAGE_DATA'),
+    ]),
+    "M3D_MT_export": ("Export", [
+        op("Save All Images", "image.save_all_modified", 'FILE_TICK'),
+        sub("Export Scene", "TOPBAR_MT_file_export", 'EXPORT'),
     ]),
 
     # Rigging menu set.
@@ -474,7 +530,7 @@ MENUS = {
     ]),
     "M3D_MT_texturing": ("Texturing", [
         editor("UV Editor", 'UV', 'UV'),
-        op("3D Paint Tool", "object.mode_set", 'TPAINT_HLT', mode='TEXTURE_PAINT'),
+        op("Texture Paint Tool", "object.mode_set", 'TPAINT_HLT', mode='TEXTURE_PAINT'),
     ]),
     "M3D_MT_render": ("Render", [
         op("Render Current Frame", "render.render", 'RENDER_STILL'),
@@ -606,6 +662,9 @@ MENUS = {
 MENU_SETS = {
     'MODELING': ("Modeling", ["M3D_MT_mesh", "M3D_MT_edit_mesh", "M3D_MT_mesh_tools", "M3D_MT_mesh_display",
                               "M3D_MT_curves", "M3D_MT_surfaces", "M3D_MT_deform", "M3D_MT_uv"]),
+    'SCULPTING': ("Sculpting", ["M3D_MT_sculpt", "M3D_MT_mask", "M3D_MT_face_sets", "M3D_MT_remesh"]),
+    'UV': ("UV", ["M3D_MT_uv_edit", "M3D_MT_uv_select", "M3D_MT_uv_create"]),
+    'TEXTURING': ("Texturing", ["M3D_MT_paint", "M3D_MT_layers", "M3D_MT_bake", "M3D_MT_export"]),
     'RIGGING': ("Rigging", ["M3D_MT_skeleton", "M3D_MT_skin", "M3D_MT_deform", "M3D_MT_constrain",
                             "M3D_MT_control"]),
     'ANIMATION': ("Animation", ["M3D_MT_key", "M3D_MT_playback", "M3D_MT_visualize", "M3D_MT_deform",
@@ -613,6 +672,9 @@ MENU_SETS = {
     'FX': ("FX", ["M3D_MT_nparticles", "M3D_MT_fluids", "M3D_MT_ncloth", "M3D_MT_fields"]),
     'RENDERING': ("Rendering", ["M3D_MT_lighting_shading", "M3D_MT_texturing", "M3D_MT_render"]),
 }
+# Saved enum values: the first five keep the numbers they had before the new sets were added.
+_MENU_SET_NUMBERS = {'MODELING': 0, 'RIGGING': 1, 'ANIMATION': 2, 'FX': 3, 'RENDERING': 4,
+                     'SCULPTING': 5, 'UV': 6, 'TEXTURING': 7}
 
 COMMON_MENUS = ["M3D_MT_file", "M3D_MT_edit", "M3D_MT_create", "M3D_MT_select", "M3D_MT_modify",
                 "M3D_MT_display", "M3D_MT_windows"]
@@ -625,7 +687,10 @@ class M3D_MT_workspaces(Menu):
     bl_label = "Workspaces"
 
     def draw(self, context):
-        for ws in bpy.data.workspaces:
+        from m3d_workspace import WORKSPACE_ORDER
+        # The factory order, then the others (the tab order itself is not available to Python).
+        rank = {name: i for i, name in enumerate(WORKSPACE_ORDER)}
+        for ws in sorted(bpy.data.workspaces, key=lambda w: rank.get(w.name, len(rank))):
             o = self.layout.operator("wm.context_set_id", text=ws.name,
                                      icon='CHECKMARK' if ws == context.workspace else 'BLANK1')
             o.data_path, o.value = "window.workspace", ws.name
@@ -663,18 +728,15 @@ def _call(layout, idname, icon, label, depress=False, **props):
     return o
 
 
-def draw_status_line(layout, context):
-    """Status Line, left to right: file, selection mode and masks, snapping, symmetry,
+def draw_status_line_model(layout, context):
+    """Modeling Status Line, left to right: file, selection mode and masks, snapping, symmetry,
     render, shader editor, input box, sidebar buttons, workspace."""
     from m3d_mode import _view3d_space
     ts = context.tool_settings
     space = _view3d_space(context)
     ob = context.active_object
 
-    row = layout.row(align=True)
-    row.operator("wm.read_homefile", text="", icon='FILE_NEW').app_template = ""
-    row.operator("wm.open_mainfile", text="", icon='FILE_FOLDER')
-    row.operator("wm.save_mainfile", text="", icon='FILE_TICK')
+    draw_file_buttons(layout)
 
     # Selection mode: object / component.
     row = layout.row(align=True)
@@ -724,30 +786,67 @@ def draw_status_line(layout, context):
                       ('CHANNEL_BOX', 'ALIGN_JUSTIFY')):
         row.operator("m3d.dock_tab", text="", icon=icon).tab = tab
 
+    draw_workspace_picker(layout, context)
+
+
+def draw_file_buttons(layout):
+    row = layout.row(align=True)
+    row.operator("wm.read_homefile", text="", icon='FILE_NEW').app_template = ""
+    row.operator("wm.open_mainfile", text="", icon='FILE_FOLDER')
+    row.operator("wm.save_mainfile", text="", icon='FILE_TICK')
+
+
+def draw_workspace_picker(layout, context):
     layout.separator_spacer()
     layout.label(text="Workspace:")
     layout.template_ID(context.window, "workspace", new="workspace.add", unlink="workspace.delete")
+
+
+# Placeholder Status Lines until a kind gets its own (phases 1-6): its modes as buttons.
+# (object.mode_set mode, icon, label, context.mode values)
+_OBJECT_MODE = ('OBJECT', 'OBJECT_DATAMODE', "Object Mode", {'OBJECT'})
+_EDIT_MODE = ('EDIT', 'EDITMODE_HLT', "Edit Mode", {'EDIT_MESH', 'EDIT_ARMATURE', 'EDIT_CURVE'})
+KIND_MODES = {
+    'SCULPT': (_OBJECT_MODE, ('SCULPT', 'SCULPTMODE_HLT', "Sculpt Mode", {'SCULPT'})),
+    'UV': (_OBJECT_MODE, _EDIT_MODE),
+    'TEXTURE': (_OBJECT_MODE, ('TEXTURE_PAINT', 'TPAINT_HLT', "Texture Paint Mode", {'PAINT_TEXTURE'})),
+    'RIG': (_OBJECT_MODE, _EDIT_MODE, ('POSE', 'POSE_HLT', "Pose Mode", {'POSE'}),
+            ('WEIGHT_PAINT', 'WPAINT_HLT', "Weight Paint Mode", {'PAINT_WEIGHT'})),
+    'ANIM': (_OBJECT_MODE, ('POSE', 'POSE_HLT', "Pose Mode", {'POSE'})),
+    'RENDER': (_OBJECT_MODE,),
+}
+
+
+def draw_status_line_placeholder(layout, context, kind):
+    draw_file_buttons(layout)
+    row = layout.row(align=True)
+    for mode, icon, label, modes in KIND_MODES[kind]:
+        _call(row, "object.mode_set", icon, label, depress=context.mode in modes, mode=mode)
+    draw_workspace_picker(layout, context)
+
+
+STATUS_LINES = {'MODEL': draw_status_line_model}
+
+
+def draw_status_line(layout, context):
+    """Status Line of the workspace's kind."""
+    kind = current_kind(context)
+    if kind in STATUS_LINES:
+        STATUS_LINES[kind](layout, context)
+    else:
+        draw_status_line_placeholder(layout, context, kind)
 
 
 NODE_TAB_CONTEXTS = {'OBJECT', 'DATA', 'MODIFIER', 'MATERIAL', 'CONSTRAINT', 'PHYSICS', 'PARTICLES',
                      'SHADERFX', 'BONE', 'BONE_CONSTRAINT'}
 
 
-DOCK_TABS = (('CHANNEL_BOX', "Channel Box / Layer Editor"), ('MODELING_TOOLKIT', "Modeling Toolkit"),
-             ('TOOL', "Tool Settings"))
-
-
 def draw_node_tabs(layout, context):
-    """Dock header: the dock's own tabs (Channel Box, Modeling Toolkit, Tool Settings) as text, and in the
-    Attribute Editor its node tabs: transform node, shape node, inputs (modifiers), material."""
+    """Dock header: the workspace kind's tabs as text (m3d_workspace.DOCK_TABS), and in All Settings
+    (the Attribute Editor) its node tabs: transform node, shape node, inputs (modifiers), material."""
+    from m3d_workspace import draw_dock_tabs
     space = context.space_data
-    if space.context in {tab for tab, _label in DOCK_TABS}:
-        row = layout.row(align=True)
-        for tab, label in DOCK_TABS:
-            o = row.operator("wm.context_set_enum", text=label, depress=space.context == tab)
-            o.data_path, o.value = "space_data.context", tab
-        o = row.operator("wm.context_set_enum", text="Attribute Editor")
-        o.data_path, o.value = "space_data.context", 'OBJECT'
+    if draw_dock_tabs(layout, context):
         return True
     ob = context.active_object
     if ob is None or space.context not in NODE_TAB_CONTEXTS:
@@ -804,6 +903,8 @@ class VIEW3D_PT_m3d_quick_layouts(Panel):
 
 
 # Maya shelves: tab -> (idname, icon, props). Shown in the viewport's shelf row (tool header).
+_MODEL = frozenset({'MODEL'})
+# Shelf tab key -> (label, buttons, kinds of workspace that show the tab).
 SHELVES = {
     'CURVES': ("Curves / Surfaces", [
         ("curve.primitive_bezier_curve_add", 'CURVE_BEZCURVE', {}),
@@ -817,7 +918,7 @@ SHELVES = {
         ("surface.primitive_nurbs_surface_surface_add", 'SURFACE_NSURFACE', {}),
         None,
         ("object.modifier_add", 'MOD_SCREW', {"type": 'SCREW'}),
-    ]),
+    ], _MODEL),
     'POLY': ("Poly Modeling", [
         ("m3d.add_primitive", 'MESH_UVSPHERE', {"kind": 'SPHERE'}),
         ("m3d.add_primitive", 'MESH_CUBE', {"kind": 'CUBE'}),
@@ -844,14 +945,14 @@ SHELVES = {
         ("object.origin_set", 'PIVOT_BOUNDBOX', {"type": 'ORIGIN_GEOMETRY'}),
         ("object.transform_apply", 'FREEZE', {"location": True, "rotation": True, "scale": True}),
         ("object.convert", 'TRASH', {"target": 'MESH'}),
-    ]),
+    ], _MODEL),
     'SCULPT': ("Sculpting", [
         ("object.mode_set", 'SCULPTMODE_HLT', {"mode": 'SCULPT'}),
         ("object.mode_set", 'OBJECT_DATAMODE', {"mode": 'OBJECT'}),
         None,
         ("object.modifier_add", 'MOD_MULTIRES', {"type": 'MULTIRES'}),
         ("object.voxel_remesh", 'MOD_REMESH', {}),
-    ]),
+    ], _MODEL),
     'RIGGING': ("Rigging", [
         ("object.armature_add", 'BONE_DATA', {}),
         ("object.parent_set", 'ARMATURE_DATA', {"type": 'ARMATURE_AUTO'}),
@@ -864,7 +965,7 @@ SHELVES = {
         ("object.constraint_add_with_targets", 'CON_TRACKTO', {"type": 'DAMPED_TRACK'}),
         None,
         ("object.empty_add", 'EMPTY_AXIS', {"type": 'PLAIN_AXES'}),
-    ]),
+    ], _MODEL),
     'ANIMATION': ("Animation", [
         ("anim.keyframe_insert", 'KEY_HLT', {}),
         ("anim.keyframe_insert_by_name", 'CON_LOCLIKE', {"type": 'Location'}),
@@ -876,7 +977,7 @@ SHELVES = {
         ("m3d.open_editor", 'GRAPH', {"ui_type": 'FCURVES'}),
         ("m3d.open_editor", 'ACTION', {"ui_type": 'DOPESHEET'}),
         ("object.paths_calculate", 'ANIM_DATA', {}),
-    ]),
+    ], _MODEL),
     'RENDERING': ("Rendering", [
         ("object.camera_add", 'CAMERA_DATA', {}),
         ("object.light_add", 'LIGHT_POINT', {"type": 'POINT'}),
@@ -889,7 +990,7 @@ SHELVES = {
         None,
         ("render.render", 'RENDER_STILL', {}),
         ("render.render", 'RENDER_ANIMATION', {"animation": True}),
-    ]),
+    ], _MODEL),
     'FX': ("FX", [
         ("object.particle_system_add", 'PARTICLES', {}),
         ("object.quick_smoke", 'MOD_FLUIDSIM', {}),
@@ -901,16 +1002,45 @@ SHELVES = {
         ("object.effector_add", 'FORCE_FORCE', {"type": 'FORCE'}),
         ("object.effector_add", 'FORCE_TURBULENCE', {"type": 'TURBULENCE'}),
         ("rigidbody.object_add", 'RIGID_BODY', {"type": 'ACTIVE'}),
-    ]),
+    ], _MODEL),
+    # Buttons added by the user (m3d_user.py); every kind has its own.
+    'CUSTOM': ("Custom", [], frozenset(KINDS)),
 }
+
+
+def shelves_for(kind):
+    return [key for key, (_label, _items, kinds) in SHELVES.items() if kind in kinds]
+
+
+def shelf_key(wm, kind):
+    """The shelf tab shown: the picked one if this kind has it, else the kind's first."""
+    keys = shelves_for(kind)
+    return wm.m3d_shelf if wm.m3d_shelf in keys else keys[0]
+
+
+_shelf_memory = {}
+
+
+def restore_shelf(wm, prev_kind, kind):
+    """Workspace kind changed: remember the shelf tab of the old kind, bring back the new kind's."""
+    _shelf_memory[prev_kind] = wm.m3d_shelf
+    keys = shelves_for(kind)
+    want = _shelf_memory.get(kind)
+    wm.m3d_shelf = want if want in keys else 'POLY' if 'POLY' in keys else keys[0]
 
 
 def draw_shelf(layout, context):
     """Shelf: the active shelf's buttons, large large (the tabs are the row above)."""
     from m3d_mode import _button
+    wm, kind = context.window_manager, current_kind(context)
+    key = shelf_key(wm, kind)
+    if key == 'CUSTOM':
+        from m3d_user import draw_custom_shelf
+        draw_custom_shelf(layout, context, kind, wm.m3d_shelf_edit)
+        return
     row = layout.row(align=True)
     row.scale_x = row.scale_y = 1.5
-    for item in SHELVES[context.window_manager.m3d_shelf][1]:
+    for item in SHELVES[key][1]:
         if item is None:
             row.separator(factor=0.5)
             continue
@@ -933,7 +1063,12 @@ class TOPBAR_HT_m3d_shelf_tabs(bpy.types.Header):
     bl_region_type = 'FOOTER'
 
     def draw(self, context):
-        self.layout.prop(context.window_manager, "m3d_shelf", expand=True)
+        wm, kind = context.window_manager, current_kind(context)
+        row = self.layout.row(align=True)
+        for key in shelves_for(kind):
+            row.prop_enum(wm, "m3d_shelf", key)
+        if shelf_key(wm, kind) == 'CUSTOM':
+            self.layout.prop(wm, "m3d_shelf_edit", toggle=True)
 
 
 class TOPBAR_HT_m3d_shelf(bpy.types.Header):
@@ -971,10 +1106,10 @@ def register():
     wm = bpy.types.WindowManager
     wm.m3d_menu_set = bpy.props.EnumProperty(
         name="Menu Set", description="Menu set: which menus the main menu bar shows",
-        items=[(k, label, "") for k, (label, _) in MENU_SETS.items()])
+        items=[(k, label, "", 'NONE', _MENU_SET_NUMBERS[k]) for k, (label, _) in MENU_SETS.items()])
     wm.m3d_shelf = bpy.props.EnumProperty(
         name="Shelf", description="Shelf tab",
-        items=[(k, label, "") for k, (label, _) in SHELVES.items()], default='POLY')
+        items=[(k, label, "") for k, (label, _items, _kinds) in SHELVES.items()], default='POLY')
 
 
 def unregister():

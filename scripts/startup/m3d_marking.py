@@ -150,8 +150,8 @@ class M3D_MT_menu_set_mm(Menu):
 
     def draw(self, _context):
         pie = self.layout.menu_pie()
-        for value, label in (('MODELING', "Modeling"), ('RIGGING', "Rigging"), ('ANIMATION', "Animation"),
-                             ('FX', "FX"), ('RENDERING', "Rendering")):
+        from m3d_ui import MENU_SETS
+        for value, (label, _menus) in MENU_SETS.items():
             _op(pie, "wm.context_set_enum", label, data_path="window_manager.m3d_menu_set", value=value)
 
 

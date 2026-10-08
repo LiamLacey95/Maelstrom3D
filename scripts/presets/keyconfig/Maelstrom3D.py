@@ -55,6 +55,10 @@ def _smooth(type, level):
     return _kmi("m3d.smooth_preview", type, props={"level": level})
 
 
+# Workspace kind -> key (F1-F7); mirrors KINDS in m3d_workspace.py (test_m3d.py checks it).
+WORKSPACE_KEYS = (('MODEL', 'F1'), ('SCULPT', 'F2'), ('UV', 'F3'), ('TEXTURE', 'F4'), ('RIG', 'F5'), ('ANIM', 'F6'),
+                  ('RENDER', 'F7'))
+
 _SUBMODE = (('F9', 'VERT'), ('F10', 'EDGE'), ('F11', 'FACE'))
 
 # Keymap name -> items. Each item replaces any existing item on the same key + modifiers.
@@ -94,7 +98,7 @@ OVERRIDES = {
         _kmi("wm.context_scale_int", 'MINUS', props={"data_path": "preferences.view.gizmo_size", "value": 0.87}, repeat=True),
         _kmi("wm.context_toggle", 'M', props={"data_path": "space_data.show_region_header"}, shift=True),
         _kmi("wm.context_toggle", 'M', props={"data_path": "space_data.show_region_tool_header"}, ctrl=True, shift=True),
-        # F2-F5 switch Maya menu sets (Window keymap), not views.
+        # F1-F7 switch workspaces (Window keymap), not views.
         *(("REMOVE", {"type": k, "value": 'PRESS'}, None) for k in ('F1', 'F2', 'F3', 'F4', 'F5')),
         _shading('FOUR', 'WIREFRAME'),
         _shading('FIVE', 'SOLID'),
@@ -112,11 +116,10 @@ OVERRIDES = {
         ("REMOVE", {"type": 'PERIOD', "value": 'PRESS'}, None),
     ],
     "Window": [
-        *(_kmi("wm.context_set_enum", k, props={"data_path": "window_manager.m3d_menu_set", "value": v})
-          for k, v in (('F2', 'MODELING'), ('F3', 'RIGGING'), ('F4', 'ANIMATION'), ('F5', 'FX'), ('F6', 'RENDERING'))),
+        # F1-F7: task workspaces (kinds in m3d_workspace.py). The menu set dropdown still offers every set.
+        *(_kmi("m3d.workspace", k, props={"kind": kind}) for kind, k in WORKSPACE_KEYS),
         _kmi("wm.link", 'R', ctrl=True),
         _kmi("ed.redo", 'Y', ctrl=True, repeat=True),
-        _kmi("wm.call_menu", 'F1', props={"name": "TOPBAR_MT_help"}),
         _kmi("screen.workspace_cycle", 'LEFT_BRACKET', props={"direction": 'PREV'}, shift=True),
         _kmi("screen.workspace_cycle", 'RIGHT_BRACKET', props={"direction": 'NEXT'}, shift=True),
     ],
@@ -130,6 +133,7 @@ OVERRIDES = {
         _kmi("m3d.gizmo_slide", 'LEFTMOUSE', 'CLICK_DRAG', ctrl=True, shift=True),
     ],
     "Image": [
+        *(("REMOVE", {"type": k, "value": 'PRESS'}, None) for k in ('F1', 'F2', 'F3', 'F4')),  # Zoom ratios.
         _kmi("ed.undo", 'Z', repeat=True),
         _kmi("ed.redo", 'Z', shift=True, repeat=True),
     ],
@@ -196,7 +200,7 @@ OVERRIDES = {
         *(_kmi("mesh.select_mode", k, props={"type": m, "use_expand": True}, ctrl=True) for k, m in _SUBMODE),
         _kmi("m3d.smooth_levels", 'PAGE_UP', props={"delta": 1}),
         _kmi("m3d.smooth_levels", 'PAGE_DOWN', props={"delta": -1}),
-        _kmi("wm.context_set_id", 'F12', props={"data_path": "window.workspace", "value": "UV Editing"}),
+        _kmi("m3d.workspace", 'F12', props={"kind": 'UV'}),
         ("REMOVE", {"type": 'A', "value": 'PRESS', "ctrl": True}, None),
         ("REMOVE", {"type": 'C', "value": 'PRESS'}, None),
     ],

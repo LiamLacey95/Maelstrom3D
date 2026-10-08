@@ -82,14 +82,15 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 
 | Key | Before (Industry Compatible) | Now (Maelstrom3D) |
 |---|---|---|
-| F2 | — | Set window manager m3d menu set = MODELING |
-| F3 | — | Set window manager m3d menu set = RIGGING |
-| F4 | — | Set window manager m3d menu set = ANIMATION |
-| F5 | — | Set window manager m3d menu set = FX |
-| F6 | — | Set window manager m3d menu set = RENDERING |
+| F1 | — | Switch Workspace (kind='MODEL') |
+| F2 | — | Switch Workspace (kind='SCULPT') |
+| F3 | — | Switch Workspace (kind='UV') |
+| F4 | — | Switch Workspace (kind='TEXTURE') |
+| F5 | — | Switch Workspace (kind='RIG') |
+| F6 | — | Switch Workspace (kind='ANIM') |
+| F7 | — | Switch Workspace (kind='RENDER') |
 | Ctrl+R | — | Link |
 | Ctrl+Y | — | Redo |
-| F1 | — | Menu: Help |
 | Shift+Left Bracket | — | Cycle Workspace (direction='PREV') |
 | Shift+Right Bracket | — | Cycle Workspace (direction='NEXT') |
 
@@ -111,6 +112,10 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 
 | Key | Before (Industry Compatible) | Now (Maelstrom3D) |
 |---|---|---|
+| F1 | View Zoom Ratio (ratio=1.0) | *(removed)* |
+| F2 | View Zoom Ratio (ratio=0.5) | *(removed)* |
+| F3 | View Zoom Ratio (ratio=0.25) | *(removed)* |
+| F4 | View Zoom Ratio (ratio=0.125) | *(removed)* |
 | Z | Zoom to Border | Undo |
 | Shift+Z | — | Redo |
 
@@ -219,6 +224,6 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 | Ctrl+F11 | — | Select Mode (type='FACE', use_expand=True) |
 | Page Up | — | Smooth Preview Divisions (delta=1) |
 | Page Down | — | Smooth Preview Divisions (delta=-1) |
-| F12 | — | Set window workspace = UV Editing |
+| F12 | — | Switch Workspace (kind='UV') |
 | Ctrl+A | (De)select All (action='SELECT') | *(removed)* |
 | C | Tool: Cursor | *(removed)* |
