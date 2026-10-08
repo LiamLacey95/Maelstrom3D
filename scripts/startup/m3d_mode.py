@@ -120,7 +120,9 @@ class M3D_OT_call(Operator):
 
     def invoke(self, context, _event):
         from ast import literal_eval
-        areas = [a for a in context.screen.areas if a.type == self.editor]
+        from m3d_ui import is_uv_editor
+        areas = [a for a in context.screen.areas
+                 if (is_uv_editor(a) if self.editor == 'IMAGE_EDITOR' else a.type == self.editor)]
         if not areas:
             self.report({'WARNING'}, "No %s in this workspace" % ("3D Viewport" if self.editor == 'VIEW_3D' else "UV Editor"))
             return {'CANCELLED'}

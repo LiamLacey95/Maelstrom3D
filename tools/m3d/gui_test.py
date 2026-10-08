@@ -443,8 +443,8 @@ def _fkey_steps():
                   "%s did not switch to %s (now %s)" % (key, wname, ws.name))
             check(bpy.context.window_manager.m3d_menu_set == mset, "%s: menu set is %s" % (key, bpy.context.window_manager.m3d_menu_set))
             check(ws.object_mode == mode, "%s: workspace mode %s" % (key, ws.object_mode))
-            if kind in {'SCULPT', 'UV'}:
-                want = {'SCULPT': 'SCULPT', 'UV': 'EDIT_MESH'}[kind]
+            if kind in {'SCULPT', 'UV', 'TEXTURE'}:
+                want = {'SCULPT': 'SCULPT', 'UV': 'EDIT_MESH', 'TEXTURE': 'PAINT_TEXTURE'}[kind]
                 check(bpy.context.mode == want, "%s: entered mode %s, wanted %s" % (key, bpy.context.mode, want))
             shelf = m3d_ui.shelf_key(bpy.context.window_manager, kind)
             check(shelf in m3d_ui.shelves_for(kind), "%s: shelf tab %s" % (key, shelf))
@@ -1429,6 +1429,302 @@ def uv_done():
     window().workspace.m3d_page_right = ""
     bpy.ops.m3d.workspace(kind='MODEL')
     check(not tracebacks(), "Python error in the UV workspace tests")
+
+
+# ----------------------------------------------------------------------------------------------------
+# Phase 3a: Texture workspace with a real cube: layout, F4, channels, brushes, keys, bake, export, every tab.
+
+import os
+import tempfile
+
+import m3d_texture
+
+
+def tex_areas():
+    """(left tray, dock) Properties editors of the Texture screen."""
+    areas = sorted(props_areas(), key=lambda a: a.x)
+    return areas[0], areas[-1]
+
+
+def tex_view():
+    """(3D view area, its window region) of the Texture screen."""
+    area = next(a for a in window().screen.areas if a.type == 'VIEW_3D')
+    return area, next(r for r in area.regions if r.type == 'WINDOW')
+
+
+def tex_xy():
+    _area, region = tex_view()
+    return region.x + region.width // 2, region.y + region.height // 2
+
+
+def tex_mat():
+    return bpy.context.active_object.active_material
+
+
+def tex_brush_size():
+    ups = bpy.context.tool_settings.image_paint.unified_paint_settings
+    return ups.size if ups.use_unified_size else bpy.context.tool_settings.image_paint.brush.size
+
+
+@step
+def tex_setup():
+    # A clean scene with one cube (it has UVs, no material), then F4.
+    bpy.ops.m3d.workspace(kind='MODEL')
+    for ob in list(bpy.data.objects):
+        if ob.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.data.objects.remove(ob)
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.m3d.add_primitive(kind='CUBE')
+        bpy.context.active_object.name = "Crate"
+    GIZMO["center"] = (region.x + region.width // 2, region.y + region.height // 2)
+    event('MOUSEMOVE', xy=GIZMO["center"])
+    event('F4', 'PRESS', GIZMO["center"])
+    event('F4', 'RELEASE', GIZMO["center"])
+
+
+step(wait_until(lambda: window().workspace.name == "Texture" and bpy.context.mode == 'PAINT_TEXTURE', "F4 to enter Texture Paint Mode"))
+
+
+@step
+def tex_f4_check():
+    check(window().workspace.name == "Texture" and bpy.context.mode == 'PAINT_TEXTURE', "F4 did not enter Texture Paint Mode")
+    # The earlier dock tests moved this workspace's tabs: Reset Workspace brings the factory layout back to check it.
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.m3d.workspace_reset()
+
+
+step(wait_until(lambda: [w.name for w in bpy.data.workspaces if w.name.startswith("Texture")] == ["Texture"]
+                and window().workspace.name == "Texture" and bpy.context.mode == 'PAINT_TEXTURE', "Reset Workspace to finish"))
+
+
+@step
+def tex_layout_check():
+    screen = window().screen
+    check(len(props_areas()) == 2, "Texture has a tray and a dock")
+    tray, dock = tex_areas()
+    view, _region = tex_view()
+    image = next(a for a in screen.areas if a.type == 'IMAGE_EDITOR')
+    check(tray.x < view.x < image.x < dock.x, "Texture layout: tray, 3D view, paint view, dock (%d %d %d %d)" % (tray.x, view.x, image.x, dock.x))
+    check(view.width > image.width, "the 3D view is wider than the paint view (%d vs %d)" % (view.width, image.width))
+    check(view.spaces.active.shading.type == 'MATERIAL', "3D view is in Material Preview")
+    check(image.spaces.active.mode == 'PAINT' and not image.spaces.active.show_region_ui, "paint view is in Paint mode, sidebar closed")
+    check(not view.spaces.active.show_region_asset_shelf and view.spaces.active.show_region_tool_header, "asset shelf hidden, tool header shown")
+    check(tray.spaces.active.context == dock.spaces.active.context == 'MODELING_TOOLKIT', "docks open on pages")
+    with bpy.context.temp_override(window=window(), area=tray):
+        check(m3d_workspace.side_of(bpy.context) == 'LEFT' and m3d_workspace.active_page(bpy.context) == "tex_brushes", "tray shows the brush page")
+    with bpy.context.temp_override(window=window(), area=dock):
+        check(m3d_workspace.active_page(bpy.context) == "tex_layers", "dock opens on Layers")
+    check(m3d_ui.shelf_key(bpy.context.window_manager, 'TEXTURE') == 'TEXTURE_BRUSHES', "Paint shelf tab first")
+    check(m3d_texture.missing(bpy.context) == ['MATERIAL'], "gate: this cube needs a material (%s)" % m3d_texture.missing(bpy.context))
+    check(not tracebacks(), "Python error drawing the Texture workspace")
+    press_ok("m3d.tex_add_material", _area=tex_areas()[1])
+
+
+@step
+def tex_channels():
+    check(m3d_texture.missing(bpy.context) == [], "Add Material fixed the gate")
+    bpy.context.scene.m3d_tex.resolution = '128'
+    dock = tex_areas()[1]
+    press_ok("m3d.tex_channel", _area=dock, channel='BASE_COLOR')
+    press_ok("m3d.tex_channel", _area=dock, channel='ROUGHNESS')
+    found = m3d_texture.channel_slots(tex_mat())
+    check(set(found) == {'BASE_COLOR', 'ROUGHNESS'} and m3d_texture.active_channel(tex_mat()) == 'ROUGHNESS',
+          "Base Color and Roughness added (%s)" % sorted(found))
+    check(found['ROUGHNESS'][1].colorspace_settings.name == 'Non-Color' and found['BASE_COLOR'][1].colorspace_settings.name == 'sRGB',
+          "color spaces")
+    # Switch with the Status Line buttons (they are plain operator buttons in the top bar).
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        check(bpy.ops.m3d.tex_channel('INVOKE_DEFAULT', channel='BASE_COLOR') == {'FINISHED'}, "Status Line channel button")
+    check(m3d_texture.active_channel(tex_mat()) == 'BASE_COLOR', "Base Color is active")
+    event('MOUSEMOVE', xy=tex_xy())
+    event('C', 'PRESS', tex_xy())
+    event('C', 'RELEASE', tex_xy())
+
+
+@step
+def tex_c_key():
+    check(m3d_texture.active_channel(tex_mat()) == 'ROUGHNESS', "C did not switch to the next channel (%s)" % m3d_texture.active_channel(tex_mat()))
+    event('C', 'PRESS', tex_xy(), shift=True)
+    event('C', 'RELEASE', tex_xy(), shift=True)
+
+
+@step
+def tex_shift_c_key():
+    check(m3d_texture.active_channel(tex_mat()) == 'BASE_COLOR', "Shift+C did not switch to the previous channel (%s)" % m3d_texture.active_channel(tex_mat()))
+
+
+@step
+def tex_brush_buttons():
+    # The tray grid: every brush activates and shows as the active one.
+    tray = tex_areas()[0]
+    for label, name in m3d_texture.BRUSHES:
+        press_ok("brush.asset_activate", _area=tray, **m3d_texture.brush_props(name))
+        check(m3d_sculpt.active_brush_id(bpy.context) == m3d_texture.BRUSH_ASSET + name, "texture brush %s not active (%s)" %
+              (name, m3d_sculpt.active_brush_id(bpy.context)))
+    press_ok("brush.asset_activate", _area=tray, **m3d_texture.brush_props("Paint Soft"))
+    check(bpy.context.tool_settings.image_paint.brush is not None and bpy.context.tool_settings.image_paint.brush.name == "Paint Soft",
+          "the brush after the tray click")
+    ups = bpy.context.tool_settings.image_paint.unified_paint_settings
+    ups.color, ups.secondary_color = (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)
+    GIZMO["size"] = tex_brush_size()
+    event('MOUSEMOVE', xy=tex_xy())
+    event('RIGHT_BRACKET', 'PRESS', tex_xy())
+    event('RIGHT_BRACKET', 'RELEASE', tex_xy())
+
+
+@step
+def tex_size_keys():
+    check(tex_brush_size() > GIZMO["size"], "] did not make the brush bigger (%s -> %s)" % (GIZMO["size"], tex_brush_size()))
+    event('LEFT_BRACKET', 'PRESS', tex_xy())
+    event('LEFT_BRACKET', 'RELEASE', tex_xy())
+
+
+@step
+def tex_size_keys2():
+    check(abs(tex_brush_size() - GIZMO["size"]) < GIZMO["size"] * 0.05, "[ did not shrink the brush back (%s -> %s)" % (GIZMO["size"], tex_brush_size()))
+    event('X', 'PRESS', tex_xy(), shift=True)
+    event('X', 'RELEASE', tex_xy(), shift=True)
+
+
+@step
+def tex_swap_key():
+    ups = bpy.context.tool_settings.image_paint.unified_paint_settings
+    check(tuple(round(c, 2) for c in ups.color) == (0.0, 0.0, 1.0), "Shift+X did not swap the colors (%s)" % (tuple(ups.color),))
+    event('X', 'PRESS', tex_xy())
+    event('X', 'RELEASE', tex_xy())
+
+
+@step
+def tex_plain_x():
+    ups = bpy.context.tool_settings.image_paint.unified_paint_settings
+    check(tuple(round(c, 2) for c in ups.color) == (0.0, 0.0, 1.0), "plain X still swaps the colors (%s)" % (tuple(ups.color),))
+
+
+@step
+def tex_channel_view():
+    dock = tex_areas()[1]
+    space = tex_view()[0].spaces.active
+    press_ok("m3d.tex_channel_view", _area=dock)
+    check(m3d_texture.channel_view_on(space.shading), "Channel View did not show the channel flat")
+    press_ok("m3d.tex_channel_view", _area=dock)
+    check(space.shading.type == 'MATERIAL' and not m3d_texture.channel_view_on(space.shading), "Channel View did not restore the view")
+    press_ok("m3d.tex_channel_view", _area=dock, channel='ROUGHNESS')
+    check(m3d_texture.active_channel(tex_mat()) == 'ROUGHNESS' and m3d_texture.channel_view_on(space.shading),
+          "Channel View of Roughness")
+    press_ok("m3d.tex_channel_view", _area=dock)
+    check(space.shading.type == 'MATERIAL', "back to Material Preview")
+    # The Status Line's display buttons run through m3d.call in the 3D view.
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        view, region = tex_view()
+        with bpy.context.temp_override(area=view, region=region, space_data=view.spaces.active):
+            bpy.ops.wm.context_set_enum(data_path="space_data.shading.type", value='SOLID')
+    check(space.shading.type == 'SOLID', "Solid display")
+    space.shading.type = 'MATERIAL'
+
+
+@step
+def tex_bake_from_dock():
+    ob = bpy.context.active_object
+    dock = tex_areas()[1]
+    s = ob.m3d_bake
+    s.resolution, s.margin, s.samples = '128', 4, 4
+    s.use_normal = s.use_ao = True
+    s.use_curvature = s.use_position = s.use_thickness = False
+    GIZMO["nodes"] = sorted(n.name for n in tex_mat().node_tree.nodes)
+    GIZMO["engine"] = bpy.context.scene.render.engine
+    press_ok("m3d.tex_bake", _area=dock)
+
+
+@step
+def tex_bake_check():
+    ob = bpy.context.active_object
+    check(bpy.context.scene.render.engine == GIZMO["engine"], "Cycles switched back after the bake (%s)" % bpy.context.scene.render.engine)
+    check(bpy.context.mode == 'PAINT_TEXTURE', "Texture Paint Mode after the bake (%s)" % bpy.context.mode)
+    check(all(bpy.data.images.get("Crate_" + n) is not None for n in ("Normal", "AO")), "baked maps exist")
+    check(sorted(n.name for n in tex_mat().node_tree.nodes) == GIZMO["nodes"] and len(ob.material_slots) == 1, "material unchanged by the bake")
+    check(not tracebacks(), "Python error while baking")
+    # Export from the dock.
+    GIZMO["out"] = tempfile.mkdtemp(prefix="m3d_gui_export_")
+    tx = bpy.context.scene.m3d_tex
+    tx.export_folder, tx.export_preset, tx.export_size = GIZMO["out"], 'UNREAL', 'SAME'
+    press_ok("m3d.tex_export", _area=tex_areas()[1])
+
+
+@step
+def tex_export_check():
+    files = sorted(os.listdir(GIZMO["out"]))
+    check(files == ["T_Crate_BC.png", "T_Crate_ORM.png"], "export wrote the Unreal files (%s)" % files)
+    saved, packed = m3d_texture.save_images()
+    check(not m3d_texture.modified_images(), "Save All left nothing modified")
+    press_ok("m3d.tex_save_all", _area=tex_areas()[1])
+    check(not tracebacks(), "Python error while exporting")
+
+
+def _texture_tab_steps():
+    for object_mode in (False, True):
+        for tab in (*m3d_workspace.DOCK_TABS['TEXTURE']['RIGHT'], *m3d_workspace.DOCK_TABS['TEXTURE']['LEFT']):
+            def show(tab=tab, object_mode=object_mode):
+                if object_mode and bpy.context.mode != 'OBJECT':
+                    bpy.ops.object.mode_set(mode='OBJECT')
+                if not object_mode and bpy.context.mode != 'PAINT_TEXTURE':
+                    bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+                tray, dock = tex_areas()
+                area = tray if tab.page == "tex_brushes" else dock
+                area.spaces.active.context = 'MODELING_TOOLKIT'
+                press_ok("m3d.dock_page", _area=area, tab=tab.id)
+                for a in window().screen.areas:
+                    a.tag_redraw()
+
+            def check_draw(tab=tab, object_mode=object_mode):
+                side = "left" if tab.page == "tex_brushes" else "right"
+                check(getattr(window().workspace, "m3d_page_" + side) == tab.page, "dock tab %s did not open its page" % tab.id)
+                check(not tracebacks(), "Python error while drawing the Texture page %s%s" % (tab.page, " (Object Mode)" if object_mode else ""))
+            show.__name__, check_draw.__name__ = "tex_show_%s%s" % (tab.page, object_mode), "tex_drawn_%s%s" % (tab.page, object_mode)
+            yield show
+            yield check_draw
+
+
+for _fn in _texture_tab_steps():
+    step(_fn)
+
+
+@step
+def tex_shelves():
+    # Every Texture shelf and the Status Line draw with the cube in Texture Paint Mode and in Object Mode.
+    bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+    for key in m3d_ui.shelves_for('TEXTURE'):
+        bpy.context.window_manager.m3d_shelf = key
+        for a in window().screen.areas:
+            a.tag_redraw()
+
+
+@step
+def tex_shelves_check():
+    check(not tracebacks(), "Python error while drawing the Texture shelves")
+    bpy.context.window_manager.m3d_shelf = 'TEXTURE_BRUSHES'
+    # Auto Unwrap fix: a mesh without UVs is unwrapped from the tray's button and stays in Texture Paint Mode.
+    ob = bpy.context.active_object
+    ob.data.uv_layers.remove(ob.data.uv_layers[0])
+    check(m3d_texture.missing(bpy.context) == ['UV'], "no UVs gate the pages (%s)" % m3d_texture.missing(bpy.context))
+    press_ok("m3d.tex_unwrap", _area=tex_areas()[0])
+
+
+@step
+def tex_unwrap_check():
+    ob = bpy.context.active_object
+    check(len(ob.data.uv_layers) == 1 and bpy.context.mode == 'PAINT_TEXTURE' and m3d_texture.missing(bpy.context) == [],
+          "Auto Unwrap fixed the gate (%s, %s)" % (bpy.context.mode, m3d_texture.missing(bpy.context)))
+    check(not tracebacks(), "Python error in the Auto Unwrap fix")
+
+
+@step
+def tex_done():
+    ws = window().workspace
+    ws.m3d_page_left = ws.m3d_page_right = ""
+    bpy.ops.m3d.workspace(kind='MODEL')
+    check(not tracebacks(), "Python error in the Texture workspace tests")
 
 
 @step

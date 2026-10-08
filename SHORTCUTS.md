@@ -90,6 +90,15 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 | Shift+6 | — | Brush: Pinch/Magnify |
 | Shift+7 | — | Brush: Crease Sharp |
 
+## Image Paint
+
+| Key | Before (Industry Compatible) | Now (Maelstrom3D) |
+|---|---|---|
+| X | Swap Colors | *(removed)* |
+| Shift+X | — | Swap Colors |
+| C | — | Cycle Paint Channel (delta=1) |
+| Shift+C | — | Cycle Paint Channel (delta=-1) |
+
 ## Window
 
 | Key | Before (Industry Compatible) | Now (Maelstrom3D) |

@@ -123,6 +123,13 @@ OVERRIDES = {
           for k, name in zip(('ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN'), (
               "Draw", "Clay Strips", "Smooth", "Grab", "Inflate/Deflate", "Pinch/Magnify", "Crease Sharp"))),
     ],
+    # Texture paint (3D view and 2D view): colour swap moves to Shift+X (X is hold-to-snap here), C cycles the channel.
+    "Image Paint": [
+        ("REMOVE", {"type": 'X', "value": 'PRESS'}, None),
+        _kmi("paint.brush_colors_flip", 'X', shift=True),
+        _kmi("m3d.tex_channel_cycle", 'C', props={"delta": 1}),
+        _kmi("m3d.tex_channel_cycle", 'C', props={"delta": -1}, shift=True),
+    ],
     "Window": [
         # F1-F7: task workspaces (kinds in m3d_workspace.py). The menu set dropdown still offers every set.
         *(_kmi("m3d.workspace", k, props={"kind": kind}) for kind, k in WORKSPACE_KEYS),

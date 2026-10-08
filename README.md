@@ -42,6 +42,9 @@ Maelstrom3D keeps its settings apart from Blender's (`%APPDATA%\Maelstrom3D`), s
   color paint, display options and a mesh list, Shift+1-7 brush keys.
 - **UV workflow (F3):** UV Editor and 3D view with a dock of Unwrap, Arrange, Check, Create and UDIM tabs, Cut / Sew / Unfold /
   Optimize / Layout, Auto Unwrap, texel density read / set / match, distortion and checker map, UV marking menus.
+- **Texture workflow (F4):** 3D view and paint view with a brush tray, paint channels (Base Color, Roughness, Metallic, Normal,
+  Height, Emission), Bake (Normal, AO, Curvature, Position, Thickness), Export (glTF, Unreal ORM, Unity), HDRI and channel
+  view, painted images saved with the file, C / Shift+C channel keys.
 - **Scripting:** `m3d.cmds` (`polyCube`, `move`, `setAttr`, `select`, `ls`, ...) and MEL in the command line.
   Existing scripts that `import maya.cmds` run through a compatibility alias.
 

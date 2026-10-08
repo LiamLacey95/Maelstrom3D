@@ -143,10 +143,69 @@ def phase2_uv():
     ws.m3d_page_right = "uv_unwrap"
 
 
+def phase3_texture():
+    """Texture: the brush tray (a Properties editor), the 3D view in Material Preview, the 2D paint view and the wider
+    dock. The stock layout has the paint view left of the 3D view: the two swap places."""
+    ws = bpy.data.workspaces["Texture"]
+    # The workspace enters Texture Paint Mode on the active mesh: the brush asset shelf below is hidden in that mode.
+    layer = bpy.context.view_layer
+    active = layer.objects.active
+    data = bpy.data.meshes.new("m3dTemp")   # The startup scene has no mesh: a temporary quad.
+    data.from_pydata([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)], [], [(0, 1, 2, 3)])
+    mesh = bpy.data.objects.new("m3dTemp", data)
+    layer.active_layer_collection.collection.objects.link(mesh)
+    layer.objects.active = mesh
+    show(ws)
+    yield 0.6
+    screen = window().screen
+    if len(areas(screen, 'PROPERTIES')) < 2:
+        paint = areas(screen, 'IMAGE_EDITOR')[0]
+        run(bpy.ops.screen.area_split, paint, direction='VERTICAL', factor=0.3)
+        yield 0.3
+        tray, left = areas(screen, 'IMAGE_EDITOR')[:2]   # The new area is a copy of the paint view, left of it.
+        right = areas(screen, 'VIEW_3D')[0]
+        tray.ui_type = 'PROPERTIES'
+        left.ui_type = 'VIEW_3D'
+        right.ui_type = 'IMAGE_EDITOR'
+        yield 0.3
+        dock = areas(screen, 'PROPERTIES')[-1]
+        for edge, delta in (((dock.x - 1, dock.y + dock.height // 2), -DOCK_WIDER),
+                            ((right.x - 1, right.y + right.height // 2), TEXTURE_VIEW_WIDER)):
+            # Moving an edge needs the mouse on it (no active region): put it there with a simulated event.
+            window().event_simulate(type='MOUSEMOVE', value='NOTHING', x=edge[0], y=edge[1])
+            yield 0.3
+            with bpy.context.temp_override(window=window(), screen=screen):
+                bpy.ops.screen.area_move(x=edge[0], y=edge[1], delta=delta)
+            yield 0.3
+    view, image = areas(screen, 'VIEW_3D')[0], areas(screen, 'IMAGE_EDITOR')[0]
+    yield 1.0   # The shelf region exists once the viewport has been drawn in Texture Paint Mode.
+    assert bpy.context.mode == 'PAINT_TEXTURE', bpy.context.mode
+    if view.spaces.active.show_region_asset_shelf:   # The brush tray replaces it.
+        run(bpy.ops.screen.region_toggle, view, region_type='ASSET_SHELF')
+        yield 0.3
+    view.spaces.active.shading.type = 'MATERIAL'
+    view.spaces.active.show_region_toolbar = image.spaces.active.show_region_toolbar = True   # The paint tools.
+    image.spaces.active.ui_mode = 'PAINT'
+    image.spaces.active.show_region_ui = False
+    yield 0.3
+    if image.spaces.active.show_region_asset_shelf:
+        run(bpy.ops.screen.region_toggle, image, region_type='ASSET_SHELF')
+        yield 0.3
+    tray, dock = areas(screen, 'PROPERTIES')
+    tray.spaces.active.context = dock.spaces.active.context = 'MODELING_TOOLKIT'
+    ws.m3d_page_left, ws.m3d_page_right = "tex_brushes", "tex_layers"
+    run(bpy.ops.object.mode_set, view, mode='OBJECT')
+    layer.objects.active = active
+    yield 0.3
+    bpy.data.objects.remove(mesh)
+    bpy.data.meshes.remove(data)
+
+
 DOCK_WIDER = 170  # pixels of the 2560 px build window: seven tabs, All Settings and the tab menu fit
 UV_WIDER = 250  # pixels the UV editor gets from the 3D view
+TEXTURE_VIEW_WIDER = 250  # pixels the Texture workspace's 3D view gets from the paint view
 
-PHASES = [phase0_workspaces, phase1_sculpt, phase2_uv]
+PHASES = [phase0_workspaces, phase1_sculpt, phase2_uv, phase3_texture]
 
 
 def save():

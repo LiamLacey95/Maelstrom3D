@@ -10,8 +10,8 @@ def check(cond, msg):
 # Icons used in m3d_mode exist.
 import re, m3d_mode
 icons = set(bpy.types.UILayout.bl_rna.functions['operator'].parameters['icon'].enum_items.keys())
-import m3d_marking, m3d_sculpt, m3d_ui as _maya_ui, m3d_uv as _maya_uv
-src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_marking, m3d_sculpt, _maya_ui, _maya_uv))
+import m3d_marking, m3d_sculpt, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv
+src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_marking, m3d_sculpt, m3d_texture, _maya_ui, _maya_uv))
 for ic in set(re.findall(r"icon='([A-Z_0-9]+)'", src)):
     check(ic in icons, "missing icon " + ic)
 
@@ -277,7 +277,7 @@ check(wm.m3d_menu_set == 'MODELING' and wm.m3d_shelf == 'POLY', "shelf tab is re
 check(m3d_ui.shelves_for('SCULPT') == ['SCULPT_BRUSHES', 'SCULPT_REMESH', 'SCULPT_MASK', 'CUSTOM']
       and 'POLY' in m3d_ui.shelves_for('MODEL') and m3d_ui.shelves_for('MODEL')[-1] == 'CUSTOM', "shelf tabs per kind")
 check(set(m3d_ui.KIND_MODES) == set(W.KINDS) - set(m3d_ui.STATUS_LINES), "placeholder status line modes for the other kinds")
-check(set(m3d_ui.STATUS_LINES) == {'MODEL', 'SCULPT', 'UV'}, "status lines")
+check(set(m3d_ui.STATUS_LINES) == {'MODEL', 'SCULPT', 'UV', 'TEXTURE'}, "status lines")
 
 # Page panels: only on their page, per workspace and side.
 ws = bpy.data.workspaces["Modeling"]
@@ -612,7 +612,11 @@ check([it[3] for it in m3d_ui.SHELVES['UV'][1] if it] == ["Cut", "Sew", "Unfold"
 
 # Buttons outside the UV Editor run in it (m3d.call with editor), the 3D view keeps its own.
 def target(area, screen_types, idname):
-    ctx = NS(area=NS(type=area), screen=NS(areas=[NS(type=t) for t in screen_types]))
+    """Editors are 'TYPE' or 'TYPE:MODE' (an Image Editor is in UV mode unless it says otherwise)."""
+    def fake(t):
+        kind, _, mode = t.partition(":")
+        return NS(type=kind, spaces=NS(active=NS(mode=mode or 'UV')))
+    ctx = NS(area=NS(type=area), screen=NS(areas=[fake(t) for t in screen_types]))
     return m3d_ui.call_target(ctx, idname)
 check(target('PROPERTIES', ['VIEW_3D', 'IMAGE_EDITOR'], "uv.align") == 'IMAGE_EDITOR', "dock button runs in the UV Editor")
 check(target('TOPBAR', ['VIEW_3D', 'IMAGE_EDITOR'], "m3d.uv_cut") == 'IMAGE_EDITOR', "shelf button runs in the UV Editor")
@@ -622,6 +626,12 @@ check(target('PROPERTIES', ['VIEW_3D', 'IMAGE_EDITOR'], "uv.project_from_view") 
 check(target('VIEW_3D', ['VIEW_3D'], "mesh.bevel") is None and target('PROPERTIES', ['VIEW_3D'], "mesh.bevel") == 'VIEW_3D',
       "3D view routing is unchanged")
 check(target('TOPBAR', ['VIEW_3D'], "uv.smart_project") != 'IMAGE_EDITOR', "no UV Editor: the old route")
+# The Texture workspace's Image Editor is in Paint mode: UV tools and image.new do not go there.
+check(target('PROPERTIES', ['VIEW_3D', 'IMAGE_EDITOR:PAINT'], "uv.align") != 'IMAGE_EDITOR'
+      and target('PROPERTIES', ['VIEW_3D', 'IMAGE_EDITOR:PAINT'], "m3d.uv_cut") != 'IMAGE_EDITOR'
+      and target('PROPERTIES', ['VIEW_3D', 'IMAGE_EDITOR:PAINT'], "image.new") != 'IMAGE_EDITOR', "paint view is no UV Editor")
+check(target('PROPERTIES', ['VIEW_3D', 'IMAGE_EDITOR:PAINT', 'IMAGE_EDITOR'], "uv.align") == 'IMAGE_EDITOR',
+      "a UV Editor next to a paint view is still the target")
 
 # Sidebar UV Toolkit: only where the workspace has no dock for it.
 toolkit = U.IMAGE_PT_m3d_uvtk_selection
@@ -859,6 +869,399 @@ box = bpy.data.objects["CheckerBox"]
 check(bpy.data.materials.get(U.CHECKER) is None and bpy.data.images.get(U.CHECKER) is None, "saved file has no checker material or image")
 check(U.CHECKER not in box and [s.material.name for s in box.material_slots] == ["MatA", "MatB"] and
       len(bpy.data.objects["CheckerBare"].material_slots) == 0, "saved file has the original materials")
+
+# ----------------------------------------------------------------------------------------------------
+# Phase 3a: Texture workspace (tabs, pages, gates, channels, saving, bake, export, keys).
+import m3d_texture as T
+import numpy as np
+
+tex_ws = bpy.data.workspaces["Texture"]
+tex_tabs = W.DOCK_TABS['TEXTURE']
+check([t.label for t in tex_tabs['RIGHT']] == ["Layers", "Brush", "Shelf", "Bake", "Export", "Display"], "Texture dock tabs")
+check([t.label for t in tex_tabs['LEFT']] == ["Brushes"], "Texture left tray tab")
+for tab in (*tex_tabs['RIGHT'], *tex_tabs['LEFT']):
+    check(tab.context == 'MODELING_TOOLKIT' and tab.page == tab.id and tab.id.startswith("tex_"), "Texture page tab " + tab.id)
+tex_pages = {t.page for side in tex_tabs.values() for t in side}
+check({c.page for c in T.classes if hasattr(c, "page")} == tex_pages, "every Texture page has panels and the other way round")
+check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in T.classes
+          if not issubclass(c, bpy.types.PropertyGroup)), "Texture classes registered")
+check(m3d_ui.shelves_for('TEXTURE') == ['TEXTURE_BRUSHES', 'TEXTURE_CHANNELS', 'TEXTURE_OUTPUT', 'CUSTOM']
+      and 'TEXTURE' in m3d_ui.STATUS_LINES and 'TEXTURE' not in m3d_ui.KIND_MODES, "Texture shelf tabs and Status Line")
+check(W.KIND_MODES_IN_MENU_BAR['TEXTURE'] == {'TEXTURE_PAINT'}, "Texturing menu set covers the paint header")
+check(len(T.BRUSHES) == 10 and [n for _l, n in T.BRUSHES][:3] == ["Paint Soft", "Paint Hard", "Airbrush"], "brush grid")
+check([ch.label for ch in T.CHANNELS] == ["Base Color", "Roughness", "Metallic", "Normal", "Height", "Emission"], "channels")
+
+# Brush assets exist in the essentials file.
+asset_file = os.path.join(bpy.utils.system_resource('DATAFILES'), "assets", "brushes", "essentials_brushes-mesh_texture.blend")
+with bpy.data.libraries.load(asset_file, assets_only=True) as (src, _dst):
+    tex_asset_names = set(src.brushes)
+for label, name in (*T.BRUSHES, *T.MORE_BRUSHES):
+    check(name in tex_asset_names, "texture brush asset %r" % name)
+
+# Keys: Image Paint keymap only, free in the keymaps around it.
+bpy.utils.keyconfig_set(bpy.utils.preset_find("Maelstrom3D", "keyconfig"))
+kc = bpy.context.window_manager.keyconfigs["Maelstrom3D"]
+for idname, key, mods, props in (("paint.brush_colors_flip", 'X', dict(shift=True), {}),
+                                 ("m3d.tex_channel_cycle", 'C', dict(), {"delta": 1}),
+                                 ("m3d.tex_channel_cycle", 'C', dict(shift=True), {"delta": -1})):
+    want = {"shift": False, "ctrl": False, "alt": False, **mods}
+    item = find("Image Paint", idname, key, **want)
+    check(item and all(getattr(item[0].properties, k) == v for k, v in props.items()), "Texture key %s %s" % (key, mods))
+    others = [(km.name, k.idname) for km in kc.keymaps for k in km.keymap_items
+              if k.type == key and all(getattr(k, m) == v for m, v in want.items()) and not k.oskey
+              and (km.name, k.idname) != ("Image Paint", idname)
+              and km.name in {"Window", "Screen", "Screen Editing", "Frames", "Property Editor", "Image Paint"}]
+    check(not others, "Texture key %s %s is free: %s" % (key, mods, others))
+check(not find("Image Paint", "paint.brush_colors_flip", 'X', shift=False), "plain X no longer swaps colors in Image Paint")
+check(find("Image Paint", "brush.scale_size", 'LEFT_BRACKET') and find("Image Paint", "brush.scale_size", 'RIGHT_BRACKET'),
+      "[ and ] change the brush size in Image Paint")
+
+# Menus of the Texturing set have real entries.
+for mid in ("M3D_MT_paint", "M3D_MT_layers", "M3D_MT_bake", "M3D_MT_export"):
+    check(len(m3d_ui.MENUS[mid][1]) >= 2, "Texturing menu has entries: " + mid)
+check(sum(e.get("idname") == "m3d.tex_channel" for e in m3d_ui.MENUS["M3D_MT_layers"][1]) == 6, "Layers menu has every channel")
+
+# Gates: page panels without a mesh, in Object Mode, without UVs / material.
+for ob in list(bpy.data.objects):
+    if ob.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.data.objects.remove(ob)
+
+
+class TCtx(SCtx):
+    """Context of a Texture dock: the real one with this workspace."""
+    def __init__(self, side='RIGHT'):
+        super().__init__(side)
+        self.workspace = tex_ws
+
+
+def tex_panels(page):
+    return [c for c in T.classes if getattr(c, "page", None) == page and hasattr(c, "poll")]
+
+
+def tex_shown(page):
+    side = 'LEFT' if page == "tex_brushes" else 'RIGHT'
+    setattr(tex_ws, "m3d_page_" + side.lower(), page)
+    ctx = TCtx(side)
+    return [c.__name__ for c in tex_panels(page) if c.poll(ctx)]
+
+
+def tex_gated(page):
+    names = tex_shown(page)
+    return len(names) == 1 and names[0].endswith("_gate")
+
+
+for page in T.GATES:
+    check(tex_gated("tex_" + page), "tex_%s without a mesh shows its message only: %s" % (page, tex_shown("tex_" + page)))
+check(not any(n.endswith("_gate") for n in tex_shown("tex_shelf") + tex_shown("tex_display")), "Shelf and Display need no mesh")
+check(T.missing(bpy.context) == ['MESH'], "missing without a mesh")
+bpy.ops.m3d.add_primitive(kind='CUBE')
+cube = bpy.context.active_object
+check(T.missing(bpy.context) == ['MATERIAL', 'MODE'], "a new cube has UVs, but no material, and is in Object Mode: %s" % T.missing(bpy.context))
+check(tex_gated("tex_layers") and not tex_gated("tex_bake") and tex_gated("tex_export"), "gates in Object Mode")
+cube.data.uv_layers.remove(cube.data.uv_layers[0])
+check(T.missing(bpy.context) == ['UV', 'MATERIAL', 'MODE'] and tex_gated("tex_bake"),
+      "missing UVs gate the Bake tab: %s" % T.missing(bpy.context))
+check(bpy.ops.m3d.tex_unwrap() == {'FINISHED'} and len(cube.data.uv_layers) == 1 and cube.mode == 'OBJECT',
+      "Auto Unwrap fix adds UVs and keeps the mode")
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+check(T.missing(bpy.context) == ['MATERIAL'] and bpy.context.mode == 'PAINT_TEXTURE', "only the material is missing: %s" % T.missing(bpy.context))
+check(tex_gated("tex_layers") and tex_gated("tex_brushes") and tex_gated("tex_brush"), "no material gates the paint pages")
+check(not bpy.ops.m3d.tex_channel.poll(), "no channel without a material")
+check(bpy.ops.m3d.tex_unwrap() == {'FINISHED'} and cube.mode == 'TEXTURE_PAINT', "Auto Unwrap from Texture Paint Mode keeps it")
+check(bpy.ops.m3d.tex_add_material() == {'FINISHED'} and cube.active_material is not None and T.missing(bpy.context) == [],
+      "Add Material fix")
+for page in tex_pages:
+    names = tex_shown(page)
+    check(names and not any(n.endswith("_gate") for n in names), "%s panels in Texture Paint Mode: %s" % (page, names))
+check([n for n in tex_shown("tex_brushes") if n.endswith("_canvas")], "tray offers Add Base Color without paint slots")
+
+# Channels: every channel adds its slot with the right color space; a second click only selects it.
+T_scene = bpy.context.scene
+T_scene.m3d_tex.resolution = '128'
+mat = cube.active_material
+want_space = {ch.id: 'sRGB' if ch.srgb else 'Non-Color' for ch in T.CHANNELS}
+for ch in T.CHANNELS:
+    check(bpy.ops.m3d.tex_channel(channel=ch.id) == {'FINISHED'}, "add channel " + ch.id)
+    found = T.channel_slots(mat)
+    img = found[ch.id][1] if ch.id in found else None
+    check(img is not None and tuple(img.size) == (128, 128), "%s slot is 128 px" % ch.id)
+    check(img is not None and img.colorspace_settings.name == want_space[ch.id],
+          "%s color space %s" % (ch.id, img and img.colorspace_settings.name))
+    check(T.active_channel(mat) == ch.id, "%s is the active channel (%s)" % (ch.id, T.active_channel(mat)))
+    if img is not None and ch.id != 'EMISSION':
+        check(all(abs(a - b) < 1e-3 for a, b in zip(img.generated_color, ch.color)),
+              "%s starts as %s (%s)" % (ch.id, ch.color, tuple(img.generated_color)))
+check(len(mat.texture_paint_slots) == 6, "six paint slots: %d" % len(mat.texture_paint_slots))
+check(mat.node_tree.nodes["Principled BSDF"].inputs["Emission Strength"].default_value == 1.0, "emission lights the shader")
+bpy.ops.m3d.tex_channel(channel='ROUGHNESS')
+check(len(mat.texture_paint_slots) == 6 and T.active_channel(mat) == 'ROUGHNESS', "clicking an existing channel only selects it")
+bpy.ops.m3d.tex_channel_cycle(delta=1)
+check(T.active_channel(mat) == 'METALLIC', "next channel")
+bpy.ops.m3d.tex_channel_cycle(delta=-1)
+bpy.ops.m3d.tex_channel_cycle(delta=-1)
+check(T.active_channel(mat) == 'BASE_COLOR', "previous channel")
+bpy.ops.m3d.tex_channel_cycle(delta=-1)
+check(T.active_channel(mat) == 'EMISSION', "channels wrap around")
+check(T.channel_of(mat, T.channel_slots(mat)['HEIGHT'][1]) == 'HEIGHT', "Height is found through the Bump node")
+check(T.channel_of(mat, T.channel_slots(mat)['NORMAL'][1]) == 'NORMAL', "Normal is found through the Normal Map node")
+# The checker map gates painting and refuses channel changes.
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.ops.m3d.uv_checker()
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+check('CHECKER' in T.missing(bpy.context) and tex_gated("tex_layers") and bpy.ops.m3d.tex_channel(channel='BASE_COLOR') == {'CANCELLED'},
+      "the checker map gates painting: %s" % T.missing(bpy.context))
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.ops.m3d.uv_checker()
+check(not U.checker_on(bpy.context) and T.missing(bpy.context) == ['MODE'], "checker off: %s" % T.missing(bpy.context))
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+
+# Every page panel draws (recorded calls name real operators, properties and icons).
+ctx = TCtx()
+for page in sorted(tex_pages):
+    setattr(tex_ws, "m3d_page_" + ("left" if page == "tex_brushes" else "right"), page)
+    for cls in tex_panels(page):
+        if cls.poll(TCtx('LEFT' if page == "tex_brushes" else 'RIGHT')):
+            try:
+                check_calls(cls.__name__, draw_stub(cls, ctx))
+            except Exception as err:
+                check(False, "%s draw: %r" % (cls.__name__, err))
+# ...also the gates and the panels that do not need paint mode, in Object Mode too.
+for mode in ('OBJECT', 'TEXTURE_PAINT'):
+    bpy.ops.object.mode_set(mode=mode)
+    for cls in (*T.PAGE_GATES, T.PROPERTIES_PT_m3d_tx_shelf_brushes, T.PROPERTIES_PT_m3d_tx_shelf_materials,
+                T.PROPERTIES_PT_m3d_tx_channel_view, T.PROPERTIES_PT_m3d_tx_checker):
+        try:
+            check_calls(cls.__name__ + " " + mode, draw_stub(cls, ctx))
+        except Exception as err:
+            check(False, "%s draw in %s: %r" % (cls.__name__, mode, err))
+log = []
+T.draw_status_line(Rec(log), ctx)
+check_calls("Texture status line", log)
+props_drawn = {r._args[1] for r in log if r._kind == "prop"}
+channels_drawn = [r.values().get("channel") for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_channel"]
+check({"use_mirror_x", "use_mirror_y", "use_mirror_z", "resolution"} <= props_drawn and channels_drawn == [c.id for c in T.CHANNELS],
+      "Texture status line controls: %s %s" % (props_drawn, channels_drawn))
+check(len([r for r in log if r._kind == "operator" and r._args[0] == "m3d.call"]) >= 5, "status line mode and display buttons")
+for key in m3d_ui.shelves_for('TEXTURE'):
+    log = []
+    ctx.window_manager.m3d_shelf = key
+    m3d_ui.draw_shelf(Rec(log), ctx)
+    check_calls("shelf " + key, log)
+
+# Brushes activate; the tray knows which is active.
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+for label, name in (*T.BRUSHES, *T.MORE_BRUSHES):
+    bpy.ops.brush.asset_activate(**T.brush_props(name))
+    check(S.active_brush_id(bpy.context) == T.BRUSH_ASSET + name, "texture brush %s active (is %r)" % (name, S.active_brush_id(bpy.context)))
+
+# Images the user painted are kept with the file: packed when they have no file, written when they have one.
+base, rough, metal = (T.channel_slots(mat)[c][1] for c in ('BASE_COLOR', 'ROUGHNESS', 'METALLIC'))
+base_name = base.name
+ramp = np.tile(np.linspace(0.0, 1.0, 128, dtype=np.float32), 128)   # left to right
+ramp_back = ramp[::-1]
+
+
+def paint(image, values):
+    """Fill an image with one color (a tuple) or a grey ramp (an array)."""
+    px = np.ones((128 * 128, 4), np.float32)
+    px[:, :3] = np.asarray(values, np.float32).reshape(-1, 1) if np.size(values) > 3 else values
+    image.pixels.foreach_set(px.ravel())
+    image.update()
+    return px
+
+
+def read(image):
+    px = np.empty(len(image.pixels), np.float32)
+    image.pixels.foreach_get(px)
+    return px.reshape(-1, 4)
+
+
+paint(base, (0.6, 0.3, 0.1))
+paint(rough, ramp)
+paint(metal, (0.8, 0.8, 0.8))
+check(base.is_dirty and rough.is_dirty and base in T.modified_images(), "painted images are modified")
+check(T.save_pre in bpy.app.handlers.save_pre, "save_pre handler is registered")
+disk_path = os.path.join(tempfile.mkdtemp(prefix="m3d_test_"), "disk.png")
+tmp = bpy.data.images.new("m3dTmp", 8, 8)
+tmp.filepath_raw, tmp.file_format = disk_path, 'PNG'
+tmp.save()
+bpy.data.images.remove(tmp)
+disk = bpy.data.images.load(disk_path)
+disk.pixels.foreach_set(np.full(8 * 8 * 4, 0.5, np.float32))
+disk.update()
+check(disk.is_dirty and disk.source == 'FILE' and disk in T.modified_images(), "an image with a file is modified")
+with open(disk_path, "rb") as fh:
+    before = fh.read()
+saved_n, packed_n = T.save_images()
+with open(disk_path, "rb") as fh:
+    after = fh.read()
+check(saved_n == 1 and packed_n == 3 and base.packed_file is not None and disk.packed_file is None,
+      "saved %d, packed %d" % (saved_n, packed_n))
+check(before != after, "the image with a file was written to it")
+check(not T.modified_images(), "nothing is left modified: %s" % [i.name for i in T.modified_images()])
+# ...and through a real save: a repainted image comes back from the file.
+paint(base, (0.25, 0.5, 0.75))
+saved = os.path.join(tempfile.mkdtemp(prefix="m3d_test_"), "paint.blend")
+bpy.ops.wm.save_as_mainfile(filepath=saved)
+bpy.ops.wm.open_mainfile(filepath=saved)
+T_scene = bpy.context.scene
+back = bpy.data.images.get(base_name)
+check(back is not None and back.packed_file is not None and abs(read(back)[0, 0] - 0.25) < 2 / 255 + 1e-4
+      and back.colorspace_settings.name == 'sRGB', "the repainted image is in the saved file")
+
+# Bake: all five maps on a small sphere; Cycles, the selection and the material are put back.
+bpy.ops.object.mode_set(mode='OBJECT')
+for ob in list(bpy.data.objects):
+    bpy.data.objects.remove(ob)
+bpy.ops.m3d.add_primitive(kind='SPHERE')
+ball = bpy.context.active_object
+ball.name = "BakeBall"
+bpy.ops.m3d.tex_add_material()
+ball_mat = ball.active_material
+nodes_before = sorted(n.name for n in ball_mat.node_tree.nodes)
+mats_before = len(bpy.data.materials)
+sets = ball.m3d_bake
+sets.resolution, sets.margin, sets.samples = '128', 4, 4
+for flag in ("use_normal", "use_ao", "use_curvature", "use_position", "use_thickness"):
+    setattr(sets, flag, True)
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+T_scene.render.engine = 'BLENDER_EEVEE'
+T_scene.cycles.samples = 77
+check(bpy.ops.m3d.tex_bake() == {'FINISHED'}, "Bake runs")
+check(T_scene.render.engine == 'BLENDER_EEVEE' and T_scene.cycles.samples == 77, "Cycles and its samples are put back")
+check(ball.mode == 'TEXTURE_PAINT' and bpy.context.view_layer.objects.active == ball and ball.select_get(), "mode and selection restored")
+check(ball.active_material == ball_mat and sorted(n.name for n in ball_mat.node_tree.nodes) == nodes_before
+      and len(bpy.data.materials) == mats_before and len(ball.material_slots) == 1, "the material is unchanged after the bake")
+for label in ("Normal", "AO", "Curvature", "Position", "Thickness"):
+    img = bpy.data.images.get("BakeBall_" + label)
+    check(img is not None and tuple(img.size) == (128, 128) and img.colorspace_settings.name == 'Non-Color'
+          and img.use_fake_user, "baked %s map" % label)
+    if img is not None:
+        px = read(img)
+        check(np.isfinite(px).all() and px[:, :3].max() > 0.0 and px[:, :3].max() <= 1.0 + 1e-4,
+              "%s has content in 0-1 (max %s)" % (label, px[:, :3].max()))
+check(sets.baked.split("|") == ["BakeBall_" + l for l in ("Normal", "AO", "Curvature", "Position", "Thickness")], "baked list: %s" % sets.baked)
+check(bpy.data.images["BakeBall_Position"].is_float, "Position is baked in float")
+bpy.ops.m3d.tex_bake()
+check(len([i for i in bpy.data.images if i.name.startswith("BakeBall_")]) == 5, "baking again reuses the images")
+for flag in ("use_normal", "use_ao", "use_curvature", "use_position", "use_thickness"):
+    setattr(sets, flag, False)
+check(bpy.ops.m3d.tex_bake() == {'CANCELLED'}, "no map ticked: no bake")
+
+# Bake from a high-poly mesh: the rounded cube's edges show in the low-poly cube's normal map; the hidden
+# high-poly mesh comes back hidden.
+bpy.ops.object.mode_set(mode='OBJECT')
+for ob in list(bpy.data.objects):
+    bpy.data.objects.remove(ob)
+bpy.ops.m3d.add_primitive(kind='CUBE')
+low = bpy.context.active_object
+low.name = "Low"
+bpy.ops.m3d.add_primitive(kind='CUBE')
+high = bpy.context.active_object
+high.name = "High"
+bpy.ops.object.modifier_add(type='SUBSURF')
+high.modifiers[0].levels = 3
+bpy.ops.object.modifier_apply(modifier=high.modifiers[0].name)
+check(len(high.data.polygons) > 100, "high-poly mesh has %d faces" % len(high.data.polygons))
+bpy.context.view_layer.objects.active = low
+for ob in (low, high):
+    ob.select_set(ob is high)
+sets = low.m3d_bake
+check(bpy.ops.m3d.tex_bake_pick() == {'FINISHED'} and sets.high == high, "Use Selected as High Poly")
+sets.resolution, sets.margin, sets.samples = '128', 4, 4
+sets.use_normal = True
+sets.use_ao = sets.use_curvature = sets.use_thickness = sets.use_position = False
+high.hide_set(True)
+check(bpy.ops.m3d.tex_bake() == {'FINISHED'}, "Bake from a high-poly mesh")
+check(high.hide_get() and bpy.context.view_layer.objects.active == low and not high.select_get() and not low.select_get(),
+      "high-poly visibility and selection restored: hidden %s, active %s, high selected %s, low selected %s" % (
+          high.hide_get(), bpy.context.view_layer.objects.active.name, high.select_get(), low.select_get()))
+normal_px = read(bpy.data.images["Low_Normal"])[:, :3]
+check(normal_px[:, 0].std() > 0.01 or normal_px[:, 1].std() > 0.01, "the normal map shows the high-poly detail (std %s)" % normal_px.std(axis=0))
+check(len(low.material_slots) == 0 and not [m for m in bpy.data.materials if m.name.startswith("m3dBake")],
+      "a mesh without materials gets none, and no temporary material is left")
+sets.high = None
+sets.use_ao = True
+check(bpy.ops.m3d.tex_bake() == {'FINISHED'}, "Bake without a high-poly mesh from the cube itself")
+ao_img = bpy.data.images["Low_AO"]
+paint(ao_img, (0.9, 0.9, 0.9))   # A known occlusion map for the export below.
+
+# Export: Unreal / Unity / glTF files; the packed channels match the source maps.
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.data.objects.remove(high)
+bpy.ops.m3d.tex_add_material()
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+T_scene.m3d_tex.resolution = '128'
+for cid in ('BASE_COLOR', 'ROUGHNESS', 'METALLIC', 'NORMAL', 'EMISSION'):
+    bpy.ops.m3d.tex_channel(channel=cid)
+slots = {c: i for c, (_n, i) in T.channel_slots(low.active_material).items()}
+paint(slots['BASE_COLOR'], (0.6, 0.3, 0.1))
+paint(slots['ROUGHNESS'], ramp)
+paint(slots['METALLIC'], ramp_back)
+paint(slots['NORMAL'], (0.5, 0.7, 1.0))
+paint(slots['EMISSION'], (0.2, 0.4, 0.6))
+out_dir = tempfile.mkdtemp(prefix="m3d_export_")
+tx = T_scene.m3d_tex
+tx.export_folder, tx.export_size, tx.export_preset = out_dir, 'SAME', 'UNREAL'
+check(bpy.ops.m3d.tex_export() == {'FINISHED'}, "Unreal export runs")
+files = sorted(os.listdir(out_dir))
+check(files == ["T_Low_BC.png", "T_Low_E.png", "T_Low_N.png", "T_Low_ORM.png"], "Unreal files: %s" % files)
+check(sorted(os.path.basename(p) for p in tx.export_files.split("|")) == files, "export list is kept")
+
+
+def load_png(folder, name):
+    img = bpy.data.images.load(os.path.join(folder, name))
+    img.colorspace_settings.name = 'Non-Color'
+    return read(img), img
+
+
+tol = 2.0 / 255 + 1e-4
+orm, orm_img = load_png(out_dir, "T_Low_ORM.png")
+check(tuple(orm_img.size) == (128, 128), "ORM is 128 px")
+check(np.abs(orm[:, 0] - 0.9).max() < tol, "ORM red is the occlusion map (error %s)" % np.abs(orm[:, 0] - 0.9).max())
+check(np.abs(orm[:, 1] - ramp).max() < tol, "ORM green is the roughness map (error %s)" % np.abs(orm[:, 1] - ramp).max())
+check(np.abs(orm[:, 2] - ramp_back).max() < tol, "ORM blue is the metallic map (error %s)" % np.abs(orm[:, 2] - ramp_back).max())
+normal_out, _ = load_png(out_dir, "T_Low_N.png")
+check(abs(normal_out[0, 1] - 0.3) < tol and abs(normal_out[0, 0] - 0.5) < tol, "Unreal normal map has the green channel flipped: %s" % normal_out[0])
+base_out, _ = load_png(out_dir, "T_Low_BC.png")
+check(np.abs(base_out[:, :3] - np.array([0.6, 0.3, 0.1])).max() < tol, "base color file matches the paint")
+# Unity at a smaller size, without an occlusion map.
+bpy.data.images.remove(ao_img)
+out_dir2 = tempfile.mkdtemp(prefix="m3d_export_")
+tx.export_preset, tx.export_size, tx.export_folder = 'UNITY', '64', out_dir2
+check(bpy.ops.m3d.tex_export() == {'FINISHED'}, "Unity export runs")
+files = sorted(os.listdir(out_dir2))
+check(files == ["Low_Albedo.png", "Low_Emission.png", "Low_MetallicSmoothness.png", "Low_Normal.png"], "Unity files: %s" % files)
+ms_px, ms = load_png(out_dir2, "Low_MetallicSmoothness.png")
+check(tuple(ms.size) == (64, 64), "export size 64 resamples the maps")
+cols = np.arange(64) * 2
+small_rough, small_metal = ramp[None, cols].repeat(64, 0).ravel(), ramp_back[None, cols].repeat(64, 0).ravel()
+visible = ms_px[:, 3] > 0.05   # Fully transparent pixels may lose their color in a PNG.
+check(np.abs(ms_px[visible, 0] - small_metal[visible]).max() < tol and np.abs(ms_px[:, 3] - (1 - small_rough)).max() < tol,
+      "Unity metallic in red and smoothness in alpha")
+tx.export_preset = 'GLTF'
+out_dir3 = tempfile.mkdtemp(prefix="m3d_export_")
+tx.export_folder = out_dir3
+check(bpy.ops.m3d.tex_export() == {'FINISHED'} and os.path.exists(os.path.join(out_dir3, "Low.glb"))
+      and os.path.getsize(os.path.join(out_dir3, "Low.glb")) > 1000, "glTF export writes a .glb: %s" % os.listdir(out_dir3))
+tx.export_preset, tx.export_folder = 'UNITY', "//textures/"
+check(bpy.ops.m3d.tex_export() == {'FINISHED'} and os.path.isdir(os.path.join(os.path.dirname(saved), "textures")),
+      "a // folder is next to the saved file")
+bpy.ops.object.mode_set(mode='OBJECT')
+for ob in list(bpy.data.objects):
+    bpy.data.objects.remove(ob)
+check(not bpy.ops.m3d.tex_export.poll(), "nothing to export without a mesh")
+bpy.ops.wm.read_homefile(app_template="")
+for ob in list(bpy.data.objects):
+    bpy.data.objects.remove(ob)
+bpy.ops.m3d.add_primitive(kind='CUBE')
+bpy.ops.m3d.tex_add_material()
+try:
+    res = bpy.ops.m3d.tex_export()
+except RuntimeError as err:   # An operator that reports an error raises it in Python.
+    res = str(err)
+check(not bpy.data.filepath and "Save the file first" in str(res), "a // folder needs a saved file: %s" % res)
 
 print("FAILS:", fails or "none")
 sys.exit(1 if fails else 0)

@@ -49,8 +49,9 @@ def brush_item(label, name):
 
 
 def active_brush_id(context):
-    sculpt = context.tool_settings.sculpt
-    ref = sculpt.brush_asset_reference if sculpt else None
+    ts = context.tool_settings
+    paint = ts.image_paint if context.mode == 'PAINT_TEXTURE' else ts.sculpt
+    ref = paint.brush_asset_reference if paint else None
     return ref.relative_asset_identifier if ref else ""
 
 

@@ -13,6 +13,7 @@ import bpy
 from bpy.types import Menu, Panel
 
 import m3d_sculpt
+import m3d_texture
 import m3d_uv
 from m3d_uv import UVTK_CREATE, UVTK_CUT_SEW, UVTK_PIN, UVTK_SELECT, UVTK_UNFOLD
 from m3d_workspace import KINDS, current_kind
@@ -84,11 +85,16 @@ def needs_view3d(idname):
 _UV_EDITOR_PREFIXES = ("uv.", "m3d.uv_", "image.tile_", "image.new")
 
 
+def is_uv_editor(area):
+    """An Image Editor in UV mode (the Texture workspace's one is in Paint mode and is not a target for UV tools)."""
+    return area.type == 'IMAGE_EDITOR' and area.spaces.active.mode == 'UV'
+
+
 def call_target(context, idname):
     """The editor ('VIEW_3D' or 'IMAGE_EDITOR') an operator drawn here has to run in through `m3d.call`, or None
     when it can run in place."""
     area = context.area.type if context.area is not None else None
-    has_uv_editor = context.screen is not None and any(a.type == 'IMAGE_EDITOR' for a in context.screen.areas)
+    has_uv_editor = context.screen is not None and any(is_uv_editor(a) for a in context.screen.areas)
     if idname.startswith(_UV_EDITOR_PREFIXES) and not needs_view3d(idname) and has_uv_editor:
         return None if area == 'IMAGE_EDITOR' else 'IMAGE_EDITOR'
     return 'VIEW_3D' if area != 'VIEW_3D' and (needs_view3d(idname) or not _poll(idname)) else None
@@ -442,20 +448,31 @@ MENUS = {
         op("Texture Paint Mode", "object.mode_set", 'TPAINT_HLT', mode='TEXTURE_PAINT'),
         op("Object Mode", "object.mode_set", 'OBJECT_DATAMODE', mode='OBJECT'),
         SEP,
-        op("Project from View", "paint.project_image", 'IMAGE_DATA'),
+        *(op(label, "brush.asset_activate", modes={'PAINT_TEXTURE'}, **m3d_texture.brush_props(name))
+          for label, name in m3d_texture.BRUSHES),
+        SEP,
         op("Swap Colors", "paint.brush_colors_flip", 'ARROW_LEFTRIGHT'),
+        op("Face Mask", "wm.context_toggle", 'FACESEL', modes={'PAINT_TEXTURE'}, data_path="object.data.use_paint_mask"),
+        op("Project Image", "paint.project_image", 'IMAGE_DATA'),
         op("Add Simple UVs", "paint.add_simple_uvs", 'UV'),
     ]),
     "M3D_MT_layers": ("Layers", [
-        op("Add Paint Slot", "paint.add_texture_paint_slot", 'ADD'),
+        *(op("Paint " + ch.label, "m3d.tex_channel", 'ADD', channel=ch.id) for ch in m3d_texture.CHANNELS),
+        SEP,
+        op("Next Channel", "m3d.tex_channel_cycle", 'TRIA_RIGHT', delta=1),
+        op("Previous Channel", "m3d.tex_channel_cycle", 'TRIA_LEFT', delta=-1),
+        SEP,
+        op("Add Material", "m3d.tex_add_material", 'MATERIAL'),
+        op("Auto Unwrap", "m3d.tex_unwrap", 'MOD_UVPROJECT'),
         op("New Image", "image.new", 'FILE_NEW'),
     ]),
     "M3D_MT_bake": ("Bake", [
-        op("Bake", "object.bake", 'RENDER_STILL'),
-        op("Apply Baked Image", "object.bake_image", 'IMAGE_DATA'),
+        op("Bake Maps", "m3d.tex_bake", 'RENDER_STILL'),
+        op("Use Selected as High Poly", "m3d.tex_bake_pick", 'EYEDROPPER'),
     ]),
     "M3D_MT_export": ("Export", [
-        op("Save All Images", "image.save_all_modified", 'FILE_TICK'),
+        op("Export Textures", "m3d.tex_export", 'EXPORT'),
+        op("Save All Images", "m3d.tex_save_all", 'FILE_TICK'),
         sub("Export Scene", "TOPBAR_MT_file_export", 'EXPORT'),
     ]),
 
@@ -827,7 +844,6 @@ def draw_workspace_picker(layout, context):
 _OBJECT_MODE = ('OBJECT', 'OBJECT_DATAMODE', "Object Mode", {'OBJECT'})
 _EDIT_MODE = ('EDIT', 'EDITMODE_HLT', "Edit Mode", {'EDIT_MESH', 'EDIT_ARMATURE', 'EDIT_CURVE'})
 KIND_MODES = {
-    'TEXTURE': (_OBJECT_MODE, ('TEXTURE_PAINT', 'TPAINT_HLT', "Texture Paint Mode", {'PAINT_TEXTURE'})),
     'RIG': (_OBJECT_MODE, _EDIT_MODE, ('POSE', 'POSE_HLT', "Pose Mode", {'POSE'}),
             ('WEIGHT_PAINT', 'WPAINT_HLT', "Weight Paint Mode", {'PAINT_WEIGHT'})),
     'ANIM': (_OBJECT_MODE, ('POSE', 'POSE_HLT', "Pose Mode", {'POSE'})),
@@ -851,7 +867,12 @@ def draw_status_line_uv(layout, context):
     m3d_uv.draw_status_line(layout, context)
 
 
-STATUS_LINES = {'MODEL': draw_status_line_model, 'SCULPT': draw_status_line_sculpt, 'UV': draw_status_line_uv}
+def draw_status_line_texture(layout, context):
+    m3d_texture.draw_status_line(layout, context)
+
+
+STATUS_LINES = {'MODEL': draw_status_line_model, 'SCULPT': draw_status_line_sculpt, 'UV': draw_status_line_uv,
+                'TEXTURE': draw_status_line_texture}
 
 
 def draw_status_line(layout, context):
@@ -932,6 +953,7 @@ class VIEW3D_PT_m3d_quick_layouts(Panel):
 _MODEL = frozenset({'MODEL'})
 _SCULPT = frozenset({'SCULPT'})
 _UV = frozenset({'UV'})
+_TEXTURE = frozenset({'TEXTURE'})
 # Shelf tab key -> (label, buttons, kinds of workspace that show the tab). A button is (idname, icon, props) or
 # (idname, icon, props, text); None is a gap; a function draws its own widgets into the row.
 SHELVES = {
@@ -1036,6 +1058,9 @@ SHELVES = {
     'SCULPT_REMESH': ("Remesh", m3d_sculpt.SHELF_REMESH, _SCULPT),
     'SCULPT_MASK': ("Mask", m3d_sculpt.SHELF_MASK, _SCULPT),
     'UV': ("UV", m3d_uv.SHELF_UV, _UV),
+    'TEXTURE_BRUSHES': ("Paint", m3d_texture.SHELF_BRUSHES, _TEXTURE),
+    'TEXTURE_CHANNELS': ("Channels", m3d_texture.SHELF_CHANNELS, _TEXTURE),
+    'TEXTURE_OUTPUT': ("Bake / Export", m3d_texture.SHELF_OUTPUT, _TEXTURE),
     # Buttons added by the user (m3d_user.py); every kind has its own.
     'CUSTOM': ("Custom", [], frozenset(KINDS)),
 }

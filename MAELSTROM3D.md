@@ -25,6 +25,7 @@ named here only to describe compatibility.*
 | Editor names | Attribute Editor, Shader Editor, Script Editor, Command Line, Command History, Time Editor | `rna_space.cc`, `node_shader_tree.cc` |
 | Marking menus | RMB, Shift+RMB, Ctrl+RMB in the viewport; RMB, Shift+RMB in the UV Editor; Space hotbox | `m3d_mode.py`, `m3d_uv.py` |
 | UV editing | UV workspace (F3): dock tabs, Status Line and shelf for Cut/Sew/Unfold/Optimize/Layout, texel density, Auto Unwrap, UDIMs, checker map; sidebar UV Toolkit in other workspaces | `scripts/startup/m3d_uv.py` |
+| Texturing | Texture workspace (F4): brush tray, paint channels, Bake, Export, Display, Status Line and shelves; painted images are saved or packed with the file | `scripts/startup/m3d_texture.py` |
 | Title | Window title says Maelstrom3D | `wm_window.cc` |
 
 ## Everyday controls
@@ -137,6 +138,48 @@ Tool buttons (mesh filters, trims, Grow / Shrink face set, color filters, Mask b
 viewport afterwards. Shift+1 ... Shift+7 pick Draw, Clay Strips, Smooth, Grab, Inflate/Deflate, Pinch/Magnify, Crease
 Sharp. Expand stays on Shift+A (mask) and Shift+W (face sets) over the mesh. Space (hold) lists the brushes first.
 "All Settings" at the end of each tab row is Blender's stock Properties tabs (symmetry locks, tiling, gravity, ...).
+
+## Texture (F4)
+
+F4 opens the Texture workspace and enters Texture Paint Mode on the active mesh: the 3D view (Material Preview) and the
+2D paint view side by side, the brush tray on the left, the dock on the right. Names are Blender's own. A mesh needs
+UVs and a material before it can be painted: the tabs say what is missing and have a button to fix it (Auto Unwrap,
+Add Material, Texture Paint Mode).
+
+| Part | Contents |
+|---|---|
+| Brush tray (left) | Brush picker, a grid of 10 brushes (Paint Soft, Paint Hard, Airbrush, Blur, Smear, Clone, Fill, Erase Soft, Erase Hard, Mask), Size, Strength, color picker with the second color and swap, Blend Mode, Stencil and Projection (stencil image, Occlude, Backface Culling, Normal Falloff). Closed panels: Brush Settings, Advanced |
+| Status Line | Object / Texture Paint Mode, the paint channels (Base Color, Roughness, Metallic, Normal, Height, Emission), Mirror X/Y/Z, viewport display (Material Preview, Solid, Rendered) and Channel View, size of new slots, Save All |
+| Shelves | Paint (the brushes, swap colors), Channels (add or pick a channel, Auto Unwrap, Add Material), Bake / Export, Custom |
+| Layers tab | The material's paint slots by channel (size shown; a click picks the channel, or adds it), size of new slots, Save All Images; closed: every paint slot and the canvas mode. A layer stack will replace this tab |
+| Brush tab | Stroke and Stabilize, Falloff, Texture, Texture Mask, Stencil, Clone, Options (seam bleed, dither, cavity mask), Cursor, Color Palette |
+| Shelf tab | All texture brushes (also the pressure and pixel art ones) and Blender's brush library popover (favorites live there); materials marked as assets, applied with a click, and a button to mark the active one |
+| Bake tab | High Poly picker (or Use Selected as High Poly), maps Normal, AO, Curvature, Position, Thickness, size, margin, ray settings, **Bake**, and the list of baked images |
+| Export tab | Presets glTF, Unreal, Unity; folder; size; **Export**; Save All Images |
+| Display tab | Material Preview environment (HDRI, rotation, intensity), Channel View of each channel, UV checker map, wireframe |
+
+A channel is a paint slot of the active material: the first click on **Base Color**, **Roughness**, **Metallic**,
+**Normal**, **Height** or **Emission** adds an image of the "new slot" size (Non-Color for everything except Base Color
+and Emission) and plugs it into the shader; later clicks only pick it. C and Shift+C step to the next / previous
+channel, `[` and `]` change the brush size, Shift+X swaps the two colors (plain X is hold-to-snap in the viewport, so
+it is not used for painting). Channel View shows the picked channel flat in the 3D view and goes back on the next click.
+
+**Bake** needs Cycles: it switches to it, bakes every ticked map into an image named `<mesh>_<Map>` (kept with the file)
+and switches back; the mesh's materials are not changed (a temporary material takes the bake and is removed). With a
+high-poly mesh set, detail is baked from it onto the active mesh (selected to active); without one, the mesh bakes
+itself. Curvature uses the shader's Pointiness (needs enough polygons), Thickness uses ambient occlusion from inside
+the mesh (closed meshes only; white where the mesh is thicker than the Thickness Distance), Position is scaled to 0-1
+within the object's bounds. The window waits while it bakes.
+
+**Export** writes the active mesh's channels: **glTF** one `.glb` with the mesh, material and textures; **Unreal**
+`T_Name_BC`, `_N` (green channel flipped for DirectX), `_ORM` (red occlusion from the baked AO map, green roughness, blue
+metallic) and `_E`; **Unity** `Name_Albedo`, `_Normal`, `_MetallicSmoothness` (metallic in red, smoothness in alpha),
+`_Occlusion`, `_Emission`. A channel without a paint image uses the shader's value. The folder may start with `//`
+(next to the saved file).
+
+Painted images never get lost: before a file is saved, images with changes are written to their files, or packed into
+the .blend when they have none. Save All Images does the same on demand. Large images use a lot of memory: new slots
+default to 2048 px.
 
 ## Terms used
 

@@ -56,7 +56,7 @@ def current_kind(context):
 
 
 # Modes whose menus a workspace's menu set already shows: the viewport header doesn't repeat them there.
-KIND_MODES_IN_MENU_BAR = {'SCULPT': {'SCULPT'}}
+KIND_MODES_IN_MENU_BAR = {'SCULPT': {'SCULPT'}, 'TEXTURE': {'TEXTURE_PAINT'}}
 
 
 def menu_bar_has_mode(context):
@@ -166,6 +166,13 @@ DOCK_TABS['UV'] = {
     'RIGHT': tuple(Tab("uv_" + page, label, 'MODELING_TOOLKIT', "uv_" + page) for page, label in (
         ("unwrap", "Unwrap"), ("arrange", "Arrange"), ("check", "Check"), ("create", "Create"), ("udim", "UDIM"))),
     'LEFT': (),
+}
+# Texture: the brush tray on the left, task tabs on the right (pages: m3d_texture.py).
+DOCK_TABS['TEXTURE'] = {
+    'RIGHT': tuple(Tab("tex_" + page, label, 'MODELING_TOOLKIT', "tex_" + page) for page, label in (
+        ("layers", "Layers"), ("brush", "Brush"), ("shelf", "Shelf"), ("bake", "Bake"), ("export", "Export"),
+        ("display", "Display"))),
+    'LEFT': (Tab("tex_brushes", "Brushes", 'MODELING_TOOLKIT', "tex_brushes"),),
 }
 # The last tab of every row: the stock Properties tabs.
 ALL_SETTINGS = {'MODEL': "Attribute Editor"}

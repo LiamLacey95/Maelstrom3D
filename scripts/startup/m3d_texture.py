@@ -1,0 +1,1453 @@
+# SPDX-FileCopyrightText: 2026 Maelstrom3D
+#
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+"""
+Texture workspace (F4) for Maelstrom3D: the brush tray (left), the dock pages (Layers, Brush, Shelf, Bake, Export,
+Display), the Texture Status Line, shelf items, paint channels, Bake and Export, and the save handler that keeps
+painted images.
+
+The layout is built by tools/m3d/build_startup.py (phase3_texture), the tabs are DOCK_TABS['TEXTURE'] in
+m3d_workspace.py, the menus and shelves in m3d_ui.py. Brush, stroke, falloff and texture controls are Blender's own
+panel classes re-used on the pages. A channel is a paint slot of the active material (Base Color, Roughness,
+Metallic, Normal, Height, Emission); the Layers tab is where the layer stack will go.
+"""
+
+import os
+from collections import namedtuple
+from contextlib import contextmanager, nullcontext
+
+import bpy
+import numpy as np
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, PointerProperty, StringProperty
+from bpy.types import Menu, Operator, Panel, PropertyGroup
+from bl_ui.properties_paint_common import (
+    BrushAssetShelf, BrushSelectPanel, ClonePanel, ColorPalettePanel, DisplayPanel, FalloffPanel, SmoothStrokePanel,
+    StrokePanel, TextureMaskPanel, UnifiedPaintPanel, brush_settings, brush_settings_advanced, brush_texture_settings)
+from mathutils import Vector
+
+import m3d_uv
+from m3d_mode import _button
+from m3d_sculpt import active_brush_id, grid, mesh_of, reason, split_props, viewport
+from m3d_workspace import _PagePanel
+
+# -----------------------------------------------------------------------------
+# Brushes
+
+BRUSH_ASSET = "brushes/essentials_brushes-mesh_texture.blend/Brush/"
+# (label, asset name): the tray grid and the Paint shelf
+BRUSHES = (
+    ("Paint Soft", "Paint Soft"), ("Paint Hard", "Paint Hard"), ("Airbrush", "Airbrush"), ("Blur", "Blur"),
+    ("Smear", "Smear"), ("Clone", "Clone"), ("Fill", "Fill"), ("Erase Soft", "Erase Soft"),
+    ("Erase Hard", "Erase Hard"), ("Mask", "Mask"),
+)
+# The Shelf tab adds the pressure and pixel art variants.
+MORE_BRUSHES = tuple((name, name) for name in (
+    "Paint Soft Pressure", "Paint Hard Pressure", "Erase Hard Pressure", "Paint Pixel Art", "Erase Pixel Art"))
+
+
+def brush_props(name):
+    return {"asset_library_type": 'ESSENTIALS', "relative_asset_identifier": BRUSH_ASSET + name}
+
+
+def brush_item(label, name):
+    """Brush button for a shelf (the optional fourth entry is the button text)."""
+    return ("brush.asset_activate", 'NONE', brush_props(name), label)
+
+
+# -----------------------------------------------------------------------------
+# Channels: paint slots of the active material
+
+Channel = namedtuple("Channel", "id label slot_type color srgb")
+# slot_type: the type of paint.add_texture_paint_slot (None: wired here); color: what a new slot starts as.
+CHANNELS = (
+    Channel('BASE_COLOR', "Base Color", 'BASE_COLOR', (0.8, 0.8, 0.8, 1.0), True),
+    Channel('ROUGHNESS', "Roughness", 'ROUGHNESS', (0.5, 0.5, 0.5, 1.0), False),
+    Channel('METALLIC', "Metallic", 'METALLIC', (0.0, 0.0, 0.0, 1.0), False),
+    Channel('NORMAL', "Normal", 'NORMAL', (0.5, 0.5, 1.0, 1.0), False),
+    Channel('HEIGHT', "Height", 'BUMP', (0.5, 0.5, 0.5, 1.0), False),
+    Channel('EMISSION', "Emission", None, (0.0, 0.0, 0.0, 1.0), True),
+)
+CHANNEL_BY_ID = {ch.id: ch for ch in CHANNELS}
+CHANNEL_ITEMS = [(ch.id, ch.label, "") for ch in CHANNELS]
+# Principled BSDF input a paint image feeds -> channel
+_SOCKET_CHANNELS = {"Base Color": 'BASE_COLOR', "Roughness": 'ROUGHNESS', "Metallic": 'METALLIC',
+                    "Emission Color": 'EMISSION'}
+SIZES = [(str(n), "%d px" % n, "") for n in (64, 128, 256, 512, 1024, 2048, 4096)]
+
+
+def channel_of(mat, image):
+    """Channel an image of `mat` feeds, by following the image node's link (Normal Map -> Normal, Bump -> Height);
+    images created here also remember it."""
+    for node in mat.node_tree.nodes if mat.node_tree else ():
+        if node.type != 'TEX_IMAGE' or node.image != image:
+            continue
+        for link in node.outputs[0].links:
+            to = link.to_node
+            if to.type == 'BSDF_PRINCIPLED' and link.to_socket.name in _SOCKET_CHANNELS:
+                return _SOCKET_CHANNELS[link.to_socket.name]
+            if to.type in {'NORMAL_MAP', 'BUMP'}:
+                return 'NORMAL' if to.type == 'NORMAL_MAP' else 'HEIGHT'
+    stored = image.get("m3d_channel")
+    return stored if stored in CHANNEL_BY_ID else None
+
+
+def paint_slots(mat):
+    """[(slot index, image, channel id or None)] of the material's paint slots."""
+    if mat is None:
+        return []
+    return [(i, img, channel_of(mat, img)) for i, img in enumerate(mat.texture_paint_images)]
+
+
+def channel_slots(mat):
+    """{channel id: (slot index, image)}: the first slot of each channel."""
+    found = {}
+    for i, img, ch in paint_slots(mat):
+        if ch and ch not in found:
+            found[ch] = (i, img)
+    return found
+
+
+def active_channel(mat):
+    """Channel id of the active paint slot, or None."""
+    slots = paint_slots(mat)
+    return slots[mat.paint_active_slot][2] if slots and mat.paint_active_slot < len(slots) else None
+
+
+def set_channel_space(image, ch):
+    image.colorspace_settings.name = 'sRGB' if ch.srgb else 'Non-Color'
+    image["m3d_channel"] = ch.id
+
+
+def principled_of(mat):
+    return next((n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None) if mat.node_tree else None
+
+
+def add_emission_slot(ob, mat, name, size):
+    """Emission has no slot type in Blender: a black image feeding Emission Color (strength 1)."""
+    bsdf = principled_of(mat)
+    if bsdf is None:
+        return None
+    image = bpy.data.images.new(name, size, size, alpha=False)
+    tex = mat.node_tree.nodes.new("ShaderNodeTexImage")
+    tex.image = image
+    tex.location = (bsdf.location.x - 400, bsdf.location.y - 1100)
+    mat.node_tree.links.new(tex.outputs["Color"], bsdf.inputs["Emission Color"])
+    bsdf.inputs["Emission Strength"].default_value = 1.0
+    mat.node_tree.nodes.active = tex
+    bpy.context.view_layer.update()   # Refreshes the material's paint slots.
+    return image
+
+
+def ensure_channel(context, ob, ch):
+    """Make `ch` the active paint slot of the active material, adding the slot first. Returns its image, or None."""
+    mat = ob.active_material
+    found = channel_slots(mat)
+    if ch.id in found:
+        mat.paint_active_slot = found[ch.id][0]
+        return found[ch.id][1]
+    size = int(context.scene.m3d_tex.resolution)
+    name = "%s_%s" % (ob.name, ch.label.replace(" ", ""))
+    before = set(mat.texture_paint_images)
+    if ch.slot_type:
+        bpy.ops.paint.add_texture_paint_slot(
+            type=ch.slot_type, slot_type='IMAGE', name=name, width=size, height=size, color=ch.color,
+            alpha=ch.id == 'BASE_COLOR', float=False)
+    else:
+        image = add_emission_slot(ob, mat, name, size)
+        if image is None:
+            return None
+    images = [img for img in mat.texture_paint_images if img not in before]
+    if not images:
+        return None
+    set_channel_space(images[0], ch)
+    mat.paint_active_slot = list(mat.texture_paint_images).index(images[0])
+    return images[0]
+
+
+# -----------------------------------------------------------------------------
+# What a mesh needs before it can be painted, baked or exported
+
+def missing(context):
+    """What the active mesh still needs, in the order the gates list it."""
+    ob = mesh_of(context)
+    if ob is None:
+        return ['MESH']
+    out = []
+    if not ob.data.uv_layers:
+        out.append('UV')
+    if ob.active_material is None:
+        out.append('MATERIAL')
+    if m3d_uv.CHECKER in ob:
+        out.append('CHECKER')
+    if ob.mode != 'TEXTURE_PAINT':
+        out.append('MODE')
+    return out
+
+
+NEEDS = {None: (), 'MESH': ('MESH',), 'PAINT': ('MESH', 'UV', 'MATERIAL', 'CHECKER', 'MODE'),
+         'BAKE': ('MESH', 'UV'), 'EXPORT': ('MESH', 'MATERIAL')}
+# need -> (message, button, icon, operator, properties)
+FIXES = {
+    'MESH': ("Select a mesh to paint", "Add Cube", 'MESH_CUBE', "m3d.add_primitive", {"kind": 'CUBE'}),
+    'UV': ("This mesh has no UVs", "Auto Unwrap", 'MOD_UVPROJECT', "m3d.tex_unwrap", {}),
+    'MATERIAL': ("This mesh has no material", "Add Material", 'MATERIAL', "m3d.tex_add_material", {}),
+    'CHECKER': ("The checker map is on: turn it off to paint", "Checker Off", 'TEXTURE', "m3d.uv_checker", {}),
+    'MODE': ("Enter Texture Paint Mode to paint", "Texture Paint Mode", 'TPAINT_HLT', "object.mode_set",
+             {"mode": 'TEXTURE_PAINT'}),
+}
+
+
+def ready(context, need):
+    return not set(missing(context)) & set(NEEDS[need])
+
+
+def draw_fixes(layout, context, need):
+    col = layout.column(align=True)
+    for key in missing(context):
+        if key in NEEDS[need]:
+            text, label, icon, idname, props = FIXES[key]
+            col.label(text=text)
+            _button(col, context, label, idname, icon, props)
+
+
+# -----------------------------------------------------------------------------
+# Settings
+
+class M3D_TexSettings(PropertyGroup):
+    """Texture workspace options (Scene.m3d_tex): new slot size and the Export tab."""
+    resolution: EnumProperty(name="Resolution", default='2048', items=SIZES,
+                             description="Size of new paint slots (bigger images use more memory)")
+    export_preset: EnumProperty(name="Preset", default='UNREAL', items=(
+        ('GLTF', "glTF", "One .glb file with the mesh, the material and its textures"),
+        ('UNREAL', "Unreal", "Base Color, Normal (DirectX), packed ORM (Occlusion, Roughness, Metallic), Emissive"),
+        ('UNITY', "Unity", "Albedo, Normal, Metallic with Smoothness in alpha, Occlusion, Emission")))
+    export_folder: StringProperty(name="Folder", subtype='DIR_PATH', default="//textures/",
+                                  options={'PATH_SUPPORTS_BLEND_RELATIVE'}, description="Where the files are written")
+    export_size: EnumProperty(name="Size", default='SAME', items=(
+        ('SAME', "Same as Paint", "Keep the size of each paint image"), *SIZES),
+        description="Size of the exported images")
+    export_files: StringProperty(description="Files of the last export, separated by |")
+
+
+class M3D_BakeSettings(PropertyGroup):
+    """Bake options of an object (Object.m3d_bake): the low-poly mesh the maps are baked onto."""
+    high: PointerProperty(
+        name="High Poly", type=bpy.types.Object, description="Mesh the detail is baked from (empty: bake the mesh itself)",
+        poll=lambda self, ob: ob.type == 'MESH' and ob != self.id_data)
+    use_normal: BoolProperty(name="Normal", default=True, description="Tangent space normal map")
+    use_ao: BoolProperty(name="AO", default=True, description="Ambient occlusion")
+    use_curvature: BoolProperty(name="Curvature", default=False,
+                                description="Convex edges light, concave ones dark (needs enough polygons)")
+    use_position: BoolProperty(name="Position", default=False, description="Position within the mesh's bounds")
+    use_thickness: BoolProperty(name="Thickness", default=False,
+                                description="How thick the mesh is (closed meshes only)")
+    resolution: EnumProperty(name="Resolution", default='1024', items=SIZES)
+    margin: IntProperty(name="Margin", default=16, min=0, max=64, subtype='PIXEL',
+                        description="Pixels the baked detail is extended past the UV shells")
+    extrusion: FloatProperty(name="Extrusion", default=0.02, min=0.0, soft_max=1.0, unit='LENGTH',
+                             description="Distance the rays start from the low-poly surface")
+    ray_distance: FloatProperty(name="Max Ray Distance", default=0.0, min=0.0, soft_max=1.0, unit='LENGTH',
+                                description="Longest distance a ray travels to the high-poly mesh (0: no limit)")
+    samples: IntProperty(name="Samples", default=32, min=1, soft_max=512,
+                         description="Samples for ambient occlusion and thickness")
+    thickness_distance: FloatProperty(name="Thickness Distance", default=0.25, min=0.001, soft_max=10.0, unit='LENGTH',
+                                      description="Where the mesh is thicker than this the map is white, where it is thinner "
+                                      "it gets darker")
+    baked: StringProperty(description="Maps of the last bake, separated by |")
+
+
+# -----------------------------------------------------------------------------
+# Safety: painted images are saved or packed with the file
+
+def modified_images():
+    return [i for i in bpy.data.images if i.is_dirty and i.source in {'GENERATED', 'FILE'} and i.name != m3d_uv.CHECKER]
+
+
+def save_images():
+    """Write every changed image to its file, or pack it into the .blend when it has none. Returns (saved, packed)."""
+    saved = packed = 0
+    for image in modified_images():
+        if image.source == 'FILE' and not image.packed_file and image.filepath_raw:
+            try:
+                image.save()
+                saved += 1
+                continue
+            except RuntimeError:
+                pass   # An unwritable path: keep the work in the file instead.
+        image.pack()
+        packed += 1
+    return saved, packed
+
+
+@bpy.app.handlers.persistent
+def save_pre(*_args):
+    save_images()
+
+
+# -----------------------------------------------------------------------------
+# Operators
+
+def paint_mesh(context):
+    ob = mesh_of(context)
+    return ob if ob is not None and ob.mode == 'TEXTURE_PAINT' and ob.active_material is not None else None
+
+
+class M3D_OT_tex_channel(Operator):
+    """Paint a channel: make it the active paint slot (the slot is added first when the material has none)"""
+    bl_idname = "m3d.tex_channel"
+    bl_label = "Paint Channel"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    channel: EnumProperty(items=CHANNEL_ITEMS)
+
+    @classmethod
+    def description(cls, _context, props):
+        return "Paint %s (adds the paint slot if the material has none)" % CHANNEL_BY_ID[props.channel].label
+
+    @classmethod
+    def poll(cls, context):
+        return paint_mesh(context) is not None
+
+    def execute(self, context):
+        ob = paint_mesh(context)
+        if m3d_uv.CHECKER in ob:
+            self.report({'WARNING'}, "Turn the checker map off first")
+            return {'CANCELLED'}
+        if not ob.data.uv_layers:
+            self.report({'WARNING'}, "This mesh has no UVs: use Auto Unwrap")
+            return {'CANCELLED'}
+        try:
+            image = ensure_channel(context, ob, CHANNEL_BY_ID[self.channel])
+        except RuntimeError as err:
+            self.report({'WARNING'}, str(err).strip())
+            return {'CANCELLED'}
+        if image is None:
+            self.report({'WARNING'}, "Could not add the %s slot" % CHANNEL_BY_ID[self.channel].label)
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+class M3D_OT_tex_channel_cycle(Operator):
+    """Paint the next (or previous) channel the material has"""
+    bl_idname = "m3d.tex_channel_cycle"
+    bl_label = "Cycle Paint Channel"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    delta: IntProperty(default=1)
+
+    @classmethod
+    def description(cls, _context, props):
+        return "Paint the %s channel of the material" % ("next" if props.delta > 0 else "previous")
+
+    @classmethod
+    def poll(cls, context):
+        return paint_mesh(context) is not None
+
+    def execute(self, context):
+        mat = paint_mesh(context).active_material
+        found = channel_slots(mat)
+        order = [ch.id for ch in CHANNELS if ch.id in found]
+        if not order:
+            self.report({'INFO'}, "No channels yet: add one in the Layers tab")
+            return {'CANCELLED'}
+        now = active_channel(mat)
+        i = (order.index(now) + self.delta) % len(order) if now in order else 0
+        mat.paint_active_slot = found[order[i]][0]
+        self.report({'INFO'}, "Painting " + CHANNEL_BY_ID[order[i]].label)
+        return {'FINISHED'}
+
+
+class M3D_OT_tex_add_material(Operator):
+    """Give the active mesh a new material (a Principled shader the paint slots plug into)"""
+    bl_idname = "m3d.tex_add_material"
+    bl_label = "Add Material"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return mesh_of(context) is not None
+
+    def execute(self, context):
+        ob = mesh_of(context)
+        mat = bpy.data.materials.new(ob.name + "_Material")
+        mat.use_nodes = True
+        if ob.material_slots:
+            ob.material_slots[ob.active_material_index].material = mat
+        else:
+            ob.data.materials.append(mat)
+        return {'FINISHED'}
+
+
+class M3D_OT_tex_unwrap(Operator):
+    """Auto Unwrap the active mesh (cut at sharp edges, unfold, lay out), then go back to the mode it was in"""
+    bl_idname = "m3d.tex_unwrap"
+    bl_label = "Auto Unwrap"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return mesh_of(context) is not None
+
+    def execute(self, context):
+        ob = mesh_of(context)
+        mode = ob.mode
+        bpy.ops.object.mode_set(mode='EDIT')
+        try:
+            res = bpy.ops.m3d.uv_auto()
+        finally:
+            bpy.ops.object.mode_set(mode=mode)
+        return res
+
+
+class M3D_OT_tex_save_all(Operator):
+    """Save every changed image: to its file, or into the .blend when it has none"""
+    bl_idname = "m3d.tex_save_all"
+    bl_label = "Save All Images"
+
+    def execute(self, _context):
+        saved, packed = save_images()
+        self.report({'INFO'}, "%d images saved, %d packed into the file" % (saved, packed))
+        return {'FINISHED'}
+
+
+_view_memory = {}
+
+
+def channel_view_on(shading):
+    return shading.type == 'SOLID' and shading.light == 'FLAT' and shading.color_type == 'TEXTURE'
+
+
+class M3D_OT_tex_channel_view(Operator):
+    """Show the active paint channel alone in the 3D view (flat, no lighting); again to go back to the old view"""
+    bl_idname = "m3d.tex_channel_view"
+    bl_label = "Channel View"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    channel: StringProperty(description="Channel to show (empty: the active one)")
+
+    @classmethod
+    def poll(cls, context):
+        return viewport(context) is not None
+
+    def execute(self, context):
+        shading = viewport(context).shading
+        on = channel_view_on(shading)
+        if self.channel:
+            ob = mesh_of(context)
+            found = channel_slots(ob.active_material) if ob is not None and ob.active_material else {}
+            if self.channel not in found:
+                self.report({'WARNING'}, "No %s channel yet" % CHANNEL_BY_ID[self.channel].label)
+                return {'CANCELLED'}
+            ob.active_material.paint_active_slot = found[self.channel][0]
+        if on and not self.channel:
+            shading.type, shading.light, shading.color_type = _view_memory.pop("shading", ('MATERIAL', 'STUDIO', 'MATERIAL'))
+        elif not on:
+            _view_memory["shading"] = (shading.type, shading.light, shading.color_type)
+            shading.type, shading.light, shading.color_type = 'SOLID', 'FLAT', 'TEXTURE'
+        return {'FINISHED'}
+
+
+class M3D_OT_tex_apply_material(Operator):
+    """Put this material on the active mesh (replacing the active material slot)"""
+    bl_idname = "m3d.tex_apply_material"
+    bl_label = "Apply Material"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    name: StringProperty()
+
+    @classmethod
+    def poll(cls, context):
+        return mesh_of(context) is not None
+
+    def execute(self, context):
+        ob, mat = mesh_of(context), bpy.data.materials.get(self.name)
+        if mat is None:
+            return {'CANCELLED'}
+        if ob.material_slots:
+            ob.material_slots[ob.active_material_index].material = mat
+        else:
+            ob.data.materials.append(mat)
+        return {'FINISHED'}
+
+
+class M3D_OT_tex_mark_material(Operator):
+    """Mark the active material as an asset, so the Shelf tab lists it"""
+    bl_idname = "m3d.tex_mark_material"
+    bl_label = "Mark Material as Asset"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = mesh_of(context)
+        return ob is not None and ob.active_material is not None and ob.active_material.asset_data is None
+
+    def execute(self, context):
+        mat = mesh_of(context).active_material
+        mat.asset_mark()
+        mat.asset_generate_preview()
+        return {'FINISHED'}
+
+
+# -----------------------------------------------------------------------------
+# Bake
+
+BAKE_MAPS = (   # (id, label, flag in M3D_BakeSettings)
+    ('NORMAL', "Normal", "use_normal"), ('AO', "AO", "use_ao"), ('CURVATURE', "Curvature", "use_curvature"),
+    ('POSITION', "Position", "use_position"), ('THICKNESS', "Thickness", "use_thickness"),
+)
+BAKE_TYPES = {'NORMAL': 'NORMAL', 'AO': 'AO', 'CURVATURE': 'EMIT', 'POSITION': 'POSITION', 'THICKNESS': 'EMIT'}
+
+
+def bake_material(image=None, emission=None, distance=1.0):
+    """Temporary material for a bake: an Image Texture node holding `image` (the bake target, active), and for
+    Curvature / Thickness an emission shader showing the map (Pointiness, or ambient occlusion from inside)."""
+    mat = bpy.data.materials.new("m3dBake")
+    mat.use_nodes = True
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    if emission:
+        nodes.clear()
+        out, emit = nodes.new("ShaderNodeOutputMaterial"), nodes.new("ShaderNodeEmission")
+        links.new(emit.outputs["Emission"], out.inputs["Surface"])
+        if emission == 'CURVATURE':   # Pointiness is 0.5 on flat areas: widen 0.45-0.55 to the whole range.
+            geo, rng = nodes.new("ShaderNodeNewGeometry"), nodes.new("ShaderNodeMapRange")
+            rng.inputs["From Min"].default_value, rng.inputs["From Max"].default_value = 0.45, 0.55
+            links.new(geo.outputs["Pointiness"], rng.inputs["Value"])
+            links.new(rng.outputs["Result"], emit.inputs["Color"])
+        else:   # Ambient occlusion from inside the mesh: the shorter the way out, the darker.
+            ao = nodes.new("ShaderNodeAmbientOcclusion")
+            ao.inside, ao.samples = True, 16
+            ao.inputs["Distance"].default_value = distance
+            links.new(ao.outputs["AO"], emit.inputs["Color"])
+    if image:
+        tex = nodes.new("ShaderNodeTexImage")
+        tex.image = image
+        nodes.active = tex
+    return mat
+
+
+@contextmanager
+def materials_swapped(ob, mat):
+    """`mat` on every material slot of `ob` (a slot is added when it has none); the old materials come back after."""
+    saved = [slot.material for slot in ob.material_slots]
+    if saved:
+        for slot in ob.material_slots:
+            slot.material = mat
+    else:
+        ob.data.materials.append(mat)
+    try:
+        yield
+    finally:
+        if saved:
+            for slot, old in zip(ob.material_slots, saved):
+                slot.material = old
+        else:
+            ob.data.materials.clear()
+        bpy.data.materials.remove(mat)
+
+
+def bake_image(ob, label, size, float_buffer):
+    """The image a map is baked into: the object's earlier one of this map (resized) or a new one."""
+    name = "%s_%s" % (ob.name, label)
+    image = bpy.data.images.get(name)
+    if image is None or image.source != 'GENERATED':
+        image = bpy.data.images.new(name, size, size, alpha=False, float_buffer=float_buffer, is_data=True)
+    elif tuple(image.size) != (size, size):
+        image.scale(size, size)
+    image.use_fake_user = True   # Nothing uses it yet: keep it in the file.
+    image.colorspace_settings.name = 'Non-Color'
+    image["m3d_bake"] = label
+    return image
+
+
+def world_bounds(ob):
+    corners = np.array([ob.matrix_world @ Vector(c) for c in ob.bound_box])
+    return corners.min(axis=0), corners.max(axis=0)
+
+
+def normalise_position(image, ob):
+    """Position bakes world coordinates: scale them to 0-1 within the object's bounds so any image format keeps them."""
+    lo, hi = world_bounds(ob)
+    px = np.empty(len(image.pixels), np.float32)
+    image.pixels.foreach_get(px)
+    rgba = px.reshape(-1, 4)
+    rgba[:, :3] = np.clip((rgba[:, :3] - lo) / np.maximum(hi - lo, 1e-6), 0.0, 1.0)
+    rgba[:, 3] = 1.0
+    image.pixels.foreach_set(px)
+    image.update()
+
+
+@contextmanager
+def bake_scene(context, ob, high):
+    """Cycles on (the bake needs it), the low-poly mesh active and the high-poly selected with it, Object Mode;
+    everything is put back afterwards."""
+    scene, layer = context.scene, context.view_layer
+    objs = [o for o in (ob, high) if o is not None]
+    if any(o.name not in layer.objects for o in objs):
+        raise RuntimeError("Both meshes have to be in the view layer")
+    state = dict(engine=scene.render.engine, samples=scene.cycles.samples, mode=ob.mode, active=layer.objects.active,
+                 selected=[o for o in layer.objects if o.select_get()],
+                 hidden=[(o, o.hide_get(), o.hide_viewport) for o in objs])
+    if ob.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    try:
+        for o in objs:
+            o.hide_viewport = False
+            o.hide_set(False)
+        for o in state["selected"]:
+            o.select_set(False)
+        for o in objs:
+            o.select_set(True)
+        layer.objects.active = ob
+        scene.render.engine = 'CYCLES'
+        yield
+    finally:
+        scene.render.engine, scene.cycles.samples = state["engine"], state["samples"]
+        for o, hide, hide_viewport in state["hidden"]:
+            o.hide_set(hide)
+            o.hide_viewport = hide_viewport
+        for o in objs:
+            o.select_set(False)
+        for o in state["selected"]:
+            o.select_set(True)
+        layer.objects.active = state["active"]
+        if state["mode"] != 'OBJECT' and state["active"] is ob:
+            bpy.ops.object.mode_set(mode=state["mode"])
+
+
+def bake_maps(context, ob, high, s, maps):
+    """Bake the ticked maps of `ob` (from `high` when set) into images. Returns the images."""
+    size, images = int(s.resolution), []
+    context.scene.cycles.samples = s.samples
+    for key, label, _flag in maps:
+        image = bake_image(ob, label, size, key == 'POSITION')
+        emission = key if BAKE_TYPES[key] == 'EMIT' else None
+        # Without a high-poly mesh the low-poly one carries both the emission and the bake target.
+        target = bake_material(image, None if high else emission, s.thickness_distance)
+        with materials_swapped(ob, target):
+            with materials_swapped(high, bake_material(emission=emission, distance=s.thickness_distance)) \
+                    if high and emission else nullcontext():
+                bpy.ops.object.bake(
+                    type=BAKE_TYPES[key], margin=s.margin, use_selected_to_active=high is not None,
+                    cage_extrusion=s.extrusion, max_ray_distance=s.ray_distance, normal_space='TANGENT',
+                    use_clear=True, target='IMAGE_TEXTURES', save_mode='INTERNAL')
+        if key == 'POSITION':
+            normalise_position(image, high or ob)
+        images.append(image)
+    return images
+
+
+class M3D_OT_tex_bake_pick(Operator):
+    """Use the other selected mesh as the high-poly mesh of the active one"""
+    bl_idname = "m3d.tex_bake_pick"
+    bl_label = "Use Selected as High Poly"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return mesh_of(context) is not None
+
+    def execute(self, context):
+        ob = mesh_of(context)
+        other = next((o for o in context.selected_objects if o.type == 'MESH' and o != ob), None)
+        if other is None:
+            self.report({'WARNING'}, "Select the high-poly mesh as well (the low-poly one stays active)")
+            return {'CANCELLED'}
+        ob.m3d_bake.high = other
+        return {'FINISHED'}
+
+
+class M3D_OT_tex_bake(Operator):
+    """Bake the ticked maps of the active mesh into images (from the high-poly mesh when set). Cycles is used for the
+    bake and switched back; the mesh's materials are not changed"""
+    bl_idname = "m3d.tex_bake"
+    bl_label = "Bake"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = mesh_of(context)
+        return ob is not None and bool(ob.data.uv_layers)
+
+    def execute(self, context):
+        ob = mesh_of(context)
+        s = ob.m3d_bake
+        maps = [m for m in BAKE_MAPS if getattr(s, m[2])]
+        if not maps:
+            self.report({'WARNING'}, "Tick at least one map")
+            return {'CANCELLED'}
+        wm = context.window_manager
+        wm.progress_begin(0, 1)
+        try:
+            with bake_scene(context, ob, s.high):
+                images = bake_maps(context, ob, s.high, s, maps)
+        except RuntimeError as err:
+            self.report({'ERROR'}, str(err).strip())
+            return {'CANCELLED'}
+        finally:
+            wm.progress_end()
+        s.baked = "|".join(img.name for img in images)
+        self.report({'INFO'}, "Baked %s at %s px" % (", ".join(m[1] for m in maps), s.resolution))
+        return {'FINISHED'}
+
+
+class M3D_OT_tex_show_image(Operator):
+    """Show an image in the 2D view"""
+    bl_idname = "m3d.tex_show_image"
+    bl_label = "Show Image"
+    bl_options = {'INTERNAL'}
+
+    name: StringProperty()
+
+    def execute(self, context):
+        image = bpy.data.images.get(self.name)
+        areas = [a for a in context.screen.areas if a.type == 'IMAGE_EDITOR']
+        if image is None or not areas:
+            return {'CANCELLED'}
+        max(areas, key=lambda a: a.width * a.height).spaces.active.image = image
+        return {'FINISHED'}
+
+
+# -----------------------------------------------------------------------------
+# Export
+
+def constant(mat, socket, default):
+    bsdf = principled_of(mat)
+    return float(bsdf.inputs[socket].default_value) if bsdf is not None else default
+
+
+def pixels_of(image, size):
+    """The image's pixels as a (size, size, 4) array (resampled when it has another size)."""
+    px = np.empty(len(image.pixels), np.float32)
+    image.pixels.foreach_get(px)
+    w, h = image.size
+    px = px.reshape(h, w, 4)
+    if (w, h) != (size, size):
+        px = px[np.ix_(np.arange(size) * h // size, np.arange(size) * w // size)]
+    return px
+
+
+def write_png(path, array, srgb, alpha=False):
+    """Save a (size, size, 4) array as a PNG. Pixels are stored as they are (no colour conversion)."""
+    size = array.shape[0]
+    image = bpy.data.images.new("m3dExport", size, size, alpha=alpha, is_data=not srgb)
+    try:
+        image.pixels.foreach_set(np.ascontiguousarray(array, np.float32).ravel())
+        image.filepath_raw, image.file_format = path, 'PNG'
+        image.save()
+    finally:
+        bpy.data.images.remove(image)
+
+
+def export_textures(context, ob):
+    """Write the active mesh's channels in the format of the Export preset. Returns the files written."""
+    s = context.scene.m3d_tex
+    if s.export_folder.startswith("//") and not bpy.data.filepath:
+        raise RuntimeError("Save the file first, or pick a folder that does not start with //")
+    folder = bpy.path.abspath(s.export_folder)
+    os.makedirs(folder, exist_ok=True)
+    name = bpy.path.clean_name(ob.name)
+    mat = ob.active_material
+    found = {ch: img for ch, (_i, img) in channel_slots(mat).items()}
+    if s.export_preset == 'GLTF':
+        return [export_gltf(context, ob, os.path.join(folder, name + ".glb"))]
+    sizes = [max(img.size) for img in found.values()]
+    size = int(s.export_size) if s.export_size != 'SAME' else max(sizes, default=1024)
+    ao_image = bpy.data.images.get(ob.name + "_AO")
+    ones = np.ones((size, size, 4), np.float32)
+
+    def map_of(channel, socket, default):
+        if channel in found:
+            return pixels_of(found[channel], size)
+        return ones * np.float32(constant(mat, socket, default))
+
+    unreal = s.export_preset == 'UNREAL'
+    names = dict(base=("T_%s_BC" if unreal else "%s_Albedo"), normal=("T_%s_N" if unreal else "%s_Normal"),
+                 pack=("T_%s_ORM" if unreal else "%s_MetallicSmoothness"), emit=("T_%s_E" if unreal else "%s_Emission"),
+                 ao="%s_Occlusion")
+    paths = []
+
+    def out(key, array, srgb, alpha=False):
+        path = os.path.join(folder, names[key] % name + ".png")
+        write_png(path, array, srgb, alpha)
+        paths.append(path)
+
+    if 'BASE_COLOR' in found:
+        out("base", pixels_of(found['BASE_COLOR'], size), True, alpha=True)
+    if 'NORMAL' in found:
+        normal = pixels_of(found['NORMAL'], size).copy()
+        if unreal:
+            normal[..., 1] = 1.0 - normal[..., 1]   # Unreal reads normal maps with the green channel flipped.
+        out("normal", normal, False)
+    if 'EMISSION' in found:
+        out("emit", pixels_of(found['EMISSION'], size), True)
+    rough, metal = map_of('ROUGHNESS', "Roughness", 0.5), map_of('METALLIC', "Metallic", 0.0)
+    ao = pixels_of(ao_image, size) if ao_image is not None else ones
+    packed = np.ones((size, size, 4), np.float32)
+    if unreal:
+        packed[..., 0], packed[..., 1], packed[..., 2] = ao[..., 0], rough[..., 0], metal[..., 0]
+    else:   # Metallic in red, smoothness in alpha.
+        packed[..., :3] = metal[..., :1]
+        packed[..., 3] = 1.0 - rough[..., 0]
+    out("pack", packed, False, alpha=not unreal)
+    if not unreal and ao_image is not None:
+        out("ao", ao, False)
+    return paths
+
+
+def export_gltf(context, ob, path):
+    """The mesh with its material as a .glb (the glTF exporter reads the paint images from the material)."""
+    if not hasattr(bpy.ops.export_scene, "gltf"):
+        raise RuntimeError("The glTF exporter is not enabled")
+    layer = context.view_layer
+    state = [o for o in layer.objects if o.select_get()], layer.objects.active
+    for o in state[0]:
+        o.select_set(False)
+    ob.select_set(True)
+    layer.objects.active = ob
+    try:
+        bpy.ops.export_scene.gltf(filepath=path, export_format='GLB', use_selection=True)
+    finally:
+        ob.select_set(False)
+        for o in state[0]:
+            o.select_set(True)
+        layer.objects.active = state[1]
+    return path
+
+
+class M3D_OT_tex_export(Operator):
+    """Write the channels of the active mesh as texture files for the chosen engine (Export tab)"""
+    bl_idname = "m3d.tex_export"
+    bl_label = "Export"
+
+    @classmethod
+    def poll(cls, context):
+        ob = mesh_of(context)
+        return ob is not None and ob.active_material is not None
+
+    def execute(self, context):
+        ob = mesh_of(context)
+        try:
+            paths = export_textures(context, ob)
+        except (RuntimeError, OSError) as err:
+            self.report({'ERROR'}, str(err).strip())
+            return {'CANCELLED'}
+        context.scene.m3d_tex.export_files = "|".join(paths)
+        self.report({'INFO'}, "Exported %d files to %s" % (len(paths), os.path.dirname(paths[0])))
+        return {'FINISHED'}
+
+
+# -----------------------------------------------------------------------------
+# Dock pages: panels of the MODELING_TOOLKIT context, shown by page id (see m3d_workspace.DOCK_TABS)
+
+class _Page(_PagePanel):
+    """Panel that needs `need` (see `NEEDS`)."""
+    need = 'PAINT'
+
+    @classmethod
+    def page_poll(cls, context):
+        return ready(context, cls.need)
+
+
+class _BrushPage(_PagePanel):
+    """Panel for the active brush; the stock mixin classes (falloff, stroke ...) add their own poll."""
+    @classmethod
+    def page_poll(cls, context):
+        stock = super(_PagePanel, cls)
+        return ready(context, 'PAINT') and UnifiedPaintPanel.get_brush_mode(context) is not None and (
+            not hasattr(stock, "poll") or stock.poll(context))
+
+
+def _gate(page, need):
+    """The panel a page shows instead of its own when something is missing: what to do next."""
+    def draw(self, context):
+        draw_fixes(self.layout, context, need)
+    return type("PROPERTIES_PT_m3d_tx_%s_gate" % page, (_PagePanel, Panel), {
+        "bl_label": "Texture", "bl_options": {'HIDE_HEADER'}, "page": "tex_" + page,
+        "page_poll": classmethod(lambda cls, context: not ready(context, need)), "draw": draw})
+
+
+def paint_settings(context):
+    return context.tool_settings.image_paint
+
+
+# --- Left tray: brushes
+
+class PROPERTIES_PT_m3d_tx_canvas(_Page, Panel):
+    page = "tex_brushes"
+    bl_label = "Canvas"
+
+    @classmethod
+    def page_poll(cls, context):
+        return ready(context, 'PAINT') and not paint_slots(mesh_of(context).active_material)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="No paint slots yet")
+        layout.prop(context.scene.m3d_tex, "resolution")
+        op = layout.operator("m3d.tex_channel", text="Add Base Color", icon='ADD')
+        op.channel = 'BASE_COLOR'
+
+
+class PROPERTIES_PT_m3d_tx_brush(_BrushPage, BrushSelectPanel, Panel):
+    page = "tex_brushes"
+
+
+class PROPERTIES_PT_m3d_tx_grid(_Page, Panel):
+    page = "tex_brushes"
+    bl_label = "Brushes"
+
+    def draw(self, context):
+        grid(self.layout, context, [(label, "brush.asset_activate", 'NONE', brush_props(name))
+                                    for label, name in BRUSHES],
+             active=lambda idname, props: idname == "brush.asset_activate" and
+             props["relative_asset_identifier"] == active_brush_id(context))
+
+
+class PROPERTIES_PT_m3d_tx_tuning(_Page, Panel):
+    page = "tex_brushes"
+    bl_label = "Size, Strength and Color"
+
+    def draw(self, context):
+        layout = self.layout
+        split_props(layout)
+        settings = paint_settings(context)
+        brush = settings.brush
+        if brush is None:
+            layout.label(text="Pick a brush above")
+            return
+        col = layout.column()
+        UnifiedPaintPanel.prop_unified(col, context, brush, "size", unified_name="use_unified_size", text="Size",
+                                       pressure_name="use_pressure_size", slider=True)
+        UnifiedPaintPanel.prop_unified(col, context, brush, "strength", unified_name="use_unified_strength",
+                                       pressure_name="use_pressure_strength", slider=True)
+        if not brush.image_paint_capabilities.has_color:
+            return
+        UnifiedPaintPanel.prop_unified_color_picker(layout, context, brush, "color")
+        row = layout.row(align=True)
+        UnifiedPaintPanel.prop_unified_color(row, context, brush, "color", text="")
+        UnifiedPaintPanel.prop_unified_color(row, context, brush, "secondary_color", text="")
+        row.operator("paint.brush_colors_flip", icon='ARROW_LEFTRIGHT', text="")
+        layout.prop(brush, "blend", text="Blend Mode")
+
+
+class PROPERTIES_PT_m3d_tx_projection(_Page, Panel):
+    page = "tex_brushes"
+    bl_label = "Stencil and Projection"
+
+    def draw(self, context):
+        layout = self.layout
+        split_props(layout)
+        ipaint = paint_settings(context)
+        col = layout.column(heading="Stencil")
+        col.prop(ipaint, "use_stencil_layer", text="Use Stencil")
+        if ipaint.use_stencil_layer:
+            col.template_ID(ipaint, "stencil_image", new="image.new", open="image.open")
+        col = layout.column(heading="Projection")
+        col.prop(ipaint, "use_occlude", text="Occlude")
+        col.prop(ipaint, "use_backface_culling", text="Backface Culling")
+        col.prop(ipaint, "use_normal_falloff", text="Normal Falloff")
+
+
+class PROPERTIES_PT_m3d_tx_more(_BrushPage, Panel):
+    page = "tex_brushes"
+    bl_label = "Brush Settings"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        split_props(self.layout)
+        brush_settings(self.layout.column(), context, paint_settings(context).brush, popover=True)
+
+
+class PROPERTIES_PT_m3d_tx_advanced(_BrushPage, Panel):
+    page = "tex_brushes"
+    bl_label = "Advanced"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        split_props(self.layout)
+        settings = paint_settings(context)
+        brush_settings_advanced(self.layout.column(), context, settings, settings.brush, self.is_popover)
+
+
+# --- Layers: the material's paint slots, by channel
+
+class PROPERTIES_PT_m3d_tx_channels(_Page, Panel):
+    page = "tex_layers"
+    bl_label = "Channels"
+
+    def draw(self, context):
+        layout = self.layout
+        ob = mesh_of(context)
+        mat = ob.active_material
+        if len(ob.material_slots) > 1:
+            layout.template_list("MATERIAL_UL_matslots", "layers", ob, "material_slots", ob, "active_material_index",
+                                 rows=2)
+        found, now = channel_slots(mat), active_channel(mat)
+        col = layout.column(align=True)
+        for ch in CHANNELS:
+            split = col.split(factor=0.55, align=True)
+            o = split.operator("m3d.tex_channel", text=ch.label, icon='ADD' if ch.id not in found else 'NONE',
+                               depress=ch.id in found and ch.id == now)
+            o.channel = ch.id
+            if ch.id in found:
+                w, h = found[ch.id][1].size
+                split.label(text="%d x %d" % (w, h))
+            else:
+                split.label(text="Add")
+        layout.prop(context.scene.m3d_tex, "resolution", text="New Size")
+        layout.operator("m3d.tex_save_all", icon='FILE_TICK')
+        reason(layout, "C / Shift+C: next / previous channel")
+
+
+class PROPERTIES_PT_m3d_tx_slots(_Page, Panel):
+    page = "tex_layers"
+    bl_label = "All Paint Slots"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        ob = mesh_of(context)
+        mat = ob.active_material
+        layout.prop(paint_settings(context), "mode", text="Canvas")
+        row = layout.row()
+        row.template_list("TEXTURE_UL_texpaintslots", "", mat, "texture_paint_slots", mat, "paint_active_slot", rows=3)
+        row.operator_menu_enum("paint.add_texture_paint_slot", "type", icon='ADD', text="")
+
+
+# --- Brush: the stock brush panels
+
+class _Brush(_BrushPage):
+    page = "tex_brush"
+
+
+class PROPERTIES_PT_m3d_tx_stroke(_Brush, StrokePanel, Panel):
+    pass
+
+
+class PROPERTIES_PT_m3d_tx_stabilize(_Brush, SmoothStrokePanel, Panel):
+    bl_parent_id = "PROPERTIES_PT_m3d_tx_stroke"
+
+
+class PROPERTIES_PT_m3d_tx_falloff(_Brush, FalloffPanel, Panel):
+    pass
+
+
+class PROPERTIES_PT_m3d_tx_texture(_Brush, Panel):
+    bl_label = "Texture"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def page_poll(cls, context):
+        brush = paint_settings(context).brush
+        return super().page_poll(context) and getattr(brush, "image_brush_type", None) == 'DRAW'
+
+    def draw(self, context):
+        brush = paint_settings(context).brush
+        col = self.layout.column()
+        col.template_ID_preview(brush.texture_slot, "texture", new="texture.new", rows=3, cols=8)
+        brush_texture_settings(col, brush, None)
+
+
+class PROPERTIES_PT_m3d_tx_mask_texture(_Brush, TextureMaskPanel, Panel):
+    pass
+
+
+class PROPERTIES_PT_m3d_tx_stencil(_Page, Panel):
+    page = "tex_brush"
+    bl_label = "Stencil"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw_header(self, context):
+        self.layout.prop(paint_settings(context), "use_stencil_layer", text="")
+
+    def draw(self, context):
+        layout = self.layout
+        split_props(layout)
+        ipaint = paint_settings(context)
+        mesh = mesh_of(context).data
+        col = layout.column()
+        col.active = ipaint.use_stencil_layer
+        col.template_ID(ipaint, "stencil_image", new="image.new", open="image.open")
+        col.menu("VIEW3D_MT_tools_projectpaint_stencil", text=mesh.uv_layer_stencil.name if mesh.uv_layer_stencil else "UV Map",
+                 translate=False)
+        row = col.row(align=True)
+        row.prop(ipaint, "stencil_color", text="Display Color")
+        row.prop(ipaint, "invert_stencil", text="", icon='IMAGE_ALPHA')
+
+
+class PROPERTIES_PT_m3d_tx_clone(_Brush, ClonePanel, Panel):
+    pass
+
+
+class PROPERTIES_PT_m3d_tx_options(_Page, Panel):
+    page = "tex_brush"
+    bl_label = "Options"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        split_props(layout)
+        ipaint = paint_settings(context)
+        layout.prop(ipaint, "seam_bleed")
+        layout.prop(ipaint, "dither", slider=True)
+        layout.prop(ipaint, "use_cavity", text="Cavity Mask")
+        if ipaint.use_cavity:
+            layout.template_curve_mapping(ipaint, "cavity_curve", brush=True)
+
+
+class PROPERTIES_PT_m3d_tx_cursor(_Brush, DisplayPanel, Panel):
+    bl_label = "Cursor"
+
+
+class PROPERTIES_PT_m3d_tx_palette(_Brush, ColorPalettePanel, Panel):
+    pass
+
+
+# --- Shelf: brushes and materials
+
+class _Shelf(_Page):
+    page = "tex_shelf"
+    need = None
+
+
+class PROPERTIES_PT_m3d_tx_shelf_brushes(_Shelf, Panel):
+    bl_label = "Brushes"
+
+    def draw(self, context):
+        layout = self.layout
+        if context.mode != 'PAINT_TEXTURE':
+            reason(layout, "Enter Texture Paint Mode to pick a brush")
+            return
+        BrushAssetShelf.draw_popup_selector(layout, context, paint_settings(context).brush)
+        grid(layout, context, [(label, "brush.asset_activate", 'NONE', brush_props(name))
+                               for label, name in (*BRUSHES, *MORE_BRUSHES)],
+             active=lambda idname, props: idname == "brush.asset_activate" and
+             props["relative_asset_identifier"] == active_brush_id(context))
+        reason(layout, "Favorites: in the brush library above")
+
+
+class PROPERTIES_PT_m3d_tx_shelf_materials(_Shelf, Panel):
+    bl_label = "Materials"
+
+    def draw(self, context):
+        layout = self.layout
+        mats = [m for m in bpy.data.materials if m.asset_data is not None]
+        if not mats:
+            layout.label(text="No materials marked as assets")
+        col = layout.column(align=True)
+        for mat in mats:
+            icon = mat.preview.icon_id if mat.preview else 0
+            o = col.operator("m3d.tex_apply_material", text=mat.name, icon_value=icon) if icon else \
+                col.operator("m3d.tex_apply_material", text=mat.name, icon='MATERIAL')
+            o.name = mat.name
+        layout.operator("m3d.tex_mark_material", icon='ASSET_MANAGER')
+
+
+# --- Bake
+
+class _Bake(_Page):
+    page = "tex_bake"
+    need = 'BAKE'
+
+
+class PROPERTIES_PT_m3d_tx_bake_high(_Bake, Panel):
+    bl_label = "High Poly"
+
+    def draw(self, context):
+        layout = self.layout
+        split_props(layout)
+        s = mesh_of(context).m3d_bake
+        layout.prop(s, "high", text="Mesh")
+        layout.operator("m3d.tex_bake_pick", icon='EYEDROPPER')
+        if s.high is None:
+            reason(layout, "No high poly: the mesh bakes itself")
+
+
+class PROPERTIES_PT_m3d_tx_bake_maps(_Bake, Panel):
+    bl_label = "Maps"
+
+    def draw(self, context):
+        layout = self.layout
+        s = mesh_of(context).m3d_bake
+        grid_ = layout.grid_flow(row_major=True, columns=2, even_columns=True, align=True)
+        for _key, _label, flag in BAKE_MAPS:
+            grid_.prop(s, flag, toggle=True)
+        split_props(layout)
+        layout.prop(s, "resolution")
+        layout.prop(s, "margin")
+        if s.use_curvature:
+            reason(layout, "Curvature needs enough polygons")
+        if s.use_thickness:
+            reason(layout, "Thickness is for closed meshes")
+
+
+class PROPERTIES_PT_m3d_tx_bake_settings(_Bake, Panel):
+    bl_label = "Settings"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        split_props(layout)
+        s = mesh_of(context).m3d_bake
+        layout.prop(s, "extrusion")
+        layout.prop(s, "ray_distance")
+        layout.prop(s, "samples")
+        if s.use_thickness:
+            layout.prop(s, "thickness_distance")
+        world = context.scene.world
+        if world is not None:
+            layout.prop(world.light_settings, "distance", text="AO Distance")
+
+
+class PROPERTIES_PT_m3d_tx_bake_run(_Bake, Panel):
+    bl_label = "Bake"
+
+    def draw(self, context):
+        layout = self.layout
+        s = mesh_of(context).m3d_bake
+        row = layout.row()
+        row.scale_y = 1.6
+        row.operator("m3d.tex_bake", icon='RENDER_STILL')
+        reason(layout, "Uses Cycles; the window waits until it is done")
+        for name in filter(None, s.baked.split("|")):
+            row = layout.row(align=True)
+            row.label(text=name, icon='IMAGE_DATA')
+            row.operator("m3d.tex_show_image", text="", icon='HIDE_OFF').name = name
+
+
+# --- Export
+
+class _Export(_Page):
+    page = "tex_export"
+    need = 'EXPORT'
+
+
+EXPORT_NOTES = {
+    'GLTF': "One .glb with the mesh, the material and its textures",
+    'UNREAL': "T_Name_BC, _N (DirectX), _ORM (R occlusion, G roughness, B metallic), _E",
+    'UNITY': "Name_Albedo, _Normal, _MetallicSmoothness (smoothness in alpha), _Occlusion, _Emission",
+}
+
+
+class PROPERTIES_PT_m3d_tx_export_preset(_Export, Panel):
+    bl_label = "Preset"
+
+    def draw(self, context):
+        layout = self.layout
+        s = context.scene.m3d_tex
+        layout.row().prop(s, "export_preset", expand=True)
+        reason(layout, EXPORT_NOTES[s.export_preset])
+        split_props(layout)
+        layout.prop(s, "export_folder")
+        if s.export_preset != 'GLTF':
+            layout.prop(s, "export_size")
+
+
+class PROPERTIES_PT_m3d_tx_export_run(_Export, Panel):
+    bl_label = "Export"
+
+    def draw(self, context):
+        layout = self.layout
+        s = context.scene.m3d_tex
+        row = layout.row()
+        row.scale_y = 1.6
+        row.operator("m3d.tex_export", icon='EXPORT')
+        layout.operator("m3d.tex_save_all", icon='FILE_TICK')
+        for path in filter(None, s.export_files.split("|")):
+            layout.label(text=os.path.basename(path), icon='FILE_IMAGE')
+
+
+# --- Display
+
+class _Display(_Page):
+    page = "tex_display"
+    need = None
+
+
+class PROPERTIES_PT_m3d_tx_environment(_Display, Panel):
+    bl_label = "Environment"
+
+    def draw(self, context):
+        layout = self.layout
+        space = viewport(context)
+        if space is None:
+            reason(layout, "No 3D Viewport in this workspace")
+            return
+        shading = space.shading
+        layout.row().prop(shading, "type", expand=True)
+        if shading.type != 'MATERIAL':
+            reason(layout, "The HDRI is for Material Preview")
+            return
+        split_props(layout)
+        layout.prop(shading, "use_scene_lights")
+        layout.prop(shading, "use_scene_world")
+        if not shading.use_scene_world:
+            layout.template_icon_view(shading, "studio_light", scale=3)
+            layout.prop(shading, "studiolight_rotate_z", text="Rotation")
+            layout.prop(shading, "studiolight_intensity", text="Intensity")
+            layout.prop(shading, "studiolight_background_alpha", text="Background")
+
+
+class PROPERTIES_PT_m3d_tx_channel_view(_Display, Panel):
+    bl_label = "Channel View"
+
+    def draw(self, context):
+        layout = self.layout
+        space = viewport(context)
+        ob = mesh_of(context)
+        found = channel_slots(ob.active_material) if ob is not None and ob.active_material else {}
+        now = active_channel(ob.active_material) if found else None
+        on = space is not None and channel_view_on(space.shading)
+        flow = layout.grid_flow(row_major=True, columns=2, even_columns=True, align=True)
+        for ch in CHANNELS:
+            sub = flow.row(align=True)
+            sub.enabled = ch.id in found
+            sub.operator("m3d.tex_channel_view", text=ch.label, depress=on and ch.id == now).channel = ch.id
+        layout.operator("m3d.tex_channel_view", text="Back to the Material" if on else "Show Active Channel",
+                        icon='IMAGE_RGB').channel = ''
+
+
+class PROPERTIES_PT_m3d_tx_checker(_Display, Panel):
+    bl_label = "UV Checker"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("m3d.uv_checker", text="Checker Map", icon='TEXTURE', depress=m3d_uv.checker_on(context))
+        reason(layout, "Replaces the material while it is on")
+        space = viewport(context)
+        if space is not None:
+            layout.prop(space.overlay, "show_wireframes", text="Wireframe")
+
+
+GATES = {"brushes": 'PAINT', "layers": 'PAINT', "brush": 'PAINT', "bake": 'BAKE', "export": 'EXPORT'}
+# Registered first so a page's message comes before its panels (they are never shown together).
+PAGE_GATES = tuple(_gate(page, need) for page, need in GATES.items())
+
+
+# -----------------------------------------------------------------------------
+# Status Line
+
+def draw_status_line(layout, context):
+    """Texture Status Line: file, modes, paint channels, symmetry, viewport display, channel view, new slot size,
+    Save All."""
+    from m3d_ui import _call, draw_file_buttons, draw_workspace_picker
+    draw_file_buttons(layout)
+    row = layout.row(align=True)
+    _call(row, "object.mode_set", 'OBJECT_DATAMODE', "Object Mode", depress=context.mode == 'OBJECT', mode='OBJECT')
+    _call(row, "object.mode_set", 'TPAINT_HLT', "Texture Paint Mode", depress=context.mode == 'PAINT_TEXTURE',
+          mode='TEXTURE_PAINT')
+    ob = mesh_of(context)
+    if ob is None:
+        draw_workspace_picker(layout, context)
+        return
+    found = channel_slots(ob.active_material) if ob.active_material else {}
+    now = active_channel(ob.active_material) if found else None
+    row = layout.row(align=True)
+    for ch in CHANNELS:
+        sub = row.row(align=True)
+        sub.active = ch.id in found
+        sub.operator("m3d.tex_channel", text=ch.label, depress=ch.id == now).channel = ch.id
+    row = layout.row(align=True)
+    for axis in "xyz":
+        row.prop(ob.data, "use_mirror_" + axis, text=axis.upper(), toggle=True)
+    space = viewport(context)
+    if space is not None:
+        row = layout.row(align=True)
+        for shading, icon, label in (('MATERIAL', 'SHADING_TEXTURE', "Material Preview"),
+                                     ('SOLID', 'SHADING_SOLID', "Solid"), ('RENDERED', 'SHADING_RENDERED', "Rendered")):
+            _call(row, "wm.context_set_enum", icon, label, depress=space.shading.type == shading and
+                  not channel_view_on(space.shading), data_path="space_data.shading.type", value=shading)
+        row.operator("m3d.tex_channel_view", text="", icon='IMAGE_RGB', depress=channel_view_on(space.shading))
+    layout.prop(context.scene.m3d_tex, "resolution", text="")
+    layout.operator("m3d.tex_save_all", text="Save All", icon='FILE_TICK')
+    draw_workspace_picker(layout, context)
+
+
+# Shelves (items as in m3d_ui.SHELVES: (idname, icon, props[, text]), or a function drawing into the row)
+
+SHELF_BRUSHES = [
+    ("object.mode_set", 'TPAINT_HLT', {"mode": 'TEXTURE_PAINT'}),
+    None,
+    *(brush_item(label, name) for label, name in BRUSHES),
+    None,
+    ("paint.brush_colors_flip", 'ARROW_LEFTRIGHT', {}),
+]
+SHELF_CHANNELS = [
+    *(("m3d.tex_channel", 'ADD', {"channel": ch.id}, ch.label) for ch in CHANNELS),
+    None,
+    ("m3d.tex_unwrap", 'MOD_UVPROJECT', {}, "Auto Unwrap"),
+    ("m3d.tex_add_material", 'MATERIAL', {}, "Add Material"),
+]
+SHELF_OUTPUT = [
+    ("m3d.tex_bake", 'RENDER_STILL', {}, "Bake"),
+    ("m3d.tex_export", 'EXPORT', {}, "Export"),
+    ("m3d.tex_save_all", 'FILE_TICK', {}, "Save All"),
+]
+
+
+# -----------------------------------------------------------------------------
+
+classes = (
+    M3D_TexSettings,
+    M3D_BakeSettings,
+    M3D_OT_tex_channel,
+    M3D_OT_tex_channel_cycle,
+    M3D_OT_tex_add_material,
+    M3D_OT_tex_unwrap,
+    M3D_OT_tex_save_all,
+    M3D_OT_tex_channel_view,
+    M3D_OT_tex_apply_material,
+    M3D_OT_tex_mark_material,
+    M3D_OT_tex_bake_pick,
+    M3D_OT_tex_bake,
+    M3D_OT_tex_show_image,
+    M3D_OT_tex_export,
+    *PAGE_GATES,
+    PROPERTIES_PT_m3d_tx_canvas,
+    PROPERTIES_PT_m3d_tx_brush,
+    PROPERTIES_PT_m3d_tx_grid,
+    PROPERTIES_PT_m3d_tx_tuning,
+    PROPERTIES_PT_m3d_tx_projection,
+    PROPERTIES_PT_m3d_tx_more,
+    PROPERTIES_PT_m3d_tx_advanced,
+    PROPERTIES_PT_m3d_tx_channels,
+    PROPERTIES_PT_m3d_tx_slots,
+    PROPERTIES_PT_m3d_tx_stroke,
+    PROPERTIES_PT_m3d_tx_stabilize,
+    PROPERTIES_PT_m3d_tx_falloff,
+    PROPERTIES_PT_m3d_tx_texture,
+    PROPERTIES_PT_m3d_tx_mask_texture,
+    PROPERTIES_PT_m3d_tx_stencil,
+    PROPERTIES_PT_m3d_tx_clone,
+    PROPERTIES_PT_m3d_tx_options,
+    PROPERTIES_PT_m3d_tx_cursor,
+    PROPERTIES_PT_m3d_tx_palette,
+    PROPERTIES_PT_m3d_tx_shelf_brushes,
+    PROPERTIES_PT_m3d_tx_shelf_materials,
+    PROPERTIES_PT_m3d_tx_bake_high,
+    PROPERTIES_PT_m3d_tx_bake_maps,
+    PROPERTIES_PT_m3d_tx_bake_settings,
+    PROPERTIES_PT_m3d_tx_bake_run,
+    PROPERTIES_PT_m3d_tx_export_preset,
+    PROPERTIES_PT_m3d_tx_export_run,
+    PROPERTIES_PT_m3d_tx_environment,
+    PROPERTIES_PT_m3d_tx_channel_view,
+    PROPERTIES_PT_m3d_tx_checker,
+)
+
+
+def register():
+    for cls in classes:
+        bpy.utils.register_class(cls)
+    bpy.types.Scene.m3d_tex = PointerProperty(type=M3D_TexSettings)
+    bpy.types.Object.m3d_bake = PointerProperty(type=M3D_BakeSettings)
+    bpy.app.handlers.save_pre.append(save_pre)
+
+
+def unregister():
+    bpy.app.handlers.save_pre.remove(save_pre)
+    del bpy.types.Object.m3d_bake
+    del bpy.types.Scene.m3d_tex
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
