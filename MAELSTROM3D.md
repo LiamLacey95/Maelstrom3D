@@ -25,7 +25,7 @@ named here only to describe compatibility.*
 | Editor names | Attribute Editor, Shader Editor, Script Editor, Command Line, Command History, Time Editor | `rna_space.cc`, `node_shader_tree.cc` |
 | Marking menus | RMB, Shift+RMB, Ctrl+RMB in the viewport; RMB, Shift+RMB in the UV Editor; Space hotbox | `m3d_mode.py`, `m3d_uv.py` |
 | UV editing | UV workspace (F3): dock tabs, Status Line and shelf for Cut/Sew/Unfold/Optimize/Layout, texel density, Auto Unwrap, UDIMs, checker map; sidebar UV Toolkit in other workspaces | `scripts/startup/m3d_uv.py` |
-| Texturing | Texture workspace (F4): brush tray, paint channels, Bake, Export, Display, Status Line and shelves; painted images are saved or packed with the file | `scripts/startup/m3d_texture.py` |
+| Texturing | Texture workspace (F4): brush tray, paint channels, Bake, Export, Display, Status Line and shelves; paint layer stack, painted images are saved or packed with the file | `scripts/startup/m3d_texture.py`, `scripts/startup/m3d_layers.py` |
 | Title | Window title says Maelstrom3D | `wm_window.cc` |
 
 ## Everyday controls
@@ -151,7 +151,7 @@ Add Material, Texture Paint Mode).
 | Brush tray (left) | Brush picker, a grid of 10 brushes (Paint Soft, Paint Hard, Airbrush, Blur, Smear, Clone, Fill, Erase Soft, Erase Hard, Mask), Size, Strength, color picker with the second color and swap, Blend Mode, Stencil and Projection (stencil image, Occlude, Backface Culling, Normal Falloff). Closed panels: Brush Settings, Advanced |
 | Status Line | Object / Texture Paint Mode, the paint channels (Base Color, Roughness, Metallic, Normal, Height, Emission), Mirror X/Y/Z, viewport display (Material Preview, Solid, Rendered) and Channel View, size of new slots, Save All |
 | Shelves | Paint (the brushes, swap colors), Channels (add or pick a channel, Auto Unwrap, Add Material), Bake / Export, Custom |
-| Layers tab | The material's paint slots by channel (size shown; a click picks the channel, or adds it), size of new slots, Save All Images; closed: every paint slot and the canvas mode. A layer stack will replace this tab |
+| Layers tab | The layer stack of the active material: a list (top layer first: eye, name, blend mode, opacity, channel letters), buttons to add a Paint Layer or Fill Layer, move, duplicate, delete, **Merge Down** and **Flatten**; below it the active layer's settings (name, blend, opacity, channels, fill values), its Mask, and closed panels Channels (the paint slots by channel) and All Paint Slots |
 | Brush tab | Stroke and Stabilize, Falloff, Texture, Texture Mask, Stencil, Clone, Options (seam bleed, dither, cavity mask), Cursor, Color Palette |
 | Shelf tab | All texture brushes (also the pressure and pixel art ones) and Blender's brush library popover (favorites live there); materials marked as assets, applied with a click, and a button to mark the active one |
 | Bake tab | High Poly picker (or Use Selected as High Poly), maps Normal, AO, Curvature, Position, Thickness, size, margin, ray settings, **Bake**, and the list of baked images |
@@ -176,6 +176,24 @@ within the object's bounds. The window waits while it bakes.
 metallic) and `_E`; **Unity** `Name_Albedo`, `_Normal`, `_MetallicSmoothness` (metallic in red, smoothness in alpha),
 `_Occlusion`, `_Emission`. A channel without a paint image uses the shader's value. The folder may start with `//`
 (next to the saved file).
+
+**Layers.** Blender has no paint layers, so the stack is kept on the material and built into its shader. The first
+**Paint Layer** or **Fill Layer** on a material that already has paint slots turns those images into the bottom layer
+"Base" (nothing painted is lost; the new image nodes keep the old ones' interpolation, extension, Mapping link and
+the Normal Map / Bump settings, and the Base layer ignores image alpha so the look does not change). A Paint Layer is transparent and holds one image per channel; the image of a channel
+is only made (at the "new slot" size) when that layer and channel are first picked for painting, so unused channels cost
+no memory. A Fill Layer is a value or color over the whole mesh; limit it with a **Mask**. A mask is a greyscale image
+(white shows the layer, black hides it); **Paint Mask** sends strokes to the mask instead of the channel (on a Fill
+Layer strokes always go to its mask; a Fill Layer without a mask can be turned into a Paint Layer with Convert, and
+until then the brush is aimed at a tiny hidden scratch image so no layer is painted by mistake).
+The brush always paints the active layer's image of the active channel (Status Line buttons, C / Shift+C). Blend modes
+are Mix, Multiply, Add, Overlay, Screen, Soft Light, Subtract, Difference, Color, Darken and Lighten (the Normal channel
+always mixes). Double-click a name to rename it. In the shader each channel has a frame with one Image Texture and Mix
+node per layer; only nodes made by the stack are ever changed. **Merge Down** combines a layer into the one below with
+its blend mode, opacity and mask baked in (exact when the lower layer is opaque or the upper one uses Mix; the merged
+layer keeps the lower layer's blend mode); **Flatten** replaces the stack by one layer holding what it looks like.
+Export, glTF included, uses the flattened visible stack of each channel and does not change the layers. The tab warns
+when the layer images add up to more than twelve 4K images of memory.
 
 Painted images never get lost: before a file is saved, images with changes are written to their files, or packed into
 the .blend when they have none. Save All Images does the same on demand. Large images use a lot of memory: new slots

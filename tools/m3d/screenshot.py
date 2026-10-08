@@ -8,7 +8,7 @@ Each name is a workspace name or kind (MODEL, SCULPT, ...); writes <prefix><name
 `KIND/page` also shows that dock page (e.g. SCULPT/sculpt_mask). Setup steps (no picture): `+sphere` / `+cube` add a
 mesh, `+unwrap` runs Auto Unwrap (Edit Mode, UV workspace), `+checker` toggles the checker map, `+distortion` shows
 the UV Editor's distortion, `+paint` (Texture workspace: a material, four painted channels), `+bake` (bakes Normal and
-AO at 128 px).
+AO at 128 px), `+layers` (like `+paint`, then a paint layer with a mask and a fill layer), `+fillsel` (select the fill layer).
 """
 
 import sys
@@ -41,6 +41,37 @@ def paint():
     base.update()
 
 
+def layers():
+    import numpy as np
+    import m3d_layers as L
+    paint()
+    mat = bpy.context.active_object.active_material
+    bpy.ops.m3d.layer_add(kind='PAINT')
+    stripes = mat.m3d_layers[1]
+    stripes.name, stripes.blend, stripes.opacity = "Scratches", 'MULTIPLY', 0.8
+    image = L.entry_of(stripes, 'BASE_COLOR').image
+    n = image.size[0]
+    ys, xs = np.mgrid[0:n, 0:n]
+    px = np.zeros((n, n, 4), np.float32)
+    px[..., :3] = 0.25
+    px[..., 3] = (((xs + ys) // 24) % 3 == 0)
+    L.write_pixels(image, px)
+    bpy.ops.m3d.layer_mask_add(fill='WHITE')
+    mask = mat.m3d_layers[1].mask
+    ramp = np.ones((n, n, 4), np.float32)
+    ramp[..., :3] = np.clip(1.6 - 1.6 * xs[..., None] / n, 0.0, 1.0)
+    L.write_pixels(mask, ramp)
+    bpy.ops.m3d.layer_add(kind='FILL')
+    tint = mat.m3d_layers[2]
+    tint.name, tint.blend, tint.opacity = "Tint", 'OVERLAY', 0.6
+    tint.channels[0].color = (0.1, 0.45, 0.9, 1.0)
+    mat.m3d_layer_index = 1
+
+
+def fillsel():
+    bpy.context.active_object.active_material.m3d_layer_index = 2
+
+
 def bake():
     ob = bpy.context.active_object
     ob.m3d_bake.resolution, ob.m3d_bake.samples = '128', 8
@@ -50,6 +81,8 @@ def bake():
 SETUP = {
     "+paint": paint,
     "+bake": bake,
+    "+layers": layers,
+    "+fillsel": fillsel,
     "+sphere": lambda: bpy.ops.m3d.add_primitive(kind='SPHERE'),
     "+cube": lambda: bpy.ops.m3d.add_primitive(kind='CUBE'),
     "+unwrap": lambda: bpy.ops.m3d.uv_auto(),

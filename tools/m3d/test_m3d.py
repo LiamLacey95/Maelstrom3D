@@ -10,8 +10,8 @@ def check(cond, msg):
 # Icons used in m3d_mode exist.
 import re, m3d_mode
 icons = set(bpy.types.UILayout.bl_rna.functions['operator'].parameters['icon'].enum_items.keys())
-import m3d_marking, m3d_sculpt, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv
-src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_marking, m3d_sculpt, m3d_texture, _maya_ui, _maya_uv))
+import m3d_layers, m3d_marking, m3d_sculpt, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv
+src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_layers, m3d_marking, m3d_sculpt, m3d_texture, _maya_ui, _maya_uv))
 for ic in set(re.findall(r"icon='([A-Z_0-9]+)'", src)):
     check(ic in icons, "missing icon " + ic)
 
@@ -1262,6 +1262,735 @@ try:
 except RuntimeError as err:   # An operator that reports an error raises it in Python.
     res = str(err)
 check(not bpy.data.filepath and "Save the file first" in str(res), "a // folder needs a saved file: %s" % res)
+
+# ----------------------------------------------------------------------------------------------------
+# Phase 3b: the paint layer stack (data, node chains, paint target, merge, flatten, export, safety).
+import m3d_layers as LY
+
+check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in LY.classes
+          if not issubclass(c, bpy.types.PropertyGroup)), "layer classes registered")
+check(hasattr(bpy.types.Material, "m3d_layers") and hasattr(bpy.types.Material, "m3d_layer_index")
+      and hasattr(bpy.types.Material, "m3d_channel"), "Material layer properties")
+check(T.CHANNELS is LY.CHANNELS and T.principled_of is LY.principled_of, "channels live in m3d_layers")
+check([b for b, _l in LY.BLENDS] == ['MIX', 'MULTIPLY', 'ADD', 'OVERLAY', 'SCREEN', 'SOFT_LIGHT', 'SUBTRACT', 'DIFFERENCE',
+                                      'COLOR', 'DARKEN', 'LIGHTEN'], "blend modes")
+node_blends = {i.identifier for i in bpy.types.ShaderNodeMix.bl_rna.properties['blend_type'].enum_items}
+check({b for b, _l in LY.BLENDS} <= node_blends and set(LY.BLEND_FUNCTIONS) == {b for b, _l in LY.BLENDS},
+      "every blend mode is a Mix node blend type with numpy math")
+layer_ops = {e.get("idname") for e in m3d_ui.MENUS["M3D_MT_layers"][1]}
+check({"m3d.layer_add", "m3d.layer_duplicate", "m3d.layer_remove", "m3d.layer_move", "m3d.layer_visible",
+       "m3d.layer_mask_add", "m3d.layer_mask_remove", "m3d.layer_mask_invert", "m3d.layer_paint_mask",
+       "m3d.layer_merge_down", "m3d.layer_flatten", "m3d.layer_convert"} <= layer_ops, "Layers menu has the layer operators")
+
+
+def clean_scene():
+    if bpy.context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    for o in list(bpy.data.objects):
+        bpy.data.objects.remove(o)
+
+
+def fill_rgb(image, rgb):
+    w, h = image.size
+    LY.write_pixels(image, np.tile(np.array([*rgb, 1.0], np.float32), (w * h, 1)))
+
+
+def blend_py(mode, b, s):
+    """One channel of what the Mix node does before the factor (worked out by hand, independent of the numpy code)."""
+    if mode == 'MIX':
+        return s
+    if mode == 'MULTIPLY':
+        return b * s
+    if mode == 'ADD':
+        return b + s
+    if mode == 'OVERLAY':
+        return 2 * b * s if b < 0.5 else 1 - 2 * (1 - b) * (1 - s)
+    raise KeyError(mode)
+
+
+def over_py(b, s, a, mode):
+    return min(1.0, max(0.0, b + a * (blend_py(mode, b, s) - b)))
+
+
+def srgb_py(v):
+    return 12.92 * v if v <= 0.0031308 else 1.055 * v ** (1 / 2.4) - 0.055
+
+
+def linear_py(v):
+    return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+
+
+def fresh_cube(name, size='64'):
+    """A clean scene with one cube (UVs, material), channel size `size`, in Texture Paint Mode."""
+    clean_scene()
+    bpy.ops.m3d.add_primitive(kind='CUBE')
+    o = bpy.context.active_object
+    o.name = name
+    bpy.ops.m3d.tex_add_material()
+    bpy.context.scene.m3d_tex.resolution = size
+    bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+    return o, o.active_material
+
+
+def level(mat, ch_id):
+    """The Mix nodes of a channel's chain, bottom to top, followed from the Principled BSDF."""
+    bsdf = LY.principled_of(mat)
+    if ch_id in LY.SOCKETS:
+        links = bsdf.inputs[LY.SOCKETS[ch_id]].links
+        node = links[0].from_node if links else None
+    else:
+        node = bsdf.inputs["Normal"].links[0].from_node
+        if node.type == 'BUMP' and ch_id == 'HEIGHT':
+            node = node.inputs["Height"].links[0].from_node
+        else:
+            if node.type == 'BUMP':
+                node = node.inputs["Normal"].links[0].from_node
+            node = node.inputs["Color"].links[0].from_node
+    out = []
+    while node is not None and node.type == 'MIX':
+        out.append(node)
+        links = node.inputs[6].links
+        node = links[0].from_node if links else None
+    return out[::-1]
+
+
+def expect_chain(mat, ch_id, msg):
+    """The chain of `ch_id` has one Mix per layer with content, in stack order, with each layer's blend mode."""
+    layers = [l for l in mat.m3d_layers if LY.has_content(l, ch_id)]
+    got = level(mat, ch_id) if layers else []
+    want = [LY.part(ch_id, l.uid, "mix") for l in layers]
+    check([n.name for n in got] == want, "%s: %s chain is %s, want %s" % (msg, ch_id, [n.name for n in got], want))
+    modes = [('MIX' if ch_id == 'NORMAL' else l.blend) for l in layers]
+    check([n.blend_type for n in got] == modes, "%s: %s blend modes %s" % (msg, ch_id, [n.blend_type for n in got]))
+    for l, n in zip(layers, got):
+        opv = mat.node_tree.nodes[LY.part(ch_id, l.uid, "opv")].inputs[1].default_value
+        check(abs(opv - (l.opacity if l.visible else 0.0)) < 1e-5, "%s: %s opacity node of %s is %s" % (msg, ch_id, l.name, opv))
+    return got
+
+
+def slot_image(mat):
+    images = list(mat.texture_paint_images)
+    return images[mat.paint_active_slot] if mat.paint_active_slot < len(images) else None
+
+
+def small(name, values, srgb=False, alpha=True):
+    """A 4 x 4 image: `values` is (4, 4, 4) RGBA."""
+    im = bpy.data.images.new(name, 4, 4, alpha=alpha, is_data=not srgb)
+    LY.write_pixels(im, np.asarray(values, np.float32))
+    return im
+
+
+# --- Migration: the 3a paint slots become the Base layer, nothing painted is lost
+cube, mat = fresh_cube("Stack")
+for cid in ('BASE_COLOR', 'ROUGHNESS', 'NORMAL', 'HEIGHT', 'EMISSION'):
+    bpy.ops.m3d.tex_channel(channel=cid)
+legacy = {c: img for c, (_i, img) in T.channel_slots(mat).items()}
+check(len(legacy) == 5 and not mat.m3d_layers, "five 3a channels, no layers: %s" % sorted(legacy))
+fill_rgb(legacy['BASE_COLOR'], (0.6, 0.3, 0.1))
+fill_rgb(legacy['ROUGHNESS'], (0.2, 0.2, 0.2))
+base_px = {c: read(img).copy() for c, img in legacy.items()}
+base_names = {c: img.name for c, img in legacy.items()}
+check(LY.rebuild_all(mat) is False and not any(LY.TAG in n.keys() for n in mat.node_tree.nodes),
+      "rebuilding a material without layers adds nothing")
+check(bpy.ops.m3d.layer_add(kind='PAINT') == {'FINISHED'}, "Add Paint Layer on a material with slots")
+check([l.name for l in mat.m3d_layers] == ["Base", "Paint Layer"] and mat.m3d_layer_index == 1, "Base and the new layer: %s" % [l.name for l in mat.m3d_layers])
+base = mat.m3d_layers[0]
+check({c: e.image.name for c in legacy for e in [LY.entry_of(base, c)] if e.image} == base_names
+      and all(LY.entry_of(base, c).use == (c in legacy) for c in LY.CHANNEL_BY_ID), "the 3a images are the Base layer's: %s" % base_names)
+check(all(np.array_equal(read(LY.entry_of(base, c).image), base_px[c]) for c in legacy), "no pixel of the old slots changed")
+direct = [n for n in mat.node_tree.nodes if n.type == 'TEX_IMAGE' and LY.TAG not in n.keys()]
+check(not direct and not [n for n in mat.node_tree.nodes if n.type in {'NORMAL_MAP', 'BUMP'} and LY.TAG not in n.keys()],
+      "the old image, Normal Map and Bump nodes are gone: %s" % [n.name for n in direct])
+for cid in legacy:
+    expect_chain(mat, cid, "after migration")
+top = mat.m3d_layers[1]
+check(sum(e.image is not None for e in top.channels) == 1 and LY.entry_of(top, T.active_channel(mat)).image is not None,
+      "the new layer only has the image of the active channel (%s): %s" % (T.active_channel(mat),
+                                                                        [e.channel for e in top.channels if e.image]))
+check(LY.entry_of(top, 'EMISSION').image is not None and LY.entry_of(top, 'EMISSION').image.depth == 32
+      and tuple(LY.entry_of(top, 'EMISSION').image.generated_color) == (0.0, 0.0, 0.0, 0.0), "layers above the base start transparent")
+check(slot_image(mat) == LY.entry_of(top, 'EMISSION').image, "the brush paints the new layer's Emission image")
+check(bpy.ops.m3d.tex_channel(channel='BASE_COLOR') == {'FINISHED'} and LY.entry_of(top, 'BASE_COLOR').image is not None
+      and slot_image(mat) == LY.entry_of(top, 'BASE_COLOR').image and T.active_channel(mat) == 'BASE_COLOR'
+      and LY.entry_of(top, 'BASE_COLOR').image.colorspace_settings.name == 'sRGB'
+      and LY.entry_of(top, 'BASE_COLOR').image.size[0] == 64, "choosing a channel makes the layer's image for it")
+check(sum(e.image is not None for e in top.channels) == 2, "images are made one channel at a time")
+check(set(T.channel_slots(mat)) == set(legacy), "channel_slots follows the stack: %s" % sorted(T.channel_slots(mat)))
+bpy.ops.m3d.tex_channel_cycle(delta=1)
+check(T.active_channel(mat) == 'ROUGHNESS' and LY.entry_of(top, 'ROUGHNESS').image is not None
+      and slot_image(mat) == LY.entry_of(top, 'ROUGHNESS').image, "C cycles channels on the active layer")
+bpy.ops.m3d.tex_channel(channel='BASE_COLOR')
+
+# --- Node chains: blend, opacity, visibility, order, duplicate, delete
+bsdf = LY.principled_of(mat)
+chain = expect_chain(mat, 'BASE_COLOR', "two layers")
+check(len(chain) == 2 and not chain[0].inputs[6].links and chain[0].inputs[6].default_value[0] > 0
+      and bsdf.inputs["Base Color"].links[0].from_node == chain[1], "bottom Mix starts from the channel color, the top feeds the shader")
+check(bsdf.inputs["Normal"].links[0].from_node.type == 'BUMP'
+      and bsdf.inputs["Normal"].links[0].from_node.inputs["Normal"].links[0].from_node.type == 'NORMAL_MAP', "Normal Map feeds Bump feeds the shader")
+check(bsdf.inputs["Emission Strength"].default_value == 1.0, "emission lights the shader")
+frames = [n for n in mat.node_tree.nodes if n.type == 'FRAME']
+check(len(frames) == 5 and all(n.get(LY.TAG) for n in frames) and all(n.parent in frames for n in mat.node_tree.nodes
+      if n.type == 'MIX'), "one frame per channel holds its chain")
+nodes_ptr = {n.name: n.as_pointer() for n in mat.node_tree.nodes}
+top.blend = 'MULTIPLY'
+top.opacity = 0.4
+expect_chain(mat, 'BASE_COLOR', "blend and opacity")
+check({n.name: n.as_pointer() for n in mat.node_tree.nodes} == nodes_ptr, "blend and opacity only change values (no node is remade)")
+top.visible = False
+expect_chain(mat, 'BASE_COLOR', "hidden")
+check(len(level(mat, 'BASE_COLOR')) == 2, "a hidden layer keeps its nodes (opacity 0)")
+top.visible = True
+top.blend = 'MIX'
+top.opacity = 1.0
+check(bpy.ops.m3d.layer_move(delta=-1) == {'FINISHED'} and [l.name for l in mat.m3d_layers] == ["Paint Layer", "Base"]
+      and mat.m3d_layer_index == 0, "Move Down")
+expect_chain(mat, 'BASE_COLOR', "moved down")
+expect_chain(mat, 'ROUGHNESS', "moved down")
+check(bpy.ops.m3d.layer_move(delta=-1) == {'CANCELLED'}, "cannot move below the bottom")
+check(bpy.ops.m3d.layer_move(delta=1) == {'FINISHED'} and mat.m3d_layers[1].name == "Paint Layer", "Move Up")
+expect_chain(mat, 'BASE_COLOR', "moved up")
+check(slot_image(mat) == LY.entry_of(mat.m3d_layers[1], 'BASE_COLOR').image, "the paint target follows the moved layer")
+# Duplicate: images are copies.
+check(bpy.ops.m3d.layer_duplicate() == {'FINISHED'} and [l.name for l in mat.m3d_layers] == ["Base", "Paint Layer", "Paint Layer Copy"]
+      and mat.m3d_layer_index == 2, "Duplicate: %s" % [l.name for l in mat.m3d_layers])
+orig, dup = mat.m3d_layers[1], mat.m3d_layers[2]
+check(orig.uid != dup.uid and all((LY.entry_of(orig, c).image is None) == (LY.entry_of(dup, c).image is None) for c in LY.CHANNEL_BY_ID)
+      and all(LY.entry_of(dup, c).image != LY.entry_of(orig, c).image for c in LY.CHANNEL_BY_ID if LY.entry_of(orig, c).image),
+      "the copy has its own images")
+for cid in legacy:
+    expect_chain(mat, cid, "duplicated")
+check(slot_image(mat) == LY.entry_of(dup, 'BASE_COLOR').image, "the copy is the paint target")
+# Delete removes the copy's images, nothing else.
+dup_images = [e.image.name for e in dup.channels if e.image]
+n_images = len(bpy.data.images)
+check(bpy.ops.m3d.layer_remove() == {'FINISHED'} and [l.name for l in mat.m3d_layers] == ["Base", "Paint Layer"]
+      and mat.m3d_layer_index == 1, "Delete")
+check(not [n for n in dup_images if n in bpy.data.images] and len(bpy.data.images) == n_images - len(dup_images),
+      "the deleted layer's images are gone: %s" % dup_images)
+check(sum(e.image is not None for e in mat.m3d_layers[1].channels) == len(dup_images)
+      and all(e.image.name in bpy.data.images for e in mat.m3d_layers[1].channels if e.image), "the other layers keep theirs")
+for cid in legacy:
+    expect_chain(mat, cid, "after delete")
+
+# --- Delete keeps images something else uses
+shared = bpy.data.images.new("m3dShared", 4, 4)
+LY.add_layer(mat, 'PAINT', "Extra")
+e_extra = LY.entry_of(mat.m3d_layers[2], 'ROUGHNESS')
+e_extra.image = shared
+e_other = LY.entry_of(mat.m3d_layers[1], 'METALLIC')
+e_other.image, e_other.use = shared, True
+user_tex = mat.node_tree.nodes.new("ShaderNodeTexImage")
+user_tex.name = "UserTex"
+user_tex.image = bpy.data.images.new("m3dUserImage", 4, 4)
+LY.entry_of(mat.m3d_layers[2], 'METALLIC').image = user_tex.image
+LY.entry_of(mat.m3d_layers[2], 'METALLIC').use = True
+mat.m3d_layer_index = 2
+check(bpy.ops.m3d.layer_remove() == {'FINISHED'} and "m3dShared" in bpy.data.images, "a shared image survives Delete")
+check("m3dUserImage" in bpy.data.images and mat.node_tree.nodes["UserTex"].image.name == "m3dUserImage",
+      "an image a user node uses survives Delete")
+LY.entry_of(mat.m3d_layers[1], 'METALLIC').image = None
+LY.entry_of(mat.m3d_layers[1], 'METALLIC').use = False
+bpy.data.images.remove(shared)
+mat.node_tree.nodes.remove(user_tex)
+bpy.data.images.remove(bpy.data.images["m3dUserImage"])
+
+# --- User nodes are left alone by every rebuild
+noise = mat.node_tree.nodes.new("ShaderNodeTexNoise")
+noise.name, noise.location = "UserNoise", (-1234, 567)
+noise.inputs["Scale"].default_value = 7.0
+mat.node_tree.links.new(noise.outputs["Fac"], bsdf.inputs["Alpha"])
+ptr = noise.as_pointer()
+bsdf.inputs["Specular IOR Level"].default_value = 0.77
+for fn in (lambda: bpy.ops.m3d.layer_add(kind='FILL'), lambda: bpy.ops.m3d.layer_move(delta=1), lambda: LY.rebuild_all(mat),
+           lambda: bpy.ops.m3d.layer_duplicate(), lambda: bpy.ops.m3d.layer_remove(), lambda: bpy.ops.m3d.layer_remove()):
+    fn()
+un = mat.node_tree.nodes.get("UserNoise")
+check(un is not None and un.as_pointer() == ptr and tuple(un.location) == (-1234, 567) and un.inputs["Scale"].default_value == 7.0
+      and bsdf.inputs["Alpha"].links and bsdf.inputs["Alpha"].links[0].from_node == un
+      and abs(bsdf.inputs["Specular IOR Level"].default_value - 0.77) < 1e-6, "user nodes, links and values survive rebuilds")
+check(not [n for n in mat.node_tree.nodes if n.get(LY.TAG) and n.name.split(".")[0] != LY.TAG], "our nodes carry our prefix")
+mat.node_tree.nodes.remove(un)
+check([l.name for l in mat.m3d_layers] == ["Base", "Paint Layer"], "back to two layers: %s" % [l.name for l in mat.m3d_layers])
+
+# --- Fill layers, masks, the paint target
+mat.m3d_layer_index = 1
+n_before = len(mat.m3d_layers)
+check(bpy.ops.m3d.layer_add(kind='FILL') == {'FINISHED'} and mat.m3d_layers[2].kind == 'FILL' and mat.m3d_layers[2].name == "Fill Layer"
+      and mat.m3d_layer_index == 2, "Add Fill Layer above the active layer")
+fill = mat.m3d_layers[2]
+check([e.channel for e in fill.channels if e.use] == ['BASE_COLOR'] and not any(e.image for e in fill.channels),
+      "a fill layer has Base Color and no images")
+fill.channels[0].color = (0.2, 0.4, 0.6, 1.0)
+mix = expect_chain(mat, 'BASE_COLOR', "fill")[-1]
+check(not mix.inputs[7].links and all(abs(a - b) < 1e-5 for a, b in zip(mix.inputs[7].default_value, (0.2, 0.4, 0.6, 1.0))),
+      "the fill color is the Mix node's second color")
+fill.channels[0].color = (0.9, 0.1, 0.1, 1.0)
+check(abs(mix.inputs[7].default_value[0] - 0.9) < 1e-5, "changing the fill only sets the value")
+check(slot_image(mat) is not None and slot_image(mat).name == LY.SCRATCH and slot_image(mat) not in LY.stack_images(mat),
+      "a fill layer without a mask aims the brush at the scratch image, not at a layer image")
+check(bpy.ops.m3d.tex_channel(channel='ROUGHNESS') == {'CANCELLED'}, "painting a fill layer is refused")
+check(slot_image(mat).name == LY.SCRATCH and slot_image(mat) not in LY.stack_images(mat), "...and the brush stays on the scratch image")
+scratch_node = mat.node_tree.nodes["%s.scratch" % LY.TAG]
+check(not scratch_node.inputs["Vector"].links and not scratch_node.outputs[0].links and scratch_node[LY.TAG] == "SCRATCH"
+      and not slot_image(mat).use_fake_user, "the scratch node is tagged and connects to nothing")
+LY.write_pixels(slot_image(mat), np.ones(8 * 8 * 4, np.float32))
+check(slot_image(mat) not in T.modified_images() and tuple(slot_image(mat).size) == (8, 8), "the scratch image is never saved")
+LY.rebuild_all(mat)
+check(mat.node_tree.nodes.get("%s.scratch" % LY.TAG) is not None, "rebuilds keep the scratch node")
+check(all(i not in LY.stack_images(mat) for i in [mat.texture_paint_images[mat.paint_active_slot]]), "paint_active_slot is not a layer image")
+check(T.active_channel(mat) == 'ROUGHNESS' and not LY.entry_of(fill, 'ROUGHNESS').image, "a fill layer never gets an image")
+check(not (bpy.ops.m3d.layer_mask_remove.poll()), "no mask to remove yet")
+check(bpy.ops.m3d.layer_mask_add(fill='BLACK') == {'FINISHED'} and fill.mask is not None and fill.paint_mask
+      and fill.mask.colorspace_settings.name == 'Non-Color' and fill.mask.size[0] == 64, "Add Mask (black)")
+check(read(fill.mask)[:, :3].max() == 0.0, "a black mask hides the layer")
+check(slot_image(mat) == fill.mask, "Paint Mask: the brush paints the mask of the fill layer")
+mix = expect_chain(mat, 'BASE_COLOR', "masked")[-1]
+mask_nodes = [n for n in mat.node_tree.nodes if n.name.startswith(LY.part('BASE_COLOR', fill.uid, "mask"))]
+check(any(n.type == 'TEX_IMAGE' and n.image == fill.mask for n in mask_nodes), "the mask is an image node in the chain")
+check(bpy.ops.m3d.layer_mask_invert() == {'FINISHED'} and fill.mask_invert
+      and any(n.name.endswith("maskinv") for n in mat.node_tree.nodes), "Invert Mask adds the invert node")
+check(not bpy.ops.m3d.layer_mask_add.poll(), "one mask per layer")
+check(bpy.ops.m3d.layer_paint_mask() == {'FINISHED'} and not fill.paint_mask and slot_image(mat) == fill.mask,
+      "Paint Mask toggles off, but a fill layer's only paintable image is its mask")
+check(bpy.ops.m3d.tex_channel(channel='METALLIC') == {'FINISHED'} and slot_image(mat) == fill.mask and T.active_channel(mat) == 'METALLIC',
+      "channels can be picked while a masked fill layer is active")
+# A paint layer: mask target vs channel target.
+mat.m3d_layer_index = 1
+paint_layer = mat.m3d_layers[1]
+bpy.ops.m3d.tex_channel(channel='BASE_COLOR')
+check(slot_image(mat) == LY.entry_of(paint_layer, 'BASE_COLOR').image, "target: active layer, active channel")
+bpy.ops.m3d.layer_mask_add(fill='WHITE')
+check(slot_image(mat) == paint_layer.mask and read(paint_layer.mask)[:, :3].min() == 1.0, "target: the layer's mask after Add Mask")
+bpy.ops.m3d.tex_channel(channel='ROUGHNESS')
+check(not paint_layer.paint_mask and slot_image(mat) == LY.entry_of(paint_layer, 'ROUGHNESS').image,
+      "picking a channel goes back to painting the channel")
+paint_layer.paint_mask = True
+mat.m3d_layer_index = 0
+check(slot_image(mat) == LY.entry_of(mat.m3d_layers[0], 'ROUGHNESS').image, "target: another layer, same channel")
+mat.m3d_layer_index = 1
+check(slot_image(mat) == paint_layer.mask, "target: Paint Mask is remembered per layer")
+check(bpy.ops.m3d.layer_mask_remove() == {'FINISHED'} and paint_layer.mask is None and not paint_layer.paint_mask
+      and not [n for n in mat.node_tree.nodes if ".%s.mask" % paint_layer.uid in n.name], "Remove Mask")
+check(slot_image(mat) == LY.entry_of(paint_layer, 'ROUGHNESS').image, "...and the brush is back on the channel")
+check(bpy.ops.m3d.layer_convert.poll() is False, "Convert needs a fill layer")
+mat.m3d_layer_index = 2
+check(bpy.ops.m3d.layer_convert() == {'FINISHED'} and fill.kind == 'PAINT' and LY.entry_of(fill, 'BASE_COLOR').image is not None,
+      "Convert to Paint Layer")
+conv = read(LY.entry_of(fill, 'BASE_COLOR').image)
+check(np.abs(conv[0, :3] - [srgb_py(0.9), srgb_py(0.1), srgb_py(0.1)]).max() < 2 / 255 and conv[:, 3].min() == 1.0,
+      "the converted layer holds the fill color: %s" % conv[0])
+bpy.ops.m3d.layer_remove()
+bpy.ops.m3d.tex_channel(channel='BASE_COLOR')
+
+# --- Numbers: Merge Down and Flatten against pixels worked out by hand
+cx = np.array([0.1, 0.4, 0.6, 0.9])          # base: left to right
+ry = np.array([0.2, 0.5, 0.7, 1.0])          # layer: top to bottom
+ay = np.array([1.0, 0.5, 1.0, 0.25])         # layer alpha per row
+
+
+def grid_rgba(f, alpha):
+    out = np.ones((4, 4, 4), np.float32)
+    for y in range(4):
+        for x in range(4):
+            out[y, x, :3] = f(x, y)
+            out[y, x, 3] = alpha(y)
+    return out
+
+
+def two_layers(ch_id, mode, opacity, srgb=False):
+    """A scene whose stack is a 4 x 4 opaque base and a layer with `mode`, opacity and per-row alpha."""
+    o, m = fresh_cube("Merge")
+    m.m3d_channel = ch_id
+    base_img = small("lowImg", grid_rgba(lambda x, y: (cx[x],) * 3, lambda y: 1.0), srgb)
+    top_img = small("topImg", grid_rgba(lambda x, y: (ry[y],) * 3, lambda y: ay[y]), srgb)
+    for name, img in (("Low", base_img), ("High", top_img)):
+        layer = LY.add_layer(m, 'PAINT', name)
+        e = LY.entry_of(m.m3d_layers[len(m.m3d_layers) - 1], ch_id)
+        e.image, e.use = img, True
+    hi = m.m3d_layers[1]
+    hi.blend, hi.opacity = mode, opacity
+    LY.rebuild_all(m)
+    return o, m, base_img, top_img
+
+
+for mode in ('MIX', 'MULTIPLY', 'ADD', 'OVERLAY'):
+    for ch_id, srgb in (('ROUGHNESS', False), ('BASE_COLOR', True)):
+        o, m, low_img, high_img = two_layers(ch_id, mode, 0.5, srgb)
+        lo_px, hi_px = read(low_img).reshape(4, 4, 4), read(high_img).reshape(4, 4, 4)   # What was stored (8 bit).
+        want = np.zeros((4, 4))
+        for y in range(4):
+            for x in range(4):
+                b, s = lo_px[y, x, 0], hi_px[y, x, 0]
+                if srgb:
+                    b, s = linear_py(b), linear_py(s)
+                v = over_py(b, s, 0.5 * hi_px[y, x, 3], mode)
+                want[y, x] = srgb_py(v) if srgb else v
+        high_name = high_img.name
+        m.m3d_layer_index = 1
+        check(bpy.ops.m3d.layer_merge_down() == {'FINISHED'}, "Merge Down %s %s" % (mode, ch_id))
+        got = read(low_img).reshape(4, 4, 4)
+        err = np.abs(got[..., 0] - want).max()
+        check(err <= 1.5 / 255 and np.abs(got[..., 1] - got[..., 0]).max() < 1e-6 and np.abs(got[..., 3] - 1).max() < 1e-6,
+              "Merge Down %s on %s matches the hand-worked pixels (error %.4f)" % (mode, ch_id, err))
+        check([l.name for l in m.m3d_layers] == ["Low"] and high_name not in bpy.data.images
+              and m.m3d_layers[0].opacity == 1.0 and m.m3d_layer_index == 0, "Merge Down leaves the lower layer only")
+        expect_chain(m, ch_id, "merged")
+
+# Merge Down with a mask, a fill layer and a hidden layer.
+o, m, low_img, high_img = two_layers('ROUGHNESS', 'MULTIPLY', 1.0)
+mask_vals = np.array([1.0, 0.5, 0.0, 1.0])
+mask_img = small("maskImg", grid_rgba(lambda x, y: (mask_vals[x],) * 3, lambda y: 1.0), alpha=False)
+m.m3d_layers[1].mask = mask_img
+mask_name = mask_img.name
+lo_px, hi_px, mk = read(low_img).reshape(4, 4, 4), read(high_img).reshape(4, 4, 4), read(mask_img).reshape(4, 4, 4)
+m.m3d_layer_index = 1
+bpy.ops.m3d.layer_merge_down()
+got = read(low_img).reshape(4, 4, 4)
+want = np.array([[over_py(lo_px[y, x, 0], hi_px[y, x, 0], hi_px[y, x, 3] * mk[y, x, 0], 'MULTIPLY') for x in range(4)] for y in range(4)])
+check(np.abs(got[..., 0] - want).max() <= 1.5 / 255 and mask_name not in bpy.data.images, "Merge Down applies the mask of the upper layer (and removes it)")
+o, m, low_img, high_img = two_layers('ROUGHNESS', 'ADD', 0.5)
+m.m3d_layers[1].visible = False
+before = read(low_img).copy()
+m.m3d_layer_index = 1
+bpy.ops.m3d.layer_merge_down()
+check(np.array_equal(read(low_img), before) and len(m.m3d_layers) == 1, "Merge Down of a hidden layer only removes it")
+o, m, low_img, high_img = two_layers('ROUGHNESS', 'ADD', 0.5)
+m.m3d_layers[1].kind = 'FILL'
+LY.entry_of(m.m3d_layers[1], 'ROUGHNESS').value = 0.3
+lo_px = read(low_img).reshape(4, 4, 4)
+m.m3d_layer_index = 1
+bpy.ops.m3d.layer_merge_down()
+want = np.array([[over_py(lo_px[y, x, 0], 0.3, 0.5, 'ADD') for x in range(4)] for y in range(4)])
+check(np.abs(read(low_img).reshape(4, 4, 4)[..., 0] - want).max() <= 1.5 / 255, "Merge Down of a fill layer")
+check(not bpy.ops.m3d.layer_merge_down.poll(), "nothing below the bottom layer")
+
+# Flatten three layers (Mix, Multiply, Add) and compare with the hand-worked chain.
+o, m = fresh_cube("Flat")
+m.m3d_channel = 'ROUGHNESS'
+imgs = [small("f%d" % i, grid_rgba(lambda x, y, i=i: ((cx, ry, cx[::-1])[i][x if i != 1 else y],) * 3, lambda y, i=i: 1.0 if i == 0 else ay[y])) for i in range(3)]
+modes, opacities = ('MIX', 'MULTIPLY', 'ADD'), (1.0, 0.8, 0.6)
+for i in range(3):
+    LY.add_layer(m, 'PAINT', "L%d" % i)
+    e = LY.entry_of(m.m3d_layers[i], 'ROUGHNESS')
+    e.image, e.use = imgs[i], True
+    m.m3d_layers[i].blend, m.m3d_layers[i].opacity = modes[i], opacities[i]
+m.m3d_layers[1].mask = small("fm", grid_rgba(lambda x, y: (mask_vals[x],) * 3, lambda y: 1.0), alpha=False)
+LY.rebuild_all(m)
+old_names = [im.name for im in imgs] + ["fm"]
+px = [read(im).reshape(4, 4, 4) for im in imgs]
+mk = read(m.m3d_layers[1].mask).reshape(4, 4, 4)
+want = np.zeros((4, 4))
+for y in range(4):
+    for x in range(4):
+        v = px[0][y, x, 0]
+        v = over_py(v, px[1][y, x, 0], 0.8 * px[1][y, x, 3] * mk[y, x, 0], 'MULTIPLY')
+        v = over_py(v, px[2][y, x, 0], 0.6 * px[2][y, x, 3], 'ADD')
+        want[y, x] = v
+flat = LY.flatten_channel(m, 'ROUGHNESS', 4)
+check(np.abs(flat[..., 0] - want).max() < 1e-5 and flat.shape == (4, 4, 4), "composite of three layers matches the hand-worked pixels (error %.2e)" % np.abs(flat[..., 0] - want).max())
+m.m3d_layer_index = 2
+check(bpy.ops.m3d.layer_flatten() == {'FINISHED'} and [l.name for l in m.m3d_layers] == ["Base"], "Flatten leaves one layer")
+check(not any(n in bpy.data.images for n in old_names) and not m.m3d_layers[0].mask, "Flatten removes the old images")
+fimg = LY.entry_of(m.m3d_layers[0], 'ROUGHNESS').image
+check(tuple(fimg.size) == (4, 4) and np.abs(read(fimg).reshape(4, 4, 4)[..., 0] - want).max() <= 1.0 / 255 + 1e-5
+      and read(fimg)[:, 3].min() == 1.0, "the flattened layer holds the result")
+check(not LY.has_content(m.m3d_layers[0], 'BASE_COLOR'), "Flatten does not invent channels")
+expect_chain(m, 'ROUGHNESS', "flattened")
+check(not bpy.ops.m3d.layer_flatten.poll(), "one layer is flat already")
+
+# Blend math: every mode's numpy result is what the shader nodes compute (Cycles bake of the chain).
+clean_scene()
+bpy.ops.mesh.primitive_plane_add()
+plane = bpy.context.active_object
+plane.name = "NodeCheck"
+bpy.ops.m3d.tex_add_material()
+pmat = plane.active_material
+N = 8
+rng = np.random.default_rng(7)
+
+
+def noise_image(name, srgb, alpha=True, opaque=False):
+    im = bpy.data.images.new(name, N, N, alpha=alpha, is_data=not srgb)
+    px = rng.random((N, N, 4)).astype(np.float32)
+    if opaque:
+        px[..., 3] = 1.0
+    LY.write_pixels(im, px)
+    return im
+
+
+def bake_out(ob, mat, find, closest=True):
+    """Linear pixels of any node output as the shader computes them: Cycles emission bake of the socket `find(copy)`
+    returns, in a copy of the material (`closest`: nearest texel everywhere, so the bake's pixel jitter cannot matter)."""
+    temp = mat.copy()
+    nt = temp.node_tree
+    socket = find(temp)
+    emit = nt.nodes.new("ShaderNodeEmission")
+    out = next(n for n in nt.nodes if n.type == 'OUTPUT_MATERIAL')
+    nt.links.new(socket, emit.inputs["Color"])
+    nt.links.new(emit.outputs[0], out.inputs["Surface"])
+    for n in nt.nodes:
+        if n.type == 'TEX_IMAGE' and closest:
+            n.interpolation = 'Closest'
+    target = bpy.data.images.new("m3dNodeBake", N, N, alpha=False, float_buffer=True, is_data=True)
+    tex = nt.nodes.new("ShaderNodeTexImage")
+    tex.image = target
+    nt.nodes.active = tex
+    bpy.context.scene.cycles.samples = 1
+    with T.bake_scene(bpy.context, ob, None):
+        with T.materials_swapped(ob, temp):
+            bpy.ops.object.bake(type='EMIT', target='IMAGE_TEXTURES', margin=0, use_clear=True, save_mode='INTERNAL')
+    px = read(target).reshape(N, N, 4)[..., :3].copy()
+    bpy.data.images.remove(target)
+    return px
+
+
+def bake_chain(ob, mat, ch_id):
+    """Linear pixels of a channel's chain as the shader computes them: the output of its top Mix node."""
+    return bake_out(ob, mat, lambda t: LY.principled_of(t).inputs[LY.SOCKETS[ch_id]].links[0].from_node.outputs[2])
+
+
+worst = {True: 0.0, False: 0.0}
+for ch_id, srgb in (('BASE_COLOR', True), ('ROUGHNESS', False)):
+    for mode, _label in LY.BLENDS:
+        with LY.muted():
+            pmat.m3d_layers.clear()
+            for i in range(3):
+                LY.add_layer(pmat, 'PAINT', "N%d" % i)
+            for i in range(3):
+                layer = pmat.m3d_layers[i]
+                e = LY.entry_of(layer, ch_id)
+                e.image, e.use = noise_image("nc%d" % i, srgb, opaque=i == 0), True
+                layer.blend, layer.opacity = (mode if i else 'MIX'), (0.65 if i == 1 else 0.9)
+            pmat.m3d_layers[1].mask = noise_image("ncm", False, alpha=False)
+            pmat.m3d_layers[2].mask_invert = True
+            pmat.m3d_layers[2].mask = noise_image("ncm2", False, alpha=False)
+            pmat.m3d_layers[2].blend = 'SCREEN' if mode != 'SCREEN' else 'DARKEN'
+        LY.rebuild_all(pmat)
+        nodes_lin = bake_chain(plane, pmat, ch_id)
+        mine = LY.composite(pmat, ch_id, N)
+        err = np.abs(nodes_lin - mine).max()
+        worst[srgb] = max(worst[srgb], err)
+        check(err < (0.006 if srgb else 2e-4), "numpy %s matches the node chain for %s (error %.5f)" % (mode, ch_id, err))
+print("layer blend math vs Cycles bake: worst linear error %.5f (sRGB channel), %.6f (data channel)" % (worst[True], worst[False]))
+bpy.data.objects.remove(plane)
+
+# --- Migration keeps the old nodes' settings: tiling through a Mapping node, interpolation, Normal Map strength
+clean_scene()
+bpy.ops.mesh.primitive_plane_add()
+keep = bpy.context.active_object
+keep.name = "KeepLook"
+bpy.ops.m3d.tex_add_material()
+kmat = keep.active_material
+bpy.context.scene.m3d_tex.resolution = '64'
+knt, ksdf = kmat.node_tree, LY.principled_of(kmat)
+
+
+def user_image(name, srgb):
+    im = bpy.data.images.new(name, 6, 6, alpha=True, is_data=not srgb)
+    LY.write_pixels(im, rng.random((6, 6, 4)).astype(np.float32))
+    return im
+
+
+coord, mapping = knt.nodes.new("ShaderNodeTexCoord"), knt.nodes.new("ShaderNodeMapping")
+mapping.inputs["Scale"].default_value = (4.0, 4.0, 4.0)
+knt.links.new(coord.outputs["UV"], mapping.inputs["Vector"])
+tex_base, tex_normal, tex_alpha = (knt.nodes.new("ShaderNodeTexImage") for _ in range(3))
+tex_alpha.name = "UserAlphaTex"
+tex_base.image, tex_normal.image, tex_alpha.image = user_image("kBase", True), user_image("kNormal", False), user_image("kAlpha", False)
+tex_base.interpolation, tex_base.extension = 'Closest', 'EXTEND'
+tex_normal.interpolation = 'Closest'
+for t in (tex_base, tex_normal):
+    knt.links.new(mapping.outputs["Vector"], t.inputs["Vector"])
+nmap = knt.nodes.new("ShaderNodeNormalMap")
+nmap.inputs["Strength"].default_value = 0.5
+knt.links.new(tex_normal.outputs["Color"], nmap.inputs["Color"])
+knt.links.new(nmap.outputs["Normal"], ksdf.inputs["Normal"])
+knt.links.new(tex_base.outputs["Color"], ksdf.inputs["Base Color"])
+knt.links.new(tex_alpha.outputs["Color"], ksdf.inputs["Alpha"])
+base_find = lambda t: LY.principled_of(t).inputs["Base Color"].links[0].from_socket
+normal_find = lambda t: LY.principled_of(t).inputs["Normal"].links[0].from_socket
+before = (bake_out(keep, kmat, base_find, closest=False), bake_out(keep, kmat, normal_find, closest=False))
+check(np.ptp(before[0]) > 0.1 and np.ptp(before[1]) > 0.01, "the bake sees the tiled textures (%.2f, %.3f)" % (np.ptp(before[0]), np.ptp(before[1])))
+check(bpy.ops.m3d.layer_add(kind='PAINT') == {'FINISHED'} and [l.name for l in kmat.m3d_layers] == ["Base", "Paint Layer"],
+      "Add Paint Layer on a material with a Mapping node and a Normal Map")
+after = (bake_out(keep, kmat, base_find, closest=False), bake_out(keep, kmat, normal_find, closest=False))
+check(np.abs(after[0] - before[0]).max() < 0.004, "Base Color looks the same after the first layer operation (%.5f)" % np.abs(after[0] - before[0]).max())
+check(np.abs(after[1] - before[1]).max() < 0.004, "the normal looks the same after the first layer operation (%.5f)" % np.abs(after[1] - before[1]).max())
+ours_nm = knt.nodes["%s.NORMAL.map" % LY.TAG]
+ours_tex = knt.nodes[LY.part('BASE_COLOR', kmat.m3d_layers[0].uid, "tex")]
+check(abs(ours_nm.inputs["Strength"].default_value - 0.5) < 1e-6, "the Normal Map keeps its strength")
+check(ours_tex.interpolation == 'Closest' and ours_tex.extension == 'EXTEND' and ours_tex.inputs["Vector"].links
+      and ours_tex.inputs["Vector"].links[0].from_node == mapping, "the Base Color node keeps interpolation, extension and the Mapping node")
+check(knt.nodes.get("UserAlphaTex") is not None and ksdf.inputs["Alpha"].links and ksdf.inputs["Alpha"].links[0].from_node == tex_alpha
+      and mapping.name in knt.nodes and [n for n in knt.nodes if n.type == 'TEX_IMAGE' and LY.TAG not in n.keys()] == [tex_alpha],
+      "an image node that feeds no channel stays where it is, linked")
+# The settings survive later rebuilds (new layers change the chains), also the ones set on our nodes afterwards.
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+bpy.ops.m3d.tex_channel(channel='HEIGHT')
+bump = knt.nodes["%s.HEIGHT.bump" % LY.TAG]
+bump.inputs["Strength"].default_value, bump.inputs["Distance"].default_value, bump.invert = 0.7, 0.2, True
+ours_nm.inputs["Strength"].default_value = 0.3
+ours_nm.uv_map = "UVMap"
+bpy.ops.m3d.layer_add(kind='PAINT')       # A Height image on the new layer rebuilds the Height chain
+bpy.ops.m3d.tex_channel(channel='NORMAL')   # ...and a Normal image the Normal chain
+bpy.ops.m3d.tex_channel(channel='BASE_COLOR')   # ...and a Base Color image the Base Color chain
+bump = knt.nodes["%s.HEIGHT.bump" % LY.TAG]
+ours_nm = knt.nodes["%s.NORMAL.map" % LY.TAG]
+check(len(level(kmat, 'HEIGHT')) == 2 and len(level(kmat, 'NORMAL')) == 2 and len(level(kmat, 'BASE_COLOR')) == 3,
+      "the chains were rebuilt with the new layer")
+check(abs(bump.inputs["Strength"].default_value - 0.7) < 1e-6 and abs(bump.inputs["Distance"].default_value - 0.2) < 1e-6 and bump.invert,
+      "Bump strength, distance and invert survive a rebuild")
+check(abs(ours_nm.inputs["Strength"].default_value - 0.3) < 1e-6 and ours_nm.uv_map == "UVMap", "Normal Map strength and UV map survive a rebuild")
+ours_tex = knt.nodes[LY.part('BASE_COLOR', kmat.m3d_layers[0].uid, "tex")]
+check(ours_tex.interpolation == 'Closest' and ours_tex.inputs["Vector"].links and ours_tex.inputs["Vector"].links[0].from_node == mapping,
+      "the Base layer's image node keeps its settings and Mapping link through a rebuild")
+check(knt.nodes["%s.HEIGHT.bump" % LY.TAG].inputs["Normal"].links[0].from_node == ours_nm,
+      "Normal Map still feeds Bump")
+
+# --- Export flattens the visible stack and leaves the layers alone
+exp_ob, exp_mat = fresh_cube("Show", '64')
+for cid in ('BASE_COLOR', 'ROUGHNESS', 'METALLIC'):
+    bpy.ops.m3d.tex_channel(channel=cid)
+fill_rgb(T.channel_slots(exp_mat)['BASE_COLOR'][1], (0.6, 0.3, 0.1))
+fill_rgb(T.channel_slots(exp_mat)['ROUGHNESS'][1], (0.2, 0.2, 0.2))
+fill_rgb(T.channel_slots(exp_mat)['METALLIC'][1], (0.9, 0.9, 0.9))
+bpy.ops.m3d.layer_add(kind='FILL')
+fill = exp_mat.m3d_layers[1]
+fill.blend, fill.opacity = 'MULTIPLY', 0.5
+fill.channels[0].color = (0.5, 0.25, 0.8, 1.0)
+LY.entry_of(fill, 'ROUGHNESS').use = True
+LY.entry_of(fill, 'ROUGHNESS').value = 0.8
+LY.entry_of(fill, 'METALLIC').use = True
+LY.entry_of(fill, 'METALLIC').value = 0.0
+fill.opacity = 0.5
+lay_state = [(l.name, l.blend, l.opacity, l.visible, [(e.channel, e.use, e.image.name if e.image else None) for e in l.channels])
+             for l in exp_mat.m3d_layers]
+nodes_state = sorted(n.name for n in exp_mat.node_tree.nodes)
+images_state = {i.name for i in bpy.data.images}
+exp_dir = tempfile.mkdtemp(prefix="m3d_export_")
+tx = bpy.context.scene.m3d_tex
+tx.export_folder, tx.export_size, tx.export_preset = exp_dir, 'SAME', 'UNREAL'
+check(bpy.ops.m3d.tex_export() == {'FINISHED'}, "Unreal export of a stack runs")
+check(sorted(os.listdir(exp_dir)) == ["T_Show_BC.png", "T_Show_ORM.png"], "Unreal files of a stack: %s" % sorted(os.listdir(exp_dir)))
+orm, _ = load_png(exp_dir, "T_Show_ORM.png")
+bc, _ = load_png(exp_dir, "T_Show_BC.png")
+want_rough = over_py(0.2, 0.8, 0.5, 'MULTIPLY')
+want_metal = over_py(0.9, 0.0, 0.5, 'MULTIPLY')
+check(abs(orm[0, 1] - want_rough) < 2.5 / 255 and abs(orm[0, 2] - want_metal) < 2.5 / 255,
+      "ORM has the flattened roughness %.3f and metallic %.3f (%s)" % (want_rough, want_metal, orm[0]))
+base_lin = [linear_py(0.6), linear_py(0.3), linear_py(0.1)]
+fill_lin = (0.5, 0.25, 0.8)
+want_bc = [srgb_py(over_py(b, f, 0.5, 'MULTIPLY')) for b, f in zip(base_lin, fill_lin)]
+check(np.abs(bc[0, :3] - want_bc).max() < 3 / 255, "BC has the flattened base color (%s, want %s)" % (bc[0, :3], want_bc))
+check(lay_state == [(l.name, l.blend, l.opacity, l.visible, [(e.channel, e.use, e.image.name if e.image else None) for e in l.channels])
+                    for l in exp_mat.m3d_layers] and nodes_state == sorted(n.name for n in exp_mat.node_tree.nodes)
+      and images_state <= {i.name for i in bpy.data.images} and not [i for i in bpy.data.images if i.name.startswith("m3dExport")],
+      "export leaves the layers, nodes and images untouched")
+fill.visible = False
+tx.export_preset, tx.export_folder = 'UNITY', tempfile.mkdtemp(prefix="m3d_export_")
+check(bpy.ops.m3d.tex_export() == {'FINISHED'}, "Unity export of a stack runs")
+ms, _ = load_png(tx.export_folder, "Show_MetallicSmoothness.png")
+check(abs(ms[0, 0] - 0.9) < 2.5 / 255 and abs(ms[0, 3] - 0.8) < 2.5 / 255, "a hidden layer is not exported (metal %.3f, smoothness %.3f)" % (ms[0, 0], ms[0, 3]))
+tx.export_preset, tx.export_folder = 'GLTF', tempfile.mkdtemp(prefix="m3d_export_")
+fill.visible = True
+check(bpy.ops.m3d.tex_export() == {'FINISHED'} and os.path.getsize(os.path.join(tx.export_folder, "Show.glb")) > 1000,
+      "glTF export of a stack writes a .glb")
+check(lay_state == [(l.name, l.blend, l.opacity, l.visible, [(e.channel, e.use, e.image.name if e.image else None) for e in l.channels])
+                    for l in exp_mat.m3d_layers] and exp_ob.active_material == exp_mat
+      and sorted(n.name for n in exp_mat.node_tree.nodes) == nodes_state
+      and not [i for i in bpy.data.images if i.name.startswith("m3dFlat")]
+      and not [m for m in bpy.data.materials if m != exp_mat and m.users == 0 and m.name.startswith(exp_mat.name)],
+      "glTF export leaves the layers, nodes and materials as they were")
+tx.export_preset, tx.export_folder = 'UNITY', "//textures/"
+
+# --- Safety: layer and mask images are saved with the file
+sv_ob, sv_mat = fresh_cube("Safe")
+bpy.ops.m3d.tex_channel(channel='BASE_COLOR')
+bpy.ops.m3d.layer_add(kind='PAINT')
+bpy.ops.m3d.layer_mask_add(fill='WHITE')
+layer_a, layer_b = sv_mat.m3d_layers[0], sv_mat.m3d_layers[1]
+img_a, img_b, mask_b = LY.entry_of(layer_a, 'BASE_COLOR').image, LY.entry_of(layer_b, 'BASE_COLOR').image, layer_b.mask
+img_b = img_b or LY.entry_of(layer_b, 'BASE_COLOR').image
+spare = bpy.data.images.new("m3dSpare", 8, 8)
+LY.entry_of(layer_a, 'METALLIC').image = spare
+LY.entry_of(layer_a, 'METALLIC').use = False
+LY.write_pixels(img_a, np.full(64 * 64 * 4, 0.7, np.float32))
+LY.write_pixels(mask_b, np.full(64 * 64 * 4, 0.25, np.float32))
+LY.write_pixels(spare, np.full(8 * 8 * 4, 0.4, np.float32))
+mod = T.modified_images()
+check(img_a in mod and mask_b in mod and spare in mod, "layer, mask and spare images count as modified: %s" % [i.name for i in mod])
+layer_b_name = layer_b.name
+sv_names = (img_a.name, mask_b.name, spare.name)
+sv_path = os.path.join(tempfile.mkdtemp(prefix="m3d_test_"), "layers.blend")
+bpy.ops.wm.save_as_mainfile(filepath=sv_path)
+check(img_a.packed_file is not None and mask_b.packed_file is not None and spare.packed_file is not None,
+      "saving packed the layer, mask and spare images")
+bpy.ops.wm.open_mainfile(filepath=sv_path)
+sm = bpy.data.materials["Safe_Material"] if "Safe_Material" in bpy.data.materials else bpy.data.objects["Safe"].active_material
+check(len(sm.m3d_layers) == 2 and sm.m3d_layers[1].name == layer_b_name and sm.m3d_layers[1].mask is not None
+      and sm.m3d_layers[1].mask.name == sv_names[1], "layers, names and mask are in the saved file")
+check(abs(read(sm.m3d_layers[0].channels[0].image)[0, 0] - 0.7) < 2 / 255 and abs(read(sm.m3d_layers[1].mask)[0, 0] - 0.25) < 2 / 255,
+      "painted layer and mask pixels come back")
+check(sv_names[2] in bpy.data.images and abs(read(bpy.data.images[sv_names[2]])[0, 0] - 0.4) < 2 / 255,
+      "an image only a disabled channel points at is kept")
+expect_chain(sm, 'BASE_COLOR', "reloaded")
+check(len([i for i in bpy.data.images if i.name == sv_names[0]]) == 1, "reload does not duplicate images")
+
+tex_ws = bpy.data.workspaces["Texture"]   # Opening the file replaced the workspaces.
+
+# --- Many layers: memory estimate
+mem_ob, mem_mat = fresh_cube("Heavy")
+for i in range(2):
+    LY.add_layer(mem_mat, 'PAINT', "H%d" % i)
+    LY.entry_of(mem_mat.m3d_layers[i], 'BASE_COLOR').image = bpy.data.images.new("h%d" % i, 4096, 4096)
+check(LY.memory_bytes(mem_mat) == 2 * 4096 * 4096 * 4 and LY.memory_equivalent(mem_mat) == 2.0,
+      "memory estimate of two 4K images: %d MB" % (LY.memory_bytes(mem_mat) >> 20))
+check(LY.memory_equivalent(mem_mat) <= LY.MEMORY_WARN and LY.MEMORY_WARN == 12, "two images are no reason to warn (warns from 12 4K images)")
+LY.MEMORY_WARN = 1.5
+mem_log = draw_stub(T.PROPERTIES_PT_m3d_tx_stack, TCtx())
+LY.MEMORY_WARN = 12
+check(any(getattr(r, "alert", False) for r in mem_log if r._kind == "row") and
+      any("4K" in str(r._kw.get("text", "")) for r in mem_log if r._kind == "label"), "the Layers tab warns about the memory: %s" % [r._kw for r in mem_log if r._kind == "label"][-2:])
+
+# --- The Layers tab draws, with and without layers
+mem_mat.m3d_layers.clear()
+for i in range(2):
+    bpy.data.images.remove(bpy.data.images["h%d" % i])
+bpy.ops.m3d.layer_add(kind='PAINT')
+bpy.ops.m3d.layer_add(kind='FILL')
+bpy.ops.m3d.layer_mask_add(fill='WHITE')
+ctx = TCtx()
+tex_ws.m3d_page_right = "tex_layers"
+shown_names = [c.__name__ for c in tex_panels("tex_layers") if c.poll(ctx)]
+check({"PROPERTIES_PT_m3d_tx_stack", "PROPERTIES_PT_m3d_tx_layer", "PROPERTIES_PT_m3d_tx_mask", "PROPERTIES_PT_m3d_tx_channels"} <= set(shown_names),
+      "the Layers tab shows the stack, the layer, the mask and the channels: %s" % shown_names)
+for name in shown_names:
+    cls = getattr(T, name)
+    try:
+        check_calls(name, draw_stub(cls, ctx))
+    except Exception as err:
+        check(False, "%s draw: %r" % (name, err))
+for active in (0, 1):   # Paint layer, then the fill layer with a mask
+    mem_mat.m3d_layer_index = active
+    for cls in (T.PROPERTIES_PT_m3d_tx_stack, T.PROPERTIES_PT_m3d_tx_layer, T.PROPERTIES_PT_m3d_tx_mask):
+        try:
+            check_calls(cls.__name__, draw_stub(cls, ctx))
+        except Exception as err:
+            check(False, "%s draw (layer %d): %r" % (cls.__name__, active, err))
+log = []
+LY.M3D_UL_layers.draw_item(None, ctx, Rec(log), None, mem_mat.m3d_layers[1], 0, None, "", 0)
+check_calls("layer list row", log)
+check({r._args[1] for r in log if r._kind == "prop"} >= {"visible", "name", "blend", "opacity"}, "the list row shows eye, name, blend and opacity")
+log = []
+T.draw_status_line(Rec(log), ctx)
+check_calls("Texture status line with layers", log)
+mem_mat.m3d_layers.clear()
+LY.rebuild_all(mem_mat)
+check(not [n for n in mem_mat.node_tree.nodes if LY.TAG in n.keys()], "deleting every layer removes the chains")
+check(mem_mat.node_tree.nodes.get("%s.scratch" % LY.TAG) is None, "...and the scratch node (its image goes when no material uses it)")
+check(not tex_gated("tex_layers") and "PROPERTIES_PT_m3d_tx_stack" in tex_shown("tex_layers")
+      and "PROPERTIES_PT_m3d_tx_layer" not in tex_shown("tex_layers"), "no layers: the stack panel offers the add buttons only")
 
 print("FAILS:", fails or "none")
 sys.exit(1 if fails else 0)

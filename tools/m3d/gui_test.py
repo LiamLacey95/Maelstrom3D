@@ -1719,6 +1719,239 @@ def tex_unwrap_check():
     check(not tracebacks(), "Python error in the Auto Unwrap fix")
 
 
+# ----------------------------------------------------------------------------------------------------
+# Phase 3b: the layer stack in the Texture workspace: add, fill, mask, a real stroke, visibility, order, merge, export.
+
+import numpy as np
+
+import m3d_layers as LY
+
+
+def px(image):
+    a = np.empty(len(image.pixels), np.float32)
+    image.pixels.foreach_get(a)
+    return a.reshape(-1, 4)
+
+
+def lay_mat():
+    return bpy.context.active_object.active_material
+
+
+def lay_names():
+    return [l.name for l in lay_mat().m3d_layers]
+
+
+def lay_image(index, channel='BASE_COLOR'):
+    return LY.entry_of(lay_mat().m3d_layers[index], channel).image
+
+
+def lay_show_tab():
+    ws = window().workspace
+    dock = tex_areas()[1]
+    if bpy.context.mode != 'PAINT_TEXTURE':
+        bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+    dock.spaces.active.context = 'MODELING_TOOLKIT'
+    press_ok("m3d.dock_page", _area=dock, tab="tex_layers")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def lay_add_paint():
+    check(bpy.context.mode == 'PAINT_TEXTURE', "layer tests start in Texture Paint Mode (%s)" % bpy.context.mode)
+    lay_show_tab()
+    GIZMO["slots"] = len(m3d_texture.channel_slots(lay_mat()))
+    GIZMO["base_name"] = m3d_texture.channel_slots(lay_mat())['BASE_COLOR'][1].name
+    press_ok("m3d.layer_add", _area=tex_areas()[1], kind='PAINT')
+
+
+@step
+def lay_add_paint_check():
+    check(lay_names() == ["Base", "Paint Layer"], "Add Paint Layer from the dock: %s" % lay_names())
+    check(lay_image(0).name == GIZMO["base_name"], "the old Base Color image is the Base layer's")
+    ups = bpy.context.tool_settings.image_paint.unified_paint_settings
+    ups.color = (1.0, 0.0, 0.0)
+    press_ok("m3d.tex_channel", _area=tex_areas()[1], channel='BASE_COLOR')
+    check(not tracebacks(), "Python error drawing the Layers tab with layers")
+
+
+@step
+def lay_stroke_setup():
+    layer = lay_mat().m3d_layers[1]
+    check(lay_image(1) is not None and lay_image(1) == lay_mat().texture_paint_images[lay_mat().paint_active_slot],
+          "the brush targets the new layer's Base Color image")
+    GIZMO["layer_before"], GIZMO["base_before"] = px(lay_image(1)).copy(), px(lay_image(0)).copy()
+    view, region = tex_view()
+    rv3d = view.spaces.active.region_3d
+    p = location_3d_to_region_2d(region, rv3d, Vector((0, 0, 0)))
+    check(p is not None, "the cube is in the 3D view")
+    cx, cy = (int(region.x + p.x), int(region.y + p.y)) if p is not None else tex_xy()
+    GIZMO["stroke"] = [(cx - 40 + i * 8, cy) for i in range(11)]
+    event('MOUSEMOVE', xy=GIZMO["stroke"][0])
+
+
+@step
+def lay_stroke_press():
+    event('LEFTMOUSE', 'PRESS', GIZMO["stroke"][0])
+    for xy in GIZMO["stroke"][1:]:
+        event('MOUSEMOVE', xy=xy)
+
+
+@step
+def lay_stroke_release():
+    event('LEFTMOUSE', 'RELEASE', GIZMO["stroke"][-1])
+
+
+@step
+def lay_stroke_check():
+    after_layer, after_base = px(lay_image(1)), px(lay_image(0))
+    changed = np.abs(after_layer - GIZMO["layer_before"]).max()
+    check(changed > 0.2, "the stroke painted the active layer's image (largest change %.3f)" % changed)
+    check(np.array_equal(after_base, GIZMO["base_before"]), "...and left the base layer alone")
+    check(after_layer[:, 3].max() > 0.5 and (after_layer[:, 3] < 0.01).any(), "...only where the brush went (the rest stays transparent)")
+    check(not tracebacks(), "Python error during the stroke")
+    GIZMO["stroked"] = after_layer.copy()
+    press_ok("m3d.layer_add", _area=tex_areas()[1], kind='FILL')
+
+
+@step
+def lay_fill_check():
+    m = lay_mat()
+    check(lay_names() == ["Base", "Paint Layer", "Fill Layer"] and m.m3d_layers[2].kind == 'FILL' and m.m3d_layer_index == 2,
+          "Add Fill Layer: %s" % lay_names())
+    m.m3d_layers[2].channels[0].color = (0.1, 0.6, 0.2, 1.0)
+    m.m3d_layers[2].blend, m.m3d_layers[2].opacity = 'OVERLAY', 0.5
+    press_ok("m3d.layer_mask_add", _area=tex_areas()[1], fill='WHITE')
+
+
+@step
+def lay_mask_check():
+    m = lay_mat()
+    fill = m.m3d_layers[2]
+    check(fill.mask is not None and m.texture_paint_images[m.paint_active_slot] == fill.mask, "Add Mask: the brush is on the mask")
+    check(m3d_texture.active_channel(m) == 'BASE_COLOR', "the channel stays")
+    check(not tracebacks(), "Python error drawing a fill layer with a mask")
+    lay_show_tab()
+    press_ok("m3d.layer_visible", _area=tex_areas()[1])
+
+
+@step
+def lay_visible_check():
+    m = lay_mat()
+    check(not m.m3d_layers[2].visible, "Show / Hide Layer hid the fill layer")
+    opv = m.node_tree.nodes[LY.part('BASE_COLOR', m.m3d_layers[2].uid, "opv")]
+    check(opv.inputs[1].default_value == 0.0, "a hidden layer has no effect on the shader")
+    m.m3d_layers[2].visible = True
+    check(opv.inputs[1].default_value == 0.5, "...and showing it again restores the opacity")
+    press_ok("m3d.layer_move", _area=tex_areas()[1], delta=-1)
+
+
+@step
+def lay_move_check():
+    m = lay_mat()
+    check(lay_names() == ["Base", "Fill Layer", "Paint Layer"] and m.m3d_layer_index == 1, "Move Layer Down: %s" % lay_names())
+    check(m.texture_paint_images[m.paint_active_slot] == m.m3d_layers[1].mask, "the brush follows the moved layer (its mask)")
+    top = LY.principled_of(m).inputs["Base Color"].links[0].from_node
+    check(top.name == LY.part('BASE_COLOR', m.m3d_layers[2].uid, "mix"), "the Paint Layer is on top of the Base Color chain")
+    check(np.array_equal(px(lay_image(2)), GIZMO["stroked"]), "moving layers keeps their pixels")
+    m.m3d_layer_index = 2
+    check(m.texture_paint_images[m.paint_active_slot] == lay_image(2), "selecting a layer aims the brush at it")
+    GIZMO["images"] = {i.name for i in bpy.data.images}
+    GIZMO["fill_mask"] = m.m3d_layers[1].mask.name
+    GIZMO["stroke_img"] = lay_image(2).name
+    press_ok("m3d.layer_merge_down", _area=tex_areas()[1])
+
+
+@step
+def lay_merge_check():
+    m = lay_mat()
+    check(lay_names() == ["Base", "Fill Layer"] and m.m3d_layer_index == 1, "Merge Down: %s" % lay_names())
+    low = m.m3d_layers[1]
+    check(low.kind == 'PAINT' and low.mask is None and low.opacity == 1.0 and lay_image(1) is not None,
+          "the fill layer became a paint layer without mask or opacity")
+    check(GIZMO["stroke_img"] not in bpy.data.images and GIZMO["fill_mask"] not in bpy.data.images, "the merged layer's and the old mask images are gone")
+    merged = px(lay_image(1))
+    check(abs(merged[:, 3].min() - 0.5) < 0.02 and merged[:, 3].max() > 0.9 and np.ptp(merged[:, 0]) > 0.2,
+          "the merged layer holds the half-opaque fill and the stroke (alpha %.2f-%.2f, red range %.2f)" % (
+              merged[:, 3].min(), merged[:, 3].max(), np.ptp(merged[:, 0])))
+    check(m.texture_paint_images[m.paint_active_slot] == lay_image(1), "the brush is on the merged layer")
+    GIZMO["out2"] = tempfile.mkdtemp(prefix="m3d_gui_layers_")
+    tx = bpy.context.scene.m3d_tex
+    tx.export_folder, tx.export_preset, tx.export_size = GIZMO["out2"], 'UNREAL', 'SAME'
+    press_ok("m3d.tex_export", _area=tex_areas()[1])
+
+
+@step
+def lay_export_check():
+    files = sorted(os.listdir(GIZMO["out2"]))
+    check(files == ["T_Crate_BC.png", "T_Crate_ORM.png"], "export of a stack wrote the Unreal files (%s)" % files)
+    m = lay_mat()
+    img = bpy.data.images.load(os.path.join(GIZMO["out2"], "T_Crate_BC.png"))
+    img.colorspace_settings.name = 'Non-Color'
+    file_px = px(img)[:, :3]
+    want = LY.flatten_channel(m, 'BASE_COLOR', 128)[..., :3].reshape(-1, 3)
+    check(file_px.shape == want.shape and np.abs(file_px - want).max() < 3 / 255,
+          "the exported base color is the flattened stack (largest difference %.4f)" % np.abs(file_px - want).max())
+    bpy.data.images.remove(img)
+    check(lay_names() == ["Base", "Fill Layer"], "export left the layers alone")
+    lay_show_tab()
+    press_ok("m3d.layer_flatten", _area=tex_areas()[1])
+
+
+@step
+def lay_flatten_check():
+    m = lay_mat()
+    check(lay_names() == ["Base"] and LY.entry_of(m.m3d_layers[0], 'BASE_COLOR').image is not None, "Flatten: %s" % lay_names())
+    check(not tracebacks(), "Python error while the layer stack was edited in the Texture workspace")
+    lay_show_tab()
+
+
+@step
+def lay_fill_stroke_setup():
+    press_ok("m3d.layer_add", _area=tex_areas()[1], kind='FILL')
+
+
+@step
+def lay_fill_stroke_aim():
+    m = lay_mat()
+    check(lay_names() == ["Base", "Fill Layer"] and m.m3d_layers[1].kind == 'FILL' and m.m3d_layers[1].mask is None,
+          "a fill layer without a mask is active: %s" % lay_names())
+    now = m.texture_paint_images[m.paint_active_slot]
+    check(now.name == LY.SCRATCH and now not in LY.stack_images(m), "the brush is aimed at the scratch image, not at a layer image (%s)" % now.name)
+    GIZMO["layer_pixels"] = {i.name: px(i).copy() for i in LY.stack_images(m)}
+    GIZMO["scratch_before"] = px(now).copy()
+    event('MOUSEMOVE', xy=GIZMO["stroke"][0])
+
+
+@step
+def lay_fill_stroke_press():
+    event('LEFTMOUSE', 'PRESS', GIZMO["stroke"][0])
+    for xy in GIZMO["stroke"][1:]:
+        event('MOUSEMOVE', xy=xy)
+
+
+@step
+def lay_fill_stroke_release():
+    event('LEFTMOUSE', 'RELEASE', GIZMO["stroke"][-1])
+
+
+@step
+def lay_fill_stroke_check():
+    m = lay_mat()
+    images = LY.stack_images(m)
+    check({i.name for i in images} == set(GIZMO["layer_pixels"]) and all(np.array_equal(px(i), GIZMO["layer_pixels"][i.name]) for i in images),
+          "a stroke with a fill layer active changed no layer image")
+    scratch = bpy.data.images.get(LY.SCRATCH)
+    check(scratch is not None and np.abs(px(scratch) - GIZMO["scratch_before"]).max() > 0.1, "...the stroke did happen: it went to the scratch image")
+    check(m.texture_paint_images[m.paint_active_slot] == scratch, "the brush is still on the scratch image")
+    check(not tracebacks(), "Python error during the stroke on a fill layer")
+
+
+@step
+def lay_done():
+    check(not tracebacks(), "Python error drawing the Layers tab")
+
+
 @step
 def tex_done():
     ws = window().workspace

@@ -10,11 +10,12 @@ painted images.
 The layout is built by tools/m3d/build_startup.py (phase3_texture), the tabs are DOCK_TABS['TEXTURE'] in
 m3d_workspace.py, the menus and shelves in m3d_ui.py. Brush, stroke, falloff and texture controls are Blender's own
 panel classes re-used on the pages. A channel is a paint slot of the active material (Base Color, Roughness,
-Metallic, Normal, Height, Emission); the Layers tab is where the layer stack will go.
+Metallic, Normal, Height, Emission). The Layers tab is the layer stack (data, node chains and operators: m3d_layers.py);
+a material without layers works on its paint slots directly, and gets its slots as the bottom layer on the first layer
+operation.
 """
 
 import os
-from collections import namedtuple
 from contextlib import contextmanager, nullcontext
 
 import bpy
@@ -26,7 +27,10 @@ from bl_ui.properties_paint_common import (
     StrokePanel, TextureMaskPanel, UnifiedPaintPanel, brush_settings, brush_settings_advanced, brush_texture_settings)
 from mathutils import Vector
 
+import m3d_layers as L
 import m3d_uv
+from m3d_layers import (CHANNEL_BY_ID, CHANNEL_ITEMS, CHANNELS, active_layer, entry_of, pixels_of, principled_of,
+                        set_channel_space)
 from m3d_mode import _button
 from m3d_sculpt import active_brush_id, grid, mesh_of, reason, split_props, viewport
 from m3d_workspace import _PagePanel
@@ -56,38 +60,19 @@ def brush_item(label, name):
 
 
 # -----------------------------------------------------------------------------
-# Channels: paint slots of the active material
+# Channels: paint slots of the active material (or, with layers, channels of the stack: m3d_layers.py)
 
-Channel = namedtuple("Channel", "id label slot_type color srgb")
-# slot_type: the type of paint.add_texture_paint_slot (None: wired here); color: what a new slot starts as.
-CHANNELS = (
-    Channel('BASE_COLOR', "Base Color", 'BASE_COLOR', (0.8, 0.8, 0.8, 1.0), True),
-    Channel('ROUGHNESS', "Roughness", 'ROUGHNESS', (0.5, 0.5, 0.5, 1.0), False),
-    Channel('METALLIC', "Metallic", 'METALLIC', (0.0, 0.0, 0.0, 1.0), False),
-    Channel('NORMAL', "Normal", 'NORMAL', (0.5, 0.5, 1.0, 1.0), False),
-    Channel('HEIGHT', "Height", 'BUMP', (0.5, 0.5, 0.5, 1.0), False),
-    Channel('EMISSION', "Emission", None, (0.0, 0.0, 0.0, 1.0), True),
-)
-CHANNEL_BY_ID = {ch.id: ch for ch in CHANNELS}
-CHANNEL_ITEMS = [(ch.id, ch.label, "") for ch in CHANNELS]
-# Principled BSDF input a paint image feeds -> channel
-_SOCKET_CHANNELS = {"Base Color": 'BASE_COLOR', "Roughness": 'ROUGHNESS', "Metallic": 'METALLIC',
-                    "Emission Color": 'EMISSION'}
 SIZES = [(str(n), "%d px" % n, "") for n in (64, 128, 256, 512, 1024, 2048, 4096)]
 
 
 def channel_of(mat, image):
     """Channel an image of `mat` feeds, by following the image node's link (Normal Map -> Normal, Bump -> Height);
-    images created here also remember it."""
-    for node in mat.node_tree.nodes if mat.node_tree else ():
-        if node.type != 'TEX_IMAGE' or node.image != image:
-            continue
-        for link in node.outputs[0].links:
-            to = link.to_node
-            if to.type == 'BSDF_PRINCIPLED' and link.to_socket.name in _SOCKET_CHANNELS:
-                return _SOCKET_CHANNELS[link.to_socket.name]
-            if to.type in {'NORMAL_MAP', 'BUMP'}:
-                return 'NORMAL' if to.type == 'NORMAL_MAP' else 'HEIGHT'
+    images created here also remember it (with layers the stored channel is the answer)."""
+    for node in () if mat.m3d_layers or not mat.node_tree else mat.node_tree.nodes:
+        if node.type == 'TEX_IMAGE' and node.image == image:
+            ch = L.node_channel(node)
+            if ch:
+                return ch
     stored = image.get("m3d_channel")
     return stored if stored in CHANNEL_BY_ID else None
 
@@ -100,7 +85,9 @@ def paint_slots(mat):
 
 
 def channel_slots(mat):
-    """{channel id: (slot index, image)}: the first slot of each channel."""
+    """{channel id: (slot index, image)}: the first slot of each channel (with layers: where each channel is painted)."""
+    if mat.m3d_layers:
+        return L.stack_slots(mat)
     found = {}
     for i, img, ch in paint_slots(mat):
         if ch and ch not in found:
@@ -109,18 +96,20 @@ def channel_slots(mat):
 
 
 def active_channel(mat):
-    """Channel id of the active paint slot, or None."""
+    """Channel id of the active paint slot (with layers: the channel being painted), or None."""
+    if mat.m3d_layers:
+        return mat.m3d_channel
     slots = paint_slots(mat)
     return slots[mat.paint_active_slot][2] if slots and mat.paint_active_slot < len(slots) else None
 
 
-def set_channel_space(image, ch):
-    image.colorspace_settings.name = 'sRGB' if ch.srgb else 'Non-Color'
-    image["m3d_channel"] = ch.id
-
-
-def principled_of(mat):
-    return next((n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None) if mat.node_tree else None
+def select_channel(mat, ch_id):
+    """Paint a channel the material already has."""
+    if mat.m3d_layers:
+        mat.m3d_channel = ch_id
+        L.sync_target(bpy.context, mat, True)
+    else:
+        mat.paint_active_slot = channel_slots(mat)[ch_id][0]
 
 
 def add_emission_slot(ob, mat, name, size):
@@ -140,8 +129,11 @@ def add_emission_slot(ob, mat, name, size):
 
 
 def ensure_channel(context, ob, ch):
-    """Make `ch` the active paint slot of the active material, adding the slot first. Returns its image, or None."""
+    """Make `ch` the active paint slot of the active material, adding the slot first. Returns its image, or None.
+    With layers the active layer gets the channel (and its image, once)."""
     mat = ob.active_material
+    if mat.m3d_layers:
+        return L.paint_channel(context, ob, ch)
     found = channel_slots(mat)
     if ch.id in found:
         mat.paint_active_slot = found[ch.id][0]
@@ -261,7 +253,8 @@ class M3D_BakeSettings(PropertyGroup):
 # Safety: painted images are saved or packed with the file
 
 def modified_images():
-    return [i for i in bpy.data.images if i.is_dirty and i.source in {'GENERATED', 'FILE'} and i.name != m3d_uv.CHECKER]
+    skip = {m3d_uv.CHECKER, L.SCRATCH}
+    return [i for i in bpy.data.images if i.is_dirty and i.source in {'GENERATED', 'FILE'} and i.name not in skip]
 
 
 def save_images():
@@ -353,7 +346,7 @@ class M3D_OT_tex_channel_cycle(Operator):
             return {'CANCELLED'}
         now = active_channel(mat)
         i = (order.index(now) + self.delta) % len(order) if now in order else 0
-        mat.paint_active_slot = found[order[i]][0]
+        select_channel(mat, order[i])
         self.report({'INFO'}, "Painting " + CHANNEL_BY_ID[order[i]].label)
         return {'FINISHED'}
 
@@ -439,7 +432,7 @@ class M3D_OT_tex_channel_view(Operator):
             if self.channel not in found:
                 self.report({'WARNING'}, "No %s channel yet" % CHANNEL_BY_ID[self.channel].label)
                 return {'CANCELLED'}
-            ob.active_material.paint_active_slot = found[self.channel][0]
+            select_channel(ob.active_material, self.channel)
         if on and not self.channel:
             shading.type, shading.light, shading.color_type = _view_memory.pop("shading", ('MATERIAL', 'STUDIO', 'MATERIAL'))
         elif not on:
@@ -716,17 +709,6 @@ def constant(mat, socket, default):
     return float(bsdf.inputs[socket].default_value) if bsdf is not None else default
 
 
-def pixels_of(image, size):
-    """The image's pixels as a (size, size, 4) array (resampled when it has another size)."""
-    px = np.empty(len(image.pixels), np.float32)
-    image.pixels.foreach_get(px)
-    w, h = image.size
-    px = px.reshape(h, w, 4)
-    if (w, h) != (size, size):
-        px = px[np.ix_(np.arange(size) * h // size, np.arange(size) * w // size)]
-    return px
-
-
 def write_png(path, array, srgb, alpha=False):
     """Save a (size, size, 4) array as a PNG. Pixels are stored as they are (no colour conversion)."""
     size = array.shape[0]
@@ -740,7 +722,8 @@ def write_png(path, array, srgb, alpha=False):
 
 
 def export_textures(context, ob):
-    """Write the active mesh's channels in the format of the Export preset. Returns the files written."""
+    """Write the active mesh's channels in the format of the Export preset. Returns the files written. With layers,
+    each channel is the flattened visible stack (the layers are not touched)."""
     s = context.scene.m3d_tex
     if s.export_folder.startswith("//") and not bpy.data.filepath:
         raise RuntimeError("Save the file first, or pick a folder that does not start with //")
@@ -748,18 +731,24 @@ def export_textures(context, ob):
     os.makedirs(folder, exist_ok=True)
     name = bpy.path.clean_name(ob.name)
     mat = ob.active_material
+    stacked = bool(mat.m3d_layers)
     found = {ch: img for ch, (_i, img) in channel_slots(mat).items()}
+    present = set(L.content_channels(mat)) if stacked else set(found)
+    native = L.stack_size(mat) if stacked else max((max(img.size) for img in found.values()), default=0)
     if s.export_preset == 'GLTF':
-        return [export_gltf(context, ob, os.path.join(folder, name + ".glb"))]
-    sizes = [max(img.size) for img in found.values()]
-    size = int(s.export_size) if s.export_size != 'SAME' else max(sizes, default=1024)
+        return [export_gltf(context, ob, os.path.join(folder, name + ".glb"), native or 1024)]
+    size = int(s.export_size) if s.export_size != 'SAME' else native or 1024
     ao_image = bpy.data.images.get(ob.name + "_AO")
     ones = np.ones((size, size, 4), np.float32)
 
+    def pixels(channel):
+        if channel not in present:
+            return None
+        return L.flatten_channel(mat, channel, size) if stacked else pixels_of(found[channel], size)
+
     def map_of(channel, socket, default):
-        if channel in found:
-            return pixels_of(found[channel], size)
-        return ones * np.float32(constant(mat, socket, default))
+        px = pixels(channel)
+        return px if px is not None else ones * np.float32(constant(mat, socket, default))
 
     unreal = s.export_preset == 'UNREAL'
     names = dict(base=("T_%s_BC" if unreal else "%s_Albedo"), normal=("T_%s_N" if unreal else "%s_Normal"),
@@ -772,15 +761,15 @@ def export_textures(context, ob):
         write_png(path, array, srgb, alpha)
         paths.append(path)
 
-    if 'BASE_COLOR' in found:
-        out("base", pixels_of(found['BASE_COLOR'], size), True, alpha=True)
-    if 'NORMAL' in found:
-        normal = pixels_of(found['NORMAL'], size).copy()
+    if 'BASE_COLOR' in present:
+        out("base", pixels('BASE_COLOR'), True, alpha=True)
+    if 'NORMAL' in present:
+        normal = pixels('NORMAL').copy()
         if unreal:
             normal[..., 1] = 1.0 - normal[..., 1]   # Unreal reads normal maps with the green channel flipped.
         out("normal", normal, False)
-    if 'EMISSION' in found:
-        out("emit", pixels_of(found['EMISSION'], size), True)
+    if 'EMISSION' in present:
+        out("emit", pixels('EMISSION'), True)
     rough, metal = map_of('ROUGHNESS', "Roughness", 0.5), map_of('METALLIC', "Metallic", 0.0)
     ao = pixels_of(ao_image, size) if ao_image is not None else ones
     packed = np.ones((size, size, 4), np.float32)
@@ -795,8 +784,9 @@ def export_textures(context, ob):
     return paths
 
 
-def export_gltf(context, ob, path):
-    """The mesh with its material as a .glb (the glTF exporter reads the paint images from the material)."""
+def export_gltf(context, ob, path, size):
+    """The mesh with its material as a .glb (the glTF exporter reads the paint images from the material; a layer
+    stack is exported as a temporary copy of the material with one flattened image per channel)."""
     if not hasattr(bpy.ops.export_scene, "gltf"):
         raise RuntimeError("The glTF exporter is not enabled")
     layer = context.view_layer
@@ -806,7 +796,8 @@ def export_gltf(context, ob, path):
     ob.select_set(True)
     layer.objects.active = ob
     try:
-        bpy.ops.export_scene.gltf(filepath=path, export_format='GLB', use_selection=True)
+        with L.flattened_material(ob, ob.active_material, size) if ob.active_material.m3d_layers else nullcontext():
+            bpy.ops.export_scene.gltf(filepath=path, export_format='GLB', use_selection=True)
     finally:
         ob.select_set(False)
         for o in state[0]:
@@ -970,11 +961,15 @@ class PROPERTIES_PT_m3d_tx_advanced(_BrushPage, Panel):
         brush_settings_advanced(self.layout.column(), context, settings, settings.brush, self.is_popover)
 
 
-# --- Layers: the material's paint slots, by channel
+# --- Layers: the stack, the active layer, its mask; the channels
 
-class PROPERTIES_PT_m3d_tx_channels(_Page, Panel):
+def has_active_layer(mat):
+    return principled_of(mat) is not None and active_layer(mat) is not None
+
+
+class PROPERTIES_PT_m3d_tx_stack(_Page, Panel):
     page = "tex_layers"
-    bl_label = "Channels"
+    bl_label = "Layers"
 
     def draw(self, context):
         layout = self.layout
@@ -983,6 +978,121 @@ class PROPERTIES_PT_m3d_tx_channels(_Page, Panel):
         if len(ob.material_slots) > 1:
             layout.template_list("MATERIAL_UL_matslots", "layers", ob, "material_slots", ob, "active_material_index",
                                  rows=2)
+        if principled_of(mat) is None:
+            reason(layout, "Layers need a Principled BSDF in the material")
+            return
+        layer = active_layer(mat)
+        row = layout.row(align=True)
+        row.operator("m3d.layer_add", text="Paint Layer", icon='ADD').kind = 'PAINT'
+        row.operator("m3d.layer_add", text="Fill Layer", icon='COLOR').kind = 'FILL'
+        if layer is None:
+            n = len(paint_slots(mat))
+            reason(layout, "The %d paint slots become the Base layer" % n if n else "Add a layer to start painting")
+            return
+        if layer.kind == 'FILL' and not layer.mask:
+            box = layout.box()
+            box.alert = True
+            box.label(text="A Fill Layer cannot be painted", icon='ERROR')
+            box.operator("m3d.layer_convert", icon='IMAGE_DATA')
+        row = layout.row()
+        row.template_list("M3D_UL_layers", "", mat, "m3d_layers", mat, "m3d_layer_index", rows=5,
+                          sort_reverse=True, sort_lock=True)
+        col = row.column(align=True)
+        col.operator("m3d.layer_move", text="", icon='TRIA_UP').delta = 1
+        col.operator("m3d.layer_move", text="", icon='TRIA_DOWN').delta = -1
+        col.separator()
+        col.operator("m3d.layer_duplicate", text="", icon='DUPLICATE')
+        col.operator("m3d.layer_remove", text="", icon='TRASH')
+        row = layout.row(align=True)
+        row.operator("m3d.layer_merge_down", icon='TRIA_DOWN_BAR')
+        row.operator("m3d.layer_flatten", icon='IMAGE_DATA')
+        target = layer.name + (" mask" if layer.paint_mask and layer.mask else ": " + CHANNEL_BY_ID[mat.m3d_channel].label)
+        reason(layout, "Painting " + target)
+        equivalent = L.memory_equivalent(mat)
+        row = layout.row()
+        row.alert = equivalent > L.MEMORY_WARN
+        row.label(text="Layer images use %d MB" % (L.memory_bytes(mat) >> 20), icon='ERROR' if row.alert else 'INFO')
+        if row.alert:
+            reason(layout, "That is %d images of 4K: use smaller sizes or merge layers" % equivalent)
+
+
+class PROPERTIES_PT_m3d_tx_layer(_Page, Panel):
+    page = "tex_layers"
+    bl_label = "Layer"
+
+    @classmethod
+    def page_poll(cls, context):
+        return ready(context, 'PAINT') and has_active_layer(mesh_of(context).active_material)
+
+    def draw(self, context):
+        layout = self.layout
+        split_props(layout)
+        layer = active_layer(mesh_of(context).active_material)
+        layout.prop(layer, "name")
+        layout.prop(layer, "blend")
+        layout.prop(layer, "opacity", slider=True)
+        layout.prop(layer, "visible")
+        if layer.kind == 'PAINT':
+            layout.prop(layer, "use_alpha")
+        flow = layout.grid_flow(row_major=True, columns=2, even_columns=True, align=True)
+        for ch in CHANNELS:
+            flow.prop(entry_of(layer, ch.id), "use", text=ch.label, toggle=True)
+        if layer.kind == 'PAINT':
+            for ch in CHANNELS:
+                e = entry_of(layer, ch.id)
+                if e.image is not None:
+                    w, h = L.image_size(e.image)
+                    layout.label(text="%s: %d x %d" % (ch.label, w, h))
+            return
+        for ch in CHANNELS:
+            e = entry_of(layer, ch.id)
+            if not e.use:
+                continue
+            if ch.id == 'NORMAL':
+                layout.label(text="Normal: flat")
+            elif ch.id in L.SCALARS:
+                layout.prop(e, "value", text=ch.label, slider=True)
+            else:
+                layout.prop(e, "color", text=ch.label)
+
+
+class PROPERTIES_PT_m3d_tx_mask(_Page, Panel):
+    page = "tex_layers"
+    bl_label = "Mask"
+
+    @classmethod
+    def page_poll(cls, context):
+        return ready(context, 'PAINT') and has_active_layer(mesh_of(context).active_material)
+
+    def draw(self, context):
+        layout = self.layout
+        layer = active_layer(mesh_of(context).active_material)
+        if layer.mask is None:
+            row = layout.row(align=True)
+            row.operator("m3d.layer_mask_add", text="White (Show All)", icon='ADD').fill = 'WHITE'
+            row.operator("m3d.layer_mask_add", text="Black (Hide All)", icon='ADD').fill = 'BLACK'
+            reason(layout, "A mask limits the layer; paint it like a channel")
+            return
+        w, h = L.image_size(layer.mask)
+        layout.label(text="%s  %d x %d" % (layer.mask.name, w, h), icon='MOD_MASK')
+        if layer.kind == 'PAINT':
+            layout.prop(layer, "paint_mask", text="Paint Mask", toggle=True, icon='BRUSH_DATA')
+        else:
+            reason(layout, "Strokes on a Fill Layer paint its mask")
+        row = layout.row(align=True)
+        row.operator("m3d.layer_mask_invert", icon='ARROW_LEFTRIGHT', depress=layer.mask_invert)
+        row.operator("m3d.layer_mask_remove", icon='X')
+
+
+class PROPERTIES_PT_m3d_tx_channels(_Page, Panel):
+    page = "tex_layers"
+    bl_label = "Channels"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        ob = mesh_of(context)
+        mat = ob.active_material
         found, now = channel_slots(mat), active_channel(mat)
         col = layout.column(align=True)
         for ch in CHANNELS:
@@ -1411,6 +1521,9 @@ classes = (
     PROPERTIES_PT_m3d_tx_projection,
     PROPERTIES_PT_m3d_tx_more,
     PROPERTIES_PT_m3d_tx_advanced,
+    PROPERTIES_PT_m3d_tx_stack,
+    PROPERTIES_PT_m3d_tx_layer,
+    PROPERTIES_PT_m3d_tx_mask,
     PROPERTIES_PT_m3d_tx_channels,
     PROPERTIES_PT_m3d_tx_slots,
     PROPERTIES_PT_m3d_tx_stroke,
