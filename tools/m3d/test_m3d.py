@@ -277,7 +277,7 @@ check(wm.m3d_menu_set == 'MODELING' and wm.m3d_shelf == 'POLY', "shelf tab is re
 check(m3d_ui.shelves_for('SCULPT') == ['SCULPT_BRUSHES', 'SCULPT_REMESH', 'SCULPT_MASK', 'CUSTOM']
       and 'POLY' in m3d_ui.shelves_for('MODEL') and m3d_ui.shelves_for('MODEL')[-1] == 'CUSTOM', "shelf tabs per kind")
 check(set(m3d_ui.KIND_MODES) == set(W.KINDS) - set(m3d_ui.STATUS_LINES), "placeholder status line modes for the other kinds")
-check(set(m3d_ui.STATUS_LINES) == {'MODEL', 'SCULPT', 'UV', 'TEXTURE', 'RIG'}, "status lines")
+check(set(m3d_ui.STATUS_LINES) == {'MODEL', 'SCULPT', 'UV', 'TEXTURE', 'RIG', 'ANIM'}, "status lines")
 
 # Page panels: only on their page, per workspace and side.
 ws = bpy.data.workspaces["Modeling"]
@@ -493,7 +493,7 @@ def check_calls(where, log):
                 check(op_ok(idname, values), "%s: operator %s %s" % (where, idname, values))
         elif rec._kind == "prop":
             owner, name = rec._args[0], rec._args[1]
-            check(name in owner.bl_rna.properties, "%s: %r has no property %s" % (where, owner, name))
+            check(name.startswith("[") or name in owner.bl_rna.properties, "%s: %r has no property %s" % (where, owner, name))
         elif rec._kind == "popover":
             check(hasattr(bpy.types, rec._kw.get("panel", rec._args[0] if rec._args else "")), "%s: popover" % where)
 
@@ -2334,7 +2334,8 @@ def check_calls_ext(where, log):
     for rec in log:
         if rec._kind in {"prop_enum", "prop_search"}:
             owner, name = rec._args[0], rec._args[1]
-            check(name in owner.bl_rna.properties, "%s: %r has no property %s" % (where, owner, name))
+            if hasattr(owner, "bl_rna"):   # (a collection such as scene.keying_sets_all has none)
+                check(name in owner.bl_rna.properties, "%s: %r has no property %s" % (where, owner, name))
 
 
 def draw_rig_panels(label):
@@ -2801,6 +2802,433 @@ log = []
 R.draw_constraint(Rec(log), rig.pose.bones["Shin"], rig.pose.bones["Shin"].constraints[0])
 check_calls_ext("constraint row", log)
 check({r._args[1] for r in log if r._kind == "prop"} >= {"mute", "name", "target", "pole_target", "chain_count", "pole_angle", "influence"}, "constraint row shows target, pole and influence")
+bpy.ops.m3d.rig_mode(mode='OBJECT')
+
+# ----------------------------------------------------------------------------------------------------
+# Phase 5: Animation workspace (tabs, pages, gates, Tween, selection sets, presets, layers, playblast, Channel Box).
+import m3d_anim as A
+import math, shutil
+
+anim_ws = bpy.data.workspaces["Animation"]
+an_tabs = W.DOCK_TABS['ANIM']
+check([t.label for t in an_tabs['RIGHT']] == ["Channel Box", "Pick", "Tween & Poses", "Motion", "Layers", "Playback"], "Animation dock tabs")
+check(an_tabs['LEFT'] == () and W.dock_tabs('ANIM', 'LEFT') == an_tabs['RIGHT'], "Animation has no left tray")
+check(an_tabs['RIGHT'][0].context == 'CHANNEL_BOX' and an_tabs['RIGHT'][0].page is None, "the first Animation tab is the Channel Box")
+for tab in an_tabs['RIGHT'][1:]:
+    check(tab.context == 'MODELING_TOOLKIT' and tab.page == tab.id and tab.id.startswith("anim_"), "Animation page tab " + tab.id)
+an_pages = {t.page for t in an_tabs['RIGHT'] if t.page}
+check({c.page for c in A.classes if hasattr(c, "page")} == an_pages, "every Animation page has panels and the other way round")
+check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in A.classes if not issubclass(c, bpy.types.PropertyGroup)),
+      "Animation classes registered")
+check(m3d_ui.shelves_for('ANIM') == ['ANIM_ANIMATE', 'ANIM_POSES', 'CUSTOM'] and 'ANIM' in m3d_ui.STATUS_LINES
+      and 'ANIM' not in m3d_ui.KIND_MODES, "Animation shelf tabs and Status Line")
+check([it[3] for it in m3d_ui.SHELVES['ANIM_ANIMATE'][1] if it] == ["Set Key", "Translate", "Rotate", "Scale", "Breakdown", "Delete Key",
+                                                                   "Euler Filter", "Stepped", "Spline"], "Animate shelf buttons")
+check([it[3] if not callable(it) else "menu" for it in m3d_ui.SHELVES['ANIM_POSES'][1] if it] == ["Copy", "Paste", "Paste Flipped", "Reset", "Save Pose", "menu"],
+      "Poses shelf buttons")
+check(anim_ws.m3d_kind == 'ANIM' and anim_ws.object_mode == 'POSE', "Animation workspace kind and entry mode")
+an_src = open(A.__file__, encoding="utf-8").read().lower()
+for word in ("maya", "autodesk", "animbot", "tween machine", "studio library", "motionbuilder", "cascadeur", "mgear"):
+    check(word not in an_src, "Animation code names " + word)
+
+# Keys: the new ones land, and are free in the keymaps around them.
+bpy.utils.keyconfig_set(bpy.utils.preset_find("Maelstrom3D", "keyconfig"))
+kc = bpy.context.window_manager.keyconfigs["Maelstrom3D"]
+for km in ("Object Mode", "Pose"):
+    item = find(km, "m3d.tween", 'Q', alt=True, shift=False, ctrl=False)
+    check(item and item[0].properties.interactive, "Alt+Q tweens in " + km)
+for idname, key in (("pose.push", 'P'), ("pose.relax", 'R'), ("pose.breakdown", 'B')):
+    check(find("Pose", idname, key, alt=True, shift=True, ctrl=False), "Alt+Shift+%s is %s in Pose Mode" % (key, idname))
+for key, mods in (('Q', dict(alt=True)), ('P', dict(alt=True, shift=True)), ('R', dict(alt=True, shift=True)), ('B', dict(alt=True, shift=True))):
+    want = {"shift": False, "ctrl": False, "alt": False, **mods}
+    others = [(km.name, k.idname) for km in kc.keymaps for k in km.keymap_items
+              if k.type == key and all(getattr(k, m) == v for m, v in want.items()) and not k.oskey
+              and km.name in {"Window", "Screen", "Screen Editing", "Frames", "Property Editor", "3D View", "3D View Generic",
+                              "Object Non-modal", "Object Mode", "Pose"}
+              and not k.idname.startswith(("m3d.tween", "pose.push", "pose.relax", "pose.breakdown"))]
+    check(not others, "Animation key %s %s is free around Pose / Object Mode: %s" % (key, mods, others))
+check(find("Frames", "screen.keyframe_jump", "PERIOD", shift=False, alt=False) and find("Frames", "screen.frame_offset", "PERIOD", alt=True)
+      and find("Frames", "screen.animation_play", "V", alt=True) and find("Object Mode", "m3d.key_marking_menu", "S", shift=True),
+      "the old animation keys are still there")
+check(find("Pose", "screen.frame_jump", "LEFT_ARROW", ctrl=True) and find("Object Mode", "screen.frame_jump", "RIGHT_ARROW", ctrl=True),
+      "Ctrl+Left / Right jump to the start / end")
+
+# A scene to animate: a cube and a two-bone rig with a custom slider, keyed at frames 1 and 11.
+for ob_ in list(bpy.data.objects):
+    if ob_.mode != 'OBJECT':
+        bpy.context.view_layer.objects.active = ob_
+        bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.data.objects.remove(ob_)
+for mesh_ in list(bpy.data.meshes):
+    bpy.data.meshes.remove(mesh_)
+for act_ in list(bpy.data.actions):
+    bpy.data.actions.remove(act_)
+scn = bpy.context.scene
+scn.camera = None
+
+
+class ACtx(SCtx):
+    """Context of the Animation dock: the real one with this workspace and an (empty) screen."""
+    def __init__(self):
+        super().__init__('RIGHT')
+        self.workspace = anim_ws
+        self.screen = NS(areas=[])
+
+
+def an_panels(page):
+    return [c for c in A.classes if getattr(c, "page", None) == page and hasattr(c, "poll")]
+
+
+def an_shown(page):
+    anim_ws.m3d_page_right = page
+    ctx = ACtx()
+    return [c.__name__ for c in an_panels(page) if c.poll(ctx)]
+
+
+# Gates without anything to animate.
+for page in A.GATES:
+    names = an_shown("anim_" + page)
+    check(names and names[0].endswith("_gate") and len(names) == 1, "anim_%s without an object shows its message only: %s" % (page, names))
+check(an_shown("anim_pick") == ["PROPERTIES_PT_m3d_an_object_sets"] and an_shown("anim_playback")
+      and not any(n.endswith("_gate") for n in an_shown("anim_playback")), "Pick and Playback need no object: %s" % an_shown("anim_pick"))
+check(A.PROPERTIES_PT_m3d_an_camera.poll(ACtx()), "no scene camera: the Channel Box tab asks for one")
+bpy.ops.object.camera_add()
+scn.camera = bpy.context.active_object
+check(not A.PROPERTIES_PT_m3d_an_camera.poll(ACtx()), "...and stops asking once there is one")
+bpy.data.objects.remove(scn.camera)
+scn.camera = None
+
+bpy.ops.mesh.primitive_cube_add(size=1)
+cube_ = bpy.context.active_object
+cube_.name = "Box"
+rig_a = R.new_armature(bpy.context, "Rig")
+R._select_only(bpy.context, rig_a)
+bpy.ops.object.mode_set(mode='EDIT')
+for name_, z in (("Root", 0.0), ("Arm", 1.0)):
+    eb_ = rig_a.data.edit_bones.new(name_)
+    eb_.head, eb_.tail = (0, 0, z), (0, 0, z + 1.0)
+rig_a.data.edit_bones["Arm"].parent = rig_a.data.edit_bones["Root"]
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.ops.m3d.rig_mode(mode='POSE')
+for pb_ in rig_a.pose.bones:
+    pb_.rotation_mode = 'XYZ'
+rig_a.pose.bones["Arm"]["IK_FK"] = 0.5
+rig_a.data.bones.active = rig_a.data.bones["Arm"]
+for pb_ in rig_a.pose.bones:
+    pb_.select = pb_.name == "Arm"
+arm_pb, root_pb = rig_a.pose.bones["Arm"], rig_a.pose.bones["Root"]
+for frame_, value_ in ((1, 0.0), (11, 10.0)):
+    arm_pb.location.x = root_pb.location.x = value_
+    arm_pb.rotation_euler.y = value_ / 10
+    for pb_ in (arm_pb, root_pb):
+        pb_.keyframe_insert("location", index=0, frame=frame_)
+    arm_pb.keyframe_insert("rotation_euler", index=1, frame=frame_)
+scn.frame_set(6)
+
+
+# --- Every page panel draws in Object Mode and in Pose Mode
+def draw_anim_panels(label):
+    drawn = 0
+    for page in an_pages:
+        anim_ws.m3d_page_right = page
+        ctx = ACtx()
+        for cls in an_panels(page):
+            if not cls.poll(ctx):
+                continue
+            drawn += 1
+            try:
+                check_calls_ext("%s %s" % (label, cls.__name__), draw_stub(cls, ctx))
+            except Exception as err:
+                check(False, "%s %s draw: %r" % (label, cls.__name__, err))
+    log = []
+    A.draw_status_line(Rec(log), ACtx())
+    check_calls_ext(label + " status line", log)
+    for key in ('ANIM_ANIMATE', 'ANIM_POSES', 'CUSTOM'):
+        log = []
+        bpy.context.window_manager.m3d_shelf = key
+        m3d_ui.draw_shelf(Rec(log), ACtx())
+        check_calls_ext("shelf %s in %s" % (key, label), log)
+    return drawn
+
+
+bpy.ops.m3d.rig_mode(mode='OBJECT')
+R._select_only(bpy.context, cube_)
+cube_.keyframe_insert("location", index=0, frame=1)
+cube_.location.x = 10
+cube_.keyframe_insert("location", index=0, frame=11)
+cube_.location.x = 0
+scn.frame_set(6)
+check(draw_anim_panels('OBJECT') >= 8, "Animation panels drew in Object Mode")
+bpy.ops.m3d.rig_mode(mode='POSE')
+check(draw_anim_panels('POSE') >= 9, "Animation panels drew in Pose Mode")
+log = []
+A.draw_status_line(Rec(log), ACtx())
+check({r.values().get("mode") for r in log if r._kind == "operator" and r.values().get("mode")} >= {'OBJECT', 'POSE'}, "Status Line: Object / Pose")
+check({r._args[1] for r in log if r._kind == "prop"} >= {"use_keyframe_insert_auto", "frame_start", "frame_end", "use_preview_range", "fps",
+                                                      "playback_loop_mode"}, "Status Line: Auto Key, range, preview range, FPS, loop mode")
+check(len([r for r in log if r._kind == "prop_enum" and r._args[1] == "keyframe_type"]) == 4, "Status Line: four key types")
+check({r.values().get("kind") for r in log if r._kind == "operator" and r._args[0] == "m3d.anim_interp"} == set(A.INTERP), "Status Line: four new-key interpolations")
+check({r.values().get("editor") for r in log if r._kind == "operator" and r._args[0] == "m3d.anim_editor"} == {'GRAPH', 'DOPESHEET'}, "Status Line: Graph / Dope Sheet")
+check(any(r._kind == "operator" and r._args[0] == "m3d.playblast" for r in log) and any(r._kind == "popover" for r in log), "Status Line: Playblast, Auto Key options")
+
+
+# --- Channel Box: the active bone in Pose Mode (and the object otherwise), custom properties as sliders
+def channel_box_log():
+    log = []
+    inst = type("Inst", (), {"layout": Rec(log)})()
+    m3d_mode.PROPERTIES_PT_m3d_channel_box.draw(inst, bpy.context)
+    return log
+
+
+bpy.context.view_layer.objects.active = rig_a
+log = channel_box_log()
+owners = {r._args[0].name for r in log if r._kind == "prop" and hasattr(r._args[0], "bone")}
+check(owners == {"Arm"}, "Channel Box shows the active bone in Pose Mode: %s" % owners)
+check(any(r._kind == "prop" and r._args[1] == '["IK_FK"]' and r._kw.get("slider") for r in log), "...its custom property as a slider")
+check_calls("channel box pose", log)
+rig_a.data.bones.active = rig_a.data.bones["Root"]
+check({r._args[0].name for r in channel_box_log() if r._kind == "prop" and hasattr(r._args[0], "bone")} == {"Root"}, "...and follows the active bone")
+rig_a.data.bones.active = rig_a.data.bones["Arm"]
+arm_pb.rotation_mode = 'QUATERNION'
+check(any(r._kind == "prop" and r._args[1] == "rotation_quaternion" for r in channel_box_log()), "...with the rotation mode's own channels")
+arm_pb.rotation_mode = 'XYZ'
+bpy.ops.m3d.rig_mode(mode='OBJECT')
+R._select_only(bpy.context, cube_)
+log = channel_box_log()
+check({r._args[0] for r in log if r._kind == "prop" and r._args[1] == "location"} == {cube_}, "Channel Box shows the object in Object Mode")
+check_calls("channel box object", log)
+
+# --- Tween math: keys at 1 (0) and 11 (10), 0.25 at frame 6 sets 2.5 and keys it
+scn.frame_set(6)
+items = A.collect_tween(bpy.context)
+check(len(items) == 1 and (items[0].a, items[0].b) == (0.0, 10.0), "tween finds the neighbour keys: %s" % (items,))
+check(bpy.ops.m3d.tween(factor=0.25) == {'FINISHED'}, "Tween runs")
+check(abs(cube_.location.x - 2.5) < 1e-5, "tween 0.25 sets 2.5 (is %s)" % cube_.location.x)
+fc_ = next(f for f in A.channel_fcurves(cube_) if f.array_index == 0)
+key_ = [k for k in fc_.keyframe_points if k.co.x == 6]
+check(key_ and abs(key_[0].co.y - 2.5) < 1e-5 and key_[0].type == 'BREAKDOWN', "...and inserts a breakdown key there")
+check(len(fc_.keyframe_points) == 3, "...as a third key")
+scn.frame_set(1)
+check(bpy.ops.m3d.tween(factor=0.5) == {'CANCELLED'}, "no key before this frame: nothing to tween")
+scn.frame_set(8)
+cube_.location.x = 99
+scn.m3d_anim.tween = 0.75   # The dock slider moves the selection live...
+it_ = A.collect_tween(bpy.context)[0]
+check(abs(cube_.location.x - (it_.a * 0.25 + it_.b * 0.75)) < 1e-5 and len(fc_.keyframe_points) == 3, "the dock slider previews without keying")
+bpy.ops.m3d.anim_revert()
+check(abs(cube_.location.x - fc_.evaluate(8)) < 1e-5, "Revert puts the keys' value back")
+scn.m3d_anim.tween = 0.75
+check(bpy.ops.m3d.tween(from_dock=True) == {'FINISHED'} and len(fc_.keyframe_points) == 4 and [k for k in fc_.keyframe_points if k.co.x == 8],
+      "Key on the dock keys the slider's tween")
+# Cancel: values go back (what the modal tween does on Esc; the window test drives the real thing)
+scn.frame_set(3)
+before = cube_.location.x
+items = A.collect_tween(bpy.context)
+originals = [A.get_channel(i.id, i.path, i.index) for i in items]
+A.apply_tween(items, 0.9)
+check(abs(cube_.location.x - before) > 1e-3, "the tween moved the object while dragging")
+for i, v in zip(items, originals):
+    A.set_channel(i.id, i.path, i.index, v)
+check(abs(cube_.location.x - before) < 1e-6 and len(fc_.keyframe_points) == 4, "cancelling restores the value and keys nothing")
+
+# Tween on bones: only the selected bone, its own channels
+bpy.ops.m3d.rig_mode(mode='POSE')
+for pb_ in rig_a.pose.bones:
+    pb_.select = pb_.name == "Arm"
+scn.frame_set(6)
+root_x = root_pb.location.x
+check(bpy.ops.m3d.tween(factor=0.25) == {'FINISHED'}, "Tween on a bone")
+check(abs(arm_pb.location.x - 2.5) < 1e-5 and abs(arm_pb.rotation_euler.y - 0.25) < 1e-5,
+      "...every keyed channel of the bone: %s %s" % (arm_pb.location.x, arm_pb.rotation_euler.y))
+check(abs(root_pb.location.x - root_x) < 1e-6 and not any(k.co.x == 6 for f in A.channel_fcurves(rig_a)
+      if f.data_path == 'pose.bones["Root"].location' for k in f.keyframe_points), "...the other bone is left alone")
+check(abs(A.get_channel(rig_a, 'pose.bones["Arm"]["IK_FK"]', 0) - 0.5) < 1e-6, "custom property paths read")
+A.set_channel(rig_a, 'pose.bones["Arm"]["IK_FK"]', 0, 0.75)
+check(abs(arm_pb["IK_FK"] - 0.75) < 1e-6, "...and write")
+
+# --- Euler filter and key range
+cube_.rotation_euler.z = 0.0
+cube_.keyframe_insert("rotation_euler", index=2, frame=1)
+cube_.rotation_euler.z = 6.0
+cube_.keyframe_insert("rotation_euler", index=2, frame=11)
+bpy.ops.m3d.rig_mode(mode='OBJECT')
+R._select_only(bpy.context, cube_)
+check(bpy.ops.m3d.anim_euler_filter() == {'FINISHED'}, "Euler filter runs")
+rz = next(f for f in A.channel_fcurves(cube_) if f.data_path == "rotation_euler" and f.array_index == 2)
+check(abs(rz.keyframe_points[1].co.y - (6.0 - math.tau)) < 1e-5, "...a 6 radian jump becomes the short way round: %s" % rz.keyframe_points[1].co.y)
+check(A.key_range(bpy.context) == (1, 11), "key range of the selection: %s" % (A.key_range(bpy.context),))
+bpy.ops.m3d.anim_range(kind='KEYS')
+check(scn.use_preview_range and (scn.frame_preview_start, scn.frame_preview_end) == (1, 11), "Preview range from the keys")
+bpy.ops.m3d.anim_range(kind='SCENE')
+check(not scn.use_preview_range, "Scene Range turns the preview range off")
+check(A.playblast_frames(scn) == (scn.frame_start, scn.frame_end), "playblast frames follow the scene range")
+scn.use_preview_range = True
+check(A.playblast_frames(scn) == (scn.frame_preview_start, scn.frame_preview_end), "...or the preview range")
+scn.use_preview_range = False
+
+# --- Breakdown key keeps the key type setting
+ts = scn.tool_settings
+ts.keyframe_type = 'KEYFRAME'
+scn.frame_set(4)
+try:
+    bpy.ops.m3d.anim_key_type(key_type='BREAKDOWN')   # (the key itself needs a window: gui_test.py)
+except RuntimeError:
+    pass
+check(ts.keyframe_type == 'KEYFRAME', "Breakdown key leaves the key type setting alone")
+fx_ = next(f for f in A.channel_fcurves(cube_) if f.data_path == "location" and f.array_index == 0)
+
+# --- Object selection sets round trip
+others = []
+for n_ in range(2):
+    bpy.ops.mesh.primitive_cube_add(size=1, location=(n_ * 3 + 3, 0, 0))
+    others.append(bpy.context.active_object)
+a_s = scn.m3d_anim
+for ob_ in bpy.context.view_layer.objects:
+    ob_.select_set(ob_ in others)
+check(bpy.ops.m3d.anim_set(action='ADD') == {'FINISHED'} and len(a_s.sets) == 1 and set(A.set_objects(a_s.sets[0])) == set(others), "Add a set from the selection")
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.m3d.anim_set(action='SELECT')
+check(all(o.select_get() for o in others) and not cube_.select_get(), "Select selects the set")
+bpy.ops.m3d.anim_set(action='DESELECT')
+check(not any(o.select_get() for o in others), "Deselect")
+cube_.select_set(True)
+bpy.ops.m3d.anim_set(action='ASSIGN')
+check(cube_ in A.set_objects(a_s.sets[0]) and len(a_s.sets[0].items) == 3, "Assign adds the selected objects once")
+bpy.ops.m3d.anim_set(action='ASSIGN')
+check(len(a_s.sets[0].items) == 3, "...no doubles")
+bpy.ops.m3d.anim_set(action='UNASSIGN')
+check(cube_ not in A.set_objects(a_s.sets[0]), "Unassign takes the selected objects out")
+bpy.ops.m3d.anim_set(action='ADD')
+check(len(a_s.sets) == 2 and a_s.set_index == 1, "a second set")
+bpy.ops.m3d.anim_set(action='SELECT', index=0, extend=True)
+check(cube_.select_get() and all(o.select_get() for o in others), "Select with extend keeps the selection")
+bpy.data.objects.remove(others[1])
+check(A.set_objects(a_s.sets[0]) == [others[0]], "a deleted object drops out of its set")
+bpy.ops.m3d.anim_set(action='REMOVE', index=0)
+check(len(a_s.sets) == 1 and bpy.ops.m3d.anim_set(action='SELECT', index=5) == {'CANCELLED'}, "Remove a set; a missing one cancels")
+bpy.ops.m3d.anim_set(action='REMOVE')
+bpy.data.objects.remove(others[0])
+# Bone collection picker
+bpy.ops.m3d.rig_mode(mode='POSE')
+coll_ = rig_a.data.collections.new("Arms")
+coll_.assign(rig_a.data.bones["Arm"])
+for pb_ in rig_a.pose.bones:
+    pb_.select = pb_.name == "Root"
+check(bpy.ops.m3d.anim_pick_bones(collection="Arms") == {'FINISHED'} and arm_pb.select and not root_pb.select,
+      "Bone collection picker selects its bones")
+root_pb.select = True
+bpy.ops.m3d.anim_pick_bones(collection="Arms", extend=True)
+check(arm_pb.select and root_pb.select, "(extend keeps the others)")
+bpy.ops.m3d.rig_mode(mode='OBJECT')
+check(bpy.ops.m3d.anim_pick_bones.poll() is False, "...only in Pose Mode")
+
+# --- Blocking / Polish and the new key buttons keep the user's preferences safe
+edit_ = bpy.context.preferences.edit
+mine = (edit_.keyframe_new_interpolation_type, edit_.keyframe_new_handle_type)
+check(not A._prefs_before, "nothing remembered before the first change")
+R._select_only(bpy.context, cube_)
+bpy.ops.m3d.anim_preset(preset='BLOCKING')
+check(edit_.keyframe_new_interpolation_type == 'CONSTANT' and A.new_key_kind(bpy.context) == 'STEPPED', "Blocking: new keys are stepped")
+check(all(k.interpolation == 'CONSTANT' for f in A.channel_fcurves(cube_) for k in f.keyframe_points), "...and the selection's keys")
+bpy.ops.m3d.anim_preset(preset='POLISH')
+check((edit_.keyframe_new_interpolation_type, edit_.keyframe_new_handle_type) == ('BEZIER', 'AUTO_CLAMPED') and A.new_key_kind(bpy.context) == 'CLAMPED',
+      "Polish: new keys are clamped splines")
+check(all(k.interpolation == 'BEZIER' and k.handle_left_type == 'AUTO_CLAMPED' for f in A.channel_fcurves(cube_) for k in f.keyframe_points),
+      "...and the selection's keys")
+bpy.ops.m3d.anim_interp(kind='SPLINE')
+check((edit_.keyframe_new_interpolation_type, edit_.keyframe_new_handle_type) == ('BEZIER', 'AUTO') and A.new_key_kind(bpy.context) == 'SPLINE', "Spline button")
+bpy.ops.m3d.anim_interp(kind='LINEAR')
+check(edit_.keyframe_new_interpolation_type == 'LINEAR' and A.new_key_kind(bpy.context) == 'LINEAR', "Linear button")
+bpy.ops.m3d.anim_preset(preset='RESTORE')
+check((edit_.keyframe_new_interpolation_type, edit_.keyframe_new_handle_type) == mine and not A._prefs_before, "Restore gives back the user's own defaults: %s" % (mine,))
+check(bpy.ops.m3d.anim_preset(preset='RESTORE') == {'FINISHED'} and (edit_.keyframe_new_interpolation_type, edit_.keyframe_new_handle_type) == mine,
+      "...and a second Restore changes nothing")
+check(A.show_editor(None, 'GRAPH') is False and A.bottom_area(None) is None, "the editor switch copes with a screen without the editor")
+check(A.bottom_area(NS(areas=[NS(type='DOPESHEET_EDITOR', spaces=NS(active=NS(mode='TIMELINE')), width=9, height=9),
+                              NS(type='GRAPH_EDITOR', spaces=NS(active=None), width=2, height=2)])).type == 'GRAPH_EDITOR',
+      "the bottom editor is the Graph Editor / Dope Sheet, never the Timeline")
+
+# --- Motion paths on an object and on a bone
+R._select_only(bpy.context, cube_)
+check(bpy.ops.m3d.anim_paths(action='CALCULATE') == {'FINISHED'} and A.path_settings(bpy.context).has_motion_paths, "Object motion path calculated")
+bpy.ops.m3d.anim_paths(action='UPDATE')
+bpy.ops.m3d.anim_paths(action='CLEAR')
+check(not A.path_settings(bpy.context).has_motion_paths, "...and cleared")
+bpy.ops.m3d.rig_mode(mode='POSE')
+for pb_ in rig_a.pose.bones:
+    pb_.select = pb_.name == "Arm"
+check(bpy.ops.m3d.anim_paths(action='CALCULATE') == {'FINISHED'} and A.path_settings(bpy.context).has_motion_paths, "Bone motion path calculated")
+bpy.ops.m3d.anim_paths(action='CLEAR')
+check(not A.path_settings(bpy.context).has_motion_paths, "...and cleared")
+bpy.ops.m3d.rig_mode(mode='OBJECT')
+
+# --- Layers (NLA): push down, additive layer, tweak, remove
+R._select_only(bpy.context, cube_)
+ad_ = cube_.animation_data
+first_action = ad_.action
+check(bpy.ops.m3d.anim_layer(action='PUSH_DOWN') == {'FINISHED'} and ad_.action is None and len(ad_.nla_tracks) == 1
+      and ad_.nla_tracks[0].strips[0].action == first_action, "Push Down puts the action on an NLA track")
+check(bpy.ops.m3d.anim_layer(action='PUSH_DOWN') == {'CANCELLED'}, "...nothing to push down twice")
+scn.frame_set(11)
+check(abs(cube_.location.x - 10) < 1e-4, "(the pushed layer still plays)")
+check(bpy.ops.m3d.anim_layer(action='ADD_ADDITIVE') == {'FINISHED'} and ad_.action is not None and ad_.action_blend_type == 'ADD'
+      and ad_.action.name.endswith("_Layer"), "Add Additive Layer starts an empty adding action")
+scn.frame_set(5)
+cube_.location.x = cube_.location.x + 2
+cube_.keyframe_insert("location", index=0, frame=5)
+check(len(ad_.nla_tracks) == 1 and len(A.channel_fcurves(cube_)) == 1, "...keys go on the new layer")
+bpy.ops.m3d.anim_layer(action='PUSH_DOWN')
+check(len(ad_.nla_tracks) == 2, "a second layer")
+check(bpy.ops.m3d.anim_layer(action='TWEAK', index=0) == {'FINISHED'} and ad_.use_tweak_mode, "Edit Layer enters tweak mode")
+bpy.ops.m3d.anim_layer(action='EXIT_TWEAK')
+check(not ad_.use_tweak_mode, "Done Editing leaves it")
+check(bpy.ops.m3d.anim_layer(action='REMOVE', index=1) == {'FINISHED'} and len(ad_.nla_tracks) == 1, "Remove Track")
+check(bpy.ops.m3d.anim_layer(action='REMOVE', index=7) == {'CANCELLED'}, "a missing track cancels")
+check(op_ok("nla.bake", {"frame_start": 1, "frame_end": 2, "visual_keying": True, "bake_types": {'OBJECT'}}), "Bake options exist")
+
+# --- Playblast leaves the render settings alone
+r_ = scn.render
+r_.filepath = "//keep_me_"
+r_.resolution_percentage = 77
+r_.image_settings.file_format = 'OPEN_EXR'
+r_.image_settings.color_mode = 'RGBA'
+scn.frame_current = 7
+snap_ = A.snapshot_render(scn)
+tmp_ = tempfile.mkdtemp(prefix="m3d_pb_")
+A.configure_playblast(scn, os.path.join(tmp_, "sub"), 25)
+check(r_.resolution_percentage == 25 and r_.image_settings.file_format == 'PNG' and r_.image_settings.color_mode == 'RGB' and os.path.isdir(os.path.join(tmp_, "sub")),
+      "Playblast settings: PNG, RGB, 25%, folder made")
+scn.frame_start, scn.frame_end, scn.frame_current = 3, 4, 3
+A.restore_render(scn, snap_)
+check(r_.filepath == "//keep_me_" and r_.resolution_percentage == 77 and r_.image_settings.file_format == 'OPEN_EXR' and r_.image_settings.color_mode == 'RGBA'
+      and scn.frame_current == 7 and (scn.frame_start, scn.frame_end) == (snap_["scene"]["frame_start"], snap_["scene"]["frame_end"]),
+      "restore_render puts the output settings back")
+shutil.rmtree(tmp_)
+scn.m3d_anim.playblast_dir = ""
+check(A.playblast_folder(scn).endswith("m3d_playblast"), "default playblast folder is a temporary one")
+A.playblast_state["running"] = True
+check(not bpy.ops.m3d.playblast.poll(), "no second Playblast while one runs")
+A.playblast_state["running"] = False
+check(A.playblast_area(NS(areas=[NS(type='VIEW_3D', width=10, height=10, spaces=NS(active=NS(region_3d=NS(view_perspective='PERSP')))),
+                                 NS(type='VIEW_3D', width=5, height=5, spaces=NS(active=NS(region_3d=NS(view_perspective='CAMERA'))))])).width == 5,
+      "Playblast prefers the camera view")
+
+# --- Playback redraw limits
+scr_ = NS(use_play_properties_editors=True, use_play_image_editors=True, use_play_node_editors=True, use_play_sequence_editors=True,
+          use_play_clip_editors=True, use_play_spreadsheet_editors=True, use_play_3d_editors=False, use_play_animation_editors=False,
+          use_play_top_left_3d_editor=False)
+A.limit_playback_redraw(scr_)
+check(not scr_.use_play_properties_editors and scr_.use_play_3d_editors and scr_.use_play_animation_editors and scr_.use_play_top_left_3d_editor,
+      "While playing only the viewports and animation editors redraw")
+for name_ in ("use_play_properties_editors", "use_play_3d_editors", "use_play_animation_editors", "use_play_top_left_3d_editor"):
+    check(name_ in bpy.types.Screen.bl_rna.properties, "Screen." + name_)
+
+# --- Pick tab with a skeleton: bone selection sets and collections show up
+bpy.ops.m3d.rig_mode(mode='POSE')
+bpy.ops.pose.selection_set_add_and_assign()
+check({"PROPERTIES_PT_m3d_an_bone_sets", "PROPERTIES_PT_m3d_an_collections"} <= set(an_shown("anim_pick")),
+      "Pick lists the skeleton's sets and collections: %s" % an_shown("anim_pick"))
+check(draw_anim_panels('POSE with sets') >= 10, "Animation panels drew in Pose Mode with sets and collections")
 bpy.ops.m3d.rig_mode(mode='OBJECT')
 
 print("FAILS:", fails or "none")

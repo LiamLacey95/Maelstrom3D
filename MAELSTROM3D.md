@@ -27,6 +27,7 @@ named here only to describe compatibility.*
 | UV editing | UV workspace (F3): dock tabs, Status Line and shelf for Cut/Sew/Unfold/Optimize/Layout, texel density, Auto Unwrap, UDIMs, checker map; sidebar UV Toolkit in other workspaces | `scripts/startup/m3d_uv.py` |
 | Texturing | Texture workspace (F4): brush tray, paint channels, Bake, Export, Display, Status Line and shelves; paint layer stack, painted images are saved or packed with the file | `scripts/startup/m3d_texture.py`, `scripts/startup/m3d_layers.py` |
 | Rigging | Rigging workspace (F5): Outliner with the bone hierarchy and bone collections on the left, a large viewport, a dock of Skeleton, Controls & Constraints, Skin, Drive, Test and Collections tabs that follows the mode, Timeline that switches to the Drivers editor; Joint tool, Orient Joint, control shapes, IK with pole, bind with fallback, weight tools, Driven Key, naming check, Rigify on demand; Ctrl+E, Shift+N | `scripts/startup/m3d_rig.py` |
+| Animation | Animation workspace (F6): a large viewport and a camera view, one bottom editor that switches between the Graph Editor and the Dope Sheet, a short Timeline, a dock of Channel Box, Pick, Tween & Poses, Motion, Layers and Playback tabs; Status Line with Auto Key, key type, new key interpolation, keying set, range, FPS, loop mode, Blocking / Polish, Playblast; Tween (Alt+Q), Push / Relax / Breakdown, object selection sets, motion paths, ghost curves, NLA layers, Playblast | `scripts/startup/m3d_anim.py` |
 | Title | Window title says Maelstrom3D | `wm_window.cc` |
 
 ## Everyday controls
@@ -269,6 +270,50 @@ offers a human meta-rig and Generate Rig. If it cannot be turned on the panel sa
 
 Keys: Ctrl+E extrudes a bone in Edit Mode, P / Shift+P parent / unparent bones, Shift+N opens the naming marking menu (Name
 Sides, Flip Names, Mirror, Select Mirror, Select Problem Names) in Edit and Pose Mode.
+
+## Animation (F6)
+
+F6 opens the Animation workspace (in Pose Mode when a skeleton is active). Left: a camera view (the scene camera; the view says
+so when there is none and the Channel Box tab offers Add Camera). Middle: the large viewport. Bottom: one editor that is the
+Dope Sheet or the Graph Editor (the **Graph / Dope Sheet** buttons in the Status Line, Ctrl+Space maximizes it) with the Timeline
+under it. Right: the dock. While the animation plays only the viewports and the animation editors redraw, so the dock does not
+slow playback (it catches up when you stop).
+
+| Part | Contents |
+|---|---|
+| Status Line | Object / Pose, **Auto Key** (+ its options: replace or add keys, only the active keying set, layered recording), key type (Keyframe, Breakdown, Extreme, Moving Hold), **New keys** (Stepped, Spline, Linear, Clamped), Blocking / Polish, keying set, playback range (start / end, preview range button), FPS, loop mode, Graph / Dope Sheet, Playblast |
+| Shelves | Animate (Set Key, Translate / Rotate / Scale keys, Breakdown, Delete Key, Euler Filter, Stepped, Spline), Poses (Copy, Paste, Paste Flipped, Reset, Save Pose, Apply Pose menu), Custom |
+| Channel Box tab | The active object's channels, or in Pose Mode the **active bone's** channels (translate, the rotation of its mode, scale), with its custom properties as sliders (IK / FK switches); animated channels are coloured as usual (yellow = key on this frame, green = animated) |
+| Pick tab | Bone selection sets of the skeleton (list and one button per set), **object selection sets** (made from the selection; a click selects, Shift-click adds), bone collection picker (visibility toggle and a button that selects the collection's bones) |
+| Tween & Poses tab | Tween slider with 0 / 25 / 50 / 75 / 100 buttons, Key and Revert; Push, Relax, Breakdown, To Neighbor, To Rest (Pose Mode); Copy / Paste / Flipped, Save Pose, the saved poses with Apply and Flipped |
+| Motion tab | Motion paths (show, range, frame step, Calculate / Update / Clear, numbers, show in the viewport) of the selected bones or objects; Ghost Curves for the Graph Editor |
+| Layers tab | Layers are NLA tracks: Push Down, Add Additive Layer, the tracks (mute, name, solo, Edit, remove), the top action's blend and influence, Bake |
+| Playback tab | Range (start, end, preview range, FPS, Range from Keys, Scene from Keys), Blocking / Polish and the new key defaults, loop, pre-roll, sync, Playblast (folder, size, play when done) |
+
+**Tween.** With keys before and after the current frame, Tween sets the selected bones (Pose Mode) or objects to a value
+between the previous and the next key of each keyed channel and keys it as a breakdown. Alt+Q starts it in the viewport:
+move the mouse left and right (400 px is the whole way from the previous to the next key, 0.5 is the start; Ctrl snaps to
+tenths, Shift is slower), click or Enter keys it, Esc or right click puts everything back. In the dock the slider moves the
+selection live and **Key** keeps it (**Revert** drops it); the number buttons key straight away. Alt+Shift+P, R and B run
+Push, Relax and Breakdown (Blender's own, Pose Mode).
+
+**Blocking and Polish.** Blocking makes new keys stepped, converts the selection's keys to stepped and shows the Dope Sheet.
+Polish makes new keys clamped splines, converts the selection's keys and shows the Graph Editor. The **New keys** buttons only
+change the default. That default is a Preferences setting, so it applies to every file and stays until you change it (and a
+key set between two others copies the key before it, which is why Blocking / Polish convert the selection too). **Restore My
+Defaults** (Playback tab) puts back what the preferences had before the first change.
+
+**Layers.** The Layers tab uses the NLA: Push Down puts the current action on its own track; Add Additive Layer pushes it down
+and starts an empty action on top that adds to the layers below, so a pass of polish keys goes on its own layer. Edit enters
+tweak mode on a layer, Done Editing leaves it. Bake flattens the selection over the playback range into one action.
+
+**Playblast.** Renders the viewport (the camera view when the workspace has one) over the playback range into PNG frames
+(the Playback tab sets the folder, default a temporary one, and the size as a percentage) and opens them in the player. Esc
+cancels. Your render output settings (path, format, size, frame range) are put back afterwards.
+
+Keys: S sets a key, Shift+W / E / R key translate / rotate / scale, Alt+V plays, `,` and `.` jump between keys, Alt+, and Alt+.
+step a frame, Shift+S is the keyframe marking menu, Ctrl+Left / Right jump to the start / end, **Alt+Q Tween**,
+**Alt+Shift+P / R / B Push / Relax / Breakdown** (Pose Mode).
 
 ## Terms used
 

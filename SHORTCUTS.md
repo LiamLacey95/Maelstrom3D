@@ -111,6 +111,10 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 | Key | Before (Industry Compatible) | Now (Maelstrom3D) |
 |---|---|---|
 | Shift+N | — | Menu: Bone Names |
+| Alt+Q | — | Tween (interactive=True) |
+| Shift+Alt+P | — | Push Pose from Breakdown |
+| Shift+Alt+R | — | Relax Pose to Breakdown |
+| Shift+Alt+B | — | Pose Breakdowner |
 
 ## Window
 
@@ -193,6 +197,7 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 | 3 | Set Object Mode with Sub-mode (mode='EDIT', mesh_select_mode={'FACE'}) | Smooth Mesh Preview (level='SMOOTH') |
 | Ctrl+G | Menu: OBJECT_MT_move_to_collection | Group |
 | D | Tool: Annotate | Edit Pivot (hold) |
+| Alt+Q | — | Tween (interactive=True) |
 | Ctrl+D | Duplicate Objects | Duplicate |
 | Shift+D | — | Duplicate (with_transform=True) |
 | Ctrl+Shift+D | — | Duplicate Linked |

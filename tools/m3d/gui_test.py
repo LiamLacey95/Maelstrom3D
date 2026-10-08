@@ -2591,6 +2591,525 @@ def rig_shelves_check():
     check(not tracebacks(), "Python error in the Rigging workspace tests")
 
 
+# ----------------------------------------------------------------------------------------------------
+# Phase 5: Animation workspace with a keyed cube and a keyed two-bone rig: layout, F6, Graph / Dope Sheet, Auto Key, S,
+# Tween by keys (drag, confirm, cancel), Push / Relax keys, motion paths, ghost curves, layers, Playblast, every tab.
+
+import tempfile
+
+import m3d_anim
+
+
+def an_dock():
+    return props_areas()[0]
+
+
+def an_view():
+    """(main 3D view area, its window region) of the Animation screen."""
+    area = max((a for a in window().screen.areas if a.type == 'VIEW_3D'), key=lambda a: a.width * a.height)
+    return area, next(r for r in area.regions if r.type == 'WINDOW')
+
+
+def an_xy(dx=0, dy=0):
+    _area, region = an_view()
+    return region.x + region.width // 2 + dx, region.y + region.height // 2 + dy
+
+
+def an_status(idname, **props):
+    """A Status Line button: the operator in the top bar's own context."""
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        return getattr(getattr(bpy.ops, idname.split(".")[0]), idname.split(".")[1])('INVOKE_DEFAULT', **props)
+
+
+def an_press(idname, **props):
+    return press_ok(idname, _area=an_dock(), **props)
+
+
+def an_box():
+    return bpy.data.objects.get("Box")
+
+
+def an_rig():
+    return bpy.data.objects.get("Rig")
+
+
+def an_keys(ob, path, index=0):
+    fc = next((f for f in m3d_anim.channel_fcurves(ob) if f.data_path == path and f.array_index == index), None)
+    return {round(k.co.x): k.co.y for k in fc.keyframe_points} if fc else {}
+
+
+def an_mod_key(key, down, shift=False, alt=False, ctrl=False, xy=None):
+    """Press or release a key while the modifier keys are held (real modifier key events: flags alone are not enough)."""
+    xy = xy or an_xy()
+    for name, on in (('LEFT_ALT', alt), ('LEFT_SHIFT', shift), ('LEFT_CTRL', ctrl)):
+        if on and down:
+            event(name, 'PRESS', xy, alt=alt, shift=shift, ctrl=ctrl)
+    event(key, 'PRESS' if down else 'RELEASE', xy, alt=alt, shift=shift, ctrl=ctrl)
+    if not down:
+        for name, on in (('LEFT_ALT', alt), ('LEFT_SHIFT', shift), ('LEFT_CTRL', ctrl)):
+            if on:
+                event(name, 'RELEASE', xy)
+
+
+@step
+def anim_setup():
+    bpy.ops.m3d.workspace(kind='MODEL')
+    for ob in list(bpy.data.objects):
+        if ob.mode != 'OBJECT':
+            bpy.context.view_layer.objects.active = ob
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.data.objects.remove(ob)
+    for coll in list(bpy.data.collections):
+        bpy.data.collections.remove(coll)
+    for action in list(bpy.data.actions):
+        bpy.data.actions.remove(action)
+    scene = bpy.context.scene
+    scene.frame_start, scene.frame_end, scene.frame_current = 1, 24, 1
+    bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 0.5))
+    box = bpy.context.active_object
+    box.name = "Box"
+    bpy.ops.object.camera_add(location=(4.5, -4.5, 3.2), rotation=(1.12, 0, 0.785))
+    scene.camera = bpy.context.active_object
+    rig = m3d_rig.new_armature(bpy.context, "Rig")
+    m3d_rig._select_only(bpy.context, rig)
+    bpy.ops.object.mode_set(mode='EDIT')
+    for name, z in (("Root", 0.0), ("Arm", 1.0)):
+        eb = rig.data.edit_bones.new(name)
+        eb.head, eb.tail = (-1.5, 0, z), (-1.5, 0, z + 1.0)
+    rig.data.edit_bones["Arm"].parent = rig.data.edit_bones["Root"]
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.m3d.rig_mode(mode='POSE')
+    arm = rig.pose.bones["Arm"]
+    for pb in rig.pose.bones:
+        pb.rotation_mode = 'XYZ'
+        pb.select = pb.name == "Arm"
+    arm["IK_FK"] = 0.5
+    rig.data.bones.active = rig.data.bones["Arm"]
+    for frame, value in ((1, 0.0), (11, 1.0)):
+        arm.location.x, arm.rotation_euler.x = value, value * 0.8
+        arm.keyframe_insert("location", index=0, frame=frame)
+        arm.keyframe_insert("rotation_euler", index=0, frame=frame)
+        box.location.x = value * 10
+        box.keyframe_insert("location", index=0, frame=frame)
+    scene.frame_set(1)
+    bpy.ops.m3d.rig_mode(mode='OBJECT')
+    m3d_rig._select_only(bpy.context, rig)
+    bpy.context.window_manager.m3d_menu_set = 'MODELING'
+    c = (window().width // 2, window().height // 2)
+    event('MOUSEMOVE', xy=c)
+    event('F6', 'PRESS', c)
+    event('F6', 'RELEASE', c)
+
+
+step(wait_until(lambda: window().workspace.name == "Animation", "F6 to switch to Animation"))
+
+
+@step
+def anim_f6_check():
+    check(window().workspace.name == "Animation" and bpy.context.mode == 'POSE', "F6 enters Animation in Pose Mode on a skeleton (%s)" % bpy.context.mode)
+    check(bpy.context.window_manager.m3d_menu_set == 'ANIMATION', "F6 shows the Animation menu set")
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.m3d.workspace_reset()   # The earlier dock tests moved this workspace's tabs: the factory layout is checked.
+
+
+step(wait_until(lambda: [w.name for w in bpy.data.workspaces if w.name.startswith("Animation")] == ["Animation"]
+                and window().workspace.name == "Animation", "Reset Workspace to finish"))
+
+
+@step
+def anim_layout_check():
+    screen = window().screen
+    views = sorted((a for a in screen.areas if a.type == 'VIEW_3D'), key=lambda a: a.x)
+    bottom = m3d_anim.bottom_area(screen)
+    timelines = [a for a in screen.areas if a.type == 'DOPESHEET_EDITOR' and a.spaces.active.mode == 'TIMELINE']
+    check(len(views) == 2 and views[0].spaces.active.region_3d.view_perspective == 'CAMERA' and views[1].width > views[0].width * 1.2,
+          "Animation: a camera view next to the large viewport")
+    check(bottom is not None and bottom.ui_type == 'DOPESHEET' and len(timelines) == 1 and timelines[0].y < bottom.y
+          and timelines[0].height < 250, "Animation: one Dope Sheet / Graph Editor with a short Timeline under it")
+    check(len(props_areas()) == 1 and not [a for a in screen.areas if a.type == 'OUTLINER'], "Animation: one dock, no Outliner")
+    dock = an_dock()
+    check(dock.spaces.active.context == 'CHANNEL_BOX' and dock.width >= 600, "the dock opens on the Channel Box (%s, %d px)" % (dock.spaces.active.context, dock.width))
+    check(not screen.use_play_properties_editors and screen.use_play_3d_editors and screen.use_play_animation_editors,
+          "playback redraws only viewports and animation editors")
+    header = next(r for r in timelines[0].regions if r.type == 'HEADER')
+    check(header.alignment == 'BOTTOM', "the Timeline controls sit below the slider")
+    check(m3d_ui.shelf_key(bpy.context.window_manager, 'ANIM') == 'ANIM_ANIMATE', "Animate shelf tab first")
+    check(window().workspace.object_mode == 'POSE', "workspace enters Pose Mode")
+    check(not tracebacks(), "Python error drawing the Animation workspace")
+
+
+# --- Graph Editor / Dope Sheet from the Status Line
+@step
+def anim_graph_toggle():
+    an_status("m3d.anim_editor", editor='GRAPH')
+
+
+@step
+def anim_graph_toggle_check():
+    area = m3d_anim.bottom_area(window().screen)
+    check(area is not None and area.type == 'GRAPH_EDITOR' and area.ui_type == 'FCURVES', "Status Line: the bottom editor is the Graph Editor")
+    check(not tracebacks(), "Python error drawing the Graph Editor")
+    an_status("m3d.anim_editor", editor='DOPESHEET')
+
+
+@step
+def anim_graph_toggle_back():
+    area = m3d_anim.bottom_area(window().screen)
+    check(area is not None and area.type == 'DOPESHEET_EDITOR' and area.spaces.active.mode == 'DOPESHEET', "...and back to the Dope Sheet")
+    check(len([a for a in window().screen.areas if a.type == 'DOPESHEET_EDITOR' and a.spaces.active.mode == 'TIMELINE']) == 1, "the Timeline is untouched")
+
+
+# --- Auto Key and S (Set Key), with new keys following the Preferences default
+@step
+def anim_autokey_on():
+    bpy.context.scene.tool_settings.use_keyframe_insert_auto = True
+    bpy.ops.m3d.rig_mode(mode='OBJECT')
+    bpy.ops.object.select_all(action='DESELECT')
+    bpy.ops.mesh.primitive_cube_add(size=0.5, location=(2.5, 2, 0.25))
+    ob = bpy.context.active_object
+    ob.name = "Fresh"
+    check(bpy.context.scene.tool_settings.use_keyframe_insert_auto, "the Status Line's Auto Key toggle is on")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def anim_autokey_check():
+    ob = bpy.data.objects["Fresh"]
+    check(not tracebacks(), "Python error drawing the Status Line with Auto Key on")
+    bpy.context.scene.tool_settings.use_keyframe_insert_auto = False
+    bpy.context.scene.frame_set(1)
+    ob.location = (3.5, 2, 0.25)
+    an_status("m3d.anim_interp", kind='LINEAR')
+    bpy.context.scene.frame_set(1)
+    event('MOUSEMOVE', xy=an_xy())
+    event('S', 'PRESS', an_xy())
+    event('S', 'RELEASE', an_xy())
+
+
+@step
+def anim_set_key_move():
+    ob = bpy.data.objects["Fresh"]
+    check(1 in an_keys(ob, "location"), "S sets a key: %s" % an_keys(ob, "location"))
+    bpy.context.scene.frame_set(6)
+    ob.location.x = 7.0
+    event('MOUSEMOVE', xy=an_xy(1, 0))
+    event('S', 'PRESS', an_xy())
+    event('S', 'RELEASE', an_xy())
+
+
+@step
+def anim_set_key_check():
+    ob = bpy.data.objects["Fresh"]
+    fc = next(f for f in m3d_anim.channel_fcurves(ob) if f.data_path == "location" and f.array_index == 0)
+    check(set(an_keys(ob, "location")) == {1, 6} and [k.interpolation for k in fc.keyframe_points] == ['LINEAR', 'LINEAR'],
+          "new keys follow the Linear default: %s" % ([k.interpolation for k in fc.keyframe_points],))
+    an_status("m3d.anim_preset", preset='RESTORE')
+    check(not m3d_anim._prefs_before, "(defaults restored)")
+    bpy.data.objects.remove(ob)
+    check(not tracebacks(), "Python error with Auto Key / S")
+
+
+# --- Breakdown key and Euler filter from the shelf's operators
+@step
+def anim_breakdown_key():
+    m3d_rig._select_only(bpy.context, an_box())
+    bpy.context.scene.frame_set(4)
+    an_press("m3d.anim_key_type", key_type='BREAKDOWN')
+
+
+@step
+def anim_breakdown_key_check():
+    fc = next(f for f in m3d_anim.channel_fcurves(an_box()) if f.data_path == "location" and f.array_index == 0)
+    check([k.type for k in fc.keyframe_points if round(k.co.x) == 4] == ['BREAKDOWN'], "Breakdown key sets a breakdown key")
+    check(bpy.context.scene.tool_settings.keyframe_type == 'KEYFRAME', "...and leaves the key type alone")
+    for k in list(fc.keyframe_points):
+        if round(k.co.x) == 4:
+            fc.keyframe_points.remove(k)
+    an_press("m3d.anim_euler_filter")
+
+
+# --- Tween by key: Alt+Q, drag right, click
+@step
+def anim_tween_start():
+    bpy.context.scene.frame_set(6)
+    event('MOUSEMOVE', xy=an_xy())
+    an_mod_key('Q', True, alt=True)
+
+
+@step
+def anim_tween_drag():
+    an_mod_key('Q', False, alt=True)
+    check(any(op.bl_idname == "M3D_OT_tween" for op in window().modal_operators), "Alt+Q starts the Tween modal")
+    for i in range(1, 6):
+        event('MOUSEMOVE', xy=an_xy(20 * i, 0))
+
+
+@step
+def anim_tween_check_drag():
+    check(abs(an_box().location.x - 7.5) < 0.2, "dragging 100 px right tweens to 0.75 (x = %.3f)" % an_box().location.x)
+    check(6 not in an_keys(an_box(), "location"), "(nothing is keyed before the click)")
+    event('LEFTMOUSE', 'PRESS', an_xy(100, 0))
+    event('LEFTMOUSE', 'RELEASE', an_xy(100, 0))
+
+
+@step
+def anim_tween_confirm_check():
+    keys = an_keys(an_box(), "location")
+    check(6 in keys and abs(keys[6] - 7.5) < 0.2, "the click keys the tween at the current frame: %s" % keys)
+    check(not any(op.bl_idname == "M3D_OT_tween" for op in window().modal_operators), "the Tween modal ended")
+    check(not tracebacks(), "Python error in the Tween")
+    m3d_rig._select_only(bpy.context, an_box())
+    bpy.context.scene.frame_set(3)
+    GIZMO["tween_before"] = an_box().location.x
+    event('MOUSEMOVE', xy=an_xy())
+    an_mod_key('Q', True, alt=True)
+
+
+@step
+def anim_tween_cancel_drag():
+    an_mod_key('Q', False, alt=True)
+    for i in range(1, 6):
+        event('MOUSEMOVE', xy=an_xy(-30 * i, 0))
+
+
+@step
+def anim_tween_cancel_check():
+    check(abs(an_box().location.x - GIZMO["tween_before"]) > 0.1, "(the tween moved the cube while dragging)")
+    event('ESC', 'PRESS', an_xy(-150, 0))
+    event('ESC', 'RELEASE', an_xy(-150, 0))
+
+
+@step
+def anim_tween_cancel_done():
+    check(abs(an_box().location.x - GIZMO["tween_before"]) < 1e-4, "Esc puts the value back (%.3f vs %.3f)" % (an_box().location.x, GIZMO["tween_before"]))
+    check(3 not in an_keys(an_box(), "location"), "...and keys nothing")
+
+
+# --- The dock's Tween & Poses tab: slider and Key
+@step
+def anim_tween_dock():
+    bpy.context.scene.frame_set(9)
+    press_ok("m3d.dock_page", _area=an_dock(), tab="anim_tween")
+    bpy.context.scene.m3d_anim.tween = 0.25
+
+
+@step
+def anim_tween_dock_check():
+    before = dict(an_keys(an_box(), "location"))
+    check(9 not in before, "the dock slider previews without keying")
+    an_press("m3d.tween", from_dock=True)
+    keys = an_keys(an_box(), "location")
+    check(9 in keys and abs(keys[9] - bpy.data.objects["Box"].location.x) < 1e-3, "Key on the dock keys the slider's tween: %s" % keys)
+
+
+# --- Push and Relax by key, in Pose Mode
+@step
+def anim_push_setup():
+    bpy.ops.m3d.rig_mode(mode='POSE')
+    rig = an_rig()
+    bpy.context.scene.frame_set(6)
+    GIZMO["push_start"] = rig.pose.bones["Arm"].location.x = 0.3
+    for pb in rig.pose.bones:
+        pb.select = pb.name == "Arm"
+    event('MOUSEMOVE', xy=an_xy())
+    an_mod_key('P', True, alt=True, shift=True)
+
+
+@step
+def anim_push_drag():
+    an_mod_key('P', False, alt=True, shift=True)
+    check(any(op.bl_idname == "POSE_OT_push" for op in window().modal_operators), "Alt+Shift+P starts Push")
+    for i in range(1, 6):
+        event('MOUSEMOVE', xy=an_xy(20 * i, 0))
+
+
+@step
+def anim_push_confirm():
+    event('LEFTMOUSE', 'PRESS', an_xy(100, 0))
+    event('LEFTMOUSE', 'RELEASE', an_xy(100, 0))
+
+
+@step
+def anim_push_check():
+    check(abs(an_rig().pose.bones["Arm"].location.x - GIZMO["push_start"]) > 1e-3, "Push moved the bone (%.3f)" % an_rig().pose.bones["Arm"].location.x)
+    check(not any(op.bl_idname == "POSE_OT_push" for op in window().modal_operators), "Push ended")
+    GIZMO["relax_start"] = an_rig().pose.bones["Arm"].location.x
+    event('MOUSEMOVE', xy=an_xy())
+    an_mod_key('R', True, alt=True, shift=True)
+
+
+@step
+def anim_relax_drag():
+    an_mod_key('R', False, alt=True, shift=True)
+    check(any(op.bl_idname == "POSE_OT_relax" for op in window().modal_operators), "Alt+Shift+R starts Relax")
+    for i in range(1, 6):
+        event('MOUSEMOVE', xy=an_xy(20 * i, 0))
+
+
+@step
+def anim_relax_confirm():
+    event('LEFTMOUSE', 'PRESS', an_xy(100, 0))
+    event('LEFTMOUSE', 'RELEASE', an_xy(100, 0))
+
+
+@step
+def anim_relax_check():
+    check(abs(an_rig().pose.bones["Arm"].location.x - GIZMO["relax_start"]) > 1e-3, "Relax moved the bone (%.3f)" % an_rig().pose.bones["Arm"].location.x)
+    check(not any(op.bl_idname == "POSE_OT_relax" for op in window().modal_operators), "Relax ended")
+    check(not tracebacks(), "Python error in Push / Relax")
+    bpy.context.scene.frame_set(1)
+
+
+# --- Tween on bones through the key, then the dock's Breakdown button
+@step
+def anim_bone_tween():
+    bpy.context.scene.frame_set(6)
+    an_press("m3d.tween", factor=0.5)
+
+
+@step
+def anim_bone_tween_check():
+    rig = an_rig()
+    check(abs(rig.pose.bones["Arm"].location.x - 0.5) < 0.1, "Tween on the selected bone (x = %.3f)" % rig.pose.bones["Arm"].location.x)
+    check(6 in an_keys(rig, 'pose.bones["Arm"].location'), "...keys the bone: %s" % an_keys(rig, 'pose.bones["Arm"].location'))
+    check(6 not in an_keys(rig, 'pose.bones["Root"].location'), "...and only the selected bone")
+
+
+# --- Motion paths and ghost curves
+@step
+def anim_paths():
+    press_ok("m3d.dock_page", _area=an_dock(), tab="anim_motion")
+    an_press("m3d.anim_paths", action='CALCULATE')
+
+
+@step
+def anim_paths_check():
+    check(an_rig().pose.animation_visualization.motion_path.has_motion_paths, "Motion path calculated for the bone")
+    an_press("m3d.anim_paths", action='UPDATE')
+    an_press("m3d.anim_paths", action='CLEAR')
+
+
+@step
+def anim_paths_clear_check():
+    check(not an_rig().pose.animation_visualization.motion_path.has_motion_paths, "...and cleared")
+    an_press("m3d.anim_graph", action='GHOST_CREATE')
+    area = m3d_anim.bottom_area(window().screen)
+    check(area.ui_type == 'DOPESHEET', "ghost curves leave the bottom editor as it was")
+    an_press("m3d.anim_graph", action='GHOST_CLEAR')
+    check(not tracebacks(), "Python error with motion paths / ghost curves")
+
+
+# --- Layers: push down, additive layer
+@step
+def anim_layers():
+    bpy.ops.m3d.rig_mode(mode='OBJECT')
+    m3d_rig._select_only(bpy.context, an_box())
+    press_ok("m3d.dock_page", _area=an_dock(), tab="anim_layers")
+    an_press("m3d.anim_layer", action='PUSH_DOWN')
+
+
+@step
+def anim_layers_check():
+    ad = an_box().animation_data
+    check(ad.action is None and len(ad.nla_tracks) == 1, "Layers: Push Down (action %s, tracks %d, active %s, mode %s)" % (
+        ad.action, len(ad.nla_tracks), bpy.context.active_object, bpy.context.mode))
+    an_press("m3d.anim_layer", action='ADD_ADDITIVE')
+
+
+@step
+def anim_layers_check2():
+    ad = an_box().animation_data
+    check(ad.action is not None and ad.action_blend_type == 'ADD', "Layers: Add Additive Layer (%s %s %d)" % (ad.action, ad.action_blend_type, len(ad.nla_tracks)))
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def anim_layers_drawn():
+    check(not tracebacks(), "Python error drawing the Layers tab")
+    bpy.data.objects["Box"].animation_data.action = None   # Leave the cube with only the layer below.
+
+
+# --- Playblast: three tiny frames, the output settings stay as they were
+@step
+def anim_playblast():
+    scene = bpy.context.scene
+    scene.frame_start, scene.frame_end = 1, 3
+    GIZMO["pb_before"] = (scene.render.filepath, scene.render.resolution_percentage, scene.render.image_settings.file_format,
+                          scene.frame_current, scene.frame_start, scene.frame_end)
+    scene.m3d_anim.playblast_dir = tempfile.mkdtemp(prefix="m3d_gui_pb_")
+    scene.m3d_anim.playblast_percent = 10
+    check(an_status("m3d.playblast", play=False) == {'RUNNING_MODAL'}, "Playblast button runs")
+
+
+step(wait_until(lambda: not m3d_anim.playblast_state["running"], "the Playblast to finish", tries=60))
+
+
+@step
+def anim_playblast_check():
+    scene = bpy.context.scene
+    files = m3d_anim.playblast_state["files"]
+    check(len(files) == 3 and all(os.path.getsize(f) > 0 for f in files), "Playblast wrote 3 frames: %s" % files)
+    after = (scene.render.filepath, scene.render.resolution_percentage, scene.render.image_settings.file_format, scene.frame_current,
+             scene.frame_start, scene.frame_end)
+    check(after == GIZMO["pb_before"], "the render output settings are put back: %s vs %s" % (after, GIZMO["pb_before"]))
+    check(scene.m3d_anim.playblast_note.startswith("Playblast: 3 frames"), "Playblast reports: %r" % scene.m3d_anim.playblast_note)
+    check(not tracebacks(), "Python error in the Playblast")
+    scene.frame_start, scene.frame_end = 1, 24
+
+
+# --- Every tab draws, in Object and Pose Mode, with the Graph Editor and the Dope Sheet
+def _anim_tab_steps():
+    for mode in ('OBJECT', 'POSE'):
+        for editor in ('DOPESHEET', 'GRAPH'):
+            for tab in m3d_workspace.DOCK_TABS['ANIM']['RIGHT']:
+                def show(tab=tab, mode=mode, editor=editor):
+                    bpy.ops.m3d.rig_mode(mode='OBJECT')
+                    m3d_rig._select_only(bpy.context, an_rig() if mode == 'POSE' else an_box())
+                    bpy.ops.m3d.rig_mode(mode=mode)
+                    an_status("m3d.anim_editor", editor=editor)
+                    press_ok("m3d.dock_page", _area=an_dock(), tab=tab.id)
+                    for a in window().screen.areas:
+                        a.tag_redraw()
+
+                def check_draw(tab=tab, mode=mode, editor=editor):
+                    page = window().workspace.m3d_page_right
+                    check(tab.page is None or page == tab.page, "dock tab %s did not open its page" % tab.id)
+                    check(an_dock().spaces.active.context == tab.context, "dock tab %s context" % tab.id)
+                    check(not tracebacks(), "Python error while drawing the Animation tab %s in %s with the %s" % (tab.id, mode, editor))
+                show.__name__ = "anim_show_%s_%s_%s" % (tab.id, mode, editor)
+                check_draw.__name__ = "anim_drawn_%s_%s_%s" % (tab.id, mode, editor)
+                yield show
+                yield check_draw
+
+
+for _fn in _anim_tab_steps():
+    step(_fn)
+
+
+@step
+def anim_shelves():
+    for mode in ('POSE', 'OBJECT'):
+        bpy.ops.m3d.rig_mode(mode=mode)
+        for key in m3d_ui.shelves_for('ANIM'):
+            bpy.context.window_manager.m3d_shelf = key
+            for a in window().screen.areas:
+                a.tag_redraw()
+
+
+@step
+def anim_shelves_check():
+    check(not tracebacks(), "Python error drawing the Animation shelves / Status Line")
+    bpy.context.window_manager.m3d_shelf = 'ANIM_ANIMATE'
+    an_status("m3d.anim_editor", editor='DOPESHEET')
+    ws = window().workspace
+    ws.m3d_page_right = ""
+    bpy.ops.m3d.workspace(kind='MODEL')
+    check(not tracebacks(), "Python error in the Animation workspace tests")
+
+
+
 @step
 def finish():
     errors = "".join(stderr_tee.buf + sys.stdout.buf)

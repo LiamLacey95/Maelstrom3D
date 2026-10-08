@@ -50,6 +50,10 @@ Maelstrom3D keeps its settings apart from Blender's (`%APPDATA%\Maelstrom3D`), s
   Drive, Test and Collections tabs that follows the mode; Joint tool, Orient Joint, control shapes with colors, IK with pole,
   bind with envelope fall back, weight tools (flood, smooth, normalize, limit, clean, mirror, transfer, weight table), Driven Key,
   naming check, pose library, Rigify on demand; Ctrl+E extrude bone, Shift+N naming menu.
+- **Animation workflow (F6):** large viewport plus a camera view, one bottom editor that switches between Graph Editor and Dope Sheet
+  with a Timeline under it, a dock of Channel Box (the active bone's channels in Pose Mode), Pick (selection sets, bone collections),
+  Tween & Poses, Motion (motion paths, ghost curves), Layers (NLA) and Playback; Auto Key, key type, new key interpolation,
+  Blocking / Polish presets, Tween slider and Alt+Q, Push / Relax / Breakdown keys, object selection sets, Playblast.
 - **Scripting:** `m3d.cmds` (`polyCube`, `move`, `setAttr`, `select`, `ls`, ...) and MEL in the command line.
   Existing scripts that `import maya.cmds` run through a compatibility alias.
 

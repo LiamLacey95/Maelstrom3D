@@ -48,6 +48,16 @@ def draw_hud():
     blf.position(font, (region.width - width) / 2, 12 * scale, 0)
     blf.draw(font, name)
 
+    # A camera view with no camera (the Animation workspace's camera pane).
+    if rv3d.view_perspective == 'CAMERA' and context.scene.camera is None:
+        blf.size(font, 15 * scale)
+        text = "No camera: add one (Create > Camera)"
+        width, _height = blf.dimensions(font, text)
+        blf.color(font, 0.95, 0.75, 0.3, 1.0)
+        blf.position(font, (region.width - width) / 2, region.height / 2, 0)
+        blf.draw(font, text)
+        blf.size(font, 13 * scale)
+
     # View axis triad, bottom left.
     origin = Vector((34 * scale, 34 * scale))
     length = 22 * scale

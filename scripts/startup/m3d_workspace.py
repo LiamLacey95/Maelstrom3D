@@ -141,6 +141,8 @@ def _follow_workspace():
         workspace_changed(wm, wm.windows[0].workspace)
         from m3d_rig import follow_mode
         follow_mode(wm)   # The Rigging dock follows the mode.
+        from m3d_anim import follow
+        follow(wm)        # The Animation workspace limits what redraws while playing.
     return 0.25
 
 
@@ -182,6 +184,14 @@ DOCK_TABS['RIG'] = {
         ("skeleton", "Skeleton"), ("controls", "Controls & Constraints"), ("skin", "Skin"), ("drive", "Drive"),
         ("test", "Test"), ("collections", "Collections"))),
     'LEFT': (Tab("rig_bones", "Bones", 'MODELING_TOOLKIT', "rig_bones"),),
+}
+# Animation: Channel Box first, then the task tabs (pages: m3d_anim.py).
+DOCK_TABS['ANIM'] = {
+    'RIGHT': (Tab("channel_box", "Channel Box", 'CHANNEL_BOX', None),
+              *(Tab("anim_" + page, label, 'MODELING_TOOLKIT', "anim_" + page) for page, label in (
+                  ("pick", "Pick"), ("tween", "Tween & Poses"), ("motion", "Motion"), ("layers", "Layers"),
+                  ("playback", "Playback")))),
+    'LEFT': (),
 }
 # The last tab of every row: the stock Properties tabs.
 ALL_SETTINGS = {'MODEL': "Attribute Editor"}

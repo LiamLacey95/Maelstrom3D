@@ -12,6 +12,7 @@ Menus are plain data (see `MENUS`) so `tools/m3d/test_m3d.py` can verify every c
 import bpy
 from bpy.types import Menu, Panel
 
+import m3d_anim
 import m3d_rig
 import m3d_sculpt
 import m3d_texture
@@ -558,6 +559,13 @@ MENUS = {
         op("Key Rotate", "anim.keyframe_insert_by_name", type='Rotation'),
         op("Key Scale", "anim.keyframe_insert_by_name", type='Scaling'),
         op("Delete Keys", "anim.keyframe_delete_v3d", 'KEY_DEHLT'),
+        op("Breakdown Key", "m3d.anim_key_type", 'KEYTYPE_BREAKDOWN_VEC', key_type='BREAKDOWN'),
+        SEP,
+        op("Tween", "m3d.tween", 'ARROW_LEFTRIGHT', interactive=True),
+        op("Euler Filter", "m3d.anim_euler_filter", 'DRIVER_ROTATIONAL_DIFFERENCE'),
+        op("Blocking Preset", "m3d.anim_preset", preset='BLOCKING'),
+        op("Polish Preset", "m3d.anim_preset", preset='POLISH'),
+        op("Playblast", "m3d.playblast", 'RENDER_ANIMATION'),
         SEP,
         prop("Auto Keyframe", "tool_settings.use_keyframe_insert_auto"),
         op("Bake Simulation", "nla.bake"),
@@ -884,7 +892,6 @@ def draw_workspace_picker(layout, context):
 # (object.mode_set mode, icon, label, context.mode values)
 _OBJECT_MODE = ('OBJECT', 'OBJECT_DATAMODE', "Object Mode", {'OBJECT'})
 KIND_MODES = {
-    'ANIM': (_OBJECT_MODE, ('POSE', 'POSE_HLT', "Pose Mode", {'POSE'})),
     'RENDER': (_OBJECT_MODE,),
 }
 
@@ -913,8 +920,12 @@ def draw_status_line_rig(layout, context):
     m3d_rig.draw_status_line(layout, context)
 
 
+def draw_status_line_anim(layout, context):
+    m3d_anim.draw_status_line(layout, context)
+
+
 STATUS_LINES = {'MODEL': draw_status_line_model, 'SCULPT': draw_status_line_sculpt, 'UV': draw_status_line_uv,
-                'TEXTURE': draw_status_line_texture, 'RIG': draw_status_line_rig}
+                'TEXTURE': draw_status_line_texture, 'RIG': draw_status_line_rig, 'ANIM': draw_status_line_anim}
 
 
 def draw_status_line(layout, context):
@@ -997,6 +1008,7 @@ _SCULPT = frozenset({'SCULPT'})
 _UV = frozenset({'UV'})
 _TEXTURE = frozenset({'TEXTURE'})
 _RIG = frozenset({'RIG'})
+_ANIM = frozenset({'ANIM'})
 # Shelf tab key -> (label, buttons, kinds of workspace that show the tab). A button is (idname, icon, props) or
 # (idname, icon, props, text); None is a gap; a function draws its own widgets into the row.
 SHELVES = {
@@ -1107,6 +1119,8 @@ SHELVES = {
     'RIG_SKELETON': ("Skeleton", m3d_rig.SHELF_SKELETON, _RIG),
     'RIG_CONTROLS': ("Controls", m3d_rig.SHELF_CONTROLS, _RIG),
     'RIG_SKIN': ("Skin", m3d_rig.SHELF_SKIN, _RIG),
+    'ANIM_ANIMATE': ("Animate", m3d_anim.SHELF_ANIMATE, _ANIM),
+    'ANIM_POSES': ("Poses", m3d_anim.SHELF_POSES, _ANIM),
     # Buttons added by the user (m3d_user.py); every kind has its own.
     'CUSTOM': ("Custom", [], frozenset(KINDS)),
 }

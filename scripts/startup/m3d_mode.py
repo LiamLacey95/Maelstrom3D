@@ -732,6 +732,28 @@ class _DockPanel:
     bl_region_type = 'WINDOW'
 
 
+def channel_owner(context):
+    """What the Channel Box edits: the active pose bone while a skeleton is in Pose Mode, else the active object."""
+    ob = context.active_object
+    if ob is not None and ob.type == 'ARMATURE' and ob.mode == 'POSE':
+        bone = ob.data.bones.active
+        if bone is not None and bone.name in ob.pose.bones:
+            return ob.pose.bones[bone.name]
+    return ob
+
+
+def rotation_channel(owner):
+    """(property, label) of the rotation the owner uses: Euler, quaternion or axis-angle."""
+    return {'QUATERNION': ("rotation_quaternion", "Rotate"),
+            'AXIS_ANGLE': ("rotation_axis_angle", "Rotate")}.get(owner.rotation_mode, ("rotation_euler", "Rotate"))
+
+
+def custom_properties(owner):
+    """Names of the owner's numeric custom properties (shown as sliders)."""
+    return [k for k in owner.keys() if not k.startswith("_") and isinstance(owner[k], (int, float))
+            and not isinstance(owner[k], bool)]
+
+
 class PROPERTIES_PT_m3d_channel_box(_DockPanel, Panel):
     """Channel Box: transform channels, visibility and inputs (modifiers)"""
     bl_context = "channel_box"
@@ -743,22 +765,42 @@ class PROPERTIES_PT_m3d_channel_box(_DockPanel, Panel):
         if ob is None:
             layout.label(text="Nothing selected")
             return
-        layout.prop(ob, "name", text="")
+        owner = channel_owner(context)
+        if owner is ob:
+            layout.prop(ob, "name", text="")
+        else:   # A bone of the skeleton in Pose Mode: its own channels, the skeleton's name above.
+            layout.label(text=ob.name, icon='ARMATURE_DATA')
+            layout.prop(owner.bone, "name", text="")
         col = layout.column(align=True)
-        for label, attr, lock in (("Translate", "location", "lock_location"),
-                                  ("Rotate", "rotation_euler", "lock_rotation"), ("Scale", "scale", "lock_scale")):
-            for i, axis in enumerate("XYZ"):
+        rot, rot_label = rotation_channel(owner)
+        for label, attr, lock in (("Translate", "location", "lock_location"), (rot_label, rot, "lock_rotation"),
+                                  ("Scale", "scale", "lock_scale")):
+            count = 4 if attr in {"rotation_quaternion", "rotation_axis_angle"} else 3
+            axes = "WXYZ" if count == 4 else "XYZ"
+            for i in range(count):
+                j = i - (count - 3)   # Index in the lock (W has none).
                 row = col.row(align=True)
                 sub = row.row(align=True)
-                sub.active = not getattr(ob, lock)[i]
-                sub.prop(ob, attr, index=i, text=f"{label} {axis}")
-                row.prop(ob, lock, index=i, text="", emboss=False, icon='DECORATE_UNLOCKED')
-        col.prop(ob, "hide_viewport", text="Visibility", invert_checkbox=True, toggle=True)
+                sub.active = j < 0 or not getattr(owner, lock)[j]
+                sub.prop(owner, attr, index=i, text=f"{label} {axes[i]}")
+                if j >= 0:
+                    row.prop(owner, lock, index=j, text="", emboss=False, icon='DECORATE_UNLOCKED')
+                else:
+                    row.label(text="", icon='BLANK1')
+        if owner is ob:
+            col.prop(ob, "hide_viewport", text="Visibility", invert_checkbox=True, toggle=True)
 
-        if ob.data is not None:
+        names = custom_properties(owner)
+        if names:   # IK / FK switches and the like: sliders.
+            layout.label(text="CUSTOM")
+            col = layout.column(align=True)
+            for name in names:
+                col.prop(owner, '["%s"]' % bpy.utils.escape_identifier(name), text=name, slider=True)
+
+        if owner is ob and ob.data is not None:
             layout.label(text="SHAPES")
             layout.prop(ob.data, "name", text="")
-        if ob.modifiers:
+        if owner is ob and ob.modifiers:
             layout.label(text="INPUTS")
             col = layout.column(align=True)
             for mod in ob.modifiers:

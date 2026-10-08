@@ -2444,6 +2444,21 @@ class PROPERTIES_PT_m3d_rg_position(_Test, Panel):
                 {"selected": False})
 
 
+def draw_pose_library(layout, context, limit=20):
+    """Pose list of the Pose Library: name, Apply, Flipped (also used by the Animation workspace)."""
+    poses = pose_assets()
+    if not poses:
+        _small(layout, "No poses saved in this file yet")
+    col = layout.column(align=True)
+    for action in poses[:limit]:
+        row = col.row(align=True)
+        row.label(text=action.name, icon='POSE_HLT')
+        o = row.operator("m3d.rig_pose_apply", text="Apply")
+        o.name, o.flipped = action.name, False
+        o = row.operator("m3d.rig_pose_apply", text="Flipped")
+        o.name, o.flipped = action.name, True
+
+
 class PROPERTIES_PT_m3d_rg_library(_Test, Panel):
     bl_label = "Pose Library"
 
@@ -2456,17 +2471,7 @@ class PROPERTIES_PT_m3d_rg_library(_Test, Panel):
         space = viewport(context)
         if space is not None:
             layout.prop(space, "show_region_asset_shelf", text="Pose Shelf in the Viewport", toggle=True)
-        poses = pose_assets()
-        if not poses:
-            _small(layout, "No poses saved in this file yet")
-        col = layout.column(align=True)
-        for action in poses[:20]:
-            row = col.row(align=True)
-            row.label(text=action.name, icon='POSE_HLT')
-            o = row.operator("m3d.rig_pose_apply", text="Apply")
-            o.name, o.flipped = action.name, False
-            o = row.operator("m3d.rig_pose_apply", text="Flipped")
-            o.name, o.flipped = action.name, True
+        draw_pose_library(layout, context)
 
 
 # --- Collections
@@ -2507,6 +2512,23 @@ class PROPERTIES_PT_m3d_rg_bcolls(_Collections, Panel):
         draw_bone_collections(self.layout, context, rig_of(context).data)
 
 
+def draw_selection_sets(layout, context, rig):
+    """The skeleton's selection sets: list, add / remove, assign / select (also used by the Animation workspace)."""
+    row = layout.row()
+    row.enabled = context.mode == 'POSE'
+    row.template_list("POSE_UL_selection_set", "", rig, "selection_sets", rig, "active_selection_set",
+                      rows=4 if len(rig.selection_sets) else 1)
+    col = row.column(align=True)
+    col.operator("pose.selection_set_add", icon='ADD', text="")
+    col.operator("pose.selection_set_remove", icon='REMOVE', text="")
+    row = layout.row(align=True)
+    row.enabled = context.mode == 'POSE'
+    row.operator("pose.selection_set_assign", text="Assign")
+    row.operator("pose.selection_set_unassign", text="Remove")
+    row.operator("pose.selection_set_select", text="Select").selection_set_index = -1
+    row.operator("pose.selection_set_deselect", text="Deselect")
+
+
 class PROPERTIES_PT_m3d_rg_selsets(_Collections, Panel):
     bl_label = "Selection Sets"
 
@@ -2516,21 +2538,7 @@ class PROPERTIES_PT_m3d_rg_selsets(_Collections, Panel):
         return rig is not None and rig.pose is not None
 
     def draw(self, context):
-        layout = self.layout
-        rig = rig_of(context)
-        row = layout.row()
-        row.enabled = context.mode == 'POSE'
-        row.template_list("POSE_UL_selection_set", "", rig, "selection_sets", rig, "active_selection_set",
-                          rows=4 if len(rig.selection_sets) else 1)
-        col = row.column(align=True)
-        col.operator("pose.selection_set_add", icon='ADD', text="")
-        col.operator("pose.selection_set_remove", icon='REMOVE', text="")
-        row = layout.row(align=True)
-        row.enabled = context.mode == 'POSE'
-        row.operator("pose.selection_set_assign", text="Assign")
-        row.operator("pose.selection_set_unassign", text="Remove")
-        row.operator("pose.selection_set_select", text="Select").selection_set_index = -1
-        row.operator("pose.selection_set_deselect", text="Deselect")
+        draw_selection_sets(self.layout, context, rig_of(context))
 
 
 class PROPERTIES_PT_m3d_rg_colors(_Collections, Panel):

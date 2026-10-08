@@ -9,7 +9,9 @@ Each name is a workspace name or kind (MODEL, SCULPT, ...); writes <prefix><name
 mesh, `+unwrap` runs Auto Unwrap (Edit Mode, UV workspace), `+checker` toggles the checker map, `+distortion` shows
 the UV Editor's distortion, `+paint` (Texture workspace: a material, four painted channels), `+bake` (bakes Normal and
 AO at 128 px), `+layers` (like `+paint`, then a paint layer with a mask and a fill layer), `+fillsel` (select the fill layer), `+rig` (Rigging workspace: a cylinder bound to a spine and two legs, control shapes on the
-legs, a Driven Key, a saved pose), `+rigedit` / `+rigpose` / `+rigweight` / `+rigobject` (the mode buttons).
+legs, a Driven Key, a saved pose), `+rigedit` / `+rigpose` / `+rigweight` / `+rigobject` (the mode buttons), `+anim` (the rig keyed over 48 frames with a camera;
+then F6 shows it in Pose Mode), `+toolkit` / `+chanbox` (the Animation dock on its pages / the Channel Box), `+graph` / `+dope` (the
+bottom editor), `+paths` (motion path of the active bone), `+animlayers` (push down + additive layer), `+animobject` (Object Mode).
 """
 
 import sys
@@ -134,6 +136,76 @@ def rig():
         bpy.ops.view3d.view_all(center=False)
 
 
+def anim():
+    """The Rigging test rig, keyed over 48 frames (legs swing, spine twists, a breakdown), with a camera."""
+    rig()
+    scene = bpy.context.scene
+    scene.frame_start, scene.frame_end = 1, 48
+    bpy.ops.object.camera_add(location=(5.0, -6.0, 2.4), rotation=(1.3, 0, 0.84))
+    scene.camera = bpy.context.active_object
+    rig_ob = bpy.data.objects["Armature"]
+    bpy.context.view_layer.objects.active = rig_ob
+    bpy.ops.m3d.rig_mode(mode='POSE')
+    for pb in rig_ob.pose.bones:
+        pb.rotation_mode = 'XYZ'
+        pb.rotation_euler = (0, 0, 0)
+    rig_ob.pose.bones["Spine.001"]["IK_FK"] = 0.5
+    swing = ((1, 0.0), (13, 0.7), (25, 0.0), (37, -0.7), (48, 0.0))
+    for name, sign in (("Leg.L", 1), ("Leg.R", -1)):
+        pb = rig_ob.pose.bones[name]
+        for frame, angle in swing:
+            pb.rotation_euler[0] = angle * sign
+            pb.keyframe_insert("rotation_euler", index=0, frame=frame)
+    for name in ("Leg.001.L", "Leg.001.R"):
+        pb = rig_ob.pose.bones[name]
+        for frame, angle in swing:
+            pb.rotation_euler[0] = max(0.0, -angle) * 1.2
+            pb.keyframe_insert("rotation_euler", index=0, frame=frame)
+    spine = rig_ob.pose.bones["Spine.002"]
+    for frame, angle in ((1, 0.0), (25, 0.35), (48, 0.0)):
+        spine.rotation_euler[2] = angle
+        spine.keyframe_insert("rotation_euler", index=2, frame=frame)
+        spine.location[0] = angle * 0.2
+        spine.keyframe_insert("location", index=0, frame=frame)
+    fc = next(f for f in rig_ob.animation_data.action.layers[0].strips[0].channelbags[0].fcurves if "Leg.L" in f.data_path)
+    key = fc.keyframe_points.insert(7, 0.35, keyframe_type='BREAKDOWN')
+    key.type = 'BREAKDOWN'
+    for pb in rig_ob.pose.bones:
+        pb.select = pb.name in {"Leg.L", "Leg.001.L"}
+    rig_ob.data.bones.active = rig_ob.data.bones["Leg.001.L"]
+    scene.frame_set(18)
+    bpy.ops.m3d.rig_mode(mode='OBJECT')
+    bpy.context.view_layer.objects.active = rig_ob
+    scene.m3d_anim.sets.add().name = "Legs"
+    scene.m3d_anim.sets[0].items.add().object = rig_ob
+
+
+def anim_editor(editor):
+    return lambda: bpy.ops.m3d.anim_editor(editor=editor)
+
+
+def anim_dock(context_name):
+    def run():
+        for area in bpy.context.window_manager.windows[0].screen.areas:
+            if area.type == 'PROPERTIES':
+                area.spaces.active.context = context_name
+    return run
+
+
+def anim_paths():
+    bpy.ops.m3d.anim_paths(action='CALCULATE')
+
+
+def anim_layers():
+    rig_ob = bpy.data.objects["Armature"]
+    bpy.ops.m3d.rig_mode(mode='OBJECT')
+    bpy.context.view_layer.objects.active = rig_ob
+    bpy.ops.m3d.anim_layer(action='ADD_ADDITIVE')
+    pb = rig_ob.pose.bones["Spine.002"]
+    pb.rotation_euler[2] = 0.5
+    pb.keyframe_insert("rotation_euler", index=2, frame=10)
+
+
 def rig_mode(mode):
     return lambda: bpy.ops.m3d.rig_mode(mode=mode)
 
@@ -154,6 +226,14 @@ SETUP = {
     "+rigpose": rig_mode('POSE'),
     "+rigweight": rig_mode('WEIGHT_PAINT'),
     "+rigobject": rig_mode('OBJECT'),
+    "+anim": anim,
+    "+toolkit": anim_dock('MODELING_TOOLKIT'),
+    "+chanbox": anim_dock('CHANNEL_BOX'),
+    "+graph": anim_editor('GRAPH'),
+    "+dope": anim_editor('DOPESHEET'),
+    "+paths": anim_paths,
+    "+animlayers": anim_layers,
+    "+animobject": lambda: bpy.ops.m3d.rig_mode(mode='OBJECT'),
     "+sphere": lambda: bpy.ops.m3d.add_primitive(kind='SPHERE'),
     "+cube": lambda: bpy.ops.m3d.add_primitive(kind='CUBE'),
     "+unwrap": lambda: bpy.ops.m3d.uv_auto(),

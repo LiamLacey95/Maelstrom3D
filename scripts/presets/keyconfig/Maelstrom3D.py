@@ -136,8 +136,14 @@ OVERRIDES = {
         _kmi("armature.extrude_move", 'E', ctrl=True),
         _pie("M3D_MT_rig_names", 'N', shift=True),
     ],
+    # Animation: Alt+Q tweens (also in Object Mode below), Alt+Shift+P / R / B push, relax, breakdown (Blender's
+    # Shift+E / Ctrl+E / Alt+E clash with the Maya-style keys).
     "Pose": [
         _pie("M3D_MT_rig_names", 'N', shift=True),
+        _kmi("m3d.tween", 'Q', props={"interactive": True}, alt=True),
+        _kmi("pose.push", 'P', alt=True, shift=True),
+        _kmi("pose.relax", 'R', alt=True, shift=True),
+        _kmi("pose.breakdown", 'B', alt=True, shift=True),
     ],
     "Window": [
         # F1-F7: task workspaces (kinds in m3d_workspace.py). The menu set dropdown still offers every set.
@@ -188,6 +194,7 @@ OVERRIDES = {
         _smooth('ONE', 'OFF'), _smooth('TWO', 'CAGE'), _smooth('THREE', 'SMOOTH'),
         _kmi("m3d.group", 'G', ctrl=True),
         _kmi("m3d.pivot_hold", 'D'),
+        _kmi("m3d.tween", 'Q', props={"interactive": True}, alt=True),
         _kmi("m3d.duplicate", 'D', ctrl=True),
         _kmi("m3d.duplicate", 'D', props={"with_transform": True}, shift=True),
         _kmi("object.duplicate_move_linked", 'D', ctrl=True, shift=True),

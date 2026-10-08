@@ -262,6 +262,61 @@ def phase4_rigging():
     ws.m3d_page_left, ws.m3d_page_right = "rig_bones", "rig_skeleton"
 
 
+def phase5_animation():
+    """Animation: the small left 3D view becomes the camera view, the right Outliner is closed so the dock gets its
+    height, the bottom editor (Dope Sheet, switched to the Graph Editor by the Status Line) gets a short Timeline under
+    it with its controls below the slider, and the screen redraws only viewports and animation editors while playing."""
+    import m3d_anim
+    ws = bpy.data.workspaces["Animation"]
+    show(ws)
+    yield 0.6
+    screen = window().screen
+
+    def timelines():
+        return [a for a in areas(screen, 'DOPESHEET_EDITOR') if a.spaces.active.mode == 'TIMELINE']
+
+    if not timelines():
+        outliner = areas(screen, 'OUTLINER')[0]
+        run(bpy.ops.screen.area_close, outliner)
+        yield 0.3
+        bottom = areas(screen, 'DOPESHEET_EDITOR')[0]
+        run(bpy.ops.screen.area_split, bottom, direction='HORIZONTAL', factor=0.3)
+        yield 0.3
+        lower = min(areas(screen, 'DOPESHEET_EDITOR'), key=lambda a: a.y)
+        lower.ui_type = 'TIMELINE'
+        yield 0.3
+        lower = timelines()[0]
+        upper = next(a for a in areas(screen, 'DOPESHEET_EDITOR') if a != lower)
+        edge = (upper.x + upper.width // 2, upper.y - 1)
+        window().event_simulate(type='MOUSEMOVE', value='NOTHING', x=edge[0], y=edge[1])
+        yield 0.3
+        with bpy.context.temp_override(window=window(), screen=screen):
+            bpy.ops.screen.area_move(x=edge[0], y=edge[1], delta=-(lower.height - ANIM_TIMELINE_HEIGHT))
+        yield 0.3
+        dock = areas(screen, 'PROPERTIES')[-1]
+        edge = (dock.x - 1, dock.y + dock.height // 2)
+        window().event_simulate(type='MOUSEMOVE', value='NOTHING', x=edge[0], y=edge[1])
+        yield 0.3
+        with bpy.context.temp_override(window=window(), screen=screen):
+            bpy.ops.screen.area_move(x=edge[0], y=edge[1], delta=-DOCK_WIDER)
+        yield 0.3
+        timeline = timelines()[0]   # The slider sits above its controls.
+        header = next(r for r in timeline.regions if r.type == 'HEADER')
+        if header.alignment == 'TOP':
+            with bpy.context.temp_override(window=window(), screen=screen, area=timeline, region=header):
+                bpy.ops.screen.region_flip()
+            yield 0.3
+    left, main = sorted(areas(screen, 'VIEW_3D'), key=lambda a: a.x)
+    left.spaces.active.region_3d.view_perspective = 'CAMERA'
+    main.spaces.active.shading.type = 'SOLID'
+    main.spaces.active.overlay.show_xray_bone = True
+    areas(screen, 'PROPERTIES')[0].spaces.active.context = 'CHANNEL_BOX'
+    ws.m3d_page_right = "anim_pick"
+    m3d_anim.limit_playback_redraw(screen)
+
+
+ANIM_TIMELINE_HEIGHT = 130  # pixels the Timeline under the Graph Editor / Dope Sheet keeps
+
 RIG_LEFT_WIDTH = 300  # pixels of the 2560 px build window: Outliner and bone collections
 RIG_LEFT_SPLIT = 0.4  # share of the left column the bone collections get (the lower part; the Outliner keeps the rest)
 RIG_TIMELINE_HEIGHT = 230  # pixels the bottom Timeline keeps (the Drivers editor is the same area)
@@ -270,7 +325,7 @@ DOCK_WIDER = 170  # pixels of the 2560 px build window: seven tabs, All Settings
 UV_WIDER = 250  # pixels the UV editor gets from the 3D view
 TEXTURE_VIEW_WIDER = 250  # pixels the Texture workspace's 3D view gets from the paint view
 
-PHASES = [phase0_workspaces, phase1_sculpt, phase2_uv, phase3_texture, phase4_rigging]
+PHASES = [phase0_workspaces, phase1_sculpt, phase2_uv, phase3_texture, phase4_rigging, phase5_animation]
 
 
 def save():
