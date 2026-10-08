@@ -104,14 +104,15 @@ class M3D_OT_add_primitive(Operator):
 
 
 class M3D_OT_call(Operator):
-    """Run an operator in the 3D Viewport (used by top bar menus)"""
+    """Run an operator in the 3D Viewport or the UV Editor (used by the top bar and docks)"""
     bl_idname = "m3d.call"
-    bl_label = "Run in Viewport"
+    bl_label = "Run in Editor"
     bl_options = {'INTERNAL'}
 
     idname: bpy.props.StringProperty()
     props: bpy.props.StringProperty(default="{}")
     label: bpy.props.StringProperty()
+    editor: bpy.props.EnumProperty(items=(('VIEW_3D', "3D Viewport", ""), ('IMAGE_EDITOR', "UV Editor", "")))
 
     @classmethod
     def description(cls, _context, props):
@@ -119,9 +120,9 @@ class M3D_OT_call(Operator):
 
     def invoke(self, context, _event):
         from ast import literal_eval
-        areas = [a for a in context.screen.areas if a.type == 'VIEW_3D']
+        areas = [a for a in context.screen.areas if a.type == self.editor]
         if not areas:
-            self.report({'WARNING'}, "No 3D Viewport in this workspace")
+            self.report({'WARNING'}, "No %s in this workspace" % ("3D Viewport" if self.editor == 'VIEW_3D' else "UV Editor"))
             return {'CANCELLED'}
         area = max(areas, key=lambda a: a.width * a.height)
         region = next(r for r in area.regions if r.type == 'WINDOW')
@@ -784,12 +785,12 @@ class PROPERTIES_PT_m3d_layer_editor(_DockPanel, Panel):
 
 
 def _button(layout, context, label, idname, icon, props, depress=False):
-    """Operator button; viewport-only commands run in the 3D Viewport through `m3d.call`."""
-    from m3d_ui import needs_view3d, _poll
-    in_view3d = context.area is not None and context.area.type == 'VIEW_3D'
-    if not in_view3d and (needs_view3d(idname) or not _poll(idname)):
+    """Operator button; commands that need the 3D Viewport or the UV Editor run there through `m3d.call`."""
+    from m3d_ui import call_target
+    target = call_target(context, idname)
+    if target:
         o = layout.operator("m3d.call", text=label, icon=icon, depress=depress)
-        o.idname, o.props, o.label = idname, repr(props), label
+        o.idname, o.props, o.label, o.editor = idname, repr(props), label, target
         return o
     o = layout.operator(idname, text=label, icon=icon, depress=depress)
     for k, v in props.items():

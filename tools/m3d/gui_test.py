@@ -214,6 +214,30 @@ def space_tap():
     event('SPACE', 'RELEASE', GIZMO["start"])
 
 
+def wait_until(cond, what, tries=15):
+    """Step body: run again on the next tick until `cond()` holds (a redraw or a workspace switch is still pending)."""
+    def body():
+        GIZMO["tries"] = GIZMO.get("tries", 0) + 1
+        if not cond() and GIZMO["tries"] < tries:
+            steps.insert(0, fn)
+        else:
+            if not cond():
+                fails.append("timed out waiting for " + what)
+            GIZMO["tries"] = 0
+    fn = body
+    return body
+
+
+def _single_view():
+    _win, area, region = view3d()
+    return len(area.spaces.active.region_quadviews) == 0 and region.width > area.width // 2 + 100
+
+
+# The region rectangles come back to the full viewport on a redraw after the toggle, not with it: aiming at the
+# gizmo before that would use the quarter-size region.
+step(wait_until(_single_view, "the single view after the Space tap"))
+
+
 @step
 def object_shift_drag_setup():
     win, area, region = view3d()
@@ -328,7 +352,7 @@ def startup_panels():
     lenses = {a.spaces.active.lens for a in workspace_screen('MODEL').areas if a.type == 'VIEW_3D'}
     check(lenses == {70.0}, "viewport lens is not Maya's field of view: %r" % lenses)
     uv = [a for a in workspace_screen('UV').areas if a.type == 'IMAGE_EDITOR']
-    check(uv and uv[0].spaces.active.show_region_ui, "UV Toolkit not docked in the UV Editor")
+    check(uv and not uv[0].spaces.active.show_region_ui, "UV Editor sidebar is closed (the dock has the UV tools)")
 
 
 def hud_region():
@@ -427,6 +451,8 @@ def _fkey_steps():
             GIZMO["center"] = (window().width // 2, window().height // 2)
         press.__name__, check_kind.__name__ = "press_" + key, "check_" + key
         yield press
+        yield wait_until(lambda kind=kind: m3d_workspace.workspace_kind(window().workspace) == kind,
+                         "%s to switch workspace" % key)
         yield check_kind
 
 
@@ -733,6 +759,9 @@ def sculpt_setup():
     event('F2', 'RELEASE', GIZMO["center"])
 
 
+step(wait_until(lambda: window().workspace.name == "Sculpt" and bpy.context.mode == 'SCULPT', "F2 to enter Sculpt Mode"))
+
+
 @step
 def sculpt_f2_check():
     check(window().workspace.name == "Sculpt" and bpy.context.mode == 'SCULPT', "F2 did not enter Sculpt Mode")
@@ -979,6 +1008,427 @@ def sculpt_done():
     sculpt_ws = window().workspace
     sculpt_ws.m3d_page_left = sculpt_ws.m3d_page_right = ""
     bpy.ops.m3d.workspace(kind='MODEL')
+
+
+# ----------------------------------------------------------------------------------------------------
+# Phase 2: UV workspace with a real cube: layout, F3, every dock button, Status Line toggles, keys, every tab.
+
+import m3d_uv
+
+
+def uv_areas():
+    """(Image Editor area, its WINDOW region) of the UV screen."""
+    area = next(a for a in window().screen.areas if a.type == 'IMAGE_EDITOR')
+    return area, next(r for r in area.regions if r.type == 'WINDOW')
+
+
+def uv_dock():
+    return next(a for a in props_areas())   # The UV screen has one Properties editor: the dock.
+
+
+def uv_xy():
+    _area, region = uv_areas()
+    return region.x + region.width // 2, region.y + region.height // 2
+
+
+def uv_press(idname, **props):
+    """Click a UV dock button the way the panels draw it (`_button`: m3d.call into the editor call_target names, or
+    the operator in place). Returns (result, editor); a result of FINISHED means the operator's poll passed there."""
+    dock = uv_dock()
+    region = next(r for r in dock.regions if r.type == 'WINDOW')
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=dock, region=region,
+                                   space_data=dock.spaces.active):
+        target = m3d_ui.call_target(bpy.context, idname)
+        if target:
+            return bpy.ops.m3d.call('INVOKE_DEFAULT', idname=idname, props=repr(props), editor=target), target
+        mod, name = idname.split(".")
+        return getattr(getattr(bpy.ops, mod), name)('INVOKE_DEFAULT', **props), target
+
+
+def uv_press_ok(idname, editor='IMAGE_EDITOR', **props):
+    try:
+        res, target = uv_press(idname, **props)
+    except RuntimeError as err:
+        fails.append("UV button %s %s: %s" % (idname, props, str(err).strip()[:160]))
+        return None
+    check(res == {'FINISHED'} and target == editor, "UV button %s %s: %s via %s (wanted %s)" % (idname, props, res, target, editor))
+    return res
+
+
+def uv_press_table(table, **kw):
+    for label, idname, icon, props in table:
+        uv_press_ok(idname, editor='VIEW_3D' if idname == "uv.project_from_view" else 'IMAGE_EDITOR', **props)
+
+
+def uv_bmesh():
+    ob = bpy.context.edit_object
+    bm = bmesh.from_edit_mesh(ob.data)
+    return ob, bm, bm.loops.layers.uv.verify()
+
+
+def uv_boxes():
+    _ob, bm, uv = uv_bmesh()
+    boxes = []
+    for shell in m3d_uv.uv_shells(list(bm.faces), uv):
+        pts = [loop[uv].uv for f in shell for loop in f.loops]
+        boxes.append((min(p.x for p in pts), min(p.y for p in pts), max(p.x for p in pts), max(p.y for p in pts)))
+    return boxes
+
+
+def last_operator():
+    ops = bpy.context.window_manager.operators
+    return ops[-1].bl_idname if len(ops) else None
+
+
+def esc():
+    """Close a dialog an operator opened (some Blender operators show their options on invoke)."""
+    event('ESC', 'PRESS', uv_xy())
+    event('ESC', 'RELEASE', uv_xy())
+
+
+@step
+def uv_setup():
+    # A clean scene with one cube, then F3.
+    bpy.ops.m3d.workspace(kind='MODEL')
+    for ob in list(bpy.data.objects):
+        if ob.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.data.objects.remove(ob)
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.m3d.add_primitive(kind='CUBE')
+        bpy.context.active_object.name = "Block"
+    GIZMO["center"] = (region.x + region.width // 2, region.y + region.height // 2)
+    event('MOUSEMOVE', xy=GIZMO["center"])
+    event('F3', 'PRESS', GIZMO["center"])
+    event('F3', 'RELEASE', GIZMO["center"])
+
+
+# The workspace changes on the next event, and the mode with it.
+step(wait_until(lambda: window().workspace.name == "UV" and bpy.context.mode == 'EDIT_MESH', "F3 to enter Edit Mode"))
+
+
+@step
+def uv_f3_check():
+    check(window().workspace.name == "UV" and bpy.context.mode == 'EDIT_MESH', "F3 did not enter Edit Mode in the UV workspace")
+    # The earlier dock tests moved this workspace's tabs: Reset Workspace brings the factory layout back to check it.
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.m3d.workspace_reset()
+
+
+# Reset Workspace appends the factory UV workspace, switches to it on the next event, then removes the old one.
+step(wait_until(lambda: [w.name for w in bpy.data.workspaces if w.name.startswith("UV")] == ["UV"]
+                and window().workspace.name == "UV" and bpy.context.mode == 'EDIT_MESH', "Reset Workspace to finish"))
+
+
+@step
+def uv_layout_check():
+    check(window().workspace.name == "UV" and len(m3d_workspace.workspace_screens('UV')) == 1, "Reset Workspace kept one UV workspace")
+    check(bpy.context.mode == 'EDIT_MESH', "Edit Mode after Reset Workspace")
+    screen = window().screen
+    image, view = uv_areas()[0], next(a for a in screen.areas if a.type == 'VIEW_3D')
+    check(image.x < view.x and image.width > view.width, "UV editor is left of the 3D view and larger (%d vs %d)" % (image.width, view.width))
+    shading = view.spaces.active
+    check(shading.shading.type == 'SOLID' and shading.overlay.show_edge_seams, "3D view is Solid with seams")
+    check(len(props_areas()) == 1 and uv_dock().x > view.x, "one dock on the right")
+    with bpy.context.temp_override(window=window(), area=uv_dock()):
+        check(m3d_workspace.active_page(bpy.context) == "uv_unwrap" and uv_dock().spaces.active.context == 'MODELING_TOOLKIT',
+              "dock opens on Unwrap")
+    check(not image.spaces.active.show_region_ui, "UV editor sidebar closed")
+    bpy.context.tool_settings.use_uv_select_sync = True
+    check(not tracebacks(), "Python error drawing the UV workspace")
+
+
+@step
+def uv_select_all():
+    area, region = uv_areas()
+    view = next(a for a in window().screen.areas if a.type == 'VIEW_3D')
+    with bpy.context.temp_override(window=window(), area=view, region=next(r for r in view.regions if r.type == 'WINDOW')):
+        bpy.ops.mesh.select_all(action='SELECT')
+
+
+@step
+def uv_cut_unfold():
+    _ob, bm, _uv = uv_bmesh()
+    check(not any(e.seam for e in bm.edges), "the new cube has no seams")
+    uv_press_ok("m3d.uv_cut")
+    _ob, bm, _uv = uv_bmesh()
+    check(all(e.seam for e in bm.edges), "Cut from the dock marked the selected edges")
+    uv_press_ok("m3d.uv_unfold")
+    check(len(uv_boxes()) == 6, "Unfold: six shells (%d)" % len(uv_boxes()))
+    GIZMO["boxes"] = uv_boxes()
+
+
+@step
+def uv_optimize_layout():
+    uv_press_ok("m3d.uv_optimize")
+    uv_press_ok("m3d.uv_layout")
+    boxes = uv_boxes()
+    check(all(b[0] >= -1e-4 and b[1] >= -1e-4 and b[2] <= 1.0001 and b[3] <= 1.0001 for b in boxes), "Layout inside 0-1: %s" % boxes)
+    check(boxes != GIZMO["boxes"], "Optimize / Layout changed the UVs")
+    check(not tracebacks(), "Python error in Unfold / Optimize / Layout")
+
+
+@step
+def uv_auto():
+    uv_press_ok("m3d.uv_auto")
+    boxes = uv_boxes()
+    check(len(boxes) == 6 and all(b[0] >= -1e-4 and b[2] <= 1.0001 for b in boxes), "Auto Unwrap from the dock: %s" % boxes)
+
+
+@step
+def uv_texel():
+    s = bpy.context.scene.m3d_uv
+    s.texture_size = '1024'
+    uv_press_ok("m3d.uv_texel_density", mode='READ')
+    read = s.density_read
+    check(read > 0, "Read gave a density")
+    s.density = 777.0
+    uv_press_ok("m3d.uv_texel_density", mode='SET')
+    uv_press_ok("m3d.uv_texel_density", mode='READ')
+    check(abs(s.density_read - 777.0) < 0.5, "Set then Read: %s" % s.density_read)
+    s.density = 100.0
+    uv_press_ok("m3d.uv_texel_density", mode='MATCH')
+    check(abs(s.density - 777.0) < 0.5, "Match picks up the shells' density (%s)" % s.density)
+    check(not tracebacks(), "Python error in the texel density buttons")
+
+
+@step
+def uv_checker_distortion():
+    ob = bpy.context.edit_object
+    uv_press_ok("m3d.uv_checker")
+    check(m3d_uv.checker_on(bpy.context) and ob.material_slots[0].material.name == m3d_uv.CHECKER, "Checker on from the dock")
+    area, _region = uv_areas()
+    uvedit = area.spaces.active.uv_editor
+    uvedit.show_stretch = True
+    uvedit.display_stretch_type = 'AREA'
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def uv_checker_distortion_check():
+    check(not tracebacks(), "Python error drawing Checker / Distortion")
+    area, _region = uv_areas()
+    area.spaces.active.uv_editor.show_stretch = False
+    uv_press_ok("m3d.uv_checker")
+    check(not m3d_uv.checker_on(bpy.context), "Checker off from the dock")
+
+
+@step
+def uv_arrange_buttons():
+    bpy.context.tool_settings.mesh_select_mode = (True, False, False)   # Select Pinned works in Vertex mode only.
+    _ob, bm, uv = uv_bmesh()
+    first = lambda: [tuple(loop[uv].uv) for loop in uv_bmesh()[1].faces[0].loops]
+    before = first()
+    uv_press_table(m3d_uv.UV_SELECT_PAGE)
+    uv_press_ok("m3d.uv_flip", axis='U')
+    check(first() != before, "Flip U moved the UVs")
+    after_flip = first()
+    uv_press_ok("m3d.uv_rotate", clockwise=True)
+    check(first() != after_flip, "Rotate 90 turned the UVs")
+    uv_press_ok("m3d.uv_rotate", clockwise=False)
+    uv_press_ok("m3d.uv_flip", axis='U')
+    check(all(abs(a - b) < 1e-4 for p, q in zip(first(), before) for a, b in zip(p, q)), "Flip twice and rotate back: same UVs")
+    uv_press_ok("uv.pin")
+    check(all(loop[uv_bmesh()[2]].pin_uv for f in uv_bmesh()[1].faces for loop in f.loops), "Pin pinned the selected UVs")
+    uv_press_ok("uv.pin", clear=True)
+    check(not any(loop[uv_bmesh()[2]].pin_uv for f in uv_bmesh()[1].faces for loop in f.loops), "Unpin cleared the pins")
+    uv_press_table(m3d_uv.UVTK_TRANSFORM)
+    uv_press_table(m3d_uv.UV_SHELVES)
+    uv_press_table(m3d_uv.UV_PIN_PAGE)
+    uv_press_table(m3d_uv.UVTK_CUT_SEW)
+    check(not tracebacks(), "Python error in the Arrange / Pin / Cut buttons")
+
+
+@step
+def uv_create_buttons():
+    uv_press_table([it for it in m3d_uv.UVTK_CREATE if it[1] != "uv.smart_project"])
+    uv_press_ok("uv.smart_project")   # Opens its options: close them.
+    esc()
+
+
+@step
+def uv_create_check():
+    check(not window().modal_operators, "Smart Project's options closed (%s)" % [o.bl_idname for o in window().modal_operators])
+    check(not tracebacks(), "Python error in the projection buttons")
+
+
+@step
+def uv_status_line_toggles():
+    # The Status Line's controls are properties: flip each one (sync, select modes, shell select, Live Unwrap,
+    # Distortion + type, texture size) and let the top bar draw every state.
+    ts = bpy.context.tool_settings
+    area, _region = uv_areas()
+    uvedit = area.spaces.active.uv_editor
+    GIZMO["toggles"] = [
+        lambda: setattr(ts, "use_uv_select_sync", False),
+        lambda: setattr(ts, "uv_select_mode", 'EDGE'),
+        lambda: setattr(ts, "uv_select_mode", 'FACE'),
+        lambda: setattr(ts, "uv_select_mode", 'VERTEX'),
+        lambda: setattr(ts, "use_uv_select_island", True),
+        lambda: setattr(uvedit, "use_live_unwrap", True),
+        lambda: setattr(uvedit, "show_stretch", True),
+        lambda: setattr(uvedit, "display_stretch_type", 'ANGLE'),
+        lambda: setattr(bpy.context.scene.m3d_uv, "texture_size", '4096'),
+        lambda: setattr(ts, "use_uv_select_sync", True),
+    ]
+
+
+def _toggle_step():
+    GIZMO["toggles"].pop(0)()
+    for a in window().screen.areas:
+        a.tag_redraw()
+    bpy.context.window_manager.m3d_shelf = 'UV'
+    check(not tracebacks(), "Python error drawing the UV Status Line")
+
+
+for _i in range(10):
+    step(_toggle_step)
+
+
+@step
+def uv_status_line_done():
+    ts = bpy.context.tool_settings
+    area, _region = uv_areas()
+    uvedit = area.spaces.active.uv_editor
+    check(ts.use_uv_select_sync and ts.use_uv_select_island and uvedit.use_live_unwrap and uvedit.show_stretch
+          and bpy.context.scene.m3d_uv.texture_size == '4096', "Status Line toggles stuck")
+    ts.use_uv_select_island = False
+    uvedit.use_live_unwrap = uvedit.show_stretch = False
+    bpy.context.scene.m3d_uv.texture_size = '1024'
+    for key in m3d_ui.shelves_for('UV'):
+        bpy.context.window_manager.m3d_shelf = key
+        for a in window().screen.areas:
+            a.tag_redraw()
+    bpy.context.window_manager.m3d_shelf = 'UV'
+
+
+@step
+def uv_shelf_buttons():
+    # The shelf draws its buttons like the dock: the same routes, the same results.
+    check(not tracebacks(), "Python error drawing the UV shelf")
+    for item in m3d_uv.SHELF_UV:
+        if item:
+            uv_press_ok(item[0], **item[2])
+    check(not tracebacks(), "Python error in the UV shelf buttons")
+
+
+@step
+def uv_keys_layout():
+    GIZMO["op"] = None
+    event('MOUSEMOVE', xy=uv_xy())
+    event('P', 'PRESS', uv_xy(), alt=True)
+    event('P', 'RELEASE', uv_xy(), alt=True)
+
+
+@step
+def uv_keys_unfold():
+    check(last_operator() == "M3D_OT_uv_layout", "Alt+P ran Layout (last operator %s)" % last_operator())
+    event('U', 'PRESS', uv_xy(), ctrl=True, shift=True)
+    event('U', 'RELEASE', uv_xy(), ctrl=True, shift=True)
+
+
+@step
+def uv_keys_density():
+    check(last_operator() == "M3D_OT_uv_unfold", "Ctrl+Shift+U ran Unfold (last operator %s)" % last_operator())
+    event('T', 'PRESS', uv_xy(), shift=True)
+    event('T', 'RELEASE', uv_xy(), shift=True)
+
+
+@step
+def uv_keys_checker():
+    check(last_operator() == "M3D_OT_uv_texel_density", "Shift+T ran texel density (last operator %s)" % last_operator())
+    event('C', 'PRESS', uv_xy(), alt=True)
+    event('C', 'RELEASE', uv_xy(), alt=True)
+
+
+@step
+def uv_keys_sync():
+    check(m3d_uv.checker_on(bpy.context), "Alt+C turned the checker on")
+    GIZMO["sync"] = bpy.context.tool_settings.use_uv_select_sync
+    event('S', 'PRESS', uv_xy(), alt=True)
+    event('S', 'RELEASE', uv_xy(), alt=True)
+
+
+@step
+def uv_keys_done():
+    check(bpy.context.tool_settings.use_uv_select_sync != GIZMO["sync"], "Alt+S toggled UV Sync")
+    bpy.context.tool_settings.use_uv_select_sync = GIZMO["sync"]
+    event('C', 'PRESS', uv_xy(), alt=True)
+    event('C', 'RELEASE', uv_xy(), alt=True)
+
+
+@step
+def uv_keys_checker_off():
+    check(not m3d_uv.checker_on(bpy.context), "Alt+C turned the checker off")
+    check(not tracebacks(), "Python error from the UV keys")
+
+
+@step
+def uv_udim_image():
+    # A UDIM image in the UV editor: tile buttons run in the editor, Pack to Tile works.
+    area, _region = uv_areas()
+    image = bpy.data.images.new("udim_test", 256, 256, tiled=True)
+    area.spaces.active.image = image
+    GIZMO["image"] = image
+    uv_press_ok("image.tile_add")   # Opens its options: close them, then add with them.
+    esc()
+
+
+@step
+def uv_udim_tiles():
+    check(not window().modal_operators, "tile options closed")
+    area, region = uv_areas()
+    image = GIZMO["image"]
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=area, region=region, space_data=area.spaces.active):
+        check(bpy.ops.image.tile_add('EXEC_DEFAULT', number=1002, count=1, label="", fill=False) == {'FINISHED'}, "Add Tile")
+        check(len(image.tiles) == 2, "image has two tiles (%d)" % len(image.tiles))
+        image.tiles.active_index = 1
+        check(bpy.ops.image.tile_fill('EXEC_DEFAULT') == {'FINISHED'}, "Fill Tile")
+    uv_press_table(m3d_uv.UV_TILES)
+    area.spaces.active.uv_editor.tile_grid_shape = (2, 1)
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def uv_udim_tiles_drawn():
+    check(not tracebacks(), "Python error drawing the UDIM tab with tiles")
+    area, region = uv_areas()
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=area, region=region, space_data=area.spaces.active):
+        check(bpy.ops.image.tile_remove() == {'FINISHED'}, "Remove Tile")
+    area.spaces.active.image = None
+    bpy.data.images.remove(GIZMO["image"])
+
+
+def _uv_tab_steps():
+    for object_mode in (False, True):
+        for tab in m3d_workspace.DOCK_TABS['UV']['RIGHT']:
+            def show(tab=tab, object_mode=object_mode):
+                if object_mode and bpy.context.mode != 'OBJECT':
+                    bpy.ops.object.mode_set(mode='OBJECT')
+                uv_dock().spaces.active.context = tab.context
+                window().workspace.m3d_page_right = tab.page
+                for a in window().screen.areas:
+                    a.tag_redraw()
+
+            def check_draw(tab=tab, object_mode=object_mode):
+                check(not tracebacks(), "Python error while drawing the UV page %s%s" % (tab.page, " (Object Mode)" if object_mode else ""))
+            show.__name__, check_draw.__name__ = "uv_show_" + tab.page + str(object_mode), "uv_drawn_" + tab.page + str(object_mode)
+            yield show
+            yield check_draw
+
+
+for _fn in _uv_tab_steps():
+    step(_fn)
+
+
+@step
+def uv_done():
+    window().workspace.m3d_page_right = ""
+    bpy.ops.m3d.workspace(kind='MODEL')
+    check(not tracebacks(), "Python error in the UV workspace tests")
 
 
 @step

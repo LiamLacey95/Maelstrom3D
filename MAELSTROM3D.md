@@ -19,12 +19,12 @@ named here only to describe compatibility.*
 | Startup | Empty scene (camera `persp` and light hidden), a 35 mm-equivalent default camera field of view, dock opens on Channel Box, no splash, solid toolbox/dock strips, Segoe UI font | `versioning_defaults.cc`, `m3d_mode.py` (factory startup / preferences handlers) |
 | Layout | Modeling: Outliner left, Attribute Editor dock right, Time Slider and Command Line bottom. Workspaces (F1-F7 are the first seven): Modeling, Sculpt, UV, Texture, Rigging, Animation, Rendering, Shading, Compositing, Node Editor, Script Editor | `release/datafiles/startup.blend` (from `tools/m3d/build_startup.py`) |
 | Top rows | Four stacked rows: menu bar (menu set dropdown + File/Edit/Create/Select/Modify/Display/Windows + menu-set menus + Help), Status Line (with "Workspace:"), shelf tabs, shelf buttons | `screen_edit.cc`, `space_topbar.cc` (extra top-bar rows), `m3d_ui.py`, `bl_ui/space_topbar.py` |
-| Shelf | Shelf tabs (Curves/Surfaces, Poly Modeling, Sculpting, Rigging, Animation, Rendering, FX, Custom) and large buttons in the top rows; every workspace has a Custom tab (right-click any button, Add to Shelf) | `m3d_ui.py`, `m3d_user.py` |
+| Shelf | Shelf tabs (Curves/Surfaces, Poly Modeling, Sculpting, Rigging, Animation, Rendering, FX, UV, Custom) and large buttons in the top rows; every workspace has a Custom tab (right-click any button, Add to Shelf) | `m3d_ui.py`, `m3d_user.py` |
 | Viewport | Panel menus (View, Shading, Lighting, Show, Renderer, Panels) and panel toolbar only (Blender's menus under "..."), viewport HUD (camera name, axis triad) | `m3d_ui.py`, `m3d_hud.py`, `bl_ui/space_view3d.py` |
 | Right-hand dock | Tabs on the right edge: Channel Box / Layer Editor, Modeling Toolkit, Tool Settings, then the Attribute Editor tabs (Object, Modifiers, Material, ...) | `space_buttons.cc`, `buttons_context.cc`, `DNA_space_enums.h`, `rna_space.cc`, `m3d_mode.py` |
 | Editor names | Attribute Editor, Shader Editor, Script Editor, Command Line, Command History, Time Editor | `rna_space.cc`, `node_shader_tree.cc` |
 | Marking menus | RMB, Shift+RMB, Ctrl+RMB in the viewport; RMB, Shift+RMB in the UV Editor; Space hotbox | `m3d_mode.py`, `m3d_uv.py` |
-| UV editing | UV Toolkit, Cut/Sew/Unfold/Layout workflow, checker map | `scripts/startup/m3d_uv.py` |
+| UV editing | UV workspace (F3): dock tabs, Status Line and shelf for Cut/Sew/Unfold/Optimize/Layout, texel density, Auto Unwrap, UDIMs, checker map; sidebar UV Toolkit in other workspaces | `scripts/startup/m3d_uv.py` |
 | Title | Window title says Maelstrom3D | `wm_window.cc` |
 
 ## Everyday controls
@@ -83,25 +83,36 @@ named here only to describe compatibility.*
   - Edge: Extrude, Bevel, Bridge, Connect, Insert Edge Loop, Offset Edge Loop, Slide, Collapse, Merge to Center, Fill Hole, Spin, Crease, Soften/Harden, Cut UVs, Detach, Delete.
   - Face: Extrude, Extrude Offset, Bevel, Bridge, Poke, Wedge, Add Divisions, Triangulate, Quadrangulate, Merge to Center, Duplicate, Extract, Detach, Flip, Planar UV, Delete.
 
-## UV editing 
+## UV editing (F3)
 
-F3, or F12 in component mode (or UV > UV Workspace), opens the UV workspace. The UV Toolkit sits on the right of
-the UV Editor, like Maya's:
+F3, or F12 in component mode (or UV > UV Workspace), opens the UV workspace in Edit Mode: the UV Editor large on the left,
+the 3D view (Solid, seams shown) on the right, and the dock with the UV tools. Names are Blender's own.
 
-| Section | Tools |
+| Part | Contents |
 |---|---|
-| Selection | Sync with viewport, UV / Edge / Face mode, Shell, Grow, Shrink, Invert, Overlapping |
-| Pin | Pin, Unpin |
-| Transform | Flip U/V, Rotate 90, Align U/V, Straighten, Snap Together |
-| Create | Automatic, Planar, Cylindrical, Spherical, Camera-Based, Cube |
-| Cut and Sew | Cut, Sew, Split, Merge, Auto Seams |
-| Unfold | Unfold, Optimize, Layout, Orient Shells, Match Texel Scale |
-| Display | Checker map (toggle), Distortion, Shaded UVs |
+| Status Line | Object / Edit Mode, UV Sync, select mode (Vertex / Edge / Face) and Shell select, Live Unwrap, Distortion (and its type), Checker, texture size |
+| Shelf | Cut, Sew, Unfold, Optimize, Layout (large buttons), Auto Unwrap, Custom |
+| Unwrap tab | Cut and Sew (Cut, Sew, Split, Merge, Auto Seams from shells), Unfold (Angle Based or Conformal, Fill Holes), Optimize (iterations), Layout (margin, rotation: none / 90 degrees / axis aligned / any), Pin (Pin, Unpin, Invert Pins, Select Pinned) |
+| Arrange tab | Select (Shell, Grow, Shrink, Invert, Overlapping, Pinned), Transform (Flip U/V, Rotate 90, Align U/V, Straighten, Snap Together), Shells (Orient Shells, Match Scale) |
+| Check tab | Checker map, Distortion (angle or area), Shaded UVs, Texel Density: texture size, target, **Read**, **Set**, **Match** |
+| Create tab | Auto Unwrap (seam angle, margin), projections: Automatic, Planar, Cylindrical, Spherical, Camera-Based, Cube |
+| UDIM tab | The UV Editor's image (New / New UDIM Image), tile list with Add, Remove, Fill, tile grid, Pack to Active / Closest Tile, Select Tile |
 
-Typical flow, as in Maya: select edges, **Cut** (Shift+RMB in the UV Editor), select the shells, **Unfold**, then **Layout**.
-In the UV Editor: RMB switches UV / Edge / Face / Shell, Shift+RMB has Cut, Sew, Unfold, Layout, Straighten, Orient,
-Optimize, Automatic. F9-F11 change mode, Z undoes, Alt+MMB/RMB pan and zoom.
+Typical flow: **Cut** the edges you want as seams, **Unfold**, **Optimize** if shells stretch (it is slow on dense
+meshes, so it has its own button), **Layout**, then check Distortion and the Checker map and match the Texel Density.
+**Auto Unwrap** does cut (at edges sharper than the seam angle), unfold and layout in one go; a smooth shape with no
+sharp edge is projected instead. Buttons in the dock and shelf run in the UV Editor, so they work on the UV selection.
+UV Sync (Alt+S) makes the UV Editor follow the 3D view's selection; with it off, only what is selected in the UV Editor
+is used. Texel density is pixels per unit at the texture size in the Status Line: Read measures the selected shells
+(nothing selected: the whole mesh), Set scales every selected shell about its centre to the target, Match scales
+them to the shell of the active face.
 
+Keys in the UV Editor: Alt+P Layout, Ctrl+Shift+U Unfold, Alt+C Checker, Shift+T Set texel density, Alt+S UV Sync.
+RMB switches UV / Edge / Face / Shell, Shift+RMB has Cut, Sew, Unfold, Layout, Straighten, Orient, Optimize, Automatic.
+F9-F11 change mode, Z undoes, Alt+MMB/RMB pan and zoom. The checker map is taken off before a file is saved (and put
+back afterwards), so scene files never keep it.
+
+A UV Editor opened in another workspace (Windows > UV Editor) keeps the old sidebar UV Toolkit with the same tools.
 Difference from Maya: Blender stores cuts as seams, and shells split when you Unfold. Maya splits them as soon as you cut.
 
 ## Sculpt (F2)

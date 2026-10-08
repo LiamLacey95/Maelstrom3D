@@ -13,6 +13,7 @@ import bpy
 from bpy.types import Menu, Panel
 
 import m3d_sculpt
+import m3d_uv
 from m3d_uv import UVTK_CREATE, UVTK_CUT_SEW, UVTK_PIN, UVTK_SELECT, UVTK_UNFOLD
 from m3d_workspace import KINDS, current_kind
 
@@ -79,6 +80,20 @@ def needs_view3d(idname):
     return idname.startswith(_VIEW3D_PREFIXES)
 
 
+# Operators that need the UV Editor: drawn anywhere else they run there through `m3d.call` (when the screen has one).
+_UV_EDITOR_PREFIXES = ("uv.", "m3d.uv_", "image.tile_", "image.new")
+
+
+def call_target(context, idname):
+    """The editor ('VIEW_3D' or 'IMAGE_EDITOR') an operator drawn here has to run in through `m3d.call`, or None
+    when it can run in place."""
+    area = context.area.type if context.area is not None else None
+    has_uv_editor = context.screen is not None and any(a.type == 'IMAGE_EDITOR' for a in context.screen.areas)
+    if idname.startswith(_UV_EDITOR_PREFIXES) and not needs_view3d(idname) and has_uv_editor:
+        return None if area == 'IMAGE_EDITOR' else 'IMAGE_EDITOR'
+    return 'VIEW_3D' if area != 'VIEW_3D' and (needs_view3d(idname) or not _poll(idname)) else None
+
+
 def _resolve(context, path):
     owner_path, _, attr = path.rpartition(".")
     owner = context
@@ -115,13 +130,15 @@ def draw_entries(layout, context, entries):
             elif not in_view3d:
                 o = layout.operator("m3d.call", text=e["label"])
                 o.idname, o.props = "wm.context_toggle", repr({"data_path": e["path"]})
-        elif not in_view3d and (needs_view3d(e["idname"]) or not _poll(e["idname"])):
-            o = layout.operator("m3d.call", text=e["label"], icon=e["icon"])
-            o.idname, o.props, o.label = e["idname"], repr(e["props"]), e["label"]
         else:
-            o = layout.operator(e["idname"], text=e["label"], icon=e["icon"])
-            for k, v in e["props"].items():
-                setattr(o, k, v)
+            target = call_target(context, e["idname"])
+            if target:
+                o = layout.operator("m3d.call", text=e["label"], icon=e["icon"])
+                o.idname, o.props, o.label, o.editor = e["idname"], repr(e["props"]), e["label"], target
+            else:
+                o = layout.operator(e["idname"], text=e["label"], icon=e["icon"])
+                for k, v in e["props"].items():
+                    setattr(o, k, v)
 
 
 # -----------------------------------------------------------------------------
@@ -396,7 +413,9 @@ MENUS = {
         op("Cut", "m3d.uv_cut", modes=EDIT),
         op("Sew", "m3d.uv_sew", modes=EDIT),
         op("Unfold", "m3d.uv_unfold", modes=EDIT),
-        op("Layout", "uv.pack_islands", modes=EDIT, margin=0.01),
+        op("Optimize", "m3d.uv_optimize", modes=EDIT),
+        op("Layout", "m3d.uv_layout", modes=EDIT),
+        op("Auto Unwrap", "m3d.uv_auto", modes=EDIT),
     ]),
 
     # Sculpting menu set (Blender's own Sculpt, Mask and Face Sets menus).
@@ -808,7 +827,6 @@ def draw_workspace_picker(layout, context):
 _OBJECT_MODE = ('OBJECT', 'OBJECT_DATAMODE', "Object Mode", {'OBJECT'})
 _EDIT_MODE = ('EDIT', 'EDITMODE_HLT', "Edit Mode", {'EDIT_MESH', 'EDIT_ARMATURE', 'EDIT_CURVE'})
 KIND_MODES = {
-    'UV': (_OBJECT_MODE, _EDIT_MODE),
     'TEXTURE': (_OBJECT_MODE, ('TEXTURE_PAINT', 'TPAINT_HLT', "Texture Paint Mode", {'PAINT_TEXTURE'})),
     'RIG': (_OBJECT_MODE, _EDIT_MODE, ('POSE', 'POSE_HLT', "Pose Mode", {'POSE'}),
             ('WEIGHT_PAINT', 'WPAINT_HLT', "Weight Paint Mode", {'PAINT_WEIGHT'})),
@@ -829,7 +847,11 @@ def draw_status_line_sculpt(layout, context):
     m3d_sculpt.draw_status_line(layout, context)
 
 
-STATUS_LINES = {'MODEL': draw_status_line_model, 'SCULPT': draw_status_line_sculpt}
+def draw_status_line_uv(layout, context):
+    m3d_uv.draw_status_line(layout, context)
+
+
+STATUS_LINES = {'MODEL': draw_status_line_model, 'SCULPT': draw_status_line_sculpt, 'UV': draw_status_line_uv}
 
 
 def draw_status_line(layout, context):
@@ -909,6 +931,7 @@ class VIEW3D_PT_m3d_quick_layouts(Panel):
 # Maya shelves: tab -> (idname, icon, props). Shown in the viewport's shelf row (tool header).
 _MODEL = frozenset({'MODEL'})
 _SCULPT = frozenset({'SCULPT'})
+_UV = frozenset({'UV'})
 # Shelf tab key -> (label, buttons, kinds of workspace that show the tab). A button is (idname, icon, props) or
 # (idname, icon, props, text); None is a gap; a function draws its own widgets into the row.
 SHELVES = {
@@ -1012,6 +1035,7 @@ SHELVES = {
     'SCULPT_BRUSHES': ("Sculpt", m3d_sculpt.SHELF_BRUSHES, _SCULPT),
     'SCULPT_REMESH': ("Remesh", m3d_sculpt.SHELF_REMESH, _SCULPT),
     'SCULPT_MASK': ("Mask", m3d_sculpt.SHELF_MASK, _SCULPT),
+    'UV': ("UV", m3d_uv.SHELF_UV, _UV),
     # Buttons added by the user (m3d_user.py); every kind has its own.
     'CUSTOM': ("Custom", [], frozenset(KINDS)),
 }

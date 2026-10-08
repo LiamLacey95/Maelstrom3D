@@ -3,7 +3,7 @@
 <img src="docs/media/maelstrom3d-icon.png" width="96" align="right" alt="Maelstrom3D icon">
 
 **A 3D creation suite based on Blender 5.2, with a classic studio workflow:** menu sets, a Status Line and shelves
-across the top, a Channel Box dock, marking menus, a Modeling Toolkit, a UV Toolkit and a MEL command line.
+across the top, a Channel Box dock, marking menus, a Modeling Toolkit, a UV workspace and a MEL command line.
 Artists who learned on Autodesk® Maya® will find the hotkeys and layout familiar.
 
 Maelstrom3D is a fork of [Blender](https://www.blender.org) (branch `maelstrom3d`, based on the `v5.2.2` LTS
@@ -23,7 +23,7 @@ Maelstrom3D keeps its settings apart from Blender's (`%APPDATA%\Maelstrom3D`), s
 | ![Marking menus](docs/media/marking_menus.gif) | ![Dock](docs/media/dock.gif) |
 | **Marking menus:** W + left click, Shift / Ctrl+Shift right-click, Space hotbox. [MP4](docs/media/marking_menus.mp4) | **Right-hand dock:** Channel Box / Layer Editor, Attribute Editor (Ctrl+A), Modeling Toolkit. [MP4](docs/media/dock.mp4) |
 | ![UV editing](docs/media/uv.gif) | ![MEL](docs/media/mel.gif) |
-| **UV editing:** F3 / F12, UV Toolkit, Automatic / Layout, checker map. [MP4](docs/media/uv.mp4) | **MEL command line:** `polyCube -w 3 -n floor;`, plus `cmds` in Python. [MP4](docs/media/mel.mp4) |
+| **UV editing:** F3 / F12, UV tabs, Cut / Sew / Unfold / Layout, checker map. [MP4](docs/media/uv.mp4) | **MEL command line:** `polyCube -w 3 -n floor;`, plus `cmds` in Python. [MP4](docs/media/mel.mp4) |
 
 ## What you get
 
@@ -40,7 +40,8 @@ Maelstrom3D keeps its settings apart from Blender's (`%APPDATA%\Maelstrom3D`), s
 - **Look:** mid-grey UI with a blue highlight, gradient viewport, green / white selection, square widgets.
 - **Sculpt workflow (F2):** brush tray, Multires / Voxel Remesh / QuadriFlow / Dyntopo, mask and face set tools, mesh filters,
   color paint, display options and a mesh list, Shift+1-7 brush keys.
-- **UV workflow:** UV Toolkit, Cut / Sew / Unfold / Layout, checker map, UV marking menus.
+- **UV workflow (F3):** UV Editor and 3D view with a dock of Unwrap, Arrange, Check, Create and UDIM tabs, Cut / Sew / Unfold /
+  Optimize / Layout, Auto Unwrap, texel density read / set / match, distortion and checker map, UV marking menus.
 - **Scripting:** `m3d.cmds` (`polyCube`, `move`, `setAttr`, `select`, `ls`, ...) and MEL in the command line.
   Existing scripts that `import maya.cmds` run through a compatibility alias.
 

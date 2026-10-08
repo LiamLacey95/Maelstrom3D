@@ -120,9 +120,33 @@ def phase1_sculpt():
     ws.m3d_page_left, ws.m3d_page_right = "sculpt_brushes", "sculpt_geometry"
 
 
-DOCK_WIDER = 170  # pixels of the 2560 px build window: seven tabs, All Settings and the tab menu fit
+def phase2_uv():
+    """UV: the UV editor wider than the 3D view (its sidebar closed: the UV tools are the dock's pages), the 3D view
+    in Solid shading with seams shown, the dock on the Unwrap page."""
+    ws = bpy.data.workspaces["UV"]
+    show(ws)
+    yield 0.6
+    screen = window().screen
+    image, view = areas(screen, 'IMAGE_EDITOR')[0], areas(screen, 'VIEW_3D')[0]
+    if image.width < view.width * 1.15:
+        edge = (view.x - 1, view.y + view.height // 2)
+        window().event_simulate(type='MOUSEMOVE', value='NOTHING', x=edge[0], y=edge[1])
+        yield 0.3
+        with bpy.context.temp_override(window=window(), screen=screen):
+            bpy.ops.screen.area_move(x=edge[0], y=edge[1], delta=UV_WIDER)
+        yield 0.3
+    image.spaces.active.show_region_ui = False
+    view.spaces.active.shading.type = 'SOLID'
+    view.spaces.active.overlay.show_edge_seams = True
+    dock = areas(screen, 'PROPERTIES')[0]
+    dock.spaces.active.context = 'MODELING_TOOLKIT'
+    ws.m3d_page_right = "uv_unwrap"
 
-PHASES = [phase0_workspaces, phase1_sculpt]
+
+DOCK_WIDER = 170  # pixels of the 2560 px build window: seven tabs, All Settings and the tab menu fit
+UV_WIDER = 250  # pixels the UV editor gets from the 3D view
+
+PHASES = [phase0_workspaces, phase1_sculpt, phase2_uv]
 
 
 def save():

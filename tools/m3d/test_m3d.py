@@ -277,7 +277,7 @@ check(wm.m3d_menu_set == 'MODELING' and wm.m3d_shelf == 'POLY', "shelf tab is re
 check(m3d_ui.shelves_for('SCULPT') == ['SCULPT_BRUSHES', 'SCULPT_REMESH', 'SCULPT_MASK', 'CUSTOM']
       and 'POLY' in m3d_ui.shelves_for('MODEL') and m3d_ui.shelves_for('MODEL')[-1] == 'CUSTOM', "shelf tabs per kind")
 check(set(m3d_ui.KIND_MODES) == set(W.KINDS) - set(m3d_ui.STATUS_LINES), "placeholder status line modes for the other kinds")
-check(set(m3d_ui.STATUS_LINES) == {'MODEL', 'SCULPT'}, "status lines")
+check(set(m3d_ui.STATUS_LINES) == {'MODEL', 'SCULPT', 'UV'}, "status lines")
 
 # Page panels: only on their page, per workspace and side.
 ws = bpy.data.workspaces["Modeling"]
@@ -301,7 +301,7 @@ ws.m3d_page_right = "test_page"
 check(W.active_page(ctx()) == "test_page" and TestPage.poll(ctx()), "test page active on the right")
 check(not m3d_mode.PROPERTIES_PT_m3d_mtk_selection.poll(ctx()), "toolkit panel hidden on another page")
 check(W.active_page(ctx(0)) == "left_page" and not TestPage.poll(ctx(0)), "left tray has its own page")
-other = bpy.data.workspaces["UV"]
+other = bpy.data.workspaces["Shading"]
 check(other.m3d_page_right == "" and W.active_page(ctx(1500, other)) == "modeling_toolkit",
       "pages are stored per workspace")
 W.DOCK_TABS['MODEL'] = saved
@@ -589,5 +589,277 @@ bpy.ops.m3d.sculpt_object(name=ob.name, action='DUPLICATE')
 check(len([o for o in bpy.data.objects if o.type == 'MESH']) == count + 1 and bpy.context.mode == 'SCULPT'
       and bpy.context.active_object not in {ob, second}, "Objects: duplicate")
 
+# ----------------------------------------------------------------------------------------------------
+# Phase 2: UV workspace (tabs, pages, buttons, texel density, Auto Unwrap, checker, keys).
+import m3d_uv as U
+import math
+from mathutils import Vector
+
+uv_ws = bpy.data.workspaces["UV"]
+uv_tabs = W.DOCK_TABS['UV']
+check([t.label for t in uv_tabs['RIGHT']] == ["Unwrap", "Arrange", "Check", "Create", "UDIM"], "UV dock tabs")
+check(uv_tabs['LEFT'] == () and W.dock_tabs('UV', 'LEFT') == uv_tabs['RIGHT'], "UV has no left tray")
+for tab in uv_tabs['RIGHT']:
+    check(tab.context == 'MODELING_TOOLKIT' and tab.page == tab.id and tab.id.startswith("uv_"), "UV page tab " + tab.id)
+uv_pages = {t.page for t in uv_tabs['RIGHT']}
+check({c.page for c in U.classes if hasattr(c, "page")} == uv_pages, "every UV page has panels and the other way round")
+check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in U.classes if c is not U.M3D_UVSettings),
+      "UV classes registered")
+check(m3d_ui.shelves_for('UV') == ['UV', 'CUSTOM'] and 'UV' in m3d_ui.STATUS_LINES and 'UV' not in m3d_ui.KIND_MODES,
+      "UV shelf tabs and Status Line")
+check([it[3] for it in m3d_ui.SHELVES['UV'][1] if it] == ["Cut", "Sew", "Unfold", "Optimize", "Layout", "Auto Unwrap"],
+      "UV shelf buttons")
+
+# Buttons outside the UV Editor run in it (m3d.call with editor), the 3D view keeps its own.
+def target(area, screen_types, idname):
+    ctx = NS(area=NS(type=area), screen=NS(areas=[NS(type=t) for t in screen_types]))
+    return m3d_ui.call_target(ctx, idname)
+check(target('PROPERTIES', ['VIEW_3D', 'IMAGE_EDITOR'], "uv.align") == 'IMAGE_EDITOR', "dock button runs in the UV Editor")
+check(target('TOPBAR', ['VIEW_3D', 'IMAGE_EDITOR'], "m3d.uv_cut") == 'IMAGE_EDITOR', "shelf button runs in the UV Editor")
+check(target('PROPERTIES', ['IMAGE_EDITOR'], "image.tile_add") == 'IMAGE_EDITOR', "tile buttons run in the UV Editor")
+check(target('IMAGE_EDITOR', ['IMAGE_EDITOR'], "uv.align") is None, "UV Editor button runs in place")
+check(target('PROPERTIES', ['VIEW_3D', 'IMAGE_EDITOR'], "uv.project_from_view") == 'VIEW_3D', "Planar needs the 3D view")
+check(target('VIEW_3D', ['VIEW_3D'], "mesh.bevel") is None and target('PROPERTIES', ['VIEW_3D'], "mesh.bevel") == 'VIEW_3D',
+      "3D view routing is unchanged")
+check(target('TOPBAR', ['VIEW_3D'], "uv.smart_project") != 'IMAGE_EDITOR', "no UV Editor: the old route")
+
+# Sidebar UV Toolkit: only where the workspace has no dock for it.
+toolkit = U.IMAGE_PT_m3d_uvtk_selection
+check(not toolkit.poll(NS(space_data=NS(show_uvedit=True), workspace=uv_ws)) and
+      toolkit.poll(NS(space_data=NS(show_uvedit=True), workspace=bpy.data.workspaces["Modeling"])),
+      "UV Toolkit sidebar is not in the UV workspace")
+
+# Keys: UV Editor keymap only, free in the keymaps around it.
+bpy.utils.keyconfig_set(bpy.utils.preset_find("Maelstrom3D", "keyconfig"))
+kc = bpy.context.window_manager.keyconfigs["Maelstrom3D"]
+for idname, key, mods, props in (("m3d.uv_layout", 'P', dict(alt=True), {}),
+                                 ("m3d.uv_unfold", 'U', dict(ctrl=True, shift=True), {}),
+                                 ("m3d.uv_checker", 'C', dict(alt=True), {}),
+                                 ("m3d.uv_texel_density", 'T', dict(shift=True), {"mode": 'SET'}),
+                                 ("wm.context_toggle", 'S', dict(alt=True), {"data_path": "tool_settings.use_uv_select_sync"})):
+    want = {"shift": False, "ctrl": False, "alt": False, **mods}
+    item = find("UV Editor", idname, key, **want)
+    check(item and all(getattr(item[0].properties, k) == v for k, v in props.items()), "UV key %s %s" % (key, mods))
+    others = [(km.name, k.idname) for km in kc.keymaps for k in km.keymap_items
+              if k.type == key and all(getattr(k, m) == v for m, v in want.items()) and not k.oskey
+              and (km.name, k.idname) != ("UV Editor", idname)
+              and km.name in {"Window", "Screen", "Screen Editing", "Frames", "Image", "UV Editor", "Property Editor"}]
+    check(not others, "UV key %s %s is free: %s" % (key, mods, others))
+
+# Page panels: gate messages without a mesh / outside Edit Mode, every page panel in Edit Mode.
+bpy.ops.object.mode_set(mode='OBJECT')
+for ob in list(bpy.data.objects):
+    bpy.data.objects.remove(ob)
+
+
+class UCtx(SCtx):
+    """Context of the UV dock: the real one with the UV workspace."""
+    def __init__(self):
+        super().__init__('RIGHT')
+        self.workspace = uv_ws
+
+
+def uv_page_panels(page):
+    return [c for c in U.classes if getattr(c, "page", None) == page and hasattr(c, "poll")]
+
+
+def uv_shown(page):
+    ctx = UCtx()
+    uv_ws.m3d_page_right = page
+    return [c.__name__ for c in uv_page_panels(page) if c.poll(ctx)]
+
+
+for page in U.GATES:
+    names = uv_shown("uv_" + page)
+    check(len(names) == 1 and names[0].endswith("_gate"), "uv_%s without a mesh shows its message only: %s" % (page, names))
+check(uv_shown("uv_udim") == ["PROPERTIES_PT_m3d_uv_image"], "UDIM tab without a mesh: %s" % uv_shown("uv_udim"))
+bpy.ops.m3d.add_primitive(kind='CUBE')
+cube = bpy.context.active_object
+for page in U.GATES:
+    check(uv_shown("uv_" + page) == ["PROPERTIES_PT_m3d_uv_%s_gate" % page], "uv_%s asks for Edit Mode in Object Mode" % page)
+bpy.ops.object.mode_set(mode='EDIT')
+for page in uv_pages:
+    names = uv_shown(page)
+    check(names and not any(n.endswith("_gate") for n in names), "%s panels in Edit Mode: %s" % (page, names))
+
+ctx = UCtx()
+for page in sorted(uv_pages):
+    for cls in uv_page_panels(page):
+        uv_ws.m3d_page_right = page
+        if cls.poll(ctx):
+            try:
+                check_calls(cls.__name__, draw_stub(cls, ctx))
+            except Exception as err:
+                check(False, "%s draw: %r" % (cls.__name__, err))
+log = []
+m3d_ui.draw_status_line(Rec(log), ctx)
+check_calls("UV status line", log)
+props_drawn = {r._args[1] for r in log if r._kind == "prop"}
+check({"use_uv_select_sync", "use_uv_select_island", "texture_size"} <= props_drawn
+      and any(r._kind == "operator" and r._args[0] == "m3d.uv_checker" for r in log), "UV status line controls")
+for key in m3d_ui.shelves_for('UV'):
+    log = []
+    ctx.window_manager.m3d_shelf = key
+    m3d_ui.draw_shelf(Rec(log), ctx)
+    check_calls("shelf " + key, log)
+for table in (U.UVTK_CUT_SEW, U.UVTK_UNFOLD, U.UV_PIN_PAGE, U.UV_SELECT_PAGE, U.UV_SHELVES, U.UV_TILES, U.UVTK_TRANSFORM,
+              U.UVTK_CREATE):
+    for label, idname, icon, props in table:
+        check(op_ok(idname, props) and icon in icons, "UV button %s %s" % (label, idname))
+
+# Operators. Unfold / Optimize / Layout on a cut cube.
+S2 = bpy.context.scene.m3d_uv
+bpy.ops.mesh.select_all(action='SELECT')
+bpy.ops.m3d.uv_cut()
+check(bpy.ops.m3d.uv_unfold() == {'FINISHED'} and bpy.ops.m3d.uv_optimize() == {'FINISHED'} and
+      bpy.ops.m3d.uv_layout() == {'FINISHED'}, "Unfold, Optimize, Layout run")
+S2.method = 'CONFORMAL'
+check(bpy.ops.m3d.uv_unfold() == {'FINISHED'}, "Unfold with Conformal")
+S2.method = 'ANGLE_BASED'
+S2.rotate = 'OFF'
+check(bpy.ops.m3d.uv_layout() == {'FINISHED'}, "Layout without rotation")
+S2.rotate = 'CARDINAL'
+
+
+def edit_bm(ob):
+    bm = bmesh.from_edit_mesh(ob.data)
+    return bm, bm.loops.layers.uv.verify()
+
+
+def shell_boxes(ob):
+    bm, uv = edit_bm(ob)
+    boxes = []
+    for shell in U.uv_shells(list(bm.faces), uv):
+        pts = [loop[uv].uv for f in shell for loop in f.loops]
+        boxes.append((min(p.x for p in pts), min(p.y for p in pts), max(p.x for p in pts), max(p.y for p in pts)))
+    return boxes
+
+
+def overlap(a, b):
+    return min(a[2], b[2]) - max(a[0], b[0]) > 1e-6 and min(a[3], b[3]) - max(a[1], b[1]) > 1e-6
+
+
+# Texel density on a unit cube: every face its own shell, side 0.5 -> sqrt(0.25 / 1) x 1024 = 512 px/unit.
+S2.texture_size = '1024'
+bm, uv = edit_bm(cube)
+corners = ((0, 0), (1, 0), (1, 1), (0, 1))
+for i, f in enumerate(bm.faces):
+    for loop, (cx, cy) in zip(f.loops, corners):
+        loop[uv].uv = ((i % 3) * 0.6 + cx * 0.5, (i // 3) * 0.6 + cy * 0.5)
+bmesh.update_edit_mesh(cube.data)
+check(len(U.uv_shells(list(bm.faces), uv)) == 6, "six shells on the test cube")
+check(abs(U.uv_area(bm.faces[0], uv) - 0.25) < 1e-6 and abs(U.world_area(bm.faces[0], cube.matrix_world) - 1.0) < 1e-6,
+      "face areas")
+bpy.ops.m3d.uv_texel_density(mode='READ')
+check(abs(S2.density_read - 512.0) < 1e-3, "texel density read %s (want 512)" % S2.density_read)
+S2.density = 1024.0
+bpy.ops.m3d.uv_texel_density(mode='SET')
+bm, uv = edit_bm(cube)
+pts = [loop[uv].uv for loop in bm.faces[0].loops]
+side = max(p.x for p in pts) - min(p.x for p in pts)
+centre = ((max(p.x for p in pts) + min(p.x for p in pts)) / 2, (max(p.y for p in pts) + min(p.y for p in pts)) / 2)
+check(abs(side - 1.0) < 1e-5 and abs(centre[0] - 0.25) < 1e-5 and abs(centre[1] - 0.25) < 1e-5,
+      "set scales the shell about its centre (side %s, centre %s)" % (side, centre))
+bpy.ops.m3d.uv_texel_density(mode='READ')
+check(abs(S2.density_read - 1024.0) < 1e-3, "texel density after set %s" % S2.density_read)
+cube.scale = (2, 2, 2)
+bpy.context.view_layer.update()
+bpy.ops.m3d.uv_texel_density(mode='READ')
+check(abs(S2.density_read - 512.0) < 1e-3, "world scale halves the density: %s" % S2.density_read)
+cube.scale = (1, 1, 1)
+bpy.context.view_layer.update()
+# Match: shrink one shell, make another face active, everything follows the active shell.
+bm, uv = edit_bm(cube)
+U.scale_shell([bm.faces[0]], uv, 0.5)
+bm.faces.active = bm.faces[1]
+bmesh.update_edit_mesh(cube.data)
+bpy.ops.m3d.uv_texel_density(mode='MATCH')
+check(abs(S2.density - 1024.0) < 1e-3 and abs(S2.density_read - 1024.0) < 1e-3, "match target %s" % S2.density)
+bpy.ops.m3d.uv_texel_density(mode='READ')
+check(abs(S2.density_read - 1024.0) < 1e-3, "match: every shell at the active density (%s)" % S2.density_read)
+bpy.context.tool_settings.use_uv_select_sync = False
+bpy.ops.m3d.uv_texel_density(mode='READ')
+check(abs(S2.density_read - 1024.0) < 1e-3, "texel density with sync off")
+bpy.context.tool_settings.use_uv_select_sync = True
+
+# Auto Unwrap: a cube gets 12 seams and six shells inside 0-1 that do not overlap (sync on and off); a sphere is projected.
+for sync in (True, False):
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.data.objects.remove(bpy.context.active_object)
+    bpy.ops.m3d.add_primitive(kind='CUBE')
+    cube = bpy.context.active_object
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.context.tool_settings.use_uv_select_sync = sync
+    check(bpy.ops.m3d.uv_auto() == {'FINISHED'}, "Auto Unwrap runs (sync %s)" % sync)
+    check(bpy.context.tool_settings.use_uv_select_sync == sync, "Auto Unwrap leaves UV Sync as it was")
+    bm, uv = edit_bm(cube)
+    check(sum(e.seam for e in bm.edges) == 12, "cube seams %d" % sum(e.seam for e in bm.edges))
+    boxes = shell_boxes(cube)
+    check(len(boxes) == 6, "cube shells (sync %s): %d" % (sync, len(boxes)))
+    check(all(b[0] >= -1e-6 and b[1] >= -1e-6 and b[2] <= 1 + 1e-6 and b[3] <= 1 + 1e-6 for b in boxes),
+          "shells inside 0-1: %s" % boxes)
+    check(not any(overlap(a, b) for i, a in enumerate(boxes) for b in boxes[i + 1:]), "shells overlap: %s" % boxes)
+bpy.context.tool_settings.use_uv_select_sync = True
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.data.objects.remove(bpy.context.active_object)
+bpy.ops.m3d.add_primitive(kind='SPHERE')
+ball = bpy.context.active_object
+bpy.ops.object.mode_set(mode='EDIT')
+check(bpy.ops.m3d.uv_auto() == {'FINISHED'}, "Auto Unwrap on a smooth sphere")
+bm, uv = edit_bm(ball)
+xs = [loop[uv].uv for f in bm.faces for loop in f.loops]
+check(min(p.x for p in xs) >= -1e-6 and max(p.x for p in xs) <= 1 + 1e-6 and max(p.y for p in xs) <= 1 + 1e-6,
+      "sphere projected into 0-1")
+bpy.ops.object.mode_set(mode='OBJECT')
+
+# F3 (m3d.workspace) with a light active and a mesh selected: the mesh becomes the active object, so Edit Mode can be entered.
+ball = bpy.context.active_object
+bpy.ops.object.light_add(type='POINT')
+light = bpy.context.active_object
+ball.select_set(True)
+bpy.ops.m3d.workspace(kind='UV')
+check(bpy.context.active_object == ball, "F3 picks the selected mesh when a light is active (%s)" % bpy.context.active_object.name)
+light.select_set(True)
+ball.select_set(False)
+bpy.context.view_layer.objects.active = light
+bpy.ops.m3d.workspace(kind='UV')
+check(bpy.context.active_object == light, "F3 with no mesh selected leaves the active object alone")
+bpy.ops.m3d.workspace(kind='MODEL')
+bpy.data.objects.remove(light)
+bpy.context.view_layer.objects.active = ball
+
+# Checker: slots keep their face numbers; the save handlers take it off the file and bring it back.
+bpy.data.objects.remove(bpy.context.active_object)
+bpy.ops.m3d.add_primitive(kind='CUBE')
+box = bpy.context.active_object
+box.name = "CheckerBox"
+for name in ("MatA", "MatB"):
+    box.data.materials.append(bpy.data.materials.new(name))
+box.data.polygons[0].material_index = 1
+bpy.ops.m3d.add_primitive(kind='CUBE')
+bare = bpy.context.active_object
+bare.name = "CheckerBare"
+bpy.ops.object.select_all(action='SELECT')
+bpy.ops.m3d.uv_checker()
+check([s.material.name for s in box.material_slots] == [U.CHECKER] * 2 and box.data.polygons[0].material_index == 1,
+      "checker on keeps the slots and face numbers")
+check(len(bare.material_slots) == 1 and bare.material_slots[0].material.name == U.CHECKER, "checker on a mesh without materials")
+check(U.checker_on(bpy.context), "checker_on")
+check(U.checker_save_pre in bpy.app.handlers.save_pre and U.checker_save_post in bpy.app.handlers.save_post, "save handlers")
+saved = os.path.join(tempfile.mkdtemp(prefix="m3d_test_"), "checker.blend")
+bpy.ops.wm.save_as_mainfile(filepath=saved, copy=True)
+check(all(U.CHECKER in ob for ob in (box, bare)), "checker is back after saving")
+check([s.material.name for s in box.material_slots] == [U.CHECKER] * 2, "checker slots restored after saving")
+bpy.ops.m3d.uv_checker()
+check([s.material.name for s in box.material_slots] == ["MatA", "MatB"] and len(bare.material_slots) == 0, "checker off")
+check(box.data.polygons[0].material_index == 1, "face numbers survive the checker")
+bpy.ops.m3d.uv_checker()
+bpy.ops.wm.open_mainfile(filepath=saved)
+box = bpy.data.objects["CheckerBox"]
+check(bpy.data.materials.get(U.CHECKER) is None and bpy.data.images.get(U.CHECKER) is None, "saved file has no checker material or image")
+check(U.CHECKER not in box and [s.material.name for s in box.material_slots] == ["MatA", "MatB"] and
+      len(bpy.data.objects["CheckerBare"].material_slots) == 0, "saved file has the original materials")
+
 print("FAILS:", fails or "none")
 sys.exit(1 if fails else 0)
+

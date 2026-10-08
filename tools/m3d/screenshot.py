@@ -5,7 +5,9 @@ Screenshots of workspaces (real window, saved with bpy.ops.screen.screenshot).
     blender --factory-startup --python tools/m3d/screenshot.py -- <png prefix> [name ...]
 
 Each name is a workspace name or kind (MODEL, SCULPT, ...); writes <prefix><name>.png and quits. Default: the first workspace.
-`KIND/page` also shows that dock page (e.g. SCULPT/sculpt_mask) and `+sphere` adds a UV sphere first.
+`KIND/page` also shows that dock page (e.g. SCULPT/sculpt_mask). Setup steps (no picture): `+sphere` / `+cube` add a
+mesh, `+unwrap` runs Auto Unwrap (Edit Mode, UV workspace), `+checker` toggles the checker map, `+distortion` shows
+the UV Editor's distortion.
 """
 
 import sys
@@ -17,13 +19,27 @@ PREFIX, NAMES = args[0], args[1:] or [None]
 steps = []
 
 
+def distortion():
+    area = next(a for a in bpy.context.window_manager.windows[0].screen.areas if a.type == 'IMAGE_EDITOR')
+    area.spaces.active.uv_editor.show_stretch = True
+
+
+SETUP = {
+    "+sphere": lambda: bpy.ops.m3d.add_primitive(kind='SPHERE'),
+    "+cube": lambda: bpy.ops.m3d.add_primitive(kind='CUBE'),
+    "+unwrap": lambda: bpy.ops.m3d.uv_auto(),
+    "+checker": lambda: bpy.ops.m3d.uv_checker(),
+    "+distortion": distortion,
+}
+
+
 def switch(name):
     wm = bpy.context.window_manager
     name, _slash, page = (name or "").partition("/")
     if not name:
         return
-    if name == "+sphere":
-        bpy.ops.m3d.add_primitive(kind='SPHERE')
+    if name in SETUP:
+        SETUP[name]()
     elif name.isupper():
         bpy.ops.m3d.workspace(kind=name)
     else:

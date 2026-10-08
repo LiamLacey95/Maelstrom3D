@@ -153,6 +153,12 @@ OVERRIDES = {
           for k, m in (('F9', 'VERTEX'), ('F10', 'EDGE'), ('F11', 'FACE'), ('F12', 'VERTEX'))),
         _kmi("uv.select_more", 'PERIOD', shift=True, repeat=True),
         _kmi("uv.select_less", 'COMMA', shift=True, repeat=True),
+        # UV workspace tools (the same buttons as the shelf and the Unwrap, Check tabs).
+        _kmi("m3d.uv_layout", 'P', alt=True),
+        _kmi("m3d.uv_unfold", 'U', ctrl=True, shift=True),
+        _kmi("m3d.uv_checker", 'C', alt=True),
+        _kmi("m3d.uv_texel_density", 'T', props={"mode": 'SET'}, shift=True),
+        _kmi("wm.context_toggle", 'S', props={"data_path": "tool_settings.use_uv_select_sync"}, alt=True),
     ],
     "Object Non-modal": [
         ("REMOVE", {"type": 'FOUR', "value": 'PRESS'}, None),

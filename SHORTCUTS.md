@@ -144,6 +144,11 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 | F12 | — | UV Select Mode (type='VERTEX') |
 | Shift+. | — | Select More |
 | Shift+, | — | Select Less |
+| Alt+P | — | Layout |
+| Ctrl+Shift+U | — | Unfold |
+| Alt+C | — | Checker Map |
+| Shift+T | — | Texel Density (mode='SET') |
+| Alt+S | — | Toggle tool settings use uv select sync |
 
 ## Object Non-modal
 

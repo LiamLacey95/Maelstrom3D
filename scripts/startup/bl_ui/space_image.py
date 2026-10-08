@@ -872,8 +872,9 @@ class IMAGE_HT_header(Header):
         if sima.mode != 'UV':
             layout.prop(sima, "ui_mode", text="")
 
-        # UV editing.
-        if show_uvedit:
+        # UV editing. Maelstrom3D: the UV workspace's Status Line has UV Sync, the select mode and Shell select.
+        from m3d_workspace import current_kind
+        if show_uvedit and current_kind(context) != 'UV':
             layout.prop(tool_settings, "use_uv_select_sync", text="")
 
             if tool_settings.use_uv_select_sync:
@@ -895,6 +896,7 @@ class IMAGE_HT_header(Header):
                 ).type = 'FACE'
 
             layout.prop(tool_settings, "use_uv_select_island", icon_only=True)
+        if show_uvedit:
             layout.prop(tool_settings, "uv_sticky_select_mode", icon_only=True)
 
         IMAGE_MT_editor_menus.draw_collapsible(context, layout)

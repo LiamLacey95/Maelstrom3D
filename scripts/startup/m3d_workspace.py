@@ -79,6 +79,21 @@ def workspace_screens(kind):
     return list(ws.screens) if ws else []
 
 
+# Entry modes that need a mesh: the workspace enters them on the active object.
+MESH_MODES = {'EDIT', 'SCULPT', 'TEXTURE_PAINT'}
+
+
+def use_selected_mesh(context):
+    """Entering a mesh mode with a light, camera or empty active would leave the workspace in Object Mode: make a
+    selected mesh active instead (nothing selected or active: the workspace's tabs say what to do)."""
+    ob = context.active_object
+    if context.mode != 'OBJECT' or (ob is not None and ob.type == 'MESH'):
+        return
+    mesh = next((o for o in context.selected_objects if o.type == 'MESH'), None)
+    if mesh is not None:
+        context.view_layer.objects.active = mesh
+
+
 class M3D_OT_workspace(Operator):
     """Switch to a task workspace (F1 Modeling ... F7 Rendering) and its menu set"""
     bl_idname = "m3d.workspace"
@@ -97,6 +112,8 @@ class M3D_OT_workspace(Operator):
             return {'CANCELLED'}
         wm = context.window_manager
         win = context.window or (wm.windows[0] if wm.windows else None)
+        if KINDS[self.kind][2] in MESH_MODES:
+            use_selected_mesh(context)
         if win is not None:
             win.workspace = ws
         wm.m3d_menu_set = KINDS[self.kind][3]
@@ -143,6 +160,12 @@ DOCK_TABS['SCULPT'] = {
         ("geometry", "Geometry"), ("mask", "Mask"), ("face_sets", "Face Sets"), ("deform", "Deform"),
         ("paint", "Paint"), ("display", "Display"), ("objects", "Objects"))),
     'LEFT': (Tab("sculpt_brushes", "Brushes", 'MODELING_TOOLKIT', "sculpt_brushes"),),
+}
+# UV: the UV tools on the right (pages: m3d_uv.py); no left tray.
+DOCK_TABS['UV'] = {
+    'RIGHT': tuple(Tab("uv_" + page, label, 'MODELING_TOOLKIT', "uv_" + page) for page, label in (
+        ("unwrap", "Unwrap"), ("arrange", "Arrange"), ("check", "Check"), ("create", "Create"), ("udim", "UDIM"))),
+    'LEFT': (),
 }
 # The last tab of every row: the stock Properties tabs.
 ALL_SETTINGS = {'MODEL': "Attribute Editor"}
