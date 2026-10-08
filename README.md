@@ -45,7 +45,6 @@ Maelstrom3D keeps its settings apart from Blender's (`%APPDATA%\Maelstrom3D`), s
 Guides:
 - [MAELSTROM3D.md](MAELSTROM3D.md): full guide and change log.
 - [SHORTCUTS.md](SHORTCUTS.md): every changed shortcut, before and after.
-- [PARITY.md](PARITY.md): feature-by-feature comparison and what's still missing.
 
 ## Build from source (Windows)
 

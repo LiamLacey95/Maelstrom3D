@@ -111,7 +111,7 @@
 *.btx filter=lfs diff=lfs merge=lfs -text
 scripts/modules/_bpy_internal/assets/remote_library/*_openapi.py linguist-generated=true
 
-# MayaBlender: these are stored as plain git files, so the GitHub fork works with Blender's LFS server (.lfsconfig).
+# Maelstrom3D: these are stored as plain git files, so the GitHub fork works with Blender's LFS server (.lfsconfig).
 docs/media/** -filter -diff -merge
 release/datafiles/startup.blend -filter -diff -merge
 release/datafiles/splash.png -filter -diff -merge
