@@ -19,11 +19,17 @@ Maelstrom3D keeps its settings apart from Blender's (`%APPDATA%\Maelstrom3D`), s
 | | |
 |---|---|
 | ![Interface](docs/media/interface.gif) | ![Modeling](docs/media/modeling.gif) |
-| **Interface:** Modeling layout, workspaces on F1-F7 with their menu sets, shelf tabs, Space for four view. [MP4](docs/media/interface.mp4) | **Modeling:** Shift+drag the manipulator to extrude, right-click for every tool on the selected faces, toolkit tools open an options box on the click, 1/2/3 smooth preview. [MP4](docs/media/modeling.mp4) |
-| ![Marking menus](docs/media/marking_menus.gif) | ![Dock](docs/media/dock.gif) |
-| **Marking menus:** W + left click, Shift / Ctrl+Shift right-click, Space hotbox. [MP4](docs/media/marking_menus.mp4) | **Right-hand dock:** Channel Box / Layer Editor, Attribute Editor (Ctrl+A), Modeling Toolkit. [MP4](docs/media/dock.mp4) |
-| ![UV editing](docs/media/uv.gif) | ![MEL](docs/media/mel.gif) |
-| **UV editing:** F3 / F12, UV tabs, Cut / Sew / Unfold / Layout, checker map. [MP4](docs/media/uv.mp4) | **MEL command line:** `polyCube -w 3 -n floor;`, plus `cmds` in Python. [MP4](docs/media/mel.mp4) |
+| **Interface:** Seven task workspaces on F1-F7 with their menu sets, Add to Shelf (right-click any button) for the Custom shelf, Space for four view. [MP4](docs/media/interface.mp4) | **Modeling:** Shelf cube, Shift+drag the manipulator to extrude, right-click for every tool on the selected faces, toolkit tools open an options box on the click, 1/2/3 smooth preview. [MP4](docs/media/modeling.mp4) |
+| ![Sculpt](docs/media/sculpt.gif) | ![UV editing](docs/media/uv.gif) |
+| **Sculpt:** F2: brush tray, Clay Strips with mirror, Smooth, Grab (Shift+4), mask and invert, Voxel Remesh, Multires, Face Sets. [MP4](docs/media/sculpt.mp4) | **UV editing:** F3: Auto Unwrap, Cut / Unfold / Layout, checker map, distortion, texel density Read and Set. [MP4](docs/media/uv.mp4) |
+| ![Texture](docs/media/texture.gif) | ![Rigging](docs/media/rigging.gif) |
+| **Texture:** F4: paint channels, strokes on Base Color, paint and fill layers with a mask, blend mode, Bake, Export. [MP4](docs/media/texture.mp4) | **Rigging:** F5: Joint tool, X-Mirror chains, Orient Joint, Bind, weight paint view, IK with Pole, control shapes, Drive tab. [MP4](docs/media/rigging.mp4) |
+| ![Animation](docs/media/animation.gif) | ![Rendering](docs/media/rendering.gif) |
+| **Animation:** F6: keys with S, Graph Editor / Dope Sheet toggle, Alt+Q tween, motion paths, Blocking / Polish, Playback. [MP4](docs/media/animation.mp4) | **Rendering:** F7: quality presets, camera from view, light table, HDRI Sky, IPR, Shift+F12 into the Render View. [MP4](docs/media/rendering.mp4) |
+| ![Marking menus](docs/media/marking_menus.gif) | ![Right-hand dock](docs/media/dock.gif) |
+| **Marking menus:** W + left click, Shift / Ctrl+Shift right-click, Space hotbox. [MP4](docs/media/marking_menus.mp4) | **Right-hand dock:** Channel Box / Layer Editor, Attribute Editor (Ctrl+A), Modeling Toolkit, the tab menu. [MP4](docs/media/dock.mp4) |
+| ![MEL command line](docs/media/mel.gif) | |
+| **MEL command line:** `polyCube -w 3 -n floor;`, plus `cmds` in Python. [MP4](docs/media/mel.mp4) | |
 
 ## What you get
 

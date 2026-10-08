@@ -4,7 +4,10 @@
 Record the Maelstrom3D README videos (Windows): runs each scenario in tools/m3d/demo/scenarios.py,
 captures the Blender window with ffmpeg, writes docs/media/<name>.mp4 and docs/media/<name>.gif.
 
-    python tools/m3d/demo/record.py <blender.exe> [scenario ...]
+    python tools/m3d/demo/record.py <blender.exe> [scenario ...] [--probe]
+
+--probe runs without capturing (and writes nothing to docs/media); scenarios save screenshots with snap() when
+M3D_SNAP_DIR is set.
 
 Don't use the PC while it records: the Blender window must stay in front.
 """
@@ -19,9 +22,10 @@ import tempfile
 import time
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-SCENARIOS = os.path.join(os.path.dirname(__file__), "scenarios.py")
+SCENARIOS = os.environ.get("M3D_SCENARIOS") or os.path.join(os.path.dirname(__file__), "scenarios.py")
 OUT = os.path.join(ROOT, "docs", "media")
-ALL = ("interface", "modeling", "marking_menus", "dock", "uv", "mel")
+ALL = ("interface", "modeling", "sculpt", "uv", "texture", "rigging", "animation", "rendering", "marking_menus",
+       "dock", "mel")
 
 user32 = ctypes.windll.user32
 ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Physical pixels, same as ffmpeg's gdigrab.
@@ -46,6 +50,7 @@ def bring_to_front(hwnd):
     user32.keybd_event(0x12, 0, 0, 0)  # Alt tap: lets a background process take the foreground.
     user32.keybd_event(0x12, 0, 2, 0)
     user32.SetForegroundWindow(hwnd)
+    user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 3)  # HWND_TOPMOST: nothing else may cover the capture.
 
 
 def client_rect(hwnd):
@@ -64,7 +69,8 @@ def wait_for(path, timeout):
         time.sleep(0.05)
 
 
-def record(blender, name):
+def record(blender, name, probe=False):
+    """probe: run the scenario without capturing (its snap() screenshots go to M3D_SNAP_DIR); no output files."""
     status = tempfile.mkdtemp(prefix="mb_demo_")
     raw = os.path.join(status, name + ".mkv")
     proc = subprocess.Popen([blender, "--factory-startup", "--enable-event-simulate",
@@ -78,17 +84,26 @@ def record(blender, name):
         wait_for(os.path.join(status, "ready"), 60)
         bring_to_front(hwnd)
         x, y, w, h = client_rect(hwnd)
-        ffmpeg = subprocess.Popen(
+        ffmpeg = None if probe else subprocess.Popen(
             ["ffmpeg", "-y", "-loglevel", "error", "-f", "gdigrab", "-framerate", "30", "-draw_mouse", "0",
              "-offset_x", str(x), "-offset_y", str(y), "-video_size", f"{w}x{h}", "-i", "desktop",
              "-c:v", "libx264", "-preset", "ultrafast", "-crf", "16", raw],
             stdin=subprocess.PIPE)
-        wait_for(os.path.join(status, "done"), 180)
-        ffmpeg.communicate(b"q")
+        wait_for(os.path.join(status, "done"), 240)
+        if ffmpeg:
+            ffmpeg.communicate(b"q")
         proc.wait(30)
     finally:
         if proc.poll() is None:
             proc.kill()
+    error = os.path.join(status, "error")
+    if os.path.exists(error):
+        print(open(error).read())
+        shutil.rmtree(status, ignore_errors=True)
+        raise SystemExit(f"{name}: scenario failed")
+    if probe:
+        shutil.rmtree(status, ignore_errors=True)
+        return
 
     os.makedirs(OUT, exist_ok=True)
     mp4, gif = os.path.join(OUT, name + ".mp4"), os.path.join(OUT, name + ".gif")
@@ -103,9 +118,10 @@ def record(blender, name):
 
 
 def main():
-    blender, names = sys.argv[1], sys.argv[2:] or ALL
+    args = [a for a in sys.argv[1:] if a != "--probe"]
+    blender, names = args[0], args[1:] or ALL
     for name in names:
-        record(blender, name)
+        record(blender, name, probe="--probe" in sys.argv)
 
 
 if __name__ == "__main__":
