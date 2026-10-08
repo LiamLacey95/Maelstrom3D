@@ -10,7 +10,7 @@ happen on the next event). Later phases add their own layout steps (new workspac
 Run in the GUI (screen operators need a window), it saves and quits by itself:
 
     set BLENDER_USER_RESOURCES=<empty temp dir>
-    blender --factory-startup --python tools/m3d/build_startup.py -- release/datafiles/startup.blend
+    blender --factory-startup --enable-event-simulate --python tools/m3d/build_startup.py -- release/datafiles/startup.blend
 
 The build also installs startup.blend as datafiles/m3d_factory_layout.blend (read by Reset Workspace).
 """
@@ -89,7 +89,40 @@ def phase0_workspaces():
     assert seen == mw.WORKSPACE_ORDER, seen
 
 
-PHASES = [phase0_workspaces]
+def phase1_sculpt():
+    """Sculpt: the brush tray (a Properties editor left of the viewport), wider dock with the Sculpt tabs. The
+    Outliner stays under the dock: the Objects tab lists the meshes to sculpt, the Outliner keeps the hierarchy."""
+    ws = bpy.data.workspaces["Sculpt"]
+    show(ws)
+    yield 0.6
+    screen = window().screen
+    if len(areas(screen, 'PROPERTIES')) < 2:
+        view = areas(screen, 'VIEW_3D')[0]
+        run(bpy.ops.screen.area_split, view, direction='VERTICAL', factor=0.16)
+        yield 0.3
+        left = areas(screen, 'VIEW_3D')[0]  # The new area is a copy of the viewport; the leftmost one is the tray.
+        left.ui_type = 'PROPERTIES'
+        yield 0.3
+        dock = areas(screen, 'PROPERTIES')[-1]
+        # Moving an edge needs the mouse on it (no active region): put it there with a simulated event.
+        edge = (dock.x - 1, dock.y + dock.height // 2)
+        window().event_simulate(type='MOUSEMOVE', value='NOTHING', x=edge[0], y=edge[1])
+        yield 0.3
+        with bpy.context.temp_override(window=window(), screen=screen):
+            bpy.ops.screen.area_move(x=edge[0], y=edge[1], delta=-DOCK_WIDER)
+        yield 0.3
+    view = areas(screen, 'VIEW_3D')[0]
+    if view.spaces.active.show_region_asset_shelf:  # The brush tray replaces it (B still opens the brush popover).
+        run(bpy.ops.screen.region_toggle, view, region_type='ASSET_SHELF')
+        yield 0.3
+    tray, dock = areas(screen, 'PROPERTIES')
+    tray.spaces.active.context = dock.spaces.active.context = 'MODELING_TOOLKIT'
+    ws.m3d_page_left, ws.m3d_page_right = "sculpt_brushes", "sculpt_geometry"
+
+
+DOCK_WIDER = 170  # pixels of the 2560 px build window: seven tabs, All Settings and the tab menu fit
+
+PHASES = [phase0_workspaces, phase1_sculpt]
 
 
 def save():

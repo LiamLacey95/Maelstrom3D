@@ -104,6 +104,29 @@ Optimize, Automatic. F9-F11 change mode, Z undoes, Alt+MMB/RMB pan and zoom.
 
 Difference from Maya: Blender stores cuts as seams, and shells split when you Unfold. Maya splits them as soon as you cut.
 
+## Sculpt (F2)
+
+F2 opens the Sculpt workspace and enters Sculpt Mode on the active mesh (with no mesh, the tabs offer to add a sphere).
+Names are Blender's own.
+
+| Part | Contents |
+|---|---|
+| Brush tray (left) | Active brush and its picker, a grid of 15 brushes (Draw, Clay Strips, Clay, Smooth, Grab, Elastic Grab, Snake Hook, Inflate/Deflate, Pinch/Magnify, Crease Sharp, Flatten/Contrast, Scrape/Fill, Layer, Mask, Face Set Paint), Size, Strength, Add / Subtract, Mirror X/Y/Z. Closed panels: Brush Settings, Falloff, Stroke, Texture, Cursor, Advanced |
+| Status Line | Object / Sculpt Mode, face count, Multires level, Dyntopo, Mirror X/Y/Z, Auto-Masking, Mask and Face Set overlays, matcap picker |
+| Shelves | Sculpt (the brushes), Remesh (Voxel Remesh and size, QuadriFlow, Multires level up / down, Apply Base), Mask (Fill, Clear, Invert, Grow, Shrink, Sharpen, From Cavity, Hide Masked), Custom |
+| Geometry tab | Multires (Subdivide, Simple, Linear, level sliders, Delete Higher, Unsubdivide, Apply Base), Voxel Remesh, QuadriFlow, Dyntopo. Options that cannot work together (Dyntopo and Multires) are greyed with the reason |
+| Mask tab | Fill, Clear, Invert, filters (Smooth, Sharpen, Grow, Shrink, Contrast), From Cavity / Boundary, Box / Lasso / Line / Polyline Mask, Mask by Color, Hide Masked / Show |
+| Face Sets tab | Initialize (Loose Parts, Materials, Normals, UV Seams, Creases, Sharp Edges, ...), Create from Mask / Visible / Selection, Grow, Shrink, Fair, Delete Geometry, Show All, Randomize Colors |
+| Deform tab | Mesh filters (Smooth, Inflate, Relax, Surface Smooth, Sharpen, Enhance Details, Sphere, Random, Scale), Symmetrize, Set Pivot, trim tools |
+| Paint tab | Color brushes, color picker, palette, Add Color Attribute, color filters |
+| Display tab | Matcap / studio light, color, cavity, Mask and Face Set overlay opacity, wireframe, low resolution and delayed updates |
+| Objects tab | The scene's meshes: show / hide, pick, solo, append a duplicate; add a sphere, cube or cylinder |
+
+Tool buttons (mesh filters, trims, Grow / Shrink face set, color filters, Mask by Color) pick the tool: drag in the
+viewport afterwards. Shift+1 ... Shift+7 pick Draw, Clay Strips, Smooth, Grab, Inflate/Deflate, Pinch/Magnify, Crease
+Sharp. Expand stays on Shift+A (mask) and Shift+W (face sets) over the mesh. Space (hold) lists the brushes first.
+"All Settings" at the end of each tab row is Blender's stock Properties tabs (symmetry locks, tiling, gravity, ...).
+
 ## Terms used
 
 Attribute Editor = Properties editor · Shader Editor = shader node editor (Shading workspace) · Construction history =

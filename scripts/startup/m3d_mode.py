@@ -674,6 +674,9 @@ class M3D_MT_hotbox(Menu):
     def draw(self, context):
         from m3d_ui import COMMON_MENUS, MENU_SETS, MENUS
         row = self.layout.row()
+        if context.mode == 'SCULPT':
+            from m3d_sculpt import draw_brush_column
+            draw_brush_column(row.column())
         col = row.column()
         col.label(text="Common")
         for idname in COMMON_MENUS + ["M3D_MT_help"]:
@@ -1030,9 +1033,10 @@ def m3d_startup_layout(*_args, screens=None):
     (like Maya's DAG view), command lines use MEL. `screens`: only these (a workspace that was just reset)."""
     if bpy.app.background:
         return  # No UI to set up (changing regions without a window leaks).
-    from m3d_workspace import workspace_kind
+    from m3d_workspace import dock_tabs, side_of_area, workspace_kind
     tool_header = {s.name for ws in bpy.data.workspaces if workspace_kind(ws) in {'SCULPT', 'TEXTURE'}
                    for s in ws.screens}
+    kind_of = {s.name: workspace_kind(ws) or 'MODEL' for ws in bpy.data.workspaces for s in ws.screens}
     for screen in screens or bpy.data.screens:
         for area in screen.areas:
             space = area.spaces.active
@@ -1043,6 +1047,11 @@ def m3d_startup_layout(*_args, screens=None):
                 # sensor, so the matching field of view is 70 mm.
                 space.lens = 70.0
                 space.overlay.show_text = False  # Maya HUD (m3d_hud.py) shows the camera name instead.
+            elif area.type == 'PROPERTIES':
+                # Blender's startup defaults put every dock on the Channel Box: open on the kind's first tab.
+                width = max(a.x + a.width for a in screen.areas)
+                side = side_of_area(area.x, area.width, width)
+                space.context = dock_tabs(kind_of.get(screen.name, 'MODEL'), side)[0].context
             elif area.type == 'OUTLINER':
                 space.use_filter_object_content = False
                 space.use_filter_collection = False  # Flat object list, like Maya's Outliner.

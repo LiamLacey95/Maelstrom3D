@@ -55,6 +55,16 @@ def current_kind(context):
     return workspace_kind(context.workspace) or 'MODEL'
 
 
+# Modes whose menus a workspace's menu set already shows: the viewport header doesn't repeat them there.
+KIND_MODES_IN_MENU_BAR = {'SCULPT': {'SCULPT'}}
+
+
+def menu_bar_has_mode(context):
+    """True when the menu bar of this workspace has the menus of the active object's mode."""
+    ob = context.active_object
+    return ob is not None and ob.mode in KIND_MODES_IN_MENU_BAR.get(current_kind(context), ())
+
+
 def find_workspace(kind):
     """The workspace for a kind: the one with the factory name, then ones with a saved kind, then older names."""
     def rank(ws):
@@ -127,6 +137,13 @@ _TOOL = Tab("tool", "Tool Settings", 'TOOL', None)
 
 # kind -> side -> tabs (an empty side uses the right-hand tabs). Phases 1-6 replace the entries of their kind.
 DOCK_TABS = {kind: {'RIGHT': (_CHANNEL_BOX, _TOOLKIT, _TOOL), 'LEFT': ()} for kind in KINDS}
+# Sculpt: the brush tray on the left, task tabs on the right (pages: m3d_sculpt.py).
+DOCK_TABS['SCULPT'] = {
+    'RIGHT': tuple(Tab("sculpt_" + page, label, 'MODELING_TOOLKIT', "sculpt_" + page) for page, label in (
+        ("geometry", "Geometry"), ("mask", "Mask"), ("face_sets", "Face Sets"), ("deform", "Deform"),
+        ("paint", "Paint"), ("display", "Display"), ("objects", "Objects"))),
+    'LEFT': (Tab("sculpt_brushes", "Brushes", 'MODELING_TOOLKIT', "sculpt_brushes"),),
+}
 # The last tab of every row: the stock Properties tabs.
 ALL_SETTINGS = {'MODEL': "Attribute Editor"}
 DOCK_CONTEXTS = {'CHANNEL_BOX', 'MODELING_TOOLKIT', 'TOOL'}

@@ -842,7 +842,10 @@ class VIEW3D_HT_header(Header):
         #       are always dynamically allocated.
         # Maelstrom3D: in object and component (mesh) mode the header is Maya's panel menu bar + panel toolbar;
         # the mode menu lives in the Status Line and Blender's transform / gizmo buttons are dropped.
-        classic_header = object_mode in {'OBJECT', 'EDIT'} and (obj is None or obj.type == 'MESH')
+        # Workspaces whose menu bar has this mode's menus (Sculpt) also get the short header.
+        from m3d_workspace import menu_bar_has_mode
+        classic_header = (object_mode in {'OBJECT', 'EDIT'} and (obj is None or obj.type == 'MESH')
+                          or menu_bar_has_mode(context))
 
         act_mode_item = bpy.types.Object.bl_rna.properties["mode"].enum_items[object_mode]
         act_mode_i18n_context = bpy.types.Object.bl_rna.properties["mode"].translation_context
@@ -1161,8 +1164,9 @@ class VIEW3D_MT_editor_menus(Menu):
         # Maelstrom3D: Maya panel menus. Blender's own menus stay inline for sculpt/paint
         # modes and are tucked into the "..." menu otherwise.
         from m3d_ui import draw_panel_menus
+        from m3d_workspace import menu_bar_has_mode
         draw_panel_menus(self.layout, context)
-        if context.mode not in {'OBJECT', 'EDIT_MESH'}:
+        if context.mode not in {'OBJECT', 'EDIT_MESH'} and not menu_bar_has_mode(context):
             self.draw_blender(context)
 
     def draw_blender(self, context):

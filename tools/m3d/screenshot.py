@@ -5,6 +5,7 @@ Screenshots of workspaces (real window, saved with bpy.ops.screen.screenshot).
     blender --factory-startup --python tools/m3d/screenshot.py -- <png prefix> [name ...]
 
 Each name is a workspace name or kind (MODEL, SCULPT, ...); writes <prefix><name>.png and quits. Default: the first workspace.
+`KIND/page` also shows that dock page (e.g. SCULPT/sculpt_mask) and `+sphere` adds a UV sphere first.
 """
 
 import sys
@@ -18,18 +19,31 @@ steps = []
 
 def switch(name):
     wm = bpy.context.window_manager
-    if name is None:
+    name, _slash, page = (name or "").partition("/")
+    if not name:
         return
-    if name.isupper():
+    if name == "+sphere":
+        bpy.ops.m3d.add_primitive(kind='SPHERE')
+    elif name.isupper():
         bpy.ops.m3d.workspace(kind=name)
     else:
         wm.windows[0].workspace = bpy.data.workspaces[name]
+    if page:
+        from m3d_workspace import DOCK_TABS
+        win = wm.windows[0]
+        left = {t.page for t in DOCK_TABS[name]['LEFT']}
+        setattr(win.workspace, "m3d_page_" + ("left" if page in left else "right"), page)
+        for area in win.screen.areas:
+            area.tag_redraw()
 
 
 def shot(name):
     win = bpy.context.window_manager.windows[0]
+    if name and name.startswith("+"):
+        return
     with bpy.context.temp_override(window=win, screen=win.screen, area=win.screen.areas[0]):
-        bpy.ops.screen.screenshot(filepath="%s%s.png" % (PREFIX, name or "default"), check_existing=False)
+        bpy.ops.screen.screenshot(filepath="%s%s.png" % (PREFIX, (name or "default").replace("/", "_")),
+                                  check_existing=False)
 
 
 for name in NAMES:

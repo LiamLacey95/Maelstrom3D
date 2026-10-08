@@ -38,6 +38,8 @@ Maelstrom3D keeps its settings apart from Blender's (`%APPDATA%\Maelstrom3D`), s
 - **Marking menus:** right-click, Shift / Ctrl / Ctrl+Shift right-click, Q / W / E / R / A / H + left click,
   Shift+S keys and tangents.
 - **Look:** mid-grey UI with a blue highlight, gradient viewport, green / white selection, square widgets.
+- **Sculpt workflow (F2):** brush tray, Multires / Voxel Remesh / QuadriFlow / Dyntopo, mask and face set tools, mesh filters,
+  color paint, display options and a mesh list, Shift+1-7 brush keys.
 - **UV workflow:** UV Toolkit, Cut / Sew / Unfold / Layout, checker map, UV marking menus.
 - **Scripting:** `m3d.cmds` (`polyCube`, `move`, `setAttr`, `select`, `ls`, ...) and MEL in the command line.
   Existing scripts that `import maya.cmds` run through a compatibility alias.

@@ -12,6 +12,7 @@ Menus are plain data (see `MENUS`) so `tools/m3d/test_m3d.py` can verify every c
 import bpy
 from bpy.types import Menu, Panel
 
+import m3d_sculpt
 from m3d_uv import UVTK_CREATE, UVTK_CUT_SEW, UVTK_PIN, UVTK_SELECT, UVTK_UNFOLD
 from m3d_workspace import KINDS, current_kind
 
@@ -807,7 +808,6 @@ def draw_workspace_picker(layout, context):
 _OBJECT_MODE = ('OBJECT', 'OBJECT_DATAMODE', "Object Mode", {'OBJECT'})
 _EDIT_MODE = ('EDIT', 'EDITMODE_HLT', "Edit Mode", {'EDIT_MESH', 'EDIT_ARMATURE', 'EDIT_CURVE'})
 KIND_MODES = {
-    'SCULPT': (_OBJECT_MODE, ('SCULPT', 'SCULPTMODE_HLT', "Sculpt Mode", {'SCULPT'})),
     'UV': (_OBJECT_MODE, _EDIT_MODE),
     'TEXTURE': (_OBJECT_MODE, ('TEXTURE_PAINT', 'TPAINT_HLT', "Texture Paint Mode", {'PAINT_TEXTURE'})),
     'RIG': (_OBJECT_MODE, _EDIT_MODE, ('POSE', 'POSE_HLT', "Pose Mode", {'POSE'}),
@@ -825,7 +825,11 @@ def draw_status_line_placeholder(layout, context, kind):
     draw_workspace_picker(layout, context)
 
 
-STATUS_LINES = {'MODEL': draw_status_line_model}
+def draw_status_line_sculpt(layout, context):
+    m3d_sculpt.draw_status_line(layout, context)
+
+
+STATUS_LINES = {'MODEL': draw_status_line_model, 'SCULPT': draw_status_line_sculpt}
 
 
 def draw_status_line(layout, context):
@@ -904,7 +908,9 @@ class VIEW3D_PT_m3d_quick_layouts(Panel):
 
 # Maya shelves: tab -> (idname, icon, props). Shown in the viewport's shelf row (tool header).
 _MODEL = frozenset({'MODEL'})
-# Shelf tab key -> (label, buttons, kinds of workspace that show the tab).
+_SCULPT = frozenset({'SCULPT'})
+# Shelf tab key -> (label, buttons, kinds of workspace that show the tab). A button is (idname, icon, props) or
+# (idname, icon, props, text); None is a gap; a function draws its own widgets into the row.
 SHELVES = {
     'CURVES': ("Curves / Surfaces", [
         ("curve.primitive_bezier_curve_add", 'CURVE_BEZCURVE', {}),
@@ -1003,6 +1009,9 @@ SHELVES = {
         ("object.effector_add", 'FORCE_TURBULENCE', {"type": 'TURBULENCE'}),
         ("rigidbody.object_add", 'RIGID_BODY', {"type": 'ACTIVE'}),
     ], _MODEL),
+    'SCULPT_BRUSHES': ("Sculpt", m3d_sculpt.SHELF_BRUSHES, _SCULPT),
+    'SCULPT_REMESH': ("Remesh", m3d_sculpt.SHELF_REMESH, _SCULPT),
+    'SCULPT_MASK': ("Mask", m3d_sculpt.SHELF_MASK, _SCULPT),
     # Buttons added by the user (m3d_user.py); every kind has its own.
     'CUSTOM': ("Custom", [], frozenset(KINDS)),
 }
@@ -1043,9 +1052,12 @@ def draw_shelf(layout, context):
     for item in SHELVES[key][1]:
         if item is None:
             row.separator(factor=0.5)
-            continue
-        idname, icon, props = item
-        _button(row, context, "", idname, icon, props)
+        elif callable(item):
+            item(row, context)
+        else:
+            idname, icon, props, *text = item
+            _button(row, context, text[0] if text else "", idname, icon, props,
+                    depress=m3d_sculpt.is_active(context, idname, props))
 
 
 class TOPBAR_HT_m3d_status_line(bpy.types.Header):

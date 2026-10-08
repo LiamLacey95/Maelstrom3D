@@ -40,6 +40,8 @@ def action_text(idname, data):
     if idname in {"wm.call_menu_pie", "wm.call_menu"}:
         menu = getattr(bpy.types, props["name"], None)
         return "Menu: " + ((menu.bl_label if menu else "") or props["name"])
+    if idname == "brush.asset_activate":
+        return "Brush: " + props["relative_asset_identifier"].partition("/Brush/")[2]
     if idname == "wm.tool_set_by_id":
         return "Tool: " + props["name"].split(".")[-1].replace("_", " ").title()
     if idname.startswith("wm.context_"):

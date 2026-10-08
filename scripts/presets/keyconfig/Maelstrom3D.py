@@ -115,6 +115,14 @@ OVERRIDES = {
         ("REMOVE", {"type": 'COMMA', "value": 'PRESS'}, None),
         ("REMOVE", {"type": 'PERIOD', "value": 'PRESS'}, None),
     ],
+    # Shift+1 ... Shift+7 pick a brush (the names are m3d_sculpt.BRUSH_KEYS; test_m3d.py checks them).
+    "Sculpt": [
+        *(_kmi("brush.asset_activate", k, props={
+            "asset_library_type": 'ESSENTIALS',
+            "relative_asset_identifier": "brushes/essentials_brushes-mesh_sculpt.blend/Brush/" + name}, shift=True)
+          for k, name in zip(('ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN'), (
+              "Draw", "Clay Strips", "Smooth", "Grab", "Inflate/Deflate", "Pinch/Magnify", "Crease Sharp"))),
+    ],
     "Window": [
         # F1-F7: task workspaces (kinds in m3d_workspace.py). The menu set dropdown still offers every set.
         *(_kmi("m3d.workspace", k, props={"kind": kind}) for kind, k in WORKSPACE_KEYS),

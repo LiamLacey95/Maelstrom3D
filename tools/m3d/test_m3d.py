@@ -10,8 +10,8 @@ def check(cond, msg):
 # Icons used in m3d_mode exist.
 import re, m3d_mode
 icons = set(bpy.types.UILayout.bl_rna.functions['operator'].parameters['icon'].enum_items.keys())
-import m3d_marking, m3d_ui as _maya_ui, m3d_uv as _maya_uv
-src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_marking, _maya_ui, _maya_uv))
+import m3d_marking, m3d_sculpt, m3d_ui as _maya_ui, m3d_uv as _maya_uv
+src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_marking, m3d_sculpt, _maya_ui, _maya_uv))
 for ic in set(re.findall(r"icon='([A-Z_0-9]+)'", src)):
     check(ic in icons, "missing icon " + ic)
 
@@ -62,6 +62,8 @@ for _, menus in m3d_ui.MENU_SETS.values():
 for tab, (label, items, kinds) in m3d_ui.SHELVES.items():
     check(kinds and kinds <= set(m3d_workspace.KINDS), "shelf kinds " + tab)
     for it in filter(None, items):
+        if callable(it):
+            continue
         check(op_ok(it[0], it[2]), "bad shelf op %s %s" % (tab, it[0]))
         check(it[1] in icons, "bad shelf icon %s %s" % (tab, it[1]))
 
@@ -267,14 +269,15 @@ for kind, (wname, key, mode, mset) in W.KINDS.items():
 wm = bpy.context.window_manager
 W._state["kind"] = 'MODEL'
 W.workspace_changed(wm, bpy.data.workspaces["Sculpt"])
-check(wm.m3d_menu_set == 'SCULPTING' and wm.m3d_shelf == 'CUSTOM', "menu set and shelf follow a workspace switch")
+check(wm.m3d_menu_set == 'SCULPTING' and wm.m3d_shelf == 'SCULPT_BRUSHES', "menu set and shelf follow a workspace switch")
 W.workspace_changed(wm, bpy.data.workspaces["Modeling"])
 check(wm.m3d_menu_set == 'MODELING' and wm.m3d_shelf == 'POLY', "shelf tab is remembered per kind")
 
 # Shelf tabs and status line per kind.
-check(m3d_ui.shelves_for('SCULPT') == ['CUSTOM'] and 'POLY' in m3d_ui.shelves_for('MODEL')
-      and m3d_ui.shelves_for('MODEL')[-1] == 'CUSTOM', "shelf tabs per kind")
-check(set(m3d_ui.KIND_MODES) == set(W.KINDS) - {'MODEL'}, "placeholder status line modes for every other kind")
+check(m3d_ui.shelves_for('SCULPT') == ['SCULPT_BRUSHES', 'SCULPT_REMESH', 'SCULPT_MASK', 'CUSTOM']
+      and 'POLY' in m3d_ui.shelves_for('MODEL') and m3d_ui.shelves_for('MODEL')[-1] == 'CUSTOM', "shelf tabs per kind")
+check(set(m3d_ui.KIND_MODES) == set(W.KINDS) - set(m3d_ui.STATUS_LINES), "placeholder status line modes for the other kinds")
+check(set(m3d_ui.STATUS_LINES) == {'MODEL', 'SCULPT'}, "status lines")
 
 # Page panels: only on their page, per workspace and side.
 ws = bpy.data.workspaces["Modeling"]
@@ -298,7 +301,7 @@ ws.m3d_page_right = "test_page"
 check(W.active_page(ctx()) == "test_page" and TestPage.poll(ctx()), "test page active on the right")
 check(not m3d_mode.PROPERTIES_PT_m3d_mtk_selection.poll(ctx()), "toolkit panel hidden on another page")
 check(W.active_page(ctx(0)) == "left_page" and not TestPage.poll(ctx(0)), "left tray has its own page")
-other = bpy.data.workspaces["Sculpt"]
+other = bpy.data.workspaces["UV"]
 check(other.m3d_page_right == "" and W.active_page(ctx(1500, other)) == "modeling_toolkit",
       "pages are stored per workspace")
 W.DOCK_TABS['MODEL'] = saved
@@ -365,6 +368,226 @@ for text in ("{not json", "[]", '{"shelf": 5, "hidden_tabs": {"MODEL": 3}}', '{"
     check(ok, "damaged m3d_user.json: " + text)
 m3d_user.reset_cache()
 shutil.rmtree(TEST_CONFIG, ignore_errors=True)
+
+# ----------------------------------------------------------------------------------------------------
+# Phase 1: Sculpt workspace (tabs, pages, brushes, buttons, keys).
+import m3d_sculpt as S
+from ast import literal_eval
+from bl_ui.properties_paint_common import UnifiedPaintPanel
+from bl_ui.space_toolsystem_common import ToolSelectPanelHelper
+bpy.utils.keyconfig_set(bpy.utils.preset_find("Maelstrom3D", "keyconfig"))
+sculpt_ws = bpy.data.workspaces["Sculpt"]
+sc_tabs = W.DOCK_TABS['SCULPT']
+check([t.label for t in sc_tabs['RIGHT']] == ["Geometry", "Mask", "Face Sets", "Deform", "Paint", "Display", "Objects"],
+      "Sculpt dock tabs")
+check([t.label for t in sc_tabs['LEFT']] == ["Brushes"], "Sculpt left tray tab")
+check(W.dock_tabs('SCULPT', 'LEFT') == sc_tabs['LEFT'] and W.dock_tabs('SCULPT', 'RIGHT') == sc_tabs['RIGHT'], "dock_tabs")
+for tab in (*sc_tabs['RIGHT'], *sc_tabs['LEFT']):
+    check(tab.context == 'MODELING_TOOLKIT' and tab.page == tab.id, "Sculpt page tab " + tab.id)
+pages = {t.page for side in sc_tabs.values() for t in side}
+check({c.page for c in S.classes if hasattr(c, "page")} == pages, "every Sculpt page has panels and the other way round")
+check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in S.classes), "Sculpt classes registered")
+
+# Brush grid and Shift+1..7 resolve to assets in the essentials file.
+asset_file = os.path.join(bpy.utils.system_resource('DATAFILES'), "assets", "brushes", "essentials_brushes-mesh_sculpt.blend")
+with bpy.data.libraries.load(asset_file, assets_only=True) as (src, _dst):
+    asset_names = set(src.brushes)
+for label, name in (*S.BRUSHES, *S.PAINT_BRUSHES):
+    check(name in asset_names, "brush asset %r" % name)
+check(len(S.BRUSHES) >= 14 and set(S.BRUSH_KEYS) <= {n for _l, n in S.BRUSHES}, "brush grid and hotkey brushes")
+kc = bpy.context.window_manager.keyconfigs["Maelstrom3D"]
+for key, name in zip(('ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN'), S.BRUSH_KEYS):
+    item = find("Sculpt", "brush.asset_activate", key, shift=True, ctrl=False, alt=False)
+    check(item and item[0].properties.relative_asset_identifier == S.BRUSH_ASSET + name, "Shift+%s picks %s" % (key, name))
+    check(not [k for km in kc.keymaps for k in km.keymap_items if k.type == key and k.shift and not k.ctrl and not k.alt
+               and km.name in {"Sculpt", "3D View", "3D View Generic", "Window", "Screen", "Frames", "Object Non-modal"}
+               and k.idname != "brush.asset_activate"], "Shift+%s is free in Sculpt" % key)
+
+# Page panels: gate messages without a mesh / outside Sculpt Mode, every page panel with a sculpt mesh.
+for ob in list(bpy.data.objects):
+    bpy.data.objects.remove(ob)
+
+
+class SCtx:
+    """Context of a Sculpt dock: the real one with this workspace, side and a Properties editor."""
+    def __init__(self, side='RIGHT'):
+        self.workspace = sculpt_ws
+        self.area = NS(x=1500 if side == 'RIGHT' else 0, width=500, type='PROPERTIES')
+        self.window = NS(width=2000)
+        self.space_data = NS(type='PROPERTIES', context='MODELING_TOOLKIT')
+        self.region = NS(type='WINDOW')
+
+    def __getattr__(self, name):
+        return getattr(bpy.context, name)
+
+
+# The stock brush panels look for an active brush tool and a 3D viewport: pretend there is one (no UI here).
+ToolSelectPanelHelper.tool_active_from_context = staticmethod(lambda ctx: NS(use_brushes=True, idname="builtin.brush"))
+
+
+def page_panels(page):
+    return [c for c in S.classes if getattr(c, "page", None) == page and hasattr(c, "poll")]
+
+
+def shown(page):
+    side = 'LEFT' if page == "sculpt_brushes" else 'RIGHT'
+    ctx = SCtx(side)
+    setattr(sculpt_ws, "m3d_page_" + side.lower(), page)
+    return [c.__name__ for c in page_panels(page) if c.poll(ctx)]
+
+
+for page in S.GATES:
+    names = shown(page)
+    check(len(names) == 1 and names[0].endswith("_gate"), "%s without a mesh shows its message only: %s" % (page, names))
+bpy.ops.m3d.sculpt_add_mesh(kind='CUBE')
+check(bpy.context.mode == 'SCULPT' and bpy.context.active_object.type == 'MESH', "Add Sphere / Cube starts sculpting")
+bpy.ops.object.mode_set(mode='OBJECT')
+names = shown("sculpt_geometry")
+check(names and not any(n.endswith("_gate") for n in names), "Geometry works on a mesh in Object Mode: %s" % names)
+check(shown("sculpt_mask") == ["PROPERTIES_PT_m3d_sc_mask_gate"], "Mask asks for Sculpt Mode in Object Mode")
+check(shown("sculpt_objects") and shown("sculpt_display"), "Objects and Display need no mesh")
+bpy.ops.object.mode_set(mode='SCULPT')
+for page in pages:
+    names = shown(page)
+    check(names and not any(n.endswith("_gate") for n in names), "%s panels in Sculpt Mode: %s" % (page, names))
+sculpt_ws.m3d_page_right = sculpt_ws.m3d_page_left = ""
+
+
+class Rec:
+    """A layout that records its calls (the real one needs a window)."""
+    def __init__(self, log, kind="", args=(), kw=None):
+        self._log, self._kind, self._args, self._kw = log, kind, args, kw or {}
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        if name == "panel":
+            return lambda *a, **k: (Rec(self._log), Rec(self._log))
+
+        def call(*a, **k):
+            rec = Rec(self._log, name, a, k)
+            self._log.append(rec)
+            return rec
+        return call
+
+    def __iter__(self):
+        return iter(())
+
+    def __bool__(self):
+        return True
+
+    def values(self):
+        return {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
+
+
+def check_calls(where, log):
+    for rec in log:
+        if rec._kind == "operator":
+            idname, values = rec._args[0], rec.values()
+            if idname == "m3d.call":
+                inner = literal_eval(values["props"])
+                check(op_ok(values["idname"], inner), "%s: m3d.call %s %s" % (where, values["idname"], inner))
+            elif idname == "m3d.sculpt_tool":
+                check(not values["op"] or op_ok(values["op"], literal_eval(values["props"])), "%s: tool %s" % (where, values))
+            else:
+                check(op_ok(idname, values), "%s: operator %s %s" % (where, idname, values))
+        elif rec._kind == "prop":
+            owner, name = rec._args[0], rec._args[1]
+            check(name in owner.bl_rna.properties, "%s: %r has no property %s" % (where, owner, name))
+        elif rec._kind == "popover":
+            check(hasattr(bpy.types, rec._kw.get("panel", rec._args[0] if rec._args else "")), "%s: popover" % where)
+
+
+def draw_stub(cls, ctx):
+    log = []
+    inst = type("Inst", (UnifiedPaintPanel,), {})()
+    inst.layout, inst.is_popover = Rec(log), False
+    cls.draw(inst, ctx)
+    return log
+
+
+ctx = SCtx()
+for cls in S.classes:
+    if issubclass(cls, bpy.types.Panel) and hasattr(cls, "draw"):
+        try:
+            check_calls(cls.__name__, draw_stub(cls, ctx))
+        except Exception as err:
+            check(False, "%s draw: %r" % (cls.__name__, err))
+log = []
+S.draw_status_line(Rec(log), ctx)
+check_calls("status line", log)
+check(any(r._kind == "popover" for r in log), "status line has the Auto-Masking popover")
+for key in ('SCULPT_BRUSHES', 'SCULPT_REMESH', 'SCULPT_MASK', 'CUSTOM'):
+    log = []
+    ctx.window_manager.m3d_shelf = key
+    m3d_ui.draw_shelf(Rec(log), ctx)
+    check_calls("shelf " + key, log)
+log = []
+S.draw_brush_column(Rec(log))
+check_calls("hotbox brushes", log)
+check(len([r for r in log if r._kind == "operator"]) == len(S.BRUSHES), "hotbox has every brush")
+
+# Brushes activate (and the shelf / tray know which one is active).
+for label, name in S.BRUSHES:
+    bpy.ops.brush.asset_activate(**S.brush_props(name))
+    check(S.active_brush_id(bpy.context) == S.BRUSH_ASSET + name, "brush %s active (is %r)" % (name, S.active_brush_id(bpy.context)))
+    check(S.is_active(bpy.context, "brush.asset_activate", S.brush_props(name)), "is_active " + name)
+check(not S.is_active(bpy.context, "brush.asset_activate", S.brush_props("Draw")), "only the last brush is active")
+
+# Multires buttons: add, levels, delete higher; Dyntopo and Multires exclude each other.
+ob = bpy.context.active_object
+bpy.ops.m3d.multires_subdivide(mode='CATMULL_CLARK')
+bpy.ops.m3d.multires_subdivide(mode='SIMPLE')
+mod = S.multires_of(ob)
+check(mod and mod.total_levels == 2 and mod.sculpt_levels == 2, "multires subdivide adds the modifier and levels")
+bpy.ops.m3d.multires_level(delta=-1)
+check(mod.sculpt_levels == 1 and mod.levels == 1, "multires level down")
+bpy.ops.m3d.multires_level(delta=-5)
+check(mod.sculpt_levels == 0, "multires level stops at 0")
+bpy.ops.m3d.multires_level(delta=5)
+check(mod.sculpt_levels == 2, "multires level stops at the top")
+bpy.ops.m3d.multires_level(delta=-1)
+bpy.ops.m3d.multires_edit(action='DELETE_HIGHER')
+check(mod.total_levels == 1, "delete higher levels")
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.ops.m3d.multires_edit(action='APPLY_BASE')
+bpy.ops.object.modifier_remove(modifier=mod.name)
+bpy.ops.object.voxel_remesh()   # Operators that need the sculpt session only run in a window (gui_test.py).
+bpy.ops.object.mode_set(mode='SCULPT')
+bpy.ops.sculpt.dynamic_topology_toggle()
+check(ob.use_dynamic_topology_sculpting, "dyntopo on")
+check(bpy.ops.m3d.multires_subdivide(mode='SIMPLE') == {'CANCELLED'} and S.multires_of(ob) is None,
+      "multires refuses while Dyntopo is on")
+bpy.ops.sculpt.dynamic_topology_toggle()
+
+# Mask / Face Set / Deform buttons: operators and options exist (they run in gui_test.py).
+for group in (S.MASK_FILL, S.MASK_FILTERS, S.MASK_CREATE, S.HIDE_MASKED, S.FACE_SET_INIT, S.FACE_SET_CREATE,
+              S.FACE_SET_VISIBILITY, S.PIVOT_BUTTONS):
+    for label, idname, icon, props in group:
+        check(op_ok(idname, props), "button %s %s %s" % (label, idname, props))
+for group in (S.MESH_FILTERS, S.MASK_TOOLS, S.TRIM_TOOLS, S.FACE_SET_EDIT, S.COLOR_FILTERS):
+    for label, tool, op, props in group:
+        check(not op or op_ok(op, props), "tool option %s %s" % (label, op))
+
+# Objects tab: pick, hide, solo, duplicate.
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.ops.m3d.add_primitive(kind='SPHERE')
+second = bpy.context.active_object
+bpy.ops.object.mode_set(mode='SCULPT')
+bpy.ops.m3d.sculpt_object(name=ob.name, action='SELECT')
+check(bpy.context.active_object == ob and bpy.context.mode == 'SCULPT', "Objects: pick a mesh keeps Sculpt Mode")
+bpy.ops.m3d.sculpt_object(name=second.name, action='VISIBLE')
+check(second.hide_get(), "Objects: hide")
+bpy.ops.m3d.sculpt_object(name=second.name, action='VISIBLE')
+check(not second.hide_get(), "Objects: show")
+bpy.ops.m3d.sculpt_object(name=ob.name, action='SOLO')
+check(second.hide_get() and not ob.hide_get(), "Objects: solo hides the others")
+bpy.ops.m3d.sculpt_object(name=ob.name, action='SOLO')
+check(not second.hide_get(), "Objects: solo again shows them")
+count = len([o for o in bpy.data.objects if o.type == 'MESH'])
+bpy.ops.m3d.sculpt_object(name=ob.name, action='DUPLICATE')
+check(len([o for o in bpy.data.objects if o.type == 'MESH']) == count + 1 and bpy.context.mode == 'SCULPT'
+      and bpy.context.active_object not in {ob, second}, "Objects: duplicate")
 
 print("FAILS:", fails or "none")
 sys.exit(1 if fails else 0)

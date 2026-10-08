@@ -675,6 +675,312 @@ def phase0_done():
     check(bpy.data.workspaces["Modeling"] == window().workspace, "ended on Modeling")
 
 
+# ----------------------------------------------------------------------------------------------------
+# Phase 1: Sculpt workspace with a real mesh: layout, brushes, buttons, keys, every tab.
+
+import m3d_sculpt
+
+
+def sculpt_dock():
+    """(left tray, right dock) Properties editors of the Sculpt screen."""
+    areas = sorted(props_areas(), key=lambda a: a.x)
+    return areas[0], areas[-1]
+
+
+def press(idname, _run='INVOKE_DEFAULT', _area=None, **props):
+    """Click a dock button the way the panels draw it (`_button`: the operator, or m3d.call when it needs the
+    viewport). Returns the result and the route taken."""
+    area = _area or sculpt_dock()[1]
+    region = next(r for r in area.regions if r.type == 'WINDOW')
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=area, region=region,
+                                   space_data=area.spaces.active):
+        mod, name = idname.split(".")
+        if m3d_ui.needs_view3d(idname) or not m3d_ui._poll(idname):
+            return bpy.ops.m3d.call('INVOKE_DEFAULT', idname=idname, props=repr(props)), "call"
+        return getattr(getattr(bpy.ops, mod), name)(_run, **props), "direct"
+
+
+def press_ok(idname, _run='INVOKE_DEFAULT', **props):
+    try:
+        res, route = press(idname, _run, **props)
+    except RuntimeError as err:
+        fails.append("Sculpt button %s %s: %s" % (idname, props, str(err).strip()[:160]))
+        return None
+    check(res <= {'FINISHED', 'RUNNING_MODAL'}, "Sculpt button %s %s: %s (%s)" % (idname, props, res, route))
+    return res
+
+
+def active_tool_id():
+    tool = bpy.context.workspace.tools.from_space_view3d_mode('SCULPT')
+    return tool.idname if tool else None
+
+
+@step
+def sculpt_setup():
+    # A clean scene with one UV sphere, then F2.
+    bpy.ops.m3d.workspace(kind='MODEL')
+    for ob in list(bpy.data.objects):
+        if ob.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.data.objects.remove(ob)
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.m3d.add_primitive(kind='SPHERE')
+        bpy.context.active_object.name = "Ball"
+    GIZMO["center"] = (region.x + region.width // 2, region.y + region.height // 2)
+    event('MOUSEMOVE', xy=GIZMO["center"])
+    event('F2', 'PRESS', GIZMO["center"])
+    event('F2', 'RELEASE', GIZMO["center"])
+
+
+@step
+def sculpt_f2_check():
+    check(window().workspace.name == "Sculpt" and bpy.context.mode == 'SCULPT', "F2 did not enter Sculpt Mode")
+    tray, dock = sculpt_dock()
+    check(len(props_areas()) == 2 and tray.x < dock.x, "Sculpt has a left tray and a right dock")
+    check(tray.spaces.active.context == dock.spaces.active.context == 'MODELING_TOOLKIT',
+          "Sculpt docks open on pages (%s, %s)" % (tray.spaces.active.context, dock.spaces.active.context))
+    check(not any(a.spaces.active.show_region_asset_shelf for a in window().screen.areas if a.type == 'VIEW_3D'),
+          "asset shelf is hidden in Sculpt")
+    with bpy.context.temp_override(window=window(), area=tray):
+        check(m3d_workspace.side_of(bpy.context) == 'LEFT' and m3d_workspace.active_page(bpy.context) == "sculpt_brushes",
+              "left tray shows the brush page")
+    with bpy.context.temp_override(window=window(), area=dock):
+        check(m3d_workspace.active_page(bpy.context) == "sculpt_geometry", "dock opens on Geometry")
+    GIZMO["faces"] = len(bpy.context.active_object.data.polygons)
+    check(not tracebacks(), "Python error drawing the Sculpt workspace")
+
+
+@step
+def sculpt_brush_buttons():
+    # The tray grid: every brush activates and shows as the active one.
+    for label, name in m3d_sculpt.BRUSHES:
+        press_ok("brush.asset_activate", **m3d_sculpt.brush_props(name))
+        check(m3d_sculpt.active_brush_id(bpy.context) == m3d_sculpt.BRUSH_ASSET + name, "brush %s not active" % name)
+    # The brush keys, with the mouse over the viewport.
+    press_ok("brush.asset_activate", **m3d_sculpt.brush_props("Grab"))
+    event('MOUSEMOVE', xy=GIZMO["center"])
+    event('ONE', 'PRESS', GIZMO["center"], shift=True)
+    event('ONE', 'RELEASE', GIZMO["center"], shift=True)
+
+
+@step
+def sculpt_brush_keys():
+    check(m3d_sculpt.active_brush_id(bpy.context).endswith("/Draw"), "Shift+1 did not pick Draw (%s)" %
+          m3d_sculpt.active_brush_id(bpy.context))
+    event('SEVEN', 'PRESS', GIZMO["center"], shift=True)
+    event('SEVEN', 'RELEASE', GIZMO["center"], shift=True)
+
+
+@step
+def sculpt_brush_keys2():
+    check(m3d_sculpt.active_brush_id(bpy.context).endswith("/Crease Sharp"), "Shift+7 did not pick Crease Sharp")
+    press_ok("brush.asset_activate", **m3d_sculpt.brush_props("Clay Strips"))
+    sculpt = bpy.context.tool_settings.sculpt
+    check(sculpt.brush is not None and "Clay" in sculpt.brush.name, "active brush after the tray click")
+
+
+@step
+def sculpt_geometry_quadriflow():
+    area = sculpt_dock()[1]
+    region = next(r for r in area.regions if r.type == 'WINDOW')
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=area, region=region):
+        res = bpy.ops.object.quadriflow_remesh('EXEC_DEFAULT', mode='FACES', target_faces=200)
+    check('FINISHED' in res or 'RUNNING_MODAL' in res, "QuadriFlow button: %s" % res)
+
+
+@step
+def sculpt_geometry_quadriflow_wait():
+    pass
+
+
+@step
+def sculpt_geometry_voxel():
+    press_ok("sculpt.sample_detail_size", mode='VOXEL')  # The eyedropper starts a modal sample; Esc cancels it.
+    event('ESC', 'PRESS', GIZMO["center"])
+    event('ESC', 'RELEASE', GIZMO["center"])
+    GIZMO["faces"] = len(bpy.context.active_object.data.polygons)
+    bpy.context.active_object.data.remesh_voxel_size = 0.08
+    area = sculpt_dock()[1]
+    region = next(r for r in area.regions if r.type == 'WINDOW')
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=area, region=region):
+        res = bpy.ops.object.voxel_remesh('EXEC_DEFAULT')
+    check('FINISHED' in res, "Voxel Remesh button: %s" % res)
+
+
+@step
+def sculpt_geometry_voxel_check():
+    faces = len(bpy.context.active_object.data.polygons)
+    check(faces != GIZMO["faces"] and bpy.context.mode == 'SCULPT', "Voxel Remesh did not remesh (%s -> %s)" % (GIZMO["faces"], faces))
+
+
+@step
+def sculpt_geometry_multires():
+    ob = bpy.context.active_object
+    area = sculpt_dock()[1]
+    region = next(r for r in area.regions if r.type == 'WINDOW')
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=area, region=region):
+        check(bpy.ops.m3d.multires_subdivide(mode='CATMULL_CLARK') == {'FINISHED'}, "Multires Subdivide button")
+        bpy.ops.m3d.multires_level(delta=-1)
+        check(m3d_sculpt.multires_of(ob).sculpt_levels == 0, "Multires level button")
+        bpy.ops.m3d.multires_level(delta=1)
+        check(bpy.ops.m3d.multires_subdivide(mode='LINEAR') == {'FINISHED'}, "Multires Linear button")
+    mod = m3d_sculpt.multires_of(ob)
+    check(mod and mod.total_levels == 2, "Multires levels after two Subdivides")
+
+
+@step
+def sculpt_geometry_multires_edit():
+    ob = bpy.context.active_object
+    area = sculpt_dock()[1]
+    region = next(r for r in area.regions if r.type == 'WINDOW')
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=area, region=region):
+        bpy.ops.m3d.multires_level(delta=-1)
+        check(bpy.ops.m3d.multires_edit(action='DELETE_HIGHER') == {'FINISHED'}, "Delete Higher button")
+    check(m3d_sculpt.multires_of(ob).total_levels == 1, "Delete Higher removed the top level")
+
+
+@step
+def sculpt_geometry_dyntopo():
+    # The Dyntopo button is greyed (and cancels) while the mesh has Multires.
+    check(bpy.context.active_object.use_dynamic_topology_sculpting is False, "dyntopo is off")
+    ob = bpy.context.active_object
+    mod = m3d_sculpt.multires_of(ob)
+    bpy.ops.object.modifier_remove(modifier=mod.name)
+
+
+@step
+def sculpt_mask_ops():
+    ob = bpy.context.active_object
+    press_ok("paint.mask_flood_fill", mode='VALUE', value=1.0)
+    check(ob.data.attributes.get(".sculpt_mask") is not None, "Mask > Fill made no mask")
+    press_ok("paint.mask_flood_fill", mode='INVERT')
+    for label, idname, icon, props in (*m3d_sculpt.MASK_FILTERS, *m3d_sculpt.MASK_CREATE, *m3d_sculpt.HIDE_MASKED):
+        press_ok(idname, **props)
+    press_ok("paint.mask_flood_fill", mode='VALUE', value=0.0)
+    check(not tracebacks(), "Python error in the Mask buttons")
+
+
+@step
+def sculpt_face_set_ops():
+    ob = bpy.context.active_object
+    for label, idname, icon, props in (*m3d_sculpt.FACE_SET_INIT, *m3d_sculpt.FACE_SET_VISIBILITY):
+        press_ok(idname, **props)
+    press_ok("paint.mask_flood_fill", mode='VALUE', value=1.0)
+    for label, idname, icon, props in m3d_sculpt.FACE_SET_CREATE[:2]:
+        press_ok(idname, **props)
+    press_ok("paint.mask_flood_fill", mode='VALUE', value=0.0)
+    press_ok("sculpt.face_sets_init", mode='NORMALS', threshold=0.05)   # A sphere has one loose part: split by normals.
+    check(ob.data.attributes.get(".sculpt_face_set") is not None, "Face Sets made no face sets")
+    for label, idname, icon, props in m3d_sculpt.PIVOT_BUTTONS:
+        press_ok(idname, **props)
+    check(not tracebacks(), "Python error in the Face Sets buttons")
+
+
+@step
+def sculpt_tool_buttons():
+    # Tool buttons set the tool (and its options); the work happens in the viewport.
+    area = sculpt_dock()[1]
+    region = next(r for r in area.regions if r.type == 'WINDOW')
+    groups = (m3d_sculpt.MESH_FILTERS, m3d_sculpt.MASK_TOOLS, m3d_sculpt.FACE_SET_EDIT, m3d_sculpt.TRIM_TOOLS,
+              m3d_sculpt.COLOR_FILTERS)
+    for group in groups:
+        for label, tool, op, props in group:
+            with bpy.context.temp_override(window=window(), screen=window().screen, area=area, region=region):
+                res = bpy.ops.m3d.sculpt_tool(tool=tool, op=op, props=repr(props), label=label)
+            check('FINISHED' in res and active_tool_id() == tool, "tool button %s -> %s" % (label, active_tool_id()))
+            if op:
+                got = bpy.context.workspace.tools.from_space_view3d_mode('SCULPT').operator_properties(op)
+                check(all(getattr(got, k) == v for k, v in props.items()), "tool options of %s" % label)
+    check(m3d_sculpt.tool_is_active(bpy.context, "builtin.color_filter", "sculpt.color_filter", {"type": 'BLUE'}),
+          "tool_is_active for the pressed look")
+    press_ok("brush.asset_activate", **m3d_sculpt.brush_props("Draw"))
+    check(active_tool_id() not in {"builtin.color_filter"}, "picking a brush leaves the filter tool (%s)" % active_tool_id())
+
+
+@step
+def sculpt_deform_buttons():
+    # Symmetrize runs; the paint page's color attribute button adds an attribute.
+    press_ok("sculpt.symmetrize")
+    ob = bpy.context.active_object
+    check(not ob.data.color_attributes, "no color attribute yet")
+    press_ok("geometry.color_attribute_add", 'EXEC_DEFAULT', name="Color", domain='POINT', data_type='BYTE_COLOR',
+             color=(0.8, 0.8, 0.8, 1.0))
+    check(ob.data.color_attributes.active_color is not None, "Add Color Attribute button")
+    press_ok("brush.asset_activate", **m3d_sculpt.brush_props("Paint Soft"))
+    check(not tracebacks(), "Python error in the Deform / Paint buttons")
+
+
+def _sculpt_tab_steps():
+    for page in [t.page for t in m3d_workspace.DOCK_TABS['SCULPT']['RIGHT']] + ["sculpt_brushes"]:
+        def show(page=page):
+            tray, dock = sculpt_dock()
+            area = tray if page == "sculpt_brushes" else dock
+            area.spaces.active.context = 'MODELING_TOOLKIT'
+            setattr(window().workspace, "m3d_page_" + ("left" if page == "sculpt_brushes" else "right"), page)
+            area.tag_redraw()
+            for a in window().screen.areas:
+                a.tag_redraw()
+
+        def check_draw(page=page):
+            check(not tracebacks(), "Python error while drawing the Sculpt page %s" % page)
+        show.__name__, check_draw.__name__ = "sculpt_show_" + page, "sculpt_drawn_" + page
+        yield show
+        yield check_draw
+
+
+for _fn in _sculpt_tab_steps():
+    step(_fn)
+
+
+@step
+def sculpt_shelves_and_popovers():
+    # Every Sculpt shelf and the Status Line draw with the sphere in Sculpt Mode; the popovers and the hotbox open.
+    for key in m3d_ui.shelves_for('SCULPT'):
+        bpy.context.window_manager.m3d_shelf = key
+        for a in window().screen.areas:
+            a.tag_redraw()
+        GIZMO.setdefault("shelves", []).append(key)
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.wm.call_menu(name="M3D_MT_hotbox")
+
+
+@step
+def sculpt_hotbox_close():
+    check(not tracebacks(), "Python error while drawing the Sculpt shelves / hotbox")
+    event('ESC', 'PRESS', GIZMO["center"])
+    event('ESC', 'RELEASE', GIZMO["center"])
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.wm.call_panel(name="M3D_PT_sculpt_shading")
+
+
+@step
+def sculpt_popover_close():
+    check(not tracebacks(), "Python error while drawing the matcap popover")
+    event('ESC', 'PRESS', GIZMO["center"])
+    event('ESC', 'RELEASE', GIZMO["center"])
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.wm.call_panel(name="M3D_PT_sculpt_automasking")
+
+
+@step
+def sculpt_automask_close():
+    check(not tracebacks(), "Python error while drawing the Auto-Masking popover")
+    event('ESC', 'PRESS', GIZMO["center"])
+    event('ESC', 'RELEASE', GIZMO["center"])
+    bpy.context.window_manager.m3d_shelf = 'SCULPT_BRUSHES'
+
+
+@step
+def sculpt_done():
+    sculpt_ws = window().workspace
+    sculpt_ws.m3d_page_left = sculpt_ws.m3d_page_right = ""
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
 @step
 def finish():
     errors = "".join(stderr_tee.buf + sys.stdout.buf)

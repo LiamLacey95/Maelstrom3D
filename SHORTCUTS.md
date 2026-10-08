@@ -78,6 +78,18 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 | , | Menu: Orientation | *(removed)* |
 | . | Menu: Pivot Point | *(removed)* |
 
+## Sculpt
+
+| Key | Before (Industry Compatible) | Now (Maelstrom3D) |
+|---|---|---|
+| Shift+1 | — | Brush: Draw |
+| Shift+2 | — | Brush: Clay Strips |
+| Shift+3 | — | Brush: Smooth |
+| Shift+4 | — | Brush: Grab |
+| Shift+5 | — | Brush: Inflate/Deflate |
+| Shift+6 | — | Brush: Pinch/Magnify |
+| Shift+7 | — | Brush: Crease Sharp |
+
 ## Window
 
 | Key | Before (Industry Compatible) | Now (Maelstrom3D) |
