@@ -116,6 +116,14 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 | Shift+Alt+R | — | Relax Pose to Breakdown |
 | Shift+Alt+B | — | Pose Breakdowner |
 
+## Screen Editing
+
+| Key | Before (Industry Compatible) | Now (Maelstrom3D) |
+|---|---|---|
+| Shift+F12 | — | Render (animation=False) |
+| Ctrl+Shift+F12 | — | Render (animation=True) |
+| Alt+F12 | Render (use_sequencer_scene=True, use_viewport=True) | Render View |
+
 ## Window
 
 | Key | Before (Industry Compatible) | Now (Maelstrom3D) |

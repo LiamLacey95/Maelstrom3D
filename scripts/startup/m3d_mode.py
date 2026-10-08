@@ -1106,6 +1106,8 @@ def m3d_startup_layout(*_args, screens=None):
                 space.use_filter_collection = False
             elif area.type == 'CONSOLE':
                 space.language = 'mel'
+            elif area.type == 'IMAGE_EDITOR' and kind_of.get(screen.name) == 'RENDER':
+                space.show_region_ui = False   # The Render View needs no sidebar.
     bpy.app.timers.register(_timeline_controls_below, first_interval=0.3)
 
 

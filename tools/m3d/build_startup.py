@@ -315,6 +315,41 @@ def phase5_animation():
     m3d_anim.limit_playback_redraw(screen)
 
 
+def phase6_rendering():
+    """Rendering: a 3D view (Material Preview: the Status Line's IPR button switches it to Rendered, which is heavy on a slow
+    PC) next to the Render View (the Image Editor), a wider dock for its seven tabs, and a Render Result for the Render View
+    to show, so that the first render lands there instead of in a new window."""
+    ws = bpy.data.workspaces["Rendering"]
+    show(ws)
+    yield 0.6
+    screen = window().screen
+    if not areas(screen, 'VIEW_3D'):
+        image = areas(screen, 'IMAGE_EDITOR')[0]
+        run(bpy.ops.screen.area_split, image, direction='VERTICAL', factor=0.5)
+        yield 0.3
+        areas(screen, 'IMAGE_EDITOR')[0].ui_type = 'VIEW_3D'   # The new area is a copy of the Image Editor, left of it.
+        yield 0.3
+        dock = areas(screen, 'PROPERTIES')[-1]
+        edge = (dock.x - 1, dock.y + dock.height // 2)
+        window().event_simulate(type='MOUSEMOVE', value='NOTHING', x=edge[0], y=edge[1])
+        yield 0.3
+        with bpy.context.temp_override(window=window(), screen=screen):
+            bpy.ops.screen.area_move(x=edge[0], y=edge[1], delta=-RENDER_DOCK_WIDER)
+        yield 0.3
+    areas(screen, 'VIEW_3D')[0].spaces.active.shading.type = 'MATERIAL'
+    areas(screen, 'PROPERTIES')[0].spaces.active.context = 'MODELING_TOOLKIT'
+    ws.m3d_page_right = "render_camera"
+    scene = bpy.context.scene
+    r = scene.render
+    before = (r.resolution_x, r.resolution_y, r.resolution_percentage, scene.eevee.taa_render_samples)
+    r.resolution_x = r.resolution_y = 16
+    r.resolution_percentage, scene.eevee.taa_render_samples = 100, 1
+    bpy.ops.render.render()   # Run in place (no job, no window): it makes the Render Result.
+    r.resolution_x, r.resolution_y, r.resolution_percentage, scene.eevee.taa_render_samples = before
+    result = next(i for i in bpy.data.images if i.type == 'RENDER_RESULT')
+    areas(screen, 'IMAGE_EDITOR')[0].spaces.active.image = result
+
+
 ANIM_TIMELINE_HEIGHT = 130  # pixels the Timeline under the Graph Editor / Dope Sheet keeps
 
 RIG_LEFT_WIDTH = 300  # pixels of the 2560 px build window: Outliner and bone collections
@@ -324,8 +359,10 @@ RIG_TIMELINE_HEIGHT = 230  # pixels the bottom Timeline keeps (the Drivers edito
 DOCK_WIDER = 170  # pixels of the 2560 px build window: seven tabs, All Settings and the tab menu fit
 UV_WIDER = 250  # pixels the UV editor gets from the 3D view
 TEXTURE_VIEW_WIDER = 250  # pixels the Texture workspace's 3D view gets from the paint view
+RENDER_DOCK_WIDER = 300  # pixels: seven tabs, All Settings and the tab menu fit
 
-PHASES = [phase0_workspaces, phase1_sculpt, phase2_uv, phase3_texture, phase4_rigging, phase5_animation]
+PHASES = [phase0_workspaces, phase1_sculpt, phase2_uv, phase3_texture, phase4_rigging, phase5_animation,
+          phase6_rendering]
 
 
 def save():

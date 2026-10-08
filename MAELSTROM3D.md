@@ -28,6 +28,7 @@ named here only to describe compatibility.*
 | Texturing | Texture workspace (F4): brush tray, paint channels, Bake, Export, Display, Status Line and shelves; paint layer stack, painted images are saved or packed with the file | `scripts/startup/m3d_texture.py`, `scripts/startup/m3d_layers.py` |
 | Rigging | Rigging workspace (F5): Outliner with the bone hierarchy and bone collections on the left, a large viewport, a dock of Skeleton, Controls & Constraints, Skin, Drive, Test and Collections tabs that follows the mode, Timeline that switches to the Drivers editor; Joint tool, Orient Joint, control shapes, IK with pole, bind with fallback, weight tools, Driven Key, naming check, Rigify on demand; Ctrl+E, Shift+N | `scripts/startup/m3d_rig.py` |
 | Animation | Animation workspace (F6): a large viewport and a camera view, one bottom editor that switches between the Graph Editor and the Dope Sheet, a short Timeline, a dock of Channel Box, Pick, Tween & Poses, Motion, Layers and Playback tabs; Status Line with Auto Key, key type, new key interpolation, keying set, range, FPS, loop mode, Blocking / Polish, Playblast; Tween (Alt+Q), Push / Relax / Breakdown, object selection sets, motion paths, ghost curves, NLA layers, Playblast | `scripts/startup/m3d_anim.py` |
+| Rendering | Rendering workspace (F7): a 3D view and a Render View, a dock of Camera, Lighting, Materials, Render, Output, Passes & Layers and Advanced tabs; Status Line with engine, camera, Draft / Medium / Final presets, Render, IPR; light table, HDRI sky, camera from view; Shift+F12 | `scripts/startup/m3d_render.py` |
 | Title | Window title says Maelstrom3D | `wm_window.cc` |
 
 ## Everyday controls
@@ -57,6 +58,7 @@ named here only to describe compatibility.*
 | Space tap / hold | Four view / hotbox (every menu) |
 | F1 / F2 / F3 / F4 / F5 / F6 / F7 | Workspace (and its menu set): Modeling / Sculpt / UV / Texture / Rigging / Animation / Rendering. The menu set dropdown also offers FX |
 | F8, F9, F10, F11, F12 | Object/component toggle, Vertex, Edge, Face, UV workspace |
+| Shift+F12 / Ctrl+Shift+F12 / Alt+F12 | Render the frame / the animation / show the last render |
 | Ctrl+F9 / F10 / F11 | Convert selection to vertices / edges / faces |
 | 1 / 2 / 3, Page Up / Down | Smooth preview off / cage / smooth, more / fewer divisions |
 | 4 / 5 / 6 / 7 | Wireframe / Shaded / Textured / Lighting |
@@ -314,6 +316,45 @@ cancels. Your render output settings (path, format, size, frame range) are put b
 Keys: S sets a key, Shift+W / E / R key translate / rotate / scale, Alt+V plays, `,` and `.` jump between keys, Alt+, and Alt+.
 step a frame, Shift+S is the keyframe marking menu, Ctrl+Left / Right jump to the start / end, **Alt+Q Tween**,
 **Alt+Shift+P / R / B Push / Relax / Breakdown** (Pose Mode).
+
+## Rendering (F7)
+
+F7 opens the Rendering workspace. Left: a 3D view in Material Preview (the Status Line's **IPR** button turns it into the
+Rendered viewport and back; Rendered re-renders as you work, which is heavy on a slow PC, so it starts off). Middle: the
+**Render View** (an Image Editor showing the Render Result: renders land here, not in a new window). Right: the dock.
+
+| Part | Contents |
+|---|---|
+| Status Line | Engine (Cycles / EEVEE), scene camera picker, quality preset (**Draft / Medium / Final**, or Custom once you edit a value), **Render**, **Render Animation**, **IPR**, **Render View** |
+| Shelves | Lights (Point, Spot, Area, Sun, HDRI Sky, Previous World), Render (Render, Animation, Render View, Camera from View, Look Through, Draft / Medium / Final), Custom |
+| Camera tab | Scene camera, **New Camera from View**, Match Camera to View, Look Through Camera; focal length (or ortho scale), clip range; depth of field (focus object or distance, f-stop, blades); resolution X / Y / %; safe areas and composition guides; render border (Set / Clear) |
+| Lighting tab | Add Light buttons, the **Light Editor** (one row per light: viewport eye, render toggle, name, color, power, shadow, shared-data button, select), **HDRI Sky** (Blender's studio HDRIs, or your own file; rotation, strength), exposure and gamma |
+| Materials tab | The active object's material slots and the Principled inputs (base color, metallic, roughness, emission color / strength, normal strength when a Normal Map or Bump node feeds it); a button to the Shading workspace |
+| Render tab | Engine and quality presets, then the engine's settings: Cycles device, samples, noise threshold, time limit, denoising; EEVEE samples, ray tracing, shadows |
+| Output tab | Path, format, color mode and depth, frame range, FPS, Render / Render Animation, color management (view transform, look, exposure, gamma) |
+| Passes & Layers tab | View layers, passes (data, light, Cryptomatte, shadow catcher), AOVs, light groups, **holdout** and **indirect only** per collection, light linking and shadow linking for the active object, shadow catcher and holdout flags |
+| Advanced tab | Light paths (Cycles bounces and clamping; EEVEE fast GI), film (transparent background, filter, motion blur), performance, simplify |
+
+**Quality presets.** Each preset sets both engines at once and the size, so switching engine keeps the preset. Draft: Cycles 32
+samples, 4 bounces; EEVEE 16 samples, no ray tracing; half size. Medium: Cycles 128 samples, 8 bounces; EEVEE 64 samples, ray
+tracing at half resolution. Final: Cycles 512 samples, 12 bounces; EEVEE 256 samples, full ray tracing, 2 shadow rays. All
+use denoising and adaptive sampling in Cycles. The Status Line and the Render tab show **Custom** as soon as you change one of
+those values (or the size); the preset buttons put them back.
+
+**Light Editor.** Every light of the scene is a row, including lights in hidden or excluded collections (greyed). The eye shows
+or hides the light in the viewport, the camera icon in the render. A light whose settings are shared with other lights shows
+**xN**: editing one changes them all, and clicking it gives that light its own copy. The arrow selects the light (not possible
+for a light in an excluded collection).
+
+**HDRI Sky.** Picking an HDRI (or **HDRI Sky** on the shelf) assigns a new world called *m3dHDRI* (Texture Coordinate, Mapping,
+Environment Texture, Background). The world the scene had is kept and **Back to Previous World** puts it back. Rotation and
+strength edit the Mapping and Background nodes. The viewport shows the sky in Rendered shading.
+
+**Camera from View.** Adds a camera at the current viewport view (with the viewport's field of view) and makes it the scene
+camera; **Match Camera to View** moves the scene camera to the view instead.
+
+Keys: **Shift+F12** renders the frame, **Ctrl+Shift+F12** the animation, **Alt+F12** shows the last render (F12 itself is the
+UV workspace in Modeling). Esc cancels a render.
 
 ## Terms used
 

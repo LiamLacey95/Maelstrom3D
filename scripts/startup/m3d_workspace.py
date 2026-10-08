@@ -143,6 +143,8 @@ def _follow_workspace():
         follow_mode(wm)   # The Rigging dock follows the mode.
         from m3d_anim import follow
         follow(wm)        # The Animation workspace limits what redraws while playing.
+        from m3d_render import follow as follow_render
+        follow_render(wm)  # The Rendering workspace's Render View shows the Render Result.
     return 0.25
 
 
@@ -191,6 +193,13 @@ DOCK_TABS['ANIM'] = {
               *(Tab("anim_" + page, label, 'MODELING_TOOLKIT', "anim_" + page) for page, label in (
                   ("pick", "Pick"), ("tween", "Tween & Poses"), ("motion", "Motion"), ("layers", "Layers"),
                   ("playback", "Playback")))),
+    'LEFT': (),
+}
+# Rendering: task tabs on the right (pages: m3d_render.py).
+DOCK_TABS['RENDER'] = {
+    'RIGHT': tuple(Tab("render_" + page, label, 'MODELING_TOOLKIT', "render_" + page) for page, label in (
+        ("camera", "Camera"), ("lighting", "Lighting"), ("materials", "Materials"), ("render", "Render"),
+        ("output", "Output"), ("passes", "Passes & Layers"), ("advanced", "Advanced"))),
     'LEFT': (),
 }
 # The last tab of every row: the stock Properties tabs.

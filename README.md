@@ -54,6 +54,9 @@ Maelstrom3D keeps its settings apart from Blender's (`%APPDATA%\Maelstrom3D`), s
   with a Timeline under it, a dock of Channel Box (the active bone's channels in Pose Mode), Pick (selection sets, bone collections),
   Tween & Poses, Motion (motion paths, ghost curves), Layers (NLA) and Playback; Auto Key, key type, new key interpolation,
   Blocking / Polish presets, Tween slider and Alt+Q, Push / Relax / Breakdown keys, object selection sets, Playblast.
+- **Rendering workflow (F7):** a 3D view next to a Render View, a dock of Camera, Lighting, Materials, Render, Output,
+  Passes & Layers and Advanced tabs; Draft / Medium / Final quality presets for Cycles and EEVEE, a light table (power, color,
+  shadows, visibility), HDRI sky that keeps your world, camera from view, IPR, Shift+F12 render.
 - **Scripting:** `m3d.cmds` (`polyCube`, `move`, `setAttr`, `select`, `ls`, ...) and MEL in the command line.
   Existing scripts that `import maya.cmds` run through a compatibility alias.
 

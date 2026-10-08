@@ -276,8 +276,7 @@ check(wm.m3d_menu_set == 'MODELING' and wm.m3d_shelf == 'POLY', "shelf tab is re
 # Shelf tabs and status line per kind.
 check(m3d_ui.shelves_for('SCULPT') == ['SCULPT_BRUSHES', 'SCULPT_REMESH', 'SCULPT_MASK', 'CUSTOM']
       and 'POLY' in m3d_ui.shelves_for('MODEL') and m3d_ui.shelves_for('MODEL')[-1] == 'CUSTOM', "shelf tabs per kind")
-check(set(m3d_ui.KIND_MODES) == set(W.KINDS) - set(m3d_ui.STATUS_LINES), "placeholder status line modes for the other kinds")
-check(set(m3d_ui.STATUS_LINES) == {'MODEL', 'SCULPT', 'UV', 'TEXTURE', 'RIG', 'ANIM'}, "status lines")
+check(set(m3d_ui.STATUS_LINES) == set(W.KINDS), "every kind has its own status line")
 
 # Page panels: only on their page, per workspace and side.
 ws = bpy.data.workspaces["Modeling"]
@@ -605,7 +604,7 @@ uv_pages = {t.page for t in uv_tabs['RIGHT']}
 check({c.page for c in U.classes if hasattr(c, "page")} == uv_pages, "every UV page has panels and the other way round")
 check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in U.classes if c is not U.M3D_UVSettings),
       "UV classes registered")
-check(m3d_ui.shelves_for('UV') == ['UV', 'CUSTOM'] and 'UV' in m3d_ui.STATUS_LINES and 'UV' not in m3d_ui.KIND_MODES,
+check(m3d_ui.shelves_for('UV') == ['UV', 'CUSTOM'] and 'UV' in m3d_ui.STATUS_LINES,
       "UV shelf tabs and Status Line")
 check([it[3] for it in m3d_ui.SHELVES['UV'][1] if it] == ["Cut", "Sew", "Unfold", "Optimize", "Layout", "Auto Unwrap"],
       "UV shelf buttons")
@@ -886,7 +885,7 @@ check({c.page for c in T.classes if hasattr(c, "page")} == tex_pages, "every Tex
 check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in T.classes
           if not issubclass(c, bpy.types.PropertyGroup)), "Texture classes registered")
 check(m3d_ui.shelves_for('TEXTURE') == ['TEXTURE_BRUSHES', 'TEXTURE_CHANNELS', 'TEXTURE_OUTPUT', 'CUSTOM']
-      and 'TEXTURE' in m3d_ui.STATUS_LINES and 'TEXTURE' not in m3d_ui.KIND_MODES, "Texture shelf tabs and Status Line")
+      and 'TEXTURE' in m3d_ui.STATUS_LINES, "Texture shelf tabs and Status Line")
 check(W.KIND_MODES_IN_MENU_BAR['TEXTURE'] == {'TEXTURE_PAINT'}, "Texturing menu set covers the paint header")
 check(len(T.BRUSHES) == 10 and [n for _l, n in T.BRUSHES][:3] == ["Paint Soft", "Paint Hard", "Airbrush"], "brush grid")
 check([ch.label for ch in T.CHANNELS] == ["Base Color", "Roughness", "Metallic", "Normal", "Height", "Emission"], "channels")
@@ -2010,8 +2009,7 @@ rig_pages = {t.page for side in rig_tabs.values() for t in side}
 check({c.page for c in R.classes if hasattr(c, "page")} == rig_pages, "every Rigging page has panels and the other way round")
 check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in R.classes if not issubclass(c, bpy.types.PropertyGroup)),
       "Rigging classes registered")
-check(m3d_ui.shelves_for('RIG') == ['RIG_SKELETON', 'RIG_CONTROLS', 'RIG_SKIN', 'CUSTOM'] and 'RIG' in m3d_ui.STATUS_LINES
-      and 'RIG' not in m3d_ui.KIND_MODES, "Rigging shelf tabs and Status Line")
+check(m3d_ui.shelves_for('RIG') == ['RIG_SKELETON', 'RIG_CONTROLS', 'RIG_SKIN', 'CUSTOM'] and 'RIG' in m3d_ui.STATUS_LINES, "Rigging shelf tabs and Status Line")
 check([it[3] for it in m3d_ui.SHELVES['RIG_SKELETON'][1] if it][:5] == ["Joint", "Extrude", "Mirror", "Orient", "Names L/R"],
       "Skeleton shelf buttons")
 check([it[3] for it in m3d_ui.SHELVES['RIG_SKIN'][1] if it] == ["Bind", "Paint Weights", "Normalize", "Mirror Weights"], "Skin shelf buttons")
@@ -2820,8 +2818,7 @@ an_pages = {t.page for t in an_tabs['RIGHT'] if t.page}
 check({c.page for c in A.classes if hasattr(c, "page")} == an_pages, "every Animation page has panels and the other way round")
 check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in A.classes if not issubclass(c, bpy.types.PropertyGroup)),
       "Animation classes registered")
-check(m3d_ui.shelves_for('ANIM') == ['ANIM_ANIMATE', 'ANIM_POSES', 'CUSTOM'] and 'ANIM' in m3d_ui.STATUS_LINES
-      and 'ANIM' not in m3d_ui.KIND_MODES, "Animation shelf tabs and Status Line")
+check(m3d_ui.shelves_for('ANIM') == ['ANIM_ANIMATE', 'ANIM_POSES', 'CUSTOM'] and 'ANIM' in m3d_ui.STATUS_LINES, "Animation shelf tabs and Status Line")
 check([it[3] for it in m3d_ui.SHELVES['ANIM_ANIMATE'][1] if it] == ["Set Key", "Translate", "Rotate", "Scale", "Breakdown", "Delete Key",
                                                                    "Euler Filter", "Stepped", "Spline"], "Animate shelf buttons")
 check([it[3] if not callable(it) else "menu" for it in m3d_ui.SHELVES['ANIM_POSES'][1] if it] == ["Copy", "Paste", "Paste Flipped", "Reset", "Save Pose", "menu"],
@@ -3230,6 +3227,401 @@ check({"PROPERTIES_PT_m3d_an_bone_sets", "PROPERTIES_PT_m3d_an_collections"} <= 
       "Pick lists the skeleton's sets and collections: %s" % an_shown("anim_pick"))
 check(draw_anim_panels('POSE with sets') >= 10, "Animation panels drew in Pose Mode with sets and collections")
 bpy.ops.m3d.rig_mode(mode='OBJECT')
+
+# ----------------------------------------------------------------------------------------------------
+# Phase 6: Rendering workspace (tabs, pages, gates, quality presets, light table, HDRI, camera from view, IPR, keys, render).
+import m3d_render as RN
+import math
+
+render_ws = bpy.data.workspaces["Rendering"]
+rn_tabs = W.DOCK_TABS['RENDER']
+check([t.label for t in rn_tabs['RIGHT']] == ["Camera", "Lighting", "Materials", "Render", "Output", "Passes & Layers", "Advanced"], "Rendering dock tabs")
+check(rn_tabs['LEFT'] == () and W.dock_tabs('RENDER', 'LEFT') == rn_tabs['RIGHT'], "Rendering has no left tray")
+for tab in rn_tabs['RIGHT']:
+    check(tab.context == 'MODELING_TOOLKIT' and tab.page == tab.id and tab.id.startswith("render_"), "Rendering page tab " + tab.id)
+rn_pages = {t.page for t in rn_tabs['RIGHT']}
+check({c.page for c in RN.classes if hasattr(c, "page")} == rn_pages, "every Rendering page has panels and the other way round")
+check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in RN.classes if not issubclass(c, bpy.types.PropertyGroup)),
+      "Rendering classes registered")
+check(m3d_ui.shelves_for('RENDER') == ['RENDER_LIGHTS', 'RENDER_RENDER', 'CUSTOM'] and 'RENDER' in m3d_ui.STATUS_LINES, "Rendering shelf tabs and Status Line")
+check([it[3] for it in m3d_ui.SHELVES['RENDER_LIGHTS'][1] if it] == ["Point", "Spot", "Area", "Sun", "HDRI Sky", "Previous World"], "Lights shelf buttons")
+check([it[3] for it in m3d_ui.SHELVES['RENDER_RENDER'][1] if it] == ["Render", "Animation", "Render View", "Camera from View", "Look Through",
+                                                                  "Draft", "Medium", "Final"], "Render shelf buttons")
+check(render_ws.m3d_kind == 'RENDER' and render_ws.object_mode == 'OBJECT', "Rendering workspace kind and entry mode")
+rn_src = open(RN.__file__, encoding="utf-8").read()
+for ic in set(re.findall(r"icon='([A-Z_0-9]+)'", rn_src)):
+    check(ic in icons, "Rendering code uses a missing icon " + ic)
+for word in ("maya", "autodesk", "arnold", "hypershade", "marmoset", "toolbag", "keyshot", "houdini", "solaris", "karma"):
+    check(word not in rn_src.lower(), "Rendering code names " + word)
+
+# Keys: Shift+F12 / Ctrl+Shift+F12 render, Alt+F12 shows the render; nothing else sits on them.
+bpy.utils.keyconfig_set(bpy.utils.preset_find("Maelstrom3D", "keyconfig"))
+kc = bpy.context.window_manager.keyconfigs["Maelstrom3D"]
+for mods, idname, props in ((dict(shift=True, ctrl=False, alt=False), "m3d.render", {"animation": False}),
+                            (dict(shift=True, ctrl=True, alt=False), "m3d.render", {"animation": True}),
+                            (dict(shift=False, ctrl=False, alt=True), "m3d.render_view", {})):
+    item = find("Screen Editing", idname, 'F12', **mods)
+    check(item and all(getattr(item[0].properties, k) == v for k, v in props.items()), "F12 %s runs %s" % (mods, idname))
+    others = [(km.name, k.idname) for km in kc.keymaps for k in km.keymap_items
+              if k.type == 'F12' and all(getattr(k, m) == v for m, v in mods.items()) and not k.oskey and not k.any
+              and not k.idname.startswith("m3d.render")]
+    check(not others, "F12 %s is free around the Rendering keys: %s" % (mods, others))
+check(find("Mesh", "m3d.workspace", "F12", shift=False, ctrl=False, alt=False)[0].properties.kind == 'UV', "plain F12 is still the UV workspace")
+check(find("Screen Editing", "render.render", "F12", ctrl=True, alt=True), "Ctrl+Alt+F12 is Blender's")
+
+# A clean scene.
+for ob_ in list(bpy.data.objects):
+    if ob_.mode != 'OBJECT':
+        bpy.context.view_layer.objects.active = ob_
+        bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.data.objects.remove(ob_)
+for coll_ in list(bpy.data.collections):
+    bpy.data.collections.remove(coll_)
+scn = bpy.context.scene
+scn.camera = None
+rn = scn.render
+
+
+class RnCtx(SCtx):
+    """Context of the Rendering dock: the real one with this workspace."""
+    def __init__(self):
+        super().__init__('RIGHT')
+        self.workspace = render_ws
+
+
+def rn_panels(page):
+    return [c for c in RN.classes if getattr(c, "page", None) == page and hasattr(c, "poll")]
+
+
+def rn_shown(page):
+    render_ws.m3d_page_right = page
+    ctx_ = RnCtx()
+    return [c.__name__ for c in rn_panels(page) if c.poll(ctx_)]
+
+
+def rn_cancelled(fn, **kw):
+    """A cancelled operator call raises with its report; both count."""
+    try:
+        return fn(**kw) == {'CANCELLED'}
+    except RuntimeError:
+        return True
+
+
+# --- Quality presets
+check(RN.current_quality(scn) == 'CUSTOM' and scn.m3d_render.preset == 'CUSTOM', "a new scene has no preset")
+want = {'DRAFT': (50, 32, 16, False, '4'), 'MEDIUM': (100, 128, 64, True, '2'), 'FINAL': (100, 512, 256, True, '1')}
+saved_engine = rn.engine
+for engine_ in ('BLENDER_EEVEE', 'CYCLES'):
+    rn.engine = engine_
+    for key_, (pct_, cy_samples_, ev_samples_, ev_rt_, ev_scale_) in want.items():
+        bpy.ops.m3d.render_preset(preset=key_)
+        check((rn.resolution_percentage, scn.cycles.samples, scn.eevee.taa_render_samples, scn.eevee.use_raytracing,
+               scn.eevee.ray_tracing_options.resolution_scale) == (pct_, cy_samples_, ev_samples_, ev_rt_, ev_scale_),
+              "%s preset values with %s" % (key_, engine_))
+        check(scn.cycles.use_denoising and scn.cycles.use_adaptive_sampling, key_ + " denoises and samples adaptively")
+        check(RN.current_quality(scn) == key_ and scn.m3d_render.preset == key_, "%s is the active preset (%s)" % (key_, engine_))
+        for other_engine_ in ('BLENDER_EEVEE', 'CYCLES'):   # Both engines got the values: switching keeps the preset.
+            rn.engine = other_engine_
+            check(RN.current_quality(scn) == key_, "%s still active after switching to %s" % (key_, other_engine_))
+        rn.engine = engine_
+        if engine_ == 'CYCLES':
+            scn.cycles.samples += 1
+        else:
+            scn.eevee.taa_render_samples += 1
+        check(RN.current_quality(scn) == 'CUSTOM' and scn.m3d_render.preset == key_, "an edit makes %s Custom (%s)" % (key_, engine_))
+        bpy.ops.m3d.render_preset(preset=key_)
+        check(RN.current_quality(scn) == key_, "applying again clears Custom")
+bpy.ops.m3d.render_preset(preset='MEDIUM')
+rn.resolution_percentage = 75
+check(RN.current_quality(scn) == 'CUSTOM', "the size is part of a preset")
+bpy.ops.m3d.render_preset(preset='MEDIUM')
+rn.engine = 'CYCLES'
+scn.cycles.max_bounces = 3
+check(RN.current_quality(scn) == 'CUSTOM', "the bounces are part of a Cycles preset")
+bpy.ops.m3d.render_preset(preset='DRAFT')
+rn.engine = 'BLENDER_EEVEE'
+scn.eevee.use_raytracing = True
+check(RN.current_quality(scn) == 'CUSTOM', "ray tracing is part of an EEVEE preset")
+samples_ = [RN.PRESET_VALUES[k]['CYCLES']["cycles.samples"] for k in ('DRAFT', 'MEDIUM', 'FINAL')]
+check(samples_ == sorted(samples_) and len(set(samples_)) == 3, "presets get better in order")
+rn.engine = saved_engine
+
+# --- HDRI world
+world_before = scn.world
+old_nodes = len(world_before.node_tree.nodes) if world_before.node_tree else 0
+old_props = dict(world_before.items())
+bundled = RN.bundled_hdris()
+check(len(bundled) >= 4 and all(os.path.isfile(p) for _l, p in bundled), "studio HDRIs are listed: %s" % [l for l, _p in bundled])
+check(RN.hdri_nodes(scn.world) is None and scn.m3d_render.hdri_strength == 1.0 and scn.m3d_render.hdri_rotation == 0.0,
+      "no HDRI yet: defaults read back")
+check(bpy.ops.m3d.hdri_clear.poll() is False, "Back to Previous World needs an HDRI world")
+check(rn_cancelled(bpy.ops.m3d.hdri_setup, filepath="//missing_sky.exr") and scn.world == world_before, "a missing file changes nothing")
+check(bpy.ops.m3d.hdri_setup() == {'FINISHED'}, "HDRI Sky with no file picks a studio HDRI")
+hw = scn.world
+nodes_ = RN.hdri_nodes(hw)
+check(hw.name == "m3dHDRI" and nodes_ is not None, "a new world m3dHDRI is assigned")
+check([nodes_[k].type for k in ("coord", "mapping", "env", "background", "output")] ==
+      ['TEX_COORD', 'MAPPING', 'TEX_ENVIRONMENT', 'BACKGROUND', 'OUTPUT_WORLD'], "HDRI nodes: coordinates, mapping, environment, background, output")
+links_ = {(l.from_node.name, l.from_socket.name, l.to_node.name, l.to_socket.name) for l in hw.node_tree.links}
+check(links_ == {("M3D HDRI Coordinates", "Generated", "M3D HDRI Mapping", "Vector"), ("M3D HDRI Mapping", "Vector", "M3D HDRI Environment", "Vector"),
+                 ("M3D HDRI Environment", "Color", "M3D HDRI Background", "Color"), ("M3D HDRI Background", "Background", "M3D HDRI Output", "Surface")},
+      "HDRI nodes are wired: %s" % links_)
+check(nodes_["env"].image is not None and os.path.samefile(bpy.path.abspath(nodes_["env"].image.filepath), RN.default_hdri()), "the environment uses the studio image")
+check(scn.m3d_render.previous_world == world_before and world_before.name in bpy.data.worlds and world_before.users >= 1, "the old world is kept")
+check((len(world_before.node_tree.nodes) if world_before.node_tree else 0) == old_nodes and dict(world_before.items()) == old_props, "...untouched")
+scn.m3d_render.hdri_rotation, scn.m3d_render.hdri_strength = 1.0, 2.5
+check(abs(nodes_["mapping"].inputs["Rotation"].default_value[2] - 1.0) < 1e-5 and abs(nodes_["background"].inputs["Strength"].default_value - 2.5) < 1e-5
+      and abs(scn.m3d_render.hdri_rotation - 1.0) < 1e-5 and abs(scn.m3d_render.hdri_strength - 2.5) < 1e-5, "rotation and strength write the nodes")
+other_hdri_ = next(p for _l, p in bundled if os.path.basename(p) != os.path.basename(RN.default_hdri()))
+check(bpy.ops.m3d.hdri_setup(filepath=other_hdri_) == {'FINISHED'} and scn.world.name == "m3dHDRI" and len(bpy.data.worlds) == 2, "another image reuses the HDRI world")
+check(os.path.basename(RN.hdri_nodes(scn.world)["env"].image.filepath) == os.path.basename(other_hdri_), "...with the new image")
+check(abs(scn.m3d_render.hdri_rotation - 1.0) < 1e-5 and abs(scn.m3d_render.hdri_strength - 2.5) < 1e-5, "...and the same rotation and strength")
+check(scn.m3d_render.previous_world == world_before, "the kept world is still the first one")
+check(scn.m3d_render.hdri_path.endswith(os.path.basename(other_hdri_)), "the picked file is remembered")
+check(bpy.ops.m3d.hdri_clear() == {'FINISHED'} and scn.world == world_before and RN.hdri_nodes(scn.world) is None
+      and scn.m3d_render.previous_world is None, "Back to Previous World")
+scn.world = None
+bpy.ops.m3d.hdri_setup()
+check(scn.m3d_render.previous_world is None and bpy.ops.m3d.hdri_clear() == {'FINISHED'} and scn.world is None, "a scene without a world goes back to none")
+scn.world = world_before
+
+# --- Lights: shelf operator, light table rows
+for kind_, label_, _icon in RN.LIGHT_TYPES:
+    bpy.ops.m3d.render_light_add(kind=kind_)
+    ob_ = bpy.context.active_object
+    check(ob_.type == 'LIGHT' and ob_.data.type == kind_ and ob_.location.z > 3.5, "%s light added above the cursor" % kind_)
+check(bpy.context.active_object.rotation_euler.x > 0.5, "the sun is tilted")
+lights_ = RN.scene_lights(scn)
+check(len(lights_) == 4 and [o.name.lower() for o in lights_] == sorted(o.name.lower() for o in lights_), "four lights listed")
+point_ = next(o for o in lights_ if o.data.type == 'POINT')
+spot_ = next(o for o in lights_ if o.data.type == 'SPOT')
+# a light in a hidden collection, one in an excluded collection, and two objects sharing one light
+hid_coll = bpy.data.collections.new("HiddenLights")
+exc_coll = bpy.data.collections.new("ExcludedLights")
+scn.collection.children.link(hid_coll)
+scn.collection.children.link(exc_coll)
+hid_light = bpy.data.objects.new("HiddenLamp", bpy.data.lights.new("HiddenLamp", 'POINT'))
+exc_light = bpy.data.objects.new("ExcludedLamp", bpy.data.lights.new("ExcludedLamp", 'AREA'))
+hid_coll.objects.link(hid_light)
+exc_coll.objects.link(exc_light)
+twin_ = bpy.data.objects.new("TwinLamp", point_.data)
+scn.collection.objects.link(twin_)
+layer_ = bpy.context.view_layer
+layer_.layer_collection.children["HiddenLights"].hide_viewport = True
+layer_.layer_collection.children["ExcludedLights"].exclude = True
+names_ = [o.name for o in RN.scene_lights(scn)]
+check({"HiddenLamp", "ExcludedLamp", "TwinLamp"} <= set(names_) and len(names_) == 7, "the table lists hidden, excluded and shared lights: %s" % names_)
+check(RN.light_state(layer_, hid_light) == 'HIDDEN' and RN.light_state(layer_, exc_light) == 'EXCLUDED' and RN.light_state(layer_, point_) == 'OK',
+      "light states: %s %s %s" % (RN.light_state(layer_, hid_light), RN.light_state(layer_, exc_light), RN.light_state(layer_, point_)))
+check(point_.data.users == 2 and twin_.data is point_.data, "the twin shares the light data")
+log_ = []
+rn_ctx = RnCtx()
+render_ws.m3d_page_right = "render_lighting"
+for cls_ in rn_panels("render_lighting"):
+    if cls_.poll(rn_ctx):
+        try:
+            log_.extend(draw_stub(cls_, rn_ctx))
+        except Exception as err:
+            check(False, "%s draw: %r" % (cls_.__name__, err))
+check_calls_ext("Lighting page", log_)
+row_ops_ = [(r.values().get("name"), r.values().get("action")) for r in log_ if r._kind == "operator" and r._args[0] == "m3d.render_light"]
+check({(n, a) for n, a in row_ops_ if a == 'VISIBLE'} == {(o.name, 'VISIBLE') for o in RN.scene_lights(scn)}, "every light has an eye button")
+check({n for n, a in row_ops_ if a == 'SINGLE'} == {point_.name, twin_.name}, "only the lights sharing data say so: %s" % [n for n, a in row_ops_ if a == 'SINGLE'])
+shared_text_ = [r._kw.get("text") for r in log_ if r._kind == "operator" and r.values().get("action") == 'SINGLE']
+check(shared_text_ == ["x2", "x2"], "the shared rows read x2: %s" % shared_text_)
+check({r._args[1] for r in log_ if r._kind == "prop"} >= {"hide_render", "name", "color", "energy", "use_shadow"}, "rows edit render visibility, name, color, power, shadow")
+check(any(r._kind == "label" and "Greyed" in str(r._kw.get("text", "")) for r in log_), "the table explains greyed rows")
+# the row buttons
+check(bpy.ops.m3d.render_light(name=point_.name, action='VISIBLE') == {'FINISHED'} and point_.hide_get(), "the eye hides a light")
+check(RN.light_state(layer_, point_) == 'HIDDEN', "...and the table sees it")
+check(bpy.ops.m3d.render_light(name=point_.name, action='VISIBLE') == {'FINISHED'} and RN.light_state(layer_, point_) == 'OK', "...and shows it again")
+point_.hide_viewport = True
+check(RN.light_state(layer_, point_) == 'HIDDEN', "a light disabled in viewports reads hidden")
+bpy.ops.m3d.render_light(name=point_.name, action='VISIBLE')
+check(not point_.hide_viewport and RN.light_state(layer_, point_) == 'OK', "...the eye enables it")
+check(rn_cancelled(bpy.ops.m3d.render_light, name=exc_light.name, action='VISIBLE') and rn_cancelled(bpy.ops.m3d.render_light, name=exc_light.name, action='SELECT'),
+      "a light in an excluded collection cannot be shown or selected from the table")
+check(rn_cancelled(bpy.ops.m3d.render_light, name=hid_light.name, action='SELECT'), "a hidden light is not selected")
+check(bpy.ops.m3d.render_light(name=spot_.name, action='SELECT') == {'FINISHED'} and spot_.select_get() and bpy.context.active_object == spot_
+      and not point_.select_get(), "Select makes the light the selection")
+old_data_ = point_.data
+check(bpy.ops.m3d.render_light(name=twin_.name, action='SINGLE') == {'FINISHED'} and twin_.data is not old_data_ and twin_.data.users == 1
+      and point_.data.users == 1, "Make Single User gives the twin its own light")
+check(point_.data.color[:] == twin_.data.color[:], "...with the same settings")
+spot_.data.energy = 321.0
+spot_.data.use_shadow = False
+check(spot_.data.energy == 321.0 and not spot_.data.use_shadow, "light edits stick")
+for ob_ in (hid_light, exc_light, twin_):
+    bpy.data.objects.remove(ob_)
+for coll_ in (hid_coll, exc_coll):
+    bpy.data.collections.remove(coll_)
+
+# --- Camera from view, IPR
+space_ = RN.viewport(bpy.context)
+check(space_ is not None and space_.region_3d is not None, "the test screen has a 3D view")
+scn.camera = None
+check(bpy.ops.m3d.render_camera_from_view(mode='NEW') == {'FINISHED'} and scn.camera is not None and scn.camera.type == 'CAMERA'
+      and scn.camera == bpy.context.active_object and scn.camera.select_get(), "New Camera from View adds and selects a scene camera")
+mat_ = space_.region_3d.view_matrix.inverted()
+check(all(abs(a - b) < 1e-4 for ra, rb in zip(scn.camera.matrix_world, mat_) for a, b in zip(ra, rb)), "...at the view")
+check(abs(scn.camera.data.lens - space_.lens / 2) < 1e-4, "...with the viewport's field of view (%s)" % scn.camera.data.lens)
+first_cam_ = scn.camera
+bpy.ops.m3d.render_camera_from_view(mode='NEW')
+check(scn.camera != first_cam_ and len([o for o in scn.objects if o.type == 'CAMERA']) == 2, "another New Camera from View adds another")
+scn.camera = first_cam_
+check(bpy.ops.m3d.render_camera_from_view(mode='MATCH') == {'FINISHED'} and scn.camera == first_cam_, "Match Camera to View keeps the scene camera")
+check(len([o for o in scn.objects if o.type == 'CAMERA']) == 2, "...and adds none")
+space_.region_3d.view_perspective = 'CAMERA'
+check(rn_cancelled(bpy.ops.m3d.render_camera_from_view, mode='MATCH'), "looking through the camera there is nothing to match")
+bpy.ops.m3d.render_camera_from_view(mode='NEW')
+check(len([o for o in scn.objects if o.type == 'CAMERA']) == 3, "a new camera from the camera view copies the camera")
+space_.region_3d.view_perspective = 'PERSP'
+for ob_ in [o for o in scn.objects if o.type == 'CAMERA']:
+    bpy.data.objects.remove(ob_)
+scn.camera = None
+check(bpy.ops.m3d.render_camera_from_view(mode='MATCH') == {'FINISHED'} and scn.camera is not None, "Match without a scene camera adds one")
+
+shading_ = space_.shading.type
+space_.shading.type = 'MATERIAL'
+bpy.ops.m3d.render_ipr()
+check(space_.shading.type == 'RENDERED', "IPR turns the Rendered viewport on")
+bpy.ops.m3d.render_ipr()
+check(space_.shading.type == 'MATERIAL' and not RN._ipr_before, "...and back to the shading it had")
+space_.shading.type = 'SOLID'
+bpy.ops.m3d.render_ipr()
+bpy.ops.m3d.render_ipr()
+check(space_.shading.type == 'SOLID', "...whichever that was")
+space_.shading.type = shading_
+
+# --- Materials: principled inputs, normal strength, gate
+bpy.ops.mesh.primitive_cube_add(size=1)
+cube_rn = bpy.context.active_object
+mat_rn = bpy.data.materials.new("RnMat")
+mat_rn.use_nodes = True
+cube_rn.data.materials.append(mat_rn)
+bsdf_ = RN.principled(mat_rn)
+check(bsdf_ is not None and bsdf_.type == 'BSDF_PRINCIPLED' and RN.normal_strength_node(bsdf_) is None, "the material's Principled shader is found")
+nm_ = mat_rn.node_tree.nodes.new('ShaderNodeNormalMap')
+mat_rn.node_tree.links.new(nm_.outputs["Normal"], bsdf_.inputs["Normal"])
+check(RN.normal_strength_node(bsdf_) == nm_, "...and a Normal Map plugged into it")
+bare_ = bpy.data.materials.new("NoShader")
+bare_.node_tree.nodes.clear()
+check(RN.principled(None) is None and RN.principled(bare_) is None, "no material or no Principled node: nothing to show")
+
+
+# --- Every page draws
+def rn_draw_all(label):
+    drawn = 0
+    for page in rn_pages:
+        render_ws.m3d_page_right = page
+        ctx_ = RnCtx()
+        for cls_ in rn_panels(page):
+            if not cls_.poll(ctx_):
+                continue
+            drawn += 1
+            try:
+                check_calls_ext("%s %s" % (label, cls_.__name__), draw_stub(cls_, ctx_))
+                if hasattr(cls_, "draw_header"):
+                    head_log_ = []
+                    inst_ = type("Inst", (), {})()
+                    inst_.layout = Rec(head_log_)
+                    cls_.draw_header(inst_, ctx_)
+                    check_calls_ext("%s %s header" % (label, cls_.__name__), head_log_)
+            except Exception as err:
+                check(False, "%s %s draw: %r" % (label, cls_.__name__, err))
+    log_ = []
+    RN.draw_status_line(Rec(log_), RnCtx())
+    check_calls_ext(label + " status line", log_)
+    for key_ in ('RENDER_LIGHTS', 'RENDER_RENDER', 'CUSTOM'):
+        log_ = []
+        bpy.context.window_manager.m3d_shelf = key_
+        m3d_ui.draw_shelf(Rec(log_), RnCtx())
+        check_calls_ext("shelf %s in %s" % (key_, label), log_)
+    return drawn
+
+
+check([c.__name__ for c in RN.PAGE_GATES] == ["PROPERTIES_PT_m3d_rn_materials_gate"], "Materials is the page with a gate")
+bpy.ops.object.select_all(action='DESELECT')
+bpy.context.view_layer.objects.active = None
+check(rn_shown("render_materials") == ["PROPERTIES_PT_m3d_rn_materials_gate"], "Materials without an object shows its message only: %s" % rn_shown("render_materials"))
+bpy.context.view_layer.objects.active = spot_
+check(rn_shown("render_materials") == ["PROPERTIES_PT_m3d_rn_materials_gate"], "...and for a light")
+bpy.context.view_layer.objects.active = cube_rn
+cube_rn.select_set(True)
+check(rn_shown("render_materials") == ["PROPERTIES_PT_m3d_rn_slots", "PROPERTIES_PT_m3d_rn_surface"], "Materials with a mesh: %s" % rn_shown("render_materials"))
+for page_ in rn_pages - {"render_materials"}:
+    check(not any(n.endswith("_gate") for n in rn_shown(page_)) and rn_shown(page_), "%s needs no object: %s" % (page_, rn_shown(page_)))
+log_ = []
+render_ws.m3d_page_right = "render_materials"
+for cls_ in rn_panels("render_materials"):
+    log_.extend(draw_stub(cls_, RnCtx()))
+check(sum(1 for r in log_ if r._kind == "prop" and r._args[1] == "default_value") == 6,
+      "Surface shows base color, metallic, roughness, emission color / strength, normal strength")
+check(any(r._kind == "operator" and r._args[0] == "wm.context_set_id" and r.values().get("value") == "Shading" for r in log_), "Materials links to the Shading workspace")
+
+for engine_ in ('BLENDER_EEVEE', 'CYCLES'):
+    rn.engine = engine_
+    for mode_ in ('cube', 'light', 'none'):
+        bpy.context.view_layer.objects.active = {'cube': cube_rn, 'light': spot_, 'none': None}[mode_]
+        n_ = rn_draw_all("%s %s" % (engine_, mode_))
+        check(n_ >= 20, "Rendering panels drew with %s / %s (%d)" % (engine_, mode_, n_))
+bpy.context.view_layer.objects.active = cube_rn
+rn.engine = 'BLENDER_WORKBENCH'
+check(rn_draw_all("workbench") >= 15, "Rendering panels draw with the Workbench engine")
+rn.engine = 'BLENDER_EEVEE'
+log_ = []
+RN.draw_status_line(Rec(log_), RnCtx())
+check({r.values().get("preset") for r in log_ if r._kind == "operator" and r._args[0] == "m3d.render_preset"} == {'DRAFT', 'MEDIUM', 'FINAL'}
+      and [r._kw.get("text") for r in log_ if r._kind == "operator" and r._args[0] == "m3d.render"] == ["Render", "Render Animation"]
+      and {r._args[0] for r in log_ if r._kind == "operator"} >= {"m3d.render_ipr", "m3d.render_view"}, "Status Line: presets, Render, Render Animation, IPR, Render View")
+check({r._args[2] for r in log_ if r._kind == "prop_enum"} == {'CYCLES', 'BLENDER_EEVEE'} and any(r._kind == "prop" and r._args[1] == "camera" for r in log_),
+      "Status Line: engine and camera picker")
+bpy.ops.m3d.render_preset(preset='FINAL')
+log_ = []
+RN.draw_status_line(Rec(log_), RnCtx())
+check(not any(r._kind == "label" and r._kw.get("text") == "Custom" for r in log_), "no Custom label while a preset is active")
+scn.eevee.taa_render_samples += 5
+log_ = []
+RN.draw_status_line(Rec(log_), RnCtx())
+check(any(r._kind == "label" and r._kw.get("text") == "Custom" for r in log_), "Custom label after an edit")
+for ob_ in list(bpy.data.objects):
+    if ob_ != cube_rn:
+        bpy.data.objects.remove(ob_)
+
+# --- Render View: the Render Result shows in the workspace's Image Editor
+area_ = RN.render_view_area(render_ws.screens[0])
+check(area_ is not None and area_.type == 'IMAGE_EDITOR', "the Rendering screen has a Render View")
+fake_ = NS(workspace=render_ws, screen=render_ws.screens[0])
+other_ws_ = NS(workspace=bpy.data.workspaces["Modeling"], screen=render_ws.screens[0])
+
+
+# --- Render at 32 x 32, one sample: works for both engines and leaves every setting as it was
+def rn_snapshot():
+    return {"engine": rn.engine, "x": rn.resolution_x, "y": rn.resolution_y, "pct": rn.resolution_percentage, "path": rn.filepath,
+            "fmt": rn.image_settings.file_format, "cy": scn.cycles.samples, "ev": scn.eevee.taa_render_samples, "frame": scn.frame_current,
+            "camera": scn.camera, "world": scn.world, "preset": scn.m3d_render.preset, "quality": RN.current_quality(scn),
+            "start": scn.frame_start, "end": scn.frame_end, "view": space_.shading.type, "lights": len(RN.scene_lights(scn)),
+            "exposure": scn.view_settings.exposure, "bounces": scn.cycles.max_bounces, "denoise": scn.cycles.use_denoising}
+
+
+bpy.ops.object.camera_add(location=(0, -4, 1), rotation=(math.radians(80), 0, 0))
+scn.camera = bpy.context.active_object
+rn.resolution_x = rn.resolution_y = 32
+rn.resolution_percentage = 100
+scn.cycles.samples = scn.eevee.taa_render_samples = 1
+scn.cycles.device = 'CPU'
+for engine_ in ('CYCLES', 'BLENDER_EEVEE'):
+    rn.engine = engine_
+    snap_ = rn_snapshot()
+    check(bpy.ops.m3d.render() == {'FINISHED'}, "Render (%s, 32 x 32, 1 sample) works" % engine_)
+    check(rn_snapshot() == snap_, "...and changes none of the settings (%s)" % engine_)
+check(any(i.type == 'RENDER_RESULT' for i in bpy.data.images), "a Render Result exists after a render")
+area_.spaces.active.image = None
+check(RN.show_render_result(fake_) and area_.spaces.active.image is not None and area_.spaces.active.image.type == 'RENDER_RESULT',
+      "Render View points the Rendering workspace's Image Editor at the Render Result")
+area_.spaces.active.image = None
+check(not RN.show_render_result(other_ws_) and area_.spaces.active.image is None, "...but only in the Rendering workspace")
+rn.engine = saved_engine
 
 print("FAILS:", fails or "none")
 sys.exit(1 if fails else 0)

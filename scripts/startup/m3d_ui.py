@@ -13,6 +13,7 @@ import bpy
 from bpy.types import Menu, Panel
 
 import m3d_anim
+import m3d_render
 import m3d_rig
 import m3d_sculpt
 import m3d_texture
@@ -613,17 +614,23 @@ MENUS = {
         op("Assign New Material", "m3d.assign_material", 'MATERIAL'),
         editor("Shader Editor", 'ShaderNodeTree', 'NODE_MATERIAL'),
         sub("Lights", "VIEW3D_MT_light_add", 'LIGHT'),
+        op("HDRI Sky", "m3d.hdri_setup", 'WORLD'),
+        op("Back to Previous World", "m3d.hdri_clear", 'LOOP_BACK'),
     ]),
     "M3D_MT_texturing": ("Texturing", [
         editor("UV Editor", 'UV', 'UV'),
         op("Texture Paint Tool", "object.mode_set", 'TPAINT_HLT', mode='TEXTURE_PAINT'),
     ]),
     "M3D_MT_render": ("Render", [
-        op("Render Current Frame", "render.render", 'RENDER_STILL'),
-        op("Render Sequence", "render.render", 'RENDER_ANIMATION', animation=True),
-        op("IPR Render (Viewport)", "wm.context_set_enum", 'SHADING_RENDERED',
-           data_path="space_data.shading.type", value='RENDERED'),
-        op("Render View", "render.view_show", 'IMAGE'),
+        op("Render Current Frame", "m3d.render", 'RENDER_STILL'),
+        op("Render Sequence", "m3d.render", 'RENDER_ANIMATION', animation=True),
+        op("IPR Render (Viewport)", "m3d.render_ipr", 'SHADING_RENDERED'),
+        op("Render View", "m3d.render_view", 'IMAGE'),
+        SEP,
+        op("Camera from View", "m3d.render_camera_from_view", 'CAMERA_DATA', mode='NEW'),
+        op("Draft Quality", "m3d.render_preset", preset='DRAFT'),
+        op("Medium Quality", "m3d.render_preset", preset='MEDIUM'),
+        op("Final Quality", "m3d.render_preset", preset='FINAL'),
         SEP,
         prop("Render Engine", "scene.render.engine"),
     ]),
@@ -888,22 +895,6 @@ def draw_workspace_picker(layout, context):
     layout.template_ID(context.window, "workspace", new="workspace.add", unlink="workspace.delete")
 
 
-# Placeholder Status Lines until a kind gets its own (phases 1-6): its modes as buttons.
-# (object.mode_set mode, icon, label, context.mode values)
-_OBJECT_MODE = ('OBJECT', 'OBJECT_DATAMODE', "Object Mode", {'OBJECT'})
-KIND_MODES = {
-    'RENDER': (_OBJECT_MODE,),
-}
-
-
-def draw_status_line_placeholder(layout, context, kind):
-    draw_file_buttons(layout)
-    row = layout.row(align=True)
-    for mode, icon, label, modes in KIND_MODES[kind]:
-        _call(row, "object.mode_set", icon, label, depress=context.mode in modes, mode=mode)
-    draw_workspace_picker(layout, context)
-
-
 def draw_status_line_sculpt(layout, context):
     m3d_sculpt.draw_status_line(layout, context)
 
@@ -924,17 +915,18 @@ def draw_status_line_anim(layout, context):
     m3d_anim.draw_status_line(layout, context)
 
 
+def draw_status_line_render(layout, context):
+    m3d_render.draw_status_line(layout, context)
+
+
 STATUS_LINES = {'MODEL': draw_status_line_model, 'SCULPT': draw_status_line_sculpt, 'UV': draw_status_line_uv,
-                'TEXTURE': draw_status_line_texture, 'RIG': draw_status_line_rig, 'ANIM': draw_status_line_anim}
+                'TEXTURE': draw_status_line_texture, 'RIG': draw_status_line_rig, 'ANIM': draw_status_line_anim,
+                'RENDER': draw_status_line_render}
 
 
 def draw_status_line(layout, context):
     """Status Line of the workspace's kind."""
-    kind = current_kind(context)
-    if kind in STATUS_LINES:
-        STATUS_LINES[kind](layout, context)
-    else:
-        draw_status_line_placeholder(layout, context, kind)
+    STATUS_LINES[current_kind(context)](layout, context)
 
 
 NODE_TAB_CONTEXTS = {'OBJECT', 'DATA', 'MODIFIER', 'MATERIAL', 'CONSTRAINT', 'PHYSICS', 'PARTICLES',
@@ -1009,6 +1001,7 @@ _UV = frozenset({'UV'})
 _TEXTURE = frozenset({'TEXTURE'})
 _RIG = frozenset({'RIG'})
 _ANIM = frozenset({'ANIM'})
+_RENDER = frozenset({'RENDER'})
 # Shelf tab key -> (label, buttons, kinds of workspace that show the tab). A button is (idname, icon, props) or
 # (idname, icon, props, text); None is a gap; a function draws its own widgets into the row.
 SHELVES = {
@@ -1121,6 +1114,8 @@ SHELVES = {
     'RIG_SKIN': ("Skin", m3d_rig.SHELF_SKIN, _RIG),
     'ANIM_ANIMATE': ("Animate", m3d_anim.SHELF_ANIMATE, _ANIM),
     'ANIM_POSES': ("Poses", m3d_anim.SHELF_POSES, _ANIM),
+    'RENDER_LIGHTS': ("Lights", m3d_render.SHELF_LIGHTS, _RENDER),
+    'RENDER_RENDER': ("Render", m3d_render.SHELF_RENDER, _RENDER),
     # Buttons added by the user (m3d_user.py); every kind has its own.
     'CUSTOM': ("Custom", [], frozenset(KINDS)),
 }

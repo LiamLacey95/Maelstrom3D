@@ -3109,6 +3109,485 @@ def anim_shelves_check():
     check(not tracebacks(), "Python error in the Animation workspace tests")
 
 
+# ----------------------------------------------------------------------------------------------------
+# Phase 6: Rendering workspace with a small lit scene: layout, F7, engine / quality buttons, camera from view, lights from the
+# shelf, the light table, HDRI, IPR on and off, Shift+F12 / Ctrl+Shift+F12 / Alt+F12 at a tiny size, every tab.
+
+import shutil
+
+import m3d_render
+from bpy.app.handlers import persistent
+from mathutils import Euler
+
+
+def rn_dock():
+    return props_areas()[0]
+
+
+def rn_space():
+    return an_view()[0].spaces.active
+
+
+def rn_press(idname, **props):
+    return press_ok(idname, _area=rn_dock(), **props)
+
+
+def rn_snapshot():
+    scene = bpy.context.scene
+    r = scene.render
+    return {"engine": r.engine, "x": r.resolution_x, "y": r.resolution_y, "pct": r.resolution_percentage, "path": r.filepath,
+            "fmt": r.image_settings.file_format, "cy": scene.cycles.samples, "ev": scene.eevee.taa_render_samples,
+            "frame": scene.frame_current, "start": scene.frame_start, "end": scene.frame_end, "camera": scene.camera,
+            "world": scene.world, "preset": scene.m3d_render.preset, "exposure": scene.view_settings.exposure,
+            "bounces": scene.cycles.max_bounces, "denoise": scene.cycles.use_denoising, "lights": len(m3d_render.scene_lights(scene))}
+
+
+def rn_image_area():
+    return m3d_render.render_view_area(window().screen)
+
+
+def rn_matrix_close(a, b, tol=1e-3):
+    return all(abs(x - y) < tol for ra, rb in zip(a, b) for x, y in zip(ra, rb))
+
+
+RN_DONE = {"renders": 0}
+
+
+@persistent
+def rn_render_done(*_args):
+    RN_DONE["renders"] += 1
+
+
+bpy.app.handlers.render_complete.append(rn_render_done)
+bpy.app.handlers.render_cancel.append(rn_render_done)
+
+
+@step
+def rn_setup():
+    bpy.ops.m3d.workspace(kind='MODEL')
+    for ob in list(bpy.data.objects):
+        if ob.mode != 'OBJECT':
+            bpy.context.view_layer.objects.active = ob
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.data.objects.remove(ob)
+    for coll in list(bpy.data.collections):
+        bpy.data.collections.remove(coll)
+    scene = bpy.context.scene
+    scene.frame_start, scene.frame_end, scene.frame_current = 1, 2, 1
+    scene.camera = None
+    mat = bpy.data.materials.new("RnGuiMat")
+    mat.use_nodes = True
+    bpy.ops.mesh.primitive_plane_add(size=8)
+    bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 0.5))
+    box = bpy.context.active_object
+    box.name = "Box"
+    box.data.materials.append(mat)
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=0.5, location=(1.5, 0, 0.5))
+    bpy.context.window_manager.m3d_menu_set = 'MODELING'
+    c = (window().width // 2, window().height // 2)
+    event('MOUSEMOVE', xy=c)
+    event('F7', 'PRESS', c)
+    event('F7', 'RELEASE', c)
+
+
+step(wait_until(lambda: window().workspace.name == "Rendering", "F7 to switch to Rendering"))
+
+
+@step
+def rn_f7_check():
+    check(window().workspace.name == "Rendering" and bpy.context.mode == 'OBJECT', "F7 enters Rendering in Object Mode (%s)" % bpy.context.mode)
+    check(bpy.context.window_manager.m3d_menu_set == 'RENDERING', "F7 shows the Rendering menu set")
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.m3d.workspace_reset()   # The earlier dock tests moved this workspace's tabs: the factory layout is checked.
+
+
+step(wait_until(lambda: [w.name for w in bpy.data.workspaces if w.name.startswith("Rendering")] == ["Rendering"]
+                and window().workspace.name == "Rendering", "Reset Workspace to finish"))
+
+
+@step
+def rn_layout_check():
+    screen = window().screen
+    views = [a for a in screen.areas if a.type == 'VIEW_3D']
+    image = rn_image_area()
+    dock = rn_dock()
+    check(len(views) == 1 and image is not None, "Rendering: a 3D view and a Render View")
+    check(views and image and views[0].x < image.x and views[0].width > 600 and image.width > 500,
+          "Rendering: the 3D view is left of the Render View, both wide (%s, %s)" % (views and views[0].width, image and image.width))
+    check(views and views[0].spaces.active.shading.type == 'MATERIAL', "the 3D view starts in Material Preview (Rendered is heavy)")
+    check(image and image.spaces.active.image is not None and image.spaces.active.image.type == 'RENDER_RESULT',
+          "the Render View shows the Render Result")
+    check(len(props_areas()) == 1 and dock.spaces.active.context == 'MODELING_TOOLKIT' and dock.width >= 700,
+          "one dock on its pages (%s, %d px)" % (dock.spaces.active.context, dock.width))
+    check(window().workspace.m3d_page_right in ("", "render_camera"), "the dock opens on Camera (%s)" % window().workspace.m3d_page_right)
+    check(m3d_ui.shelf_key(bpy.context.window_manager, 'RENDER') == 'RENDER_LIGHTS', "Lights shelf tab first")
+    check(window().workspace.object_mode == 'OBJECT', "workspace enters Object Mode")
+    check(not [a for a in screen.areas if a.type == 'OUTLINER'], "Rendering: no Outliner")
+    check(not tracebacks(), "Python error drawing the Rendering workspace")
+
+
+# --- Engine and quality preset buttons (Status Line): both engines
+@step
+def rn_quality_presets():
+    scene = bpy.context.scene
+    scene.cycles.device = 'CPU'
+    GIZMO["rn_start"] = rn_snapshot()
+    for engine in ('CYCLES', 'BLENDER_EEVEE'):
+        scene.render.engine = engine   # The Status Line's engine buttons set this.
+        for key, samples in (('DRAFT', (32, 16)), ('MEDIUM', (128, 64)), ('FINAL', (512, 256))):
+            an_status("m3d.render_preset", preset=key)
+            check((scene.cycles.samples, scene.eevee.taa_render_samples) == samples and m3d_render.current_quality(scene) == key,
+                  "Status Line %s button with %s: %s" % (key, engine, (scene.cycles.samples, scene.eevee.taa_render_samples)))
+    scene.eevee.taa_render_samples += 1
+    check(m3d_render.current_quality(scene) == 'CUSTOM', "an edit reads Custom")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def rn_quality_drawn():
+    check(not tracebacks(), "Python error drawing the quality presets / Custom")
+    bpy.context.scene.render.engine = 'BLENDER_EEVEE'
+
+
+# --- Camera from view
+@step
+def rn_camera_view_setup():
+    rv3d = rn_space().region_3d
+    rv3d.view_perspective = 'PERSP'
+    rv3d.view_location = (1.0, 0.5, 0.5)
+    rv3d.view_rotation = Euler((1.2, 0.0, 0.6)).to_quaternion()
+    rv3d.view_distance = 7.0
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def rn_camera_view_redrawn():
+    pass   # The view matrix is updated by the viewport redraw.
+
+
+@step
+def rn_camera_view_new():
+    bpy.context.scene.camera = None
+    check(rn_press("m3d.render_camera_from_view", mode='NEW') is not None, "New Camera from View runs from the dock")
+
+
+@step
+def rn_camera_view_check():
+    scene = bpy.context.scene
+    cam, rv3d = scene.camera, rn_space().region_3d
+    check(cam is not None and cam.type == 'CAMERA' and cam == bpy.context.active_object, "New Camera from View: the scene camera is the new, active object")
+    if cam is not None:
+        check(rn_matrix_close(cam.matrix_world, rv3d.view_matrix.inverted()), "...at the viewport's view")
+        target = cam.matrix_world @ Vector((0, 0, -7.0))
+        check((target - Vector((1.0, 0.5, 0.5))).length < 0.01, "...looking at what the viewport looked at (%s)" % (target,))
+        GIZMO["rn_cam"] = cam.name
+    rv3d.view_location = (-1.0, 0.0, 1.0)
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def rn_camera_view_match():
+    rn_press("m3d.render_camera_from_view", mode='MATCH')
+
+
+@step
+def rn_camera_view_match_check():
+    scene = bpy.context.scene
+    rv3d = rn_space().region_3d
+    check(scene.camera.name == GIZMO["rn_cam"] and rn_matrix_close(scene.camera.matrix_world, rv3d.view_matrix.inverted()),
+          "Match Camera to View moves the scene camera to the new view")
+    rn_press("view3d.view_camera")
+
+
+@step
+def rn_camera_look_through():
+    check(rn_space().region_3d.view_perspective == 'CAMERA', "Look Through Camera enters the camera view")
+    rn_press("view3d.view_camera")
+
+
+@step
+def rn_camera_look_back():
+    check(rn_space().region_3d.view_perspective == 'PERSP', "...and the button leaves it again")
+    scene = bpy.context.scene
+    scene.camera.data.dof.use_dof = True   # The Camera tab's depth of field, guides and border draw (checked below by every tab)
+    scene.camera.data.show_composition_thirds = True
+    scene.render.use_border = True
+    scene.render.use_border = False
+
+
+# --- Lights from the shelf, the light table
+@step
+def rn_lights_shelf():
+    bpy.context.window_manager.m3d_shelf = 'RENDER_LIGHTS'
+    bpy.context.scene.cursor.location = (0, 0, 0)
+    for kind in ('POINT', 'SPOT', 'AREA', 'SUN'):
+        check(an_status("m3d.render_light_add", kind=kind) == {'FINISHED'}, "shelf button adds a %s light" % kind)
+    rn_press("m3d.dock_page", tab="render_lighting")
+
+
+@step
+def rn_lights_check():
+    lights = m3d_render.scene_lights(bpy.context.scene)
+    check({o.data.type for o in lights} == {'POINT', 'SPOT', 'AREA', 'SUN'} and all(o.location.z > 3.5 for o in lights),
+          "four lights above the origin: %s" % [(o.name, o.data.type) for o in lights])
+    check(window().workspace.m3d_page_right == "render_lighting", "the dock shows the Lighting tab")
+    GIZMO["rn_point"] = next(o.name for o in lights if o.data.type == 'POINT')
+    point = bpy.data.objects[GIZMO["rn_point"]]
+    # Table edits: power, color, shadow, render and viewport visibility.
+    point.data.energy = 777.0
+    point.data.color = (1.0, 0.4, 0.2)
+    point.data.use_shadow = False
+    point.hide_render = True
+    check(rn_press("m3d.render_light", name=point.name, action='VISIBLE') is not None and point.hide_get(), "the table's eye hides the light")
+    # A light in an excluded collection, one in a hidden collection, two objects sharing a light.
+    layer = bpy.context.view_layer
+    for name, hidden in (("GuiExcluded", False), ("GuiHidden", True)):
+        coll = bpy.data.collections.new(name)
+        bpy.context.scene.collection.children.link(coll)
+        lamp = bpy.data.objects.new(name + "Lamp", bpy.data.lights.new(name + "Lamp", 'POINT'))
+        coll.objects.link(lamp)
+        if hidden:
+            layer.layer_collection.children[name].hide_viewport = True
+        else:
+            layer.layer_collection.children[name].exclude = True
+    twin = bpy.data.objects.new("GuiTwin", point.data)
+    bpy.context.scene.collection.objects.link(twin)
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def rn_light_table_drawn():
+    point = bpy.data.objects[GIZMO["rn_point"]]
+    check(point.data.energy == 777.0 and not point.data.use_shadow and point.hide_render and point.hide_get(), "light table edits stuck")
+    check(not tracebacks(), "Python error drawing the light table (hidden, excluded and shared lights)")
+    check(m3d_render.light_state(bpy.context.view_layer, bpy.data.objects["GuiExcludedLamp"]) == 'EXCLUDED'
+          and m3d_render.light_state(bpy.context.view_layer, bpy.data.objects["GuiHiddenLamp"]) == 'HIDDEN', "table states for the collection lights")
+    rn_press("m3d.render_light", name="GuiTwin", action='SINGLE')
+    rn_press("m3d.render_light", name=point.name, action='VISIBLE')
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def rn_light_table_after():
+    point = bpy.data.objects[GIZMO["rn_point"]]
+    check(not point.hide_get() and point.data.users == 1, "the eye shows it again; the twin got its own light")
+    check(not tracebacks(), "Python error drawing the light table after the buttons")
+    for name in ("GuiExcludedLamp", "GuiHiddenLamp", "GuiTwin"):
+        bpy.data.objects.remove(bpy.data.objects[name])
+    for name in ("GuiExcluded", "GuiHidden"):
+        bpy.data.collections.remove(bpy.data.collections[name])
+    point.hide_render = False
+    point.data.use_shadow = True
+
+
+# --- HDRI from Blender's studio lights
+@step
+def rn_hdri():
+    scene = bpy.context.scene
+    GIZMO["rn_world"] = scene.world
+    bundled = m3d_render.bundled_hdris()
+    check(len(bundled) >= 4, "studio HDRIs are available (%d)" % len(bundled))
+    GIZMO["rn_hdri"] = bundled[0][1]
+    check(rn_press("m3d.hdri_setup", filepath=GIZMO["rn_hdri"]) is not None, "an HDRI button runs")
+
+
+@step
+def rn_hdri_check():
+    scene = bpy.context.scene
+    nodes = m3d_render.hdri_nodes(scene.world)
+    check(scene.world.name == "m3dHDRI" and nodes is not None and nodes["env"].image is not None, "the HDRI world is assigned")
+    check(scene.m3d_render.previous_world == GIZMO["rn_world"], "the old world is kept")
+    scene.m3d_render.hdri_rotation = 1.2
+    scene.m3d_render.hdri_strength = 1.5
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def rn_hdri_drawn():
+    check(not tracebacks(), "Python error drawing the HDRI controls")
+    scene = bpy.context.scene
+    nodes = m3d_render.hdri_nodes(scene.world)
+    check(abs(nodes["mapping"].inputs["Rotation"].default_value[2] - 1.2) < 1e-4, "HDRI rotation writes the mapping")
+
+
+# --- IPR on and off, both engines (the preview samples are kept low)
+def _ipr_steps():
+    for engine in ('BLENDER_EEVEE', 'CYCLES'):
+        def on(engine=engine):
+            scene = bpy.context.scene
+            scene.render.engine = engine
+            scene.cycles.preview_samples = 2
+            GIZMO["rn_shading"] = rn_space().shading.type
+            an_status("m3d.render_ipr")
+
+        def off(engine=engine):
+            check(rn_space().shading.type == 'RENDERED', "IPR turns on the Rendered viewport (%s)" % engine)
+            an_status("m3d.render_ipr")
+
+        def after(engine=engine):
+            check(rn_space().shading.type == GIZMO["rn_shading"] == 'MATERIAL', "IPR off returns to Material Preview (%s)" % engine)
+            check(not tracebacks(), "Python error in the %s IPR" % engine)
+        on.__name__, off.__name__, after.__name__ = "rn_ipr_on_" + engine, "rn_ipr_off_" + engine, "rn_ipr_after_" + engine
+        yield on
+        yield off
+        yield after
+
+
+for _fn in _ipr_steps():
+    step(_fn)
+
+
+# --- Shift+F12: a still at 48 x 32 with Cycles; Ctrl+Shift+F12: two frames with EEVEE; Alt+F12: the Render View
+@step
+def rn_render_still_start():
+    scene = bpy.context.scene
+    scene.render.engine = 'CYCLES'
+    scene.render.resolution_x, scene.render.resolution_y, scene.render.resolution_percentage = 48, 32, 100
+    scene.cycles.samples = scene.eevee.taa_render_samples = 1
+    scene.camera = bpy.data.objects[GIZMO["rn_cam"]]
+    rn_image_area().spaces.active.image = None
+    GIZMO["rn_before"], RN_DONE["renders"] = rn_snapshot(), 0
+    GIZMO["rn_windows"] = len(bpy.context.window_manager.windows)
+    event('MOUSEMOVE', xy=an_xy())
+    an_mod_key('F12', True, shift=True)
+
+
+@step
+def rn_render_still_keyup():
+    an_mod_key('F12', False, shift=True)
+
+
+step(wait_until(lambda: RN_DONE["renders"] >= 1 and not bpy.app.is_job_running('RENDER'), "Shift+F12 to render", tries=60))
+
+
+@step
+def rn_render_still_check():
+    image = rn_image_area().spaces.active.image
+    check(RN_DONE["renders"] >= 1, "Shift+F12 rendered the frame")
+    check(image is not None and image.type == 'RENDER_RESULT', "the render shows in the Render View")
+    check(len(bpy.context.window_manager.windows) == GIZMO["rn_windows"], "...without a new window (%d windows)" % len(bpy.context.window_manager.windows))
+    shot = os.path.join(tempfile.mkdtemp(prefix="m3d_gui_shot_"), "still.png")
+    image.save_render(shot)   # (the Render Result reports no size itself)
+    saved = bpy.data.images.load(shot)
+    check(tuple(saved.size) == (48, 32), "...at 48 x 32 (%s)" % (tuple(saved.size),))
+    bpy.data.images.remove(saved)
+    shutil.rmtree(os.path.dirname(shot), ignore_errors=True)
+    check(rn_snapshot() == GIZMO["rn_before"], "the render settings are as they were: %s" % {k: (v, rn_snapshot()[k]) for k, v in GIZMO["rn_before"].items() if rn_snapshot()[k] != v})
+    check(not tracebacks(), "Python error in the still render")
+
+
+@step
+def rn_render_anim_start():
+    scene = bpy.context.scene
+    scene.render.engine = 'BLENDER_EEVEE'
+    GIZMO["rn_dir"] = tempfile.mkdtemp(prefix="m3d_gui_render_")
+    scene.render.filepath = os.path.join(GIZMO["rn_dir"], "rn_")
+    GIZMO["rn_before"], RN_DONE["renders"] = rn_snapshot(), 0
+    event('MOUSEMOVE', xy=an_xy())
+    an_mod_key('F12', True, shift=True, ctrl=True)
+
+
+@step
+def rn_render_anim_keyup():
+    an_mod_key('F12', False, shift=True, ctrl=True)
+
+
+step(wait_until(lambda: RN_DONE["renders"] >= 1 and not bpy.app.is_job_running('RENDER'), "Ctrl+Shift+F12 to render", tries=80))
+
+
+@step
+def rn_render_anim_check():
+    files = sorted(os.listdir(GIZMO["rn_dir"]))
+    check(len(files) == 2 and all(os.path.getsize(os.path.join(GIZMO["rn_dir"], f)) > 0 for f in files),
+          "Ctrl+Shift+F12 rendered the two frames: %s" % files)
+    scene = bpy.context.scene
+    now, before = rn_snapshot(), GIZMO["rn_before"]
+    check(now == before, "the animation render left the settings as they were: %s" % {k: (v, now[k]) for k, v in before.items() if now[k] != v})
+    check(not tracebacks(), "Python error in the animation render")
+    scene.render.filepath = GIZMO["rn_start"]["path"]
+    rn_image_area().spaces.active.image = None
+    event('MOUSEMOVE', xy=an_xy())
+    an_mod_key('F12', True, alt=True)
+
+
+@step
+def rn_render_view_key():
+    an_mod_key('F12', False, alt=True)
+
+
+@step
+def rn_render_view_check():
+    image = rn_image_area().spaces.active.image
+    check(image is not None and image.type == 'RENDER_RESULT', "Alt+F12 shows the Render Result in the Render View")
+    check(len(bpy.context.window_manager.windows) == GIZMO["rn_windows"], "...in the same window")
+    an_status("m3d.render_view")
+    check(not tracebacks(), "Python error with Render View")
+
+
+# --- Restore what the tests changed in the scene, then every tab with a few kinds of selection
+@step
+def rn_restore_settings():
+    scene = bpy.context.scene
+    start = GIZMO["rn_start"]
+    r = scene.render
+    r.engine, r.resolution_x, r.resolution_y, r.resolution_percentage = start["engine"], start["x"], start["y"], start["pct"]
+    scene.cycles.samples, scene.eevee.taa_render_samples = start["cy"], start["ev"]
+    scene.frame_start, scene.frame_end = 1, 24
+    shutil.rmtree(GIZMO["rn_dir"], ignore_errors=True)
+
+
+def _render_tab_steps():
+    for engine in ('BLENDER_EEVEE', 'CYCLES'):
+        for what in ('Box', 'Light', None):
+            for tab in m3d_workspace.DOCK_TABS['RENDER']['RIGHT']:
+                def show(tab=tab, engine=engine, what=what):
+                    bpy.context.scene.render.engine = engine
+                    bpy.ops.object.select_all(action='DESELECT')
+                    ob = bpy.data.objects.get(GIZMO["rn_point"] if what == 'Light' else what) if what else None
+                    bpy.context.view_layer.objects.active = ob
+                    if ob is not None:
+                        ob.select_set(True)
+                    rn_press("m3d.dock_page", tab=tab.id)
+                    for a in window().screen.areas:
+                        a.tag_redraw()
+
+                def check_draw(tab=tab, engine=engine, what=what):
+                    check(window().workspace.m3d_page_right == tab.page, "dock tab %s did not open its page" % tab.id)
+                    check(rn_dock().spaces.active.context == tab.context, "dock tab %s context" % tab.id)
+                    check(not tracebacks(), "Python error while drawing the Rendering tab %s with %s and %s" % (tab.id, engine, what))
+                show.__name__ = "rn_show_%s_%s_%s" % (tab.id, engine, what)
+                check_draw.__name__ = "rn_drawn_%s_%s_%s" % (tab.id, engine, what)
+                yield show
+                yield check_draw
+
+
+for _fn in _render_tab_steps():
+    step(_fn)
+
+
+@step
+def rn_shelves():
+    for key in m3d_ui.shelves_for('RENDER'):
+        bpy.context.window_manager.m3d_shelf = key
+        for a in window().screen.areas:
+            a.tag_redraw()
+
+
+@step
+def rn_shelves_check():
+    check(not tracebacks(), "Python error drawing the Rendering shelves / Status Line")
+    bpy.context.window_manager.m3d_shelf = 'RENDER_LIGHTS'
+    bpy.context.scene.render.engine = GIZMO["rn_start"]["engine"]
+    window().workspace.m3d_page_right = ""
+    bpy.ops.m3d.workspace(kind='MODEL')
+    check(not tracebacks(), "Python error in the Rendering workspace tests")
+
 
 @step
 def finish():

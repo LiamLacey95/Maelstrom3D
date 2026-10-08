@@ -145,6 +145,12 @@ OVERRIDES = {
         _kmi("pose.relax", 'R', alt=True, shift=True),
         _kmi("pose.breakdown", 'B', alt=True, shift=True),
     ],
+    # Rendering: Shift+F12 renders the frame, Ctrl+Shift+F12 the animation, Alt+F12 shows the last render (F12 is taken).
+    "Screen Editing": [
+        _kmi("m3d.render", 'F12', props={"animation": False}, shift=True),
+        _kmi("m3d.render", 'F12', props={"animation": True}, ctrl=True, shift=True),
+        _kmi("m3d.render_view", 'F12', alt=True),
+    ],
     "Window": [
         # F1-F7: task workspaces (kinds in m3d_workspace.py). The menu set dropdown still offers every set.
         *(_kmi("m3d.workspace", k, props={"kind": kind}) for kind, k in WORKSPACE_KEYS),
