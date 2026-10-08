@@ -139,6 +139,8 @@ def _follow_workspace():
     wm = bpy.context.window_manager
     if wm.windows:
         workspace_changed(wm, wm.windows[0].workspace)
+        from m3d_rig import follow_mode
+        follow_mode(wm)   # The Rigging dock follows the mode.
     return 0.25
 
 
@@ -173,6 +175,13 @@ DOCK_TABS['TEXTURE'] = {
         ("layers", "Layers"), ("brush", "Brush"), ("shelf", "Shelf"), ("bake", "Bake"), ("export", "Export"),
         ("display", "Display"))),
     'LEFT': (Tab("tex_brushes", "Brushes", 'MODELING_TOOLKIT', "tex_brushes"),),
+}
+# Rigging: task tabs on the right, bone collections under the Outliner on the left (pages: m3d_rig.py).
+DOCK_TABS['RIG'] = {
+    'RIGHT': tuple(Tab("rig_" + page, label, 'MODELING_TOOLKIT', "rig_" + page) for page, label in (
+        ("skeleton", "Skeleton"), ("controls", "Controls & Constraints"), ("skin", "Skin"), ("drive", "Drive"),
+        ("test", "Test"), ("collections", "Collections"))),
+    'LEFT': (Tab("rig_bones", "Bones", 'MODELING_TOOLKIT', "rig_bones"),),
 }
 # The last tab of every row: the stock Properties tabs.
 ALL_SETTINGS = {'MODEL': "Attribute Editor"}
@@ -263,6 +272,9 @@ class M3D_OT_dock_page(Operator):
         space.context = tab.context
         if tab.page:
             setattr(context.workspace, "m3d_page_" + side.lower(), tab.page)
+        if side == 'RIGHT' and current_kind(context) == 'RIG':
+            from m3d_rig import remember_tab
+            remember_tab(context, tab.id)   # The Rigging dock opens on this tab whenever this mode is entered.
         return {'FINISHED'}
 
 

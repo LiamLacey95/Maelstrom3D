@@ -7,6 +7,7 @@ Interactive self-check for Maelstrom3D behaviour that needs a real window (gizmo
 Writes "FAILS: [...]" to <result-file> and quits.
 """
 
+import os
 import sys
 
 import bmesh
@@ -1960,6 +1961,636 @@ def tex_done():
     check(not tracebacks(), "Python error in the Texture workspace tests")
 
 
+# ----------------------------------------------------------------------------------------------------
+# Phase 4: Rigging workspace with a real cylinder: layout, F5, Joint tool by clicks, Ctrl+E, Orient, mirror, bind, Weight Paint
+# from the Status Line, flood, IK with pole, control shape, Driven Key, Test tab, Drivers editor, mode-aware tabs, every tab.
+
+import math
+
+import m3d_rig
+
+
+def rig_dock():
+    """(bone collections editor, dock) Properties editors of the Rigging screen."""
+    areas = sorted(props_areas(), key=lambda a: a.x)
+    return areas[0], areas[-1]
+
+
+def rig_view():
+    """(3D view area, its window region) of the Rigging screen."""
+    area = next(a for a in window().screen.areas if a.type == 'VIEW_3D')
+    return area, next(r for r in area.regions if r.type == 'WINDOW')
+
+
+def rig_xy(dx=0, dy=0):
+    _area, region = rig_view()
+    return region.x + region.width // 2 + dx, region.y + region.height // 2 + dy
+
+
+def rig_obj():
+    return bpy.data.objects.get("Armature")
+
+
+def rig_status(idname, **props):
+    """A Status Line button: the operator in the top bar's own context."""
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        return getattr(getattr(bpy.ops, idname.split(".")[0]), idname.split(".")[1])('INVOKE_DEFAULT', **props)
+
+
+def rig_page():
+    return window().workspace.m3d_page_right
+
+
+def rig_click(xy):
+    event('MOUSEMOVE', xy=xy)
+    event('LEFTMOUSE', 'PRESS', xy)
+    event('LEFTMOUSE', 'RELEASE', xy)
+
+
+@step
+def rig_setup():
+    # A clean scene with a cylinder, then F5.
+    bpy.ops.m3d.workspace(kind='MODEL')
+    for ob in list(bpy.data.objects):
+        if ob.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.data.objects.remove(ob)
+    for coll in list(bpy.data.collections):
+        bpy.data.collections.remove(coll)
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.mesh.primitive_cylinder_add(vertices=16, radius=0.3, depth=2.0, location=(0, 0, 1.0), end_fill_type='NGON')
+        body = bpy.context.active_object
+        body.name = "Body"
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.mesh.subdivide(number_cuts=5)
+        bpy.ops.object.mode_set(mode='OBJECT')
+    GIZMO["center"] = (region.x + region.width // 2, region.y + region.height // 2)
+    event('MOUSEMOVE', xy=GIZMO["center"])
+    event('F5', 'PRESS', GIZMO["center"])
+    event('F5', 'RELEASE', GIZMO["center"])
+
+
+step(wait_until(lambda: window().workspace.name == "Rigging", "F5 to switch to Rigging"))
+
+
+@step
+def rig_f5_check():
+    check(window().workspace.name == "Rigging" and bpy.context.mode == 'OBJECT', "F5 enters Rigging in Object Mode (%s)" % bpy.context.mode)
+    # The earlier dock tests moved this workspace's tabs: Reset Workspace brings the factory layout back to check it.
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.m3d.workspace_reset()
+
+
+step(wait_until(lambda: [w.name for w in bpy.data.workspaces if w.name.startswith("Rigging")] == ["Rigging"]
+                and window().workspace.name == "Rigging", "Reset Workspace to finish"))
+
+
+@step
+def rig_layout_check():
+    screen = window().screen
+    left, dock = rig_dock()
+    view, _region = rig_view()
+    outliner = [a for a in screen.areas if a.type == 'OUTLINER']
+    check(len(props_areas()) == 2 and len(outliner) == 1, "Rigging: Outliner and bone collections left, one dock right")
+    check(outliner and outliner[0].x < view.x < dock.x and left.x < view.x and left.y < outliner[0].y, "Rigging layout: left column (Outliner over bone collections), viewport, dock")
+    check(view.width > left.width * 4 and dock.width >= 600, "the viewport is the large one (%d vs %d, dock %d)" % (view.width, left.width, dock.width))
+    bottom = m3d_rig.bottom_area(screen)
+    check(bottom is not None and bottom.ui_type == 'TIMELINE' and bottom.height < 400, "Rigging: a short Timeline at the bottom (%s)" %
+          ((bottom.ui_type, bottom.height) if bottom else None,))
+    check(len([a for a in screen.areas if a.type == 'VIEW_3D']) == 1, "one viewport")
+    check(outliner and outliner[0].spaces.active.use_filter_object_content, "the Outliner shows the object contents (bones)")
+    check(left.spaces.active.context == dock.spaces.active.context == 'MODELING_TOOLKIT', "docks open on pages")
+    with bpy.context.temp_override(window=window(), area=left):
+        check(m3d_workspace.side_of(bpy.context) == 'LEFT' and m3d_workspace.active_page(bpy.context) == "rig_bones", "left page is the bone collections")
+    with bpy.context.temp_override(window=window(), area=dock):
+        check(m3d_workspace.active_page(bpy.context) == "rig_skeleton", "dock opens on Skeleton")
+    check(m3d_ui.shelf_key(bpy.context.window_manager, 'RIG') == 'RIG_SKELETON', "Skeleton shelf tab first")
+    check(view.spaces.active.overlay.show_xray_bone and view.spaces.active.shading.type == 'SOLID', "bones show through in the viewport")
+    check(window().workspace.object_mode == 'OBJECT', "workspace enters Object Mode")
+    check(not tracebacks(), "Python error drawing the Rigging workspace")
+    check(m3d_rig.missing(bpy.context, ('RIG', 'EDIT')) == ['RIG', 'EDIT'], "no skeleton yet")
+
+
+# --- Joint tool: three clicks make a two-bone chain
+@step
+def rig_joint_start():
+    GIZMO["joint_points"] = [rig_xy(-80, 160), rig_xy(-80, 0), rig_xy(60, -150)]
+    res = press_ok("m3d.rig_joint")
+    check(res is not None, "Joint tool button")
+
+
+@step
+def rig_joint_click1():
+    ob = rig_obj()
+    check(ob is not None and ob.mode == 'EDIT' and ob.show_in_front, "the Joint tool made a skeleton and entered Edit Mode (%s)" %
+          (ob and ob.mode))
+    check(any(op.bl_idname == "M3D_OT_rig_joint" for op in window().modal_operators), "the Joint tool is running")
+    rig_click(GIZMO["joint_points"][0])
+
+
+@step
+def rig_joint_click2():
+    rig_click(GIZMO["joint_points"][1])
+
+
+@step
+def rig_joint_click3():
+    check(len(rig_obj().data.edit_bones) == 1, "two joints make a bone")
+    rig_click(GIZMO["joint_points"][2])
+
+
+@step
+def rig_joint_finish():
+    check(len(rig_obj().data.edit_bones) == 2, "three joints make two bones (%d)" % len(rig_obj().data.edit_bones))
+    event('RET', 'PRESS', GIZMO["joint_points"][2])
+    event('RET', 'RELEASE', GIZMO["joint_points"][2])
+
+
+@step
+def rig_joint_check():
+    ob = rig_obj()
+    check(not window().modal_operators, "Enter finished the Joint tool")
+    bones = list(ob.data.edit_bones)
+    check(len(bones) == 2 and bones[1].parent == bones[0] and bones[1].use_connect and bones[0].parent is None, "a connected two-bone chain")
+    from bpy_extras.view3d_utils import region_2d_to_location_3d
+    view, region = rig_view()
+    rv3d = view.spaces.active.region_3d
+    # The first joint is on the view plane through the 3D cursor, the next ones on the plane through the previous joint.
+    depth = bpy.context.scene.cursor.location
+    first = region_2d_to_location_3d(region, rv3d, (GIZMO["joint_points"][0][0] - region.x, GIZMO["joint_points"][0][1] - region.y), depth)
+    check((bones[0].head - first).length < 1e-3, "the first joint is where the first click was (%s vs %s)" % (tuple(bones[0].head), tuple(first)))
+    second = region_2d_to_location_3d(region, rv3d, (GIZMO["joint_points"][1][0] - region.x, GIZMO["joint_points"][1][1] - region.y), first)
+    check((bones[0].tail - second).length < 1e-3, "...and the second (%s vs %s)" % (tuple(bones[0].tail), tuple(second)))
+    check(not tracebacks(), "Python error in the Joint tool")
+    GIZMO["bones"] = [b.name for b in bones]
+
+
+# --- Escape cancels
+@step
+def rig_joint_cancel_start():
+    press_ok("m3d.rig_joint")
+
+
+@step
+def rig_joint_cancel_click():
+    rig_click(rig_xy(150, 100))
+    rig_click(rig_xy(250, 100))
+
+
+@step
+def rig_joint_cancel_esc():
+    check(len(rig_obj().data.edit_bones) == 3, "a third bone while the tool runs")
+    event('ESC', 'PRESS', rig_xy(250, 100))
+    event('ESC', 'RELEASE', rig_xy(250, 100))
+
+
+@step
+def rig_joint_cancel_check():
+    check(len(rig_obj().data.edit_bones) == 2 and not window().modal_operators, "Esc takes back the joints of this run")
+
+
+# --- Ctrl+E extrudes a bone from the selected tip
+@step
+def rig_extrude_start():
+    ob = rig_obj()
+    arm = ob.data
+    for eb in arm.edit_bones:
+        eb.select = eb.select_head = eb.select_tail = False
+    tip = arm.edit_bones[GIZMO["bones"][1]]
+    tip.select = tip.select_tail = True
+    arm.edit_bones.active = tip
+    GIZMO["bone_count"] = len(arm.edit_bones)
+    event('MOUSEMOVE', xy=rig_xy())
+    event('E', 'PRESS', rig_xy(), ctrl=True)
+    event('E', 'RELEASE', rig_xy(), ctrl=True)
+
+
+@step
+def rig_extrude_move():
+    for i in range(1, 6):
+        event('MOUSEMOVE', xy=rig_xy(i * 20, -i * 10))
+
+
+@step
+def rig_extrude_confirm():
+    event('RET', 'PRESS', rig_xy(100, -50))
+    event('RET', 'RELEASE', rig_xy(100, -50))
+
+
+@step
+def rig_extrude_check():
+    arm = rig_obj().data
+    check(len(arm.edit_bones) == GIZMO["bone_count"] + 1, "Ctrl+E extruded a bone (%d -> %d)" % (GIZMO["bone_count"], len(arm.edit_bones)))
+    newest = [b for b in arm.edit_bones if b.name not in GIZMO["bones"]]
+    check(newest and newest[0].parent is not None and newest[0].parent.name == GIZMO["bones"][1], "...from the tip of the selected bone")
+    check(not window().modal_operators, "the extrude finished")
+    check(not tracebacks(), "Python error while extruding")
+    GIZMO["bones"] += [b.name for b in newest]
+
+
+# --- Orient Joint from the Skeleton tab
+@step
+def rig_orient():
+    s = bpy.context.scene.m3d_rig
+    s.orient_axis, s.orient_dir = 'Z', '+Z'
+    arm = rig_obj().data
+    for eb in arm.edit_bones:
+        eb.select = True
+    press_ok("m3d.rig_orient")
+
+
+@step
+def rig_orient_check():
+    arm = rig_obj().data
+    for eb in arm.edit_bones:
+        m = eb.matrix.to_3x3()
+        x, y, z = m.col[0], m.col[1], m.col[2]
+        best = math.sqrt(max(0.0, 1.0 - y.z * y.z))
+        check(abs(z.z - best) < 1e-3 and abs(x.dot(y)) < 1e-3 and abs(z.dot(y)) < 1e-3, "Orient Joint: %s Z axis as close to +Z as possible (%.3f of %.3f)" % (eb.name, z.z, best))
+
+
+# --- Names L/R and Mirror: move the chain to +X, name it by position, mirror it
+@step
+def rig_mirror():
+    arm = rig_obj().data
+    moved = [(eb.name, eb.head.copy(), eb.tail.copy()) for eb in arm.edit_bones]
+    for name, head, tail in moved:
+        eb = arm.edit_bones[name]
+        eb.head, eb.tail = head + Vector((1, 0, 0)), tail + Vector((1, 0, 0))
+        eb.select = eb.select_head = eb.select_tail = True
+    press_ok("armature.autoside_names", type='XAXIS')
+
+
+@step
+def rig_mirror_names():
+    arm = rig_obj().data
+    check(all(m3d_rig.side_of_name(b.name) == "L" for b in arm.edit_bones), "Names L/R: bones on +X are .L (%s)" % [b.name for b in arm.edit_bones])
+    GIZMO["left"] = sorted(b.name for b in arm.edit_bones)
+    press_ok("armature.symmetrize", direction='POSITIVE_X')
+
+
+@step
+def rig_mirror_check():
+    arm = rig_obj().data
+    names = {b.name for b in arm.edit_bones}
+    check(len(names) == len(GIZMO["left"]) * 2 and {bpy.utils.flip_name(n) for n in GIZMO["left"]} <= names, "Mirror: every .L bone has a .R bone (%s)" % sorted(names))
+    check(not [b for b in arm.edit_bones if m3d_rig.side_of_name(b.name) == "R" and b.head.x > 0], "...on the -X side")
+    check(not [m for _n, m in m3d_rig.name_issues(rig_obj()) if "mirror" in m.lower() or "side" in m.lower()],
+          "the naming check finds no missing mirror: %s" % m3d_rig.name_issues(rig_obj()))
+
+
+# --- Skeleton of our own inside the cylinder, then bind
+@step
+def rig_skeleton_inside():
+    ob = rig_obj()
+    arm = ob.data
+    for eb in list(arm.edit_bones):
+        arm.edit_bones.remove(eb)
+    chain = m3d_rig.JointChain(ob.name, "Spine")
+    for z in (0.1, 0.7, 1.3, 1.9):
+        chain.add(Vector((0, 0, z)))
+    bpy.ops.m3d.rig_mode('INVOKE_DEFAULT', mode='OBJECT')
+
+
+step(wait_until(lambda: bpy.context.mode == 'OBJECT', "Object Mode"))
+
+
+@step
+def rig_bind():
+    body = bpy.data.objects["Body"]
+    bpy.ops.object.select_all(action='DESELECT')
+    body.select_set(True)
+    bpy.context.view_layer.objects.active = body
+    bpy.context.scene.m3d_rig.skin_method = 'AUTO'
+    left, dock = rig_dock()
+    dock.spaces.active.context = 'MODELING_TOOLKIT'
+    press_ok("m3d.dock_page", tab="rig_skin")
+    press_ok("m3d.rig_bind")
+
+
+@step
+def rig_bind_check():
+    body, ob = bpy.data.objects["Body"], rig_obj()
+    check(m3d_rig.is_bound(body) and m3d_rig.armature_of(body) == ob, "Bind from the Skin tab")
+    check([g.name for g in body.vertex_groups] == ["Spine", "Spine.001", "Spine.002"] and m3d_rig.unweighted(body, ob) == 0,
+          "automatic weights on every vertex (%s)" % [g.name for g in body.vertex_groups])
+    check(rig_page() == "rig_skin", "the Skin tab is open")
+    check(not tracebacks(), "Python error while binding")
+
+
+# --- Weight Paint from the Status Line
+@step
+def rig_weight_paint():
+    rig_status("m3d.rig_mode", mode='WEIGHT_PAINT')
+
+
+step(wait_until(lambda: bpy.context.mode == 'PAINT_WEIGHT', "Weight Paint Mode from the Status Line"))
+
+
+@step
+def rig_weight_paint_check():
+    body, ob = bpy.data.objects["Body"], rig_obj()
+    check(body.mode == 'WEIGHT_PAINT' and ob.mode == 'POSE' and bpy.context.active_object == body, "mesh paints, skeleton stays in Pose Mode (%s %s)" % (body.mode, ob.mode))
+    check(ob.select_get() and body.select_get(), "both are selected")
+    check(m3d_rig.mode_key(bpy.context.view_layer) == 'WEIGHT_PAINT', "mode key")
+
+
+step(wait_until(lambda: rig_page() == "rig_skin", "the dock to stay on the Skin tab in Weight Paint Mode"))
+
+
+@step
+def rig_flood():
+    body = bpy.data.objects["Body"]
+    body.vertex_groups.active_index = 1
+    ts = bpy.context.tool_settings
+    ts.weight_paint.unified_paint_settings.use_unified_weight = True
+    ts.weight_paint.unified_paint_settings.weight = 0.5
+    for group in body.vertex_groups:
+        group.lock_weight = False
+    press_ok("paint.weight_set")
+
+
+@step
+def rig_flood_check():
+    body = bpy.data.objects["Body"]
+    gi = body.vertex_groups[1].index
+    values = [next((g.weight for g in v.groups if g.group == gi), 0.0) for v in body.data.vertices]
+    check(min(values) > 0.499 and max(values) < 0.501, "Flood set the active group to the brush weight (%.3f .. %.3f)" % (min(values), max(values)))
+    check(not tracebacks(), "Python error while flooding")
+    press_ok("object.vertex_group_normalize_all", group_select_mode='BONE_DEFORM', lock_active=False)
+
+
+@step
+def rig_normalize_check():
+    body = bpy.data.objects["Body"]
+    sums = [sum(g.weight for g in v.groups) for v in body.data.vertices]
+    check(all(abs(s - 1.0) < 1e-3 for s in sums if s > 0), "Normalize All: weights add up to 1")
+
+
+# --- Pose Mode from the Status Line opens the Controls tab; IK with a pole, control shape, locks
+@step
+def rig_pose_mode():
+    rig_status("m3d.rig_mode", mode='POSE')
+
+
+step(wait_until(lambda: bpy.context.mode == 'POSE' and rig_page() == "rig_controls", "Pose Mode to open the Controls & Constraints tab"))
+
+
+@step
+def rig_ik():
+    ob = rig_obj()
+    check(bpy.context.active_object == ob and ob.mode == 'POSE', "Pose button makes the skeleton active")
+    ob.data.bones.active = ob.data.bones["Spine.001"]
+    for pb in ob.pose.bones:
+        pb.select = pb.name == "Spine.001"
+    bpy.context.scene.m3d_rig.ik_chain = 2
+    press_ok("m3d.rig_ik_pole")
+
+
+@step
+def rig_ik_check():
+    pb = rig_obj().pose.bones["Spine.001"]
+    cons = [c for c in pb.constraints if c.type == 'IK']
+    check(cons and cons[0].target == rig_obj() and cons[0].subtarget == "IK_Spine.001" and cons[0].pole_subtarget == "Pole_Spine.001",
+          "IK with Pole from the Controls tab")
+    check(rig_obj().mode == 'POSE', "...and back in Pose Mode")
+    check(not tracebacks(), "Python error while adding the IK")
+
+
+@step
+def rig_control_shape():
+    ob = rig_obj()
+    for pb in ob.pose.bones:
+        pb.select = pb.name == "IK_Spine.001"
+    ob.data.bones.active = ob.data.bones["IK_Spine.001"]
+    s = bpy.context.scene.m3d_rig
+    s.control_color = (0.1, 0.8, 0.3)
+    press_ok("m3d.rig_control", shape='CIRCLE')
+    press_ok("m3d.rig_lock", channels='ROTATION', lock=True)
+
+
+@step
+def rig_control_shape_check():
+    pb = rig_obj().pose.bones["IK_Spine.001"]
+    check(pb.custom_shape is not None and pb.custom_shape.name == "WGT-Circle" and pb.color.palette == 'CUSTOM', "control shape and color from the Controls tab")
+    check(all(pb.lock_rotation) and not any(pb.lock_location), "Lock Rotate")
+    check(bpy.data.collections.get("Widgets") is not None, "Widgets collection")
+    check(not tracebacks(), "Python error with the control shape")
+
+
+# --- Driven Key from the Drive tab
+@step
+def rig_driven_key():
+    ob = rig_obj()
+    s = bpy.context.scene.m3d_rig
+    press_ok("m3d.dock_page", tab="rig_drive")
+    ob.pose.bones["Spine"].rotation_mode = 'XYZ'
+    s.dk_driver_object, s.dk_driver_bone, s.dk_driver_channel = ob, "Spine", 'ROT_X'
+    s.dk_kind, s.dk_driven_object, s.dk_driven_bone, s.dk_driven_channel = 'BONE', ob, "Spine.002", 'SCL_Y'
+    s.dk_interp = 'LINEAR'
+    ob.pose.bones["Spine"].rotation_euler[0] = 0.0
+    s.dk_value = 1.0
+    press_ok("m3d.rig_driven_key", action='KEY')
+    ob.pose.bones["Spine"].rotation_euler[0] = math.pi / 2
+    s.dk_value = 2.0
+    press_ok("m3d.rig_driven_key", action='KEY')
+    ob.pose.bones["Spine"].rotation_euler[0] = math.pi / 4
+
+
+@step
+def rig_driven_key_check():
+    ob = rig_obj()
+    keys = m3d_rig.driven_keys(m3d_rig.driven_channel(bpy.context.scene.m3d_rig))
+    check(len(keys) == 2 and abs(keys[1][1] - 2.0) < 1e-4, "Driven Key pairs: %s" % keys)
+    check(abs(ob.pose.bones["Spine.002"].scale[1] - 1.5) < 1e-3, "a quarter turn of the driver gives the middle value (%s)" % ob.pose.bones["Spine.002"].scale[1])
+    check(rig_page() == "rig_drive", "Drive tab picked")
+    check(not tracebacks(), "Python error with the Driven Key")
+
+
+# --- Test tab: reset pose
+@step
+def rig_reset():
+    ob = rig_obj()
+    ob.pose.bones["Spine.001"].rotation_mode = 'XYZ'
+    ob.pose.bones["Spine.001"].rotation_euler = (0.3, 0.2, 0.1)
+    ob.pose.bones["Spine"].rotation_euler[0] = 0.0
+    press_ok("m3d.dock_page", tab="rig_test")
+    press_ok("m3d.rig_reset_pose")
+
+
+@step
+def rig_reset_check():
+    ob = rig_obj()
+    check(all(abs(v) < 1e-6 for v in ob.pose.bones["Spine.001"].rotation_euler), "Reset Pose on the Test tab")
+    check(not tracebacks(), "Python error on the Test tab")
+
+
+# --- Drivers editor toggle (Status Line button and Drive tab button)
+@step
+def rig_drivers_open():
+    check(m3d_rig.bottom_area(window().screen).ui_type == 'TIMELINE', "Timeline at first")
+    rig_status("m3d.rig_drivers_editor")
+
+
+@step
+def rig_drivers_check():
+    area = m3d_rig.bottom_area(window().screen)
+    check(area is not None and area.ui_type == 'DRIVERS' and area.type == 'GRAPH_EDITOR' and area.spaces.active.mode == 'DRIVERS',
+          "Status Line button: the bottom editor is the Drivers editor (%s)" % ((area.type, area.ui_type) if area else None,))
+    check(m3d_rig.drivers_open(window().screen), "drivers_open")
+    press_ok("m3d.rig_drivers_editor")
+
+
+@step
+def rig_drivers_back():
+    area = m3d_rig.bottom_area(window().screen)
+    check(area is not None and area.ui_type == 'TIMELINE', "...and again: back to the Timeline")
+    check(not tracebacks(), "Python error with the Drivers editor")
+
+
+# --- Tabs follow the mode, and keep the tab picked in a mode
+@step
+def rig_follow_edit():
+    rig_status("m3d.rig_mode", mode='OBJECT')
+
+
+step(wait_until(lambda: bpy.context.mode == 'OBJECT', "Object Mode"))
+
+
+@step
+def rig_follow_edit2():
+    rig_status("m3d.rig_mode", mode='EDIT')
+
+
+step(wait_until(lambda: bpy.context.mode == 'EDIT_ARMATURE' and rig_page() == "rig_skeleton", "Edit Mode to open the Skeleton tab"))
+
+
+@step
+def rig_follow_pose():
+    rig_status("m3d.rig_mode", mode='POSE')
+
+
+step(wait_until(lambda: bpy.context.mode == 'POSE' and rig_page() == "rig_test", "Pose Mode to bring back the Test tab picked there"))
+
+
+@step
+def rig_follow_pick():
+    press_ok("m3d.dock_page", tab="rig_collections")
+    rig_status("m3d.rig_mode", mode='OBJECT')
+
+
+step(wait_until(lambda: bpy.context.mode == 'OBJECT', "Object Mode"))
+
+
+@step
+def rig_follow_pick2():
+    check(rig_page() == "rig_collections", "leaving a mode keeps the tab")
+    rig_status("m3d.rig_mode", mode='POSE')
+
+
+step(wait_until(lambda: bpy.context.mode == 'POSE' and rig_page() == "rig_collections", "Pose Mode to bring back the last pick"))
+
+
+@step
+def rig_follow_all_settings():
+    # On All Settings the dock is left alone.
+    left, dock = rig_dock()
+    dock.spaces.active.context = 'OBJECT'
+    rig_status("m3d.rig_mode", mode='OBJECT')
+
+
+step(wait_until(lambda: bpy.context.mode == 'OBJECT', "Object Mode"))
+
+
+@step
+def rig_follow_all_settings2():
+    rig_status("m3d.rig_mode", mode='EDIT')
+
+
+step(wait_until(lambda: bpy.context.mode == 'EDIT_ARMATURE', "Edit Mode"))
+
+
+@step
+def rig_follow_all_settings3():
+    left, dock = rig_dock()
+    check(dock.spaces.active.context == 'OBJECT', "a dock on All Settings is not switched")
+    dock.spaces.active.context = 'MODELING_TOOLKIT'
+    rig_status("m3d.rig_mode", mode='OBJECT')
+
+
+# --- Names marking menu opens with Shift+N in Edit Mode
+@step
+def rig_names_menu_open():
+    rig_status("m3d.rig_mode", mode='EDIT')
+
+
+step(wait_until(lambda: bpy.context.mode == 'EDIT_ARMATURE', "Edit Mode"))
+
+
+@step
+def rig_names_menu_key():
+    event('MOUSEMOVE', xy=rig_xy())
+    event('N', 'PRESS', rig_xy(), shift=True)
+    event('N', 'RELEASE', rig_xy(), shift=True)
+
+
+@step
+def rig_names_menu_check():
+    check(not tracebacks(), "Python error drawing the names menu")
+    event('ESC', 'PRESS', rig_xy())
+    event('ESC', 'RELEASE', rig_xy())
+
+
+# --- Every tab draws, in Object, Edit, Pose and Weight Paint Mode
+def _rig_tab_steps():
+    for mode in ('OBJECT', 'EDIT', 'POSE', 'WEIGHT_PAINT'):
+        for tab in (*m3d_workspace.DOCK_TABS['RIG']['RIGHT'], *m3d_workspace.DOCK_TABS['RIG']['LEFT']):
+            def show(tab=tab, mode=mode):
+                bpy.ops.m3d.rig_mode(mode=mode)
+                left, dock = rig_dock()
+                area = left if tab.page == "rig_bones" else dock
+                area.spaces.active.context = 'MODELING_TOOLKIT'
+                press_ok("m3d.dock_page", _area=area, tab=tab.id)
+                for a in window().screen.areas:
+                    a.tag_redraw()
+
+            def check_draw(tab=tab, mode=mode):
+                side = "left" if tab.page == "rig_bones" else "right"
+                check(getattr(window().workspace, "m3d_page_" + side) == tab.page, "dock tab %s did not open its page" % tab.id)
+                check(not tracebacks(), "Python error while drawing the Rigging page %s in %s" % (tab.page, mode))
+            show.__name__, check_draw.__name__ = "rig_show_%s_%s" % (tab.page, mode), "rig_drawn_%s_%s" % (tab.page, mode)
+            yield show
+            yield check_draw
+
+
+for _fn in _rig_tab_steps():
+    step(_fn)
+
+
+@step
+def rig_shelves():
+    # Every Rigging shelf and the Status Line draw in each mode.
+    for mode in ('POSE', 'EDIT', 'OBJECT'):
+        bpy.ops.m3d.rig_mode(mode=mode)
+        for key in m3d_ui.shelves_for('RIG'):
+            bpy.context.window_manager.m3d_shelf = key
+            for a in window().screen.areas:
+                a.tag_redraw()
+
+
+@step
+def rig_shelves_check():
+    check(not tracebacks(), "Python error drawing the Rigging shelves / Status Line")
+    bpy.context.window_manager.m3d_shelf = 'RIG_SKELETON'
+    ws = window().workspace
+    ws.m3d_page_left = ws.m3d_page_right = ""
+    bpy.ops.m3d.rig_mode(mode='OBJECT')
+    bpy.ops.m3d.workspace(kind='MODEL')
+    check(not tracebacks(), "Python error in the Rigging workspace tests")
+
+
 @step
 def finish():
     errors = "".join(stderr_tee.buf + sys.stdout.buf)
@@ -1978,5 +2609,11 @@ def run_next():
         steps[:] = [finish]
     return 0.4 if steps else None
 
+
+# M3D_GUI_FROM=<step name> skips the steps before it (to iterate on one workspace; the full run is the one that counts).
+_from = os.environ.get("M3D_GUI_FROM")
+if _from:
+    _names = [fn.__name__ for fn in steps]
+    steps[:] = steps[_names.index(_from):]
 
 bpy.app.timers.register(run_next, first_interval=2.0)

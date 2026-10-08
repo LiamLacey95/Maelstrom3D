@@ -12,6 +12,7 @@ Menus are plain data (see `MENUS`) so `tools/m3d/test_m3d.py` can verify every c
 import bpy
 from bpy.types import Menu, Panel
 
+import m3d_rig
 import m3d_sculpt
 import m3d_texture
 import m3d_uv
@@ -68,12 +69,15 @@ def shading(label, type, icon='NONE'):
 SEP = {"kind": 'SEP', "modes": None}
 EDIT = {'EDIT_MESH'}
 OBJECT = {'OBJECT'}
+EDIT_ARM = {'EDIT_ARMATURE'}
+POSE = {'POSE'}
 
 # Operators that need a 3D Viewport context: from the top bar they run through `m3d.call`.
 _VIEW3D_PREFIXES = (
     "view3d.", "transform.", "wm.context_", "wm.tool_set_by_id", "screen.region_quadview",
     "mesh.loopcut_slide", "mesh.knife_tool", "mesh.bevel", "mesh.offset_edge_loops_slide",
     "mesh.duplicate_move", "object.duplicate_move", "uv.project_from_view", "mesh.dupli_extrude_cursor",
+    "armature.", "pose.", "paint.weight",
 )
 
 
@@ -495,19 +499,32 @@ MENUS = {
 
     # Rigging menu set.
     "M3D_MT_skeleton": ("Skeleton", [
+        op("Joint Tool", "m3d.rig_joint", 'BONE_DATA'),
         op("Create Joints", "object.armature_add", 'BONE_DATA'),
-        op("Insert Joint", "armature.bone_primitive_add", modes={'EDIT_ARMATURE'}),
-        op("Mirror Joints", "armature.symmetrize", modes={'EDIT_ARMATURE'}),
-        enum("Orient Joint", "armature.calculate_roll", "type", modes={'EDIT_ARMATURE'}),
-        op("Create IK Handle", "pose.ik_add", modes={'POSE'}),
+        op("Insert Joint", "armature.bone_primitive_add", modes=EDIT_ARM),
+        op("Extrude Joint", "armature.extrude_move", 'EXPORT', modes=EDIT_ARM),
+        op("Mirror Joints", "armature.symmetrize", 'MOD_MIRROR', modes=EDIT_ARM, direction='POSITIVE_X'),
+        op("Orient Joint", "m3d.rig_orient", 'ORIENTATION_GIMBAL', modes=EDIT_ARM),
+        enum("Roll Joint To", "armature.calculate_roll", "type", modes=EDIT_ARM),
+        SEP,
+        op("Name Sides (.L / .R)", "armature.autoside_names", modes=EDIT_ARM, type='XAXIS'),
+        op("Flip Names", "armature.flip_names", modes=EDIT_ARM),
+        op("Select Problem Names", "m3d.rig_name_check", 'ERROR'),
+        SEP,
+        op("Create IK Handle", "pose.ik_add", modes=POSE),
         op("Pose Mode", "object.posemode_toggle", 'POSE_HLT'),
+        op("Edit Mode (Skeleton)", "m3d.rig_mode", 'EDITMODE_HLT', mode='EDIT'),
+        op("Object Mode", "m3d.rig_mode", 'OBJECT_DATAMODE', mode='OBJECT'),
     ]),
     "M3D_MT_skin": ("Skin", [
-        op("Bind Skin", "object.parent_set", 'ARMATURE_DATA', modes=OBJECT, type='ARMATURE_AUTO'),
-        op("Unbind Skin", "object.parent_clear", modes=OBJECT, type='CLEAR_KEEP_TRANSFORM'),
-        op("Paint Skin Weights", "object.mode_set", 'WPAINT_HLT', mode='WEIGHT_PAINT'),
-        op("Mirror Skin Weights", "object.vertex_group_mirror", modes={'WEIGHT_PAINT'}),
-        op("Normalize Weights", "object.vertex_group_normalize_all", modes={'WEIGHT_PAINT'}),
+        op("Bind Skin", "m3d.rig_bind", 'ARMATURE_DATA', modes=OBJECT),
+        op("Unbind Skin", "m3d.rig_unbind", 'UNLINKED', modes=OBJECT),
+        op("Paint Skin Weights", "m3d.rig_mode", 'WPAINT_HLT', mode='WEIGHT_PAINT'),
+        op("Mirror Skin Weights", "m3d.rig_mirror_weights", 'MOD_MIRROR', direction='POSITIVE_X'),
+        op("Normalize Weights", "object.vertex_group_normalize_all", modes={'PAINT_WEIGHT'}),
+        op("Limit Influences", "object.vertex_group_limit_total", modes={'PAINT_WEIGHT'}, group_select_mode='BONE_DEFORM'),
+        op("Clean Weights", "object.vertex_group_clean", modes={'PAINT_WEIGHT'}, group_select_mode='BONE_DEFORM'),
+        op("Copy Skin Weights", "m3d.rig_transfer_weights", 'MOD_DATA_TRANSFER'),
     ]),
     "M3D_MT_constrain": ("Constrain", [
         constraint("Parent", 'CHILD_OF'),
@@ -518,6 +535,7 @@ MENUS = {
         constraint("Geometry (Shrinkwrap)", 'SHRINKWRAP'),
         constraint("Motion Path (Follow Path)", 'FOLLOW_PATH'),
         constraint("Pole Vector (IK)", 'IK'),
+        op("IK with Pole Target", "m3d.rig_ik_pole", 'CON_KINEMATIC', modes=POSE),
         SEP,
         op("Remove Constraints", "object.constraints_clear"),
     ]),
@@ -525,6 +543,12 @@ MENUS = {
         op("Locator", "object.empty_add", 'EMPTY_AXIS', type='PLAIN_AXES'),
         op("Circle Control", "curve.primitive_bezier_circle_add", 'CURVE_BEZCIRCLE'),
         op("Lock and Hide Attributes", "m3d.lock_transforms", 'LOCKED'),
+        SEP,
+        *(op("Control Shape: " + label, "m3d.rig_control", icon, shape=shape)
+          for shape, (label, icon, _build) in m3d_rig.SHAPES.items()),
+        op("Remove Control Shape", "m3d.rig_control", 'X', shape='NONE'),
+        SEP,
+        op("Drivers Editor", "m3d.rig_drivers_editor", 'DRIVER'),
     ]),
 
     # Animation menu set.
@@ -859,10 +883,7 @@ def draw_workspace_picker(layout, context):
 # Placeholder Status Lines until a kind gets its own (phases 1-6): its modes as buttons.
 # (object.mode_set mode, icon, label, context.mode values)
 _OBJECT_MODE = ('OBJECT', 'OBJECT_DATAMODE', "Object Mode", {'OBJECT'})
-_EDIT_MODE = ('EDIT', 'EDITMODE_HLT', "Edit Mode", {'EDIT_MESH', 'EDIT_ARMATURE', 'EDIT_CURVE'})
 KIND_MODES = {
-    'RIG': (_OBJECT_MODE, _EDIT_MODE, ('POSE', 'POSE_HLT', "Pose Mode", {'POSE'}),
-            ('WEIGHT_PAINT', 'WPAINT_HLT', "Weight Paint Mode", {'PAINT_WEIGHT'})),
     'ANIM': (_OBJECT_MODE, ('POSE', 'POSE_HLT', "Pose Mode", {'POSE'})),
     'RENDER': (_OBJECT_MODE,),
 }
@@ -888,8 +909,12 @@ def draw_status_line_texture(layout, context):
     m3d_texture.draw_status_line(layout, context)
 
 
+def draw_status_line_rig(layout, context):
+    m3d_rig.draw_status_line(layout, context)
+
+
 STATUS_LINES = {'MODEL': draw_status_line_model, 'SCULPT': draw_status_line_sculpt, 'UV': draw_status_line_uv,
-                'TEXTURE': draw_status_line_texture}
+                'TEXTURE': draw_status_line_texture, 'RIG': draw_status_line_rig}
 
 
 def draw_status_line(layout, context):
@@ -971,6 +996,7 @@ _MODEL = frozenset({'MODEL'})
 _SCULPT = frozenset({'SCULPT'})
 _UV = frozenset({'UV'})
 _TEXTURE = frozenset({'TEXTURE'})
+_RIG = frozenset({'RIG'})
 # Shelf tab key -> (label, buttons, kinds of workspace that show the tab). A button is (idname, icon, props) or
 # (idname, icon, props, text); None is a gap; a function draws its own widgets into the row.
 SHELVES = {
@@ -1078,6 +1104,9 @@ SHELVES = {
     'TEXTURE_BRUSHES': ("Paint", m3d_texture.SHELF_BRUSHES, _TEXTURE),
     'TEXTURE_CHANNELS': ("Channels", m3d_texture.SHELF_CHANNELS, _TEXTURE),
     'TEXTURE_OUTPUT': ("Bake / Export", m3d_texture.SHELF_OUTPUT, _TEXTURE),
+    'RIG_SKELETON': ("Skeleton", m3d_rig.SHELF_SKELETON, _RIG),
+    'RIG_CONTROLS': ("Controls", m3d_rig.SHELF_CONTROLS, _RIG),
+    'RIG_SKIN': ("Skin", m3d_rig.SHELF_SKIN, _RIG),
     # Buttons added by the user (m3d_user.py); every kind has its own.
     'CUSTOM': ("Custom", [], frozenset(KINDS)),
 }

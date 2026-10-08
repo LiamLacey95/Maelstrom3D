@@ -99,6 +99,19 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 | C | — | Cycle Paint Channel (delta=1) |
 | Shift+C | — | Cycle Paint Channel (delta=-1) |
 
+## Armature
+
+| Key | Before (Industry Compatible) | Now (Maelstrom3D) |
+|---|---|---|
+| Ctrl+E | Tool: Extrude | Extrude |
+| Shift+N | — | Menu: Bone Names |
+
+## Pose
+
+| Key | Before (Industry Compatible) | Now (Maelstrom3D) |
+|---|---|---|
+| Shift+N | — | Menu: Bone Names |
+
 ## Window
 
 | Key | Before (Industry Compatible) | Now (Maelstrom3D) |

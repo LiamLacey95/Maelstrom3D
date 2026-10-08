@@ -130,6 +130,15 @@ OVERRIDES = {
         _kmi("m3d.tex_channel_cycle", 'C', props={"delta": 1}),
         _kmi("m3d.tex_channel_cycle", 'C', props={"delta": -1}, shift=True),
     ],
+    # Rigging: Ctrl+E extrudes a bone right away (Industry Compatible only switches tools); P parents and Shift+P
+    # unparents bones in Edit Mode already; Shift+N is the naming marking menu in Edit and Pose Mode (Ctrl+N is New Scene).
+    "Armature": [
+        _kmi("armature.extrude_move", 'E', ctrl=True),
+        _pie("M3D_MT_rig_names", 'N', shift=True),
+    ],
+    "Pose": [
+        _pie("M3D_MT_rig_names", 'N', shift=True),
+    ],
     "Window": [
         # F1-F7: task workspaces (kinds in m3d_workspace.py). The menu set dropdown still offers every set.
         *(_kmi("m3d.workspace", k, props={"kind": kind}) for kind, k in WORKSPACE_KEYS),

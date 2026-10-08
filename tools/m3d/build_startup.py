@@ -111,6 +111,12 @@ def phase1_sculpt():
         with bpy.context.temp_override(window=window(), screen=screen):
             bpy.ops.screen.area_move(x=edge[0], y=edge[1], delta=-DOCK_WIDER)
         yield 0.3
+        left = areas(screen, 'OUTLINER')[0]
+        run(bpy.ops.screen.area_split, left, direction='HORIZONTAL', factor=RIG_LEFT_SPLIT)
+        yield 0.3
+        lower = min(areas(screen, 'OUTLINER'), key=lambda a: a.y)
+        lower.ui_type = 'PROPERTIES'
+        yield 0.3
     view = areas(screen, 'VIEW_3D')[0]
     if view.spaces.active.show_region_asset_shelf:  # The brush tray replaces it (B still opens the brush popover).
         run(bpy.ops.screen.region_toggle, view, region_type='ASSET_SHELF')
@@ -201,11 +207,70 @@ def phase3_texture():
     bpy.data.meshes.remove(data)
 
 
+def phase4_rigging():
+    """Rigging: the small left 3D view becomes the Outliner (the armature hierarchy: bones show under their armature) with
+    a Properties editor under it (bone collections), the Outliner of the right column is closed so the dock gets its
+    height, the bottom editor is a short Timeline (the Status Line and the Drive tab switch it to the Drivers editor)."""
+    ws = bpy.data.workspaces["Rigging"]
+    show(ws)
+    yield 0.6
+    screen = window().screen
+    if len(areas(screen, 'PROPERTIES')) < 2:
+        small = areas(screen, 'VIEW_3D')[0]   # Left of the large viewport.
+        small.ui_type = 'OUTLINER'
+        yield 0.3
+        view = areas(screen, 'VIEW_3D')[0]
+        edge = (view.x - 1, view.y + view.height // 2)
+        window().event_simulate(type='MOUSEMOVE', value='NOTHING', x=edge[0], y=edge[1])
+        yield 0.3
+        with bpy.context.temp_override(window=window(), screen=screen):
+            bpy.ops.screen.area_move(x=edge[0], y=edge[1], delta=-(small.width - RIG_LEFT_WIDTH))
+        yield 0.3
+        right_outliner = max(areas(screen, 'OUTLINER'), key=lambda a: a.x)
+        run(bpy.ops.screen.area_close, right_outliner)
+        yield 0.3
+        bottom = areas(screen, 'DOPESHEET_EDITOR')[0]
+        bottom.ui_type = 'TIMELINE'
+        yield 0.3
+        view = areas(screen, 'VIEW_3D')[0]
+        edge = (view.x + view.width // 2, view.y - 1)
+        window().event_simulate(type='MOUSEMOVE', value='NOTHING', x=edge[0], y=edge[1])
+        yield 0.3
+        bottom = areas(screen, 'DOPESHEET_EDITOR')[0]
+        with bpy.context.temp_override(window=window(), screen=screen):
+            bpy.ops.screen.area_move(x=edge[0], y=edge[1], delta=-(bottom.height - RIG_TIMELINE_HEIGHT))
+        yield 0.3
+        dock = areas(screen, 'PROPERTIES')[-1]
+        edge = (dock.x - 1, dock.y + dock.height // 2)
+        window().event_simulate(type='MOUSEMOVE', value='NOTHING', x=edge[0], y=edge[1])
+        yield 0.3
+        with bpy.context.temp_override(window=window(), screen=screen):
+            bpy.ops.screen.area_move(x=edge[0], y=edge[1], delta=-DOCK_WIDER)
+        yield 0.3
+        left = areas(screen, 'OUTLINER')[0]
+        run(bpy.ops.screen.area_split, left, direction='HORIZONTAL', factor=RIG_LEFT_SPLIT)
+        yield 0.3
+        lower = min(areas(screen, 'OUTLINER'), key=lambda a: a.y)
+        lower.ui_type = 'PROPERTIES'
+        yield 0.3
+    view = areas(screen, 'VIEW_3D')[0]
+    view.spaces.active.shading.type = 'SOLID'
+    view.spaces.active.overlay.show_xray_bone = True   # Bones show through the mesh in Pose Mode.
+    props = sorted(areas(screen, 'PROPERTIES'), key=lambda a: a.x)
+    for area in props:
+        area.spaces.active.context = 'MODELING_TOOLKIT'
+    ws.m3d_page_left, ws.m3d_page_right = "rig_bones", "rig_skeleton"
+
+
+RIG_LEFT_WIDTH = 300  # pixels of the 2560 px build window: Outliner and bone collections
+RIG_LEFT_SPLIT = 0.4  # share of the left column the bone collections get (the lower part; the Outliner keeps the rest)
+RIG_TIMELINE_HEIGHT = 230  # pixels the bottom Timeline keeps (the Drivers editor is the same area)
+
 DOCK_WIDER = 170  # pixels of the 2560 px build window: seven tabs, All Settings and the tab menu fit
 UV_WIDER = 250  # pixels the UV editor gets from the 3D view
 TEXTURE_VIEW_WIDER = 250  # pixels the Texture workspace's 3D view gets from the paint view
 
-PHASES = [phase0_workspaces, phase1_sculpt, phase2_uv, phase3_texture]
+PHASES = [phase0_workspaces, phase1_sculpt, phase2_uv, phase3_texture, phase4_rigging]
 
 
 def save():

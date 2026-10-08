@@ -277,7 +277,7 @@ check(wm.m3d_menu_set == 'MODELING' and wm.m3d_shelf == 'POLY', "shelf tab is re
 check(m3d_ui.shelves_for('SCULPT') == ['SCULPT_BRUSHES', 'SCULPT_REMESH', 'SCULPT_MASK', 'CUSTOM']
       and 'POLY' in m3d_ui.shelves_for('MODEL') and m3d_ui.shelves_for('MODEL')[-1] == 'CUSTOM', "shelf tabs per kind")
 check(set(m3d_ui.KIND_MODES) == set(W.KINDS) - set(m3d_ui.STATUS_LINES), "placeholder status line modes for the other kinds")
-check(set(m3d_ui.STATUS_LINES) == {'MODEL', 'SCULPT', 'UV', 'TEXTURE'}, "status lines")
+check(set(m3d_ui.STATUS_LINES) == {'MODEL', 'SCULPT', 'UV', 'TEXTURE', 'RIG'}, "status lines")
 
 # Page panels: only on their page, per workspace and side.
 ws = bpy.data.workspaces["Modeling"]
@@ -1991,6 +1991,817 @@ check(not [n for n in mem_mat.node_tree.nodes if LY.TAG in n.keys()], "deleting 
 check(mem_mat.node_tree.nodes.get("%s.scratch" % LY.TAG) is None, "...and the scratch node (its image goes when no material uses it)")
 check(not tex_gated("tex_layers") and "PROPERTIES_PT_m3d_tx_stack" in tex_shown("tex_layers")
       and "PROPERTIES_PT_m3d_tx_layer" not in tex_shown("tex_layers"), "no layers: the stack panel offers the add buttons only")
+
+# ----------------------------------------------------------------------------------------------------
+# Phase 4: Rigging workspace (tabs, pages, gates, modes, Joint tool, Orient Joint, controls, IK, skin, Driven Key, names).
+import m3d_rig as R
+import math
+import addon_utils
+from mathutils import Matrix, Vector
+
+rig_ws = bpy.data.workspaces["Rigging"]
+rig_tabs = W.DOCK_TABS['RIG']
+check([t.label for t in rig_tabs['RIGHT']] == ["Skeleton", "Controls & Constraints", "Skin", "Drive", "Test", "Collections"],
+      "Rigging dock tabs")
+check([t.label for t in rig_tabs['LEFT']] == ["Bones"], "Rigging left tab")
+for tab in (*rig_tabs['RIGHT'], *rig_tabs['LEFT']):
+    check(tab.context == 'MODELING_TOOLKIT' and tab.page == tab.id and tab.id.startswith("rig_"), "Rigging page tab " + tab.id)
+rig_pages = {t.page for side in rig_tabs.values() for t in side}
+check({c.page for c in R.classes if hasattr(c, "page")} == rig_pages, "every Rigging page has panels and the other way round")
+check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in R.classes if not issubclass(c, bpy.types.PropertyGroup)),
+      "Rigging classes registered")
+check(m3d_ui.shelves_for('RIG') == ['RIG_SKELETON', 'RIG_CONTROLS', 'RIG_SKIN', 'CUSTOM'] and 'RIG' in m3d_ui.STATUS_LINES
+      and 'RIG' not in m3d_ui.KIND_MODES, "Rigging shelf tabs and Status Line")
+check([it[3] for it in m3d_ui.SHELVES['RIG_SKELETON'][1] if it][:5] == ["Joint", "Extrude", "Mirror", "Orient", "Names L/R"],
+      "Skeleton shelf buttons")
+check([it[3] for it in m3d_ui.SHELVES['RIG_SKIN'][1] if it] == ["Bind", "Paint Weights", "Normalize", "Mirror Weights"], "Skin shelf buttons")
+check(sum(1 for it in m3d_ui.SHELVES['RIG_CONTROLS'][1] if it and not callable(it) and it[1] in {s[1] for s in R.SHAPES.values()}) == 5,
+      "Controls shelf has the five shapes")
+check(rig_ws.m3d_kind == 'RIG' and rig_ws.object_mode == 'OBJECT', "Rigging workspace kind and entry mode")
+check('M3D_MT_rig_names' in {c.__name__ for c in R.classes}, "names pie exists")
+for _, icon, _build in R.SHAPES.values():
+    check(icon in icons, "shape icon " + icon)
+for label, kind, icon in R.CONSTRAINTS:
+    check(icon in icons, "constraint icon " + icon)
+    check(op_ok("pose.constraint_add_with_targets", {"type": kind}), "constraint type " + kind)
+for _l, kind in R.ROLL_PRESETS:
+    check(op_ok("armature.calculate_roll", {"type": kind}), "roll preset " + kind)
+
+# No other program's names in the Rigging code.
+rig_src = open(R.__file__, encoding="utf-8").read().lower()
+for word in ("maya", "autodesk", "mixamo", "accurig", "cascadeur", "houdini", "kinefx", "apex", "mgear", "advanced skeleton"):
+    check(word not in rig_src, "Rigging code names " + word)
+
+# Keys: free in the keymaps around them.
+bpy.utils.keyconfig_set(bpy.utils.preset_find("Maelstrom3D", "keyconfig"))
+kc = bpy.context.window_manager.keyconfigs["Maelstrom3D"]
+item = find("Armature", "armature.extrude_move", 'E', ctrl=True, shift=False, alt=False)
+check(item, "Ctrl+E extrudes a bone in Edit Mode")
+check(not find("Armature", "wm.tool_set_by_id", 'E', ctrl=True), "Ctrl+E no longer only switches tools in Edit Mode")
+check(find("Armature", "armature.parent_set", 'P', shift=False, ctrl=False), "P parents bones")
+check(find("Armature", "armature.parent_clear", 'P', shift=True), "Shift+P unparents bones")
+check(find("Window", "wm.read_homefile", 'N', ctrl=True), "Ctrl+N is still New Scene")
+for km in ("Armature", "Pose"):
+    item = find(km, "wm.call_menu_pie", 'N', shift=True, ctrl=False, alt=False)
+    check(item and item[0].properties.name == "M3D_MT_rig_names" and hasattr(bpy.types, "M3D_MT_rig_names"), "Shift+N names menu in " + km)
+for key, mods in (('E', dict(ctrl=True)), ('N', dict(shift=True))):
+    want = {"shift": False, "ctrl": False, "alt": False, **mods}
+    others = [(km.name, k.idname) for km in kc.keymaps for k in km.keymap_items
+              if k.type == key and all(getattr(k, m) == v for m, v in want.items()) and not k.oskey
+              and km.name in {"Window", "Screen", "Screen Editing", "Frames", "Property Editor", "3D View", "3D View Generic",
+                              "Object Non-modal", "Object Mode", "Weight Paint"}]
+    check(not others, "Rigging key %s %s is free around Armature / Pose: %s" % (key, mods, others))
+
+# Menus of the Rigging set point at real things (the generic loop at the top checked every entry).
+check(len(m3d_ui.MENUS["M3D_MT_skeleton"][1]) >= 10 and any(e.get("idname") == "m3d.rig_joint" for e in m3d_ui.MENUS["M3D_MT_skeleton"][1]),
+      "Skeleton menu has the new tools")
+
+# ---- Page panels: gates and drawing in every mode
+for ob in list(bpy.data.objects):
+    if ob.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.data.objects.remove(ob)
+for mesh_ in list(bpy.data.meshes):
+    bpy.data.meshes.remove(mesh_)
+
+
+class RCtx(SCtx):
+    """Context of a Rigging dock: the real one with this workspace."""
+    def __init__(self, side='RIGHT'):
+        super().__init__(side)
+        self.workspace = rig_ws
+        self.screen = None
+
+
+def rig_panels(page):
+    return [c for c in R.classes if getattr(c, "page", None) == page and hasattr(c, "poll")]
+
+
+def rig_shown(page):
+    side = 'LEFT' if page == "rig_bones" else 'RIGHT'
+    setattr(rig_ws, "m3d_page_" + side.lower(), page)
+    ctx = RCtx(side)
+    return [c.__name__ for c in rig_panels(page) if c.poll(ctx)]
+
+
+def rig_gated(page):
+    names = rig_shown(page)
+    return bool(names) and names[0].endswith("_gate")
+
+
+for page in R.GATES:
+    check(rig_gated("rig_" + page), "rig_%s without a skeleton shows its message first: %s" % (page, rig_shown("rig_" + page)))
+check(rig_shown("rig_skeleton") == ["PROPERTIES_PT_m3d_rg_skeleton_gate", "PROPERTIES_PT_m3d_rg_create", "PROPERTIES_PT_m3d_rg_rigify"],
+      "Skeleton tab without a skeleton: message, Create, Rigify: %s" % rig_shown("rig_skeleton"))
+check(not any(n.endswith("_gate") for n in rig_shown("rig_drive")) and len(rig_shown("rig_drive")) >= 3, "Drive tab needs no skeleton")
+check(not R.ready(bpy.context, ('RIG',)) and R.rig_of(bpy.context) is None and R.skin_mesh(bpy.context) is None, "no skeleton, no mesh")
+
+# A cylinder and a 3 bone chain: the test rig. Bones are made through the Joint tool's own class.
+bpy.ops.mesh.primitive_cylinder_add(vertices=16, radius=0.3, depth=2.0, location=(0, 0, 1.0), end_fill_type='NGON')
+body = bpy.context.active_object
+body.name = "Body"
+bpy.ops.object.mode_set(mode='EDIT')
+bpy.ops.mesh.select_all(action='SELECT')
+bpy.ops.mesh.subdivide(number_cuts=6)
+bpy.ops.object.mode_set(mode='OBJECT')
+body.data.shade_smooth()
+check(R.missing(bpy.context, ('RIG', 'MESH', 'EDIT')) == ['RIG', 'EDIT'], "a mesh but no skeleton: %s" % R.missing(bpy.context, ('RIG', 'MESH', 'EDIT')))
+check(R.enter_mode(bpy.context, 'POSE') == "There is no skeleton: place joints with the Joint tool first", "Pose Mode needs a skeleton")
+check(bpy.ops.m3d.rig_mode(mode='POSE') == {'CANCELLED'}, "Pose button without a skeleton cancels")
+check(bpy.ops.m3d.rig_mode(mode='EDIT') == {'FINISHED'} and body.mode == 'EDIT', "Edit without a skeleton edits the active mesh")
+bpy.ops.object.mode_set(mode='OBJECT')
+rig = R.new_armature(bpy.context, "Rig")
+check(rig.show_in_front and rig.data.display_type == 'OCTAHEDRAL', "new skeleton: in front, octahedral")
+check(R.enter_mode(bpy.context, 'EDIT') is None and rig.mode == 'EDIT' and bpy.context.active_object == rig, "Edit Mode makes the skeleton active")
+
+# --- Joint tool: a chain of joints becomes connected bones
+chain = R.JointChain(rig.name, "Joint")
+for z in (0.1, 0.7, 1.3, 1.9):
+    chain.add(Vector((0, 0, z)))
+arm = rig.data
+check(len(arm.edit_bones) == 3 and chain.bones == ["Joint", "Joint.001", "Joint.002"], "4 joints make 3 bones: %s" % [b.name for b in arm.edit_bones])
+check(arm.edit_bones["Joint.001"].parent == arm.edit_bones["Joint"] and arm.edit_bones["Joint.001"].use_connect
+      and arm.edit_bones["Joint"].parent is None, "bones are connected in a chain")
+check((arm.edit_bones["Joint.002"].tail - Vector((0, 0, 1.9))).length < 1e-5 and
+      (arm.edit_bones["Joint.002"].head - Vector((0, 0, 1.3))).length < 1e-5, "bone ends are the joints")
+chain.remove_last()
+check(len(arm.edit_bones) == 2 and len(chain.joints) == 3, "Backspace removes the last joint and bone")
+chain.add(Vector((0, 0, 1.9)))
+check(len(arm.edit_bones) == 3 and arm.edit_bones.active.name == "Joint.002", "...and it can be placed again")
+# Continue from the tip of a bone, branch from the start of one.
+side = R.JointChain(rig.name, "Branch")
+side.add(Vector((0, 0, 1.9)), ("Joint.002", 'TAIL'))
+side.add(Vector((0.5, 0, 2.2)))
+b = arm.edit_bones["Branch"]
+check(b.parent == arm.edit_bones["Joint.002"] and b.use_connect, "a chain started on a tip continues that bone")
+branch = R.JointChain(rig.name, "Twig")
+branch.add(Vector((0, 0, 0.7)), ("Joint.001", 'HEAD'))
+branch.add(Vector((0.4, 0, 0.9)))
+t = arm.edit_bones["Twig"]
+check(t.parent == arm.edit_bones["Joint"] and t.use_connect, "a chain started on a bone's start branches from its parent")
+side.discard()
+branch.discard()
+check({b.name for b in arm.edit_bones} == {"Joint", "Joint.001", "Joint.002"}, "discard removes a chain: %s" % [b.name for b in arm.edit_bones])
+
+# X-Mirror: a chain on the +X side is named .L and gets a .R copy.
+arm.use_mirror_x = True
+left = R.JointChain(rig.name, "Arm")
+for p in ((0.3, 0, 1.6), (0.8, 0, 1.6), (1.3, 0, 1.4)):
+    left.add(Vector(p))
+check(left.mirror() is None and {"Arm.L", "Arm.001.L", "Arm.R", "Arm.001.R"} <= {b.name for b in arm.edit_bones}, "X-Mirror: .L chain gets a .R copy: %s" % [b.name for b in arm.edit_bones])
+check(arm.edit_bones["Arm.R"].head.x < 0 and abs(arm.edit_bones["Arm.R"].head.x + arm.edit_bones["Arm.L"].head.x) < 1e-5, "the copy is on the -X side")
+center = R.JointChain(rig.name, "Mid")
+center.add(Vector((-0.2, 0, 0.5)))
+center.add(Vector((0.2, 0, 0.5)))
+check(center.mirror() == "X-Mirror: the chain crosses the center, so it was not mirrored", "a chain across the center is not mirrored")
+center.discard()
+for name in ("Arm.L", "Arm.001.L", "Arm.R", "Arm.001.R"):
+    arm.edit_bones.remove(arm.edit_bones[name])
+arm.use_mirror_x = False
+
+# --- Orient Joint: the chosen side axis follows a world direction, Y runs along the bone
+def axes(eb):
+    m = eb.matrix.to_3x3()
+    return m.col[0], m.col[1], m.col[2]
+
+
+n = R.orient_bones(rig, list(arm.edit_bones), '-Y', 'Z')
+check(n == 3, "Orient Joint touched 3 bones")
+for eb in arm.edit_bones:
+    x, y, z = axes(eb)
+    check((z - Vector((0, -1, 0))).length < 1e-4 and (y - (eb.tail - eb.head).normalized()).length < 1e-4 and abs(x.dot(y)) < 1e-4,
+          "%s: Z axis to -Y, Y along the bone, X across: %s %s %s" % (eb.name, x, y, z))
+    check(abs(x.cross(y).dot(z) - 1.0) < 1e-4, "%s: right-handed axes" % eb.name)
+R.orient_bones(rig, list(arm.edit_bones), '+X', 'X')
+for eb in arm.edit_bones:
+    x, y, z = axes(eb)
+    check((x - Vector((1, 0, 0))).length < 1e-4, "%s: X axis to +X" % eb.name)
+# A bone along the direction cannot follow it: -Y is used (+Z for a bone along Y).
+lone = arm.edit_bones.new("Fwd")
+lone.head, lone.tail = (0.5, 0, 0), (0.5, 1, 0)
+check(R.orient_bones(rig, [lone], '+Y', 'Z') == 1 and (axes(lone)[2] - Vector((0, 0, 1))).length < 1e-4, "a bone along Y falls back to +Z")
+arm.edit_bones.remove(lone)
+slant = arm.edit_bones.new("Slant")
+slant.head, slant.tail = (1, 0, 0), (1.5, 0.5, 1.0)
+R.orient_bones(rig, [slant], '+Z', 'Z')
+x, y, z = axes(slant)
+check(z.z > 0.5 and abs(z.dot(y)) < 1e-4, "a slanted bone: Z as close to +Z as it can be (%s)" % z)
+arm.edit_bones.remove(slant)
+# The operator takes the Skeleton tab's settings and every selected bone.
+s = bpy.context.scene.m3d_rig
+s.orient_axis, s.orient_dir = 'Z', '+Z'
+for eb in arm.edit_bones:
+    eb.select = True
+tilted = arm.edit_bones.new("Along")
+tilted.head, tilted.tail = (1, 0, 0), (2, 0, 0)
+check(bpy.ops.m3d.rig_orient() == {'FINISHED'} and (axes(arm.edit_bones["Along"])[2] - Vector((0, 0, 1))).length < 1e-4,
+      "Orient Joint operator: arm along X gets Z up")
+arm.edit_bones.remove(arm.edit_bones["Along"])
+# X-Mirror orients the partner of a selected bone to the mirrored direction.
+pair = [arm.edit_bones.new("Leg.L"), arm.edit_bones.new("Leg.R")]
+pair[0].head, pair[0].tail = (0.3, 0, 1), (0.3, 0, 0.2)
+pair[1].head, pair[1].tail = (-0.3, 0, 1), (-0.3, 0, 0.2)
+arm.use_mirror_x = True
+R.orient_bones(rig, [pair[0]], '+Y', 'X')
+check((axes(arm.edit_bones["Leg.L"])[0] - Vector((0, 1, 0))).length < 1e-4 and abs(arm.edit_bones["Leg.L"].roll) > 0.5
+      and abs(arm.edit_bones["Leg.R"].roll + arm.edit_bones["Leg.L"].roll) < 1e-5,
+      "X-Mirror: Blender gives the .R bone the mirrored roll (%s %s)" % (arm.edit_bones["Leg.L"].roll, arm.edit_bones["Leg.R"].roll))
+arm.use_mirror_x = False
+for name in ("Leg.L", "Leg.R"):
+    arm.edit_bones.remove(arm.edit_bones[name])
+
+# --- Naming check
+names = {}
+for name, head, tail in (("Hip.L", (0.2, 0, 1), (0.2, 0, 0.5)), ("Hip.R", (-0.2, 0, 1), (-0.2, 0, 0.5)),
+                         ("Arm.L", (0.3, 0, 1.6), (0.8, 0, 1.6)), ("Foot.R", (0.2, 0, 0.1), (0.2, 0.3, 0.1)),
+                         ("Hand", (0.9, 0, 1.6), (1.1, 0, 1.6)), ("Hand.R", (-0.9, 0, 1.6), (-1.1, 0, 1.6)),
+                         ("Joint.003", (3, 0, 0), (3, 0, 1)), ("Spine", (0, 0, 0), (0, 0, 1))):
+    eb = arm.edit_bones.new(name)
+    eb.head, eb.tail = head, tail
+    names[name] = eb.name
+issues = dict((n, m) for n, m in R.name_issues(rig))
+check("Arm.L" in issues and "No mirror partner" in issues["Arm.L"], "missing .R partner is found: %s" % issues)
+check("Foot.R" in issues and "wrong" not in issues["Foot.R"] and "+X" in issues["Foot.R"], "a .R bone on the +X side is found: %s" % issues)
+check("Hand" in issues and "no side" in issues["Hand"], "an unsided bone that mirrors a .R bone is found: %s" % issues)
+check(not ({"Hip.L", "Hip.R", "Spine"} & set(issues)), "consistent names are not flagged: %s" % issues)
+check(any(n == "Joint.003" and "Numbered duplicate" in m for n, m in R.name_issues(rig)), "a numbered duplicate is found")
+check(R.side_of_name("Arm_L") == "L" and R.side_of_name("Arm.right") == "R" and R.side_of_name("Spine") == "" and
+      R.side_of_name("Left") == "", "side_of_name")
+bpy.ops.object.mode_set(mode='OBJECT')
+check(bpy.ops.m3d.rig_name_check() == {'FINISHED'} and rig.data.bones["Arm.L"].name and
+      rig.pose.bones["Arm.L"].select and not rig.pose.bones["Spine"].select, "Select Problem Bones selects the flagged bones")
+bpy.ops.object.mode_set(mode='EDIT')
+for name in names.values():
+    arm.edit_bones.remove(arm.edit_bones[name])
+bpy.ops.object.mode_set(mode='OBJECT')
+check({n for n, _m in R.name_issues(rig)} == {"Joint.001", "Joint.002"}, "numbered default names are listed, nothing else: %s" % R.name_issues(rig))
+
+# --- Modes and the selection each needs
+check(R.ready(bpy.context, ('RIG',)) and not R.ready(bpy.context, ('MESH',)) and R.missing(bpy.context, ('EDIT', 'POSE')) == ['EDIT', 'POSE'],
+      "needs with a skeleton and no mesh selected")
+body.select_set(True)
+bpy.context.view_layer.objects.active = body
+check(R.ready(bpy.context, ('RIG', 'MESH')), "needs with a skeleton and a mesh")
+bpy.context.view_layer.objects.active = rig
+for page in ("rig_skeleton", "rig_controls", "rig_test"):
+    check(rig_gated(page), "%s is gated in Object Mode: %s" % (page, rig_shown(page)))
+check(not rig_gated("rig_skin") and not rig_gated("rig_collections") and not rig_gated("rig_bones"), "Skin, Collections and Bones need no mode")
+check(bpy.ops.m3d.rig_mode(mode='POSE') == {'FINISHED'} and rig.mode == 'POSE' and bpy.context.active_object == rig, "Pose button")
+check(bpy.ops.m3d.rig_mode(mode='EDIT') == {'FINISHED'} and rig.mode == 'EDIT', "Edit button from Pose Mode")
+check(bpy.ops.m3d.rig_mode(mode='OBJECT') == {'FINISHED'} and rig.mode == 'OBJECT', "Object button")
+
+# --- Bind: automatic weights on the cylinder
+bpy.ops.object.select_all(action='DESELECT')
+body.select_set(True)
+bpy.context.view_layer.objects.active = body
+check(not R.is_bound(body) and R.armature_of(body) is None, "the body is not bound yet")
+s.skin_method = 'AUTO'
+check(bpy.ops.m3d.rig_bind() == {'FINISHED'}, "Bind with one skeleton in the scene")
+check(R.is_bound(body) and R.armature_of(body) == rig and body.parent == rig, "bound: modifier and parent")
+check([g.name for g in body.vertex_groups] == ["Joint", "Joint.001", "Joint.002"], "one group per bone: %s" % [g.name for g in body.vertex_groups])
+check(R.unweighted(body, rig) == 0, "automatic weights reach every vertex")
+low = min(body.data.vertices, key=lambda v: v.co.z)
+high = max(body.data.vertices, key=lambda v: v.co.z)
+w_low = {body.vertex_groups[g.group].name: g.weight for g in low.groups}
+w_high = {body.vertex_groups[g.group].name: g.weight for g in high.groups}
+check(max(w_low, key=w_low.get) == "Joint" and max(w_high, key=w_high.get) == "Joint.002", "weights follow the bones: %s / %s" % (w_low, w_high))
+check(abs(sum(w_low.values()) - 1.0) < 0.2, "weights near the bottom add up to about 1: %s" % w_low)
+check(bpy.ops.m3d.rig_unbind() == {'FINISHED'} and not R.is_bound(body) and not body.vertex_groups and body.parent is None, "Unbind")
+s.skin_method = 'EMPTY'
+check(R.bind(bpy.context, rig, [body], 'EMPTY').startswith("Body bound") and len(body.vertex_groups) == 3
+      and R.unweighted(body, rig) == len(body.data.vertices), "Empty Groups: a group per bone, no weights")
+R.unbind(body, rig)
+check(R.bind(bpy.context, rig, [body], 'ENVELOPE') and len(body.vertex_groups) == 3, "Envelope bind makes groups")
+R.unbind(body, rig)
+# A vertex that belongs to no bone's reach: automatic weights leave it empty, envelope weights are the fallback.
+loose = bpy.data.meshes.new("Loose")
+bm_ = bmesh.new()
+bmesh.ops.create_cone(bm_, cap_ends=True, cap_tris=False, segments=12, radius1=0.3, radius2=0.3, depth=2.0, matrix=Matrix.Translation((0, 0, 1)))
+bm_.verts.new((5.0, 5.0, 5.0))
+bm_.to_mesh(loose)
+bm_.free()
+stray = bpy.data.objects.new("Stray", loose)
+bpy.context.collection.objects.link(stray)
+message = R.bind(bpy.context, rig, [stray], 'AUTO', fallback=True)
+check(R.is_bound(stray) and (R.unweighted(stray, rig) == 0 or "instead" in message or "without weight" in message),
+      "Bind reports meshes automatic weights could not reach: %s" % message)
+R.unbind(stray, rig)
+check(R.bind(bpy.context, rig, [stray], 'AUTO', fallback=False) and R.is_bound(stray), "Bind without the envelope fallback keeps the automatic result")
+bpy.data.objects.remove(stray)
+bpy.data.meshes.remove(loose)
+bpy.context.view_layer.objects.active = body
+R.unbind(body, rig)
+body.select_set(True)
+rig.select_set(True)
+bpy.context.view_layer.objects.active = body
+s.skin_method = 'AUTO'
+res_ = bpy.ops.m3d.rig_bind()
+check(res_ == {'FINISHED'} and R.is_bound(body) and R.unweighted(body, rig) == 0, "bind again, mesh and skeleton selected: %s %s %s" % (res_, R.is_bound(body), R.unweighted(body, rig)))
+
+# Modes with the mesh bound: Weight Paint paints the mesh, the skeleton stays in Pose Mode.
+check(bpy.ops.m3d.rig_mode(mode='WEIGHT_PAINT') == {'FINISHED'}, "Weight Paint button")
+check(body.mode == 'WEIGHT_PAINT' and rig.mode == 'POSE' and bpy.context.active_object == body and rig.select_get() and body.select_get(),
+      "mesh in Weight Paint Mode, skeleton in Pose Mode and selected: %s %s" % (body.mode, rig.mode))
+check(bpy.context.mode == 'PAINT_WEIGHT' and R.mode_key(bpy.context.view_layer) == 'WEIGHT_PAINT', "mode key: Weight Paint")
+check(R.rig_of(bpy.context) == rig and R.skin_mesh(bpy.context) == body, "the skeleton and the mesh are found from the mesh")
+check(bpy.ops.m3d.rig_mode(mode='POSE') == {'FINISHED'} and rig.mode == 'POSE' and body.mode == 'OBJECT' and bpy.context.active_object == rig,
+      "Pose from Weight Paint: the mesh leaves its mode, the skeleton is active")
+check(bpy.ops.m3d.rig_mode(mode='OBJECT') == {'FINISHED'} and rig.mode == body.mode == 'OBJECT', "Object leaves both")
+bpy.ops.object.select_all(action='DESELECT')
+rig.select_set(True)
+bpy.context.view_layer.objects.active = rig
+check(bpy.ops.m3d.rig_mode(mode='WEIGHT_PAINT') == {'FINISHED'} and body.mode == 'WEIGHT_PAINT' and bpy.context.active_object == body,
+      "Weight Paint with the skeleton active picks its bound mesh")
+bpy.ops.m3d.rig_mode(mode='OBJECT')
+
+# Dock tab follows the mode: defaults, and the tab the user picked in a mode comes back in that mode.
+check([R.MODE_TABS[k] for k in ('EDIT', 'POSE', 'WEIGHT_PAINT')] == ["rig_skeleton", "rig_controls", "rig_skin"], "default tab per mode")
+check(all(any(t.id == tab for t in rig_tabs['RIGHT']) for tab in R.MODE_TABS.values()), "mode tabs exist")
+R._state["picked"].clear()
+bpy.ops.m3d.rig_mode(mode='POSE')
+R.remember_tab(bpy.context, "rig_test")
+check(R._state["picked"] == {'POSE': "rig_test"}, "a tab picked in Pose Mode is remembered for Pose Mode")
+R.remember_tab(bpy.context, "rig_controls")
+check(R._state["picked"]["POSE"] == "rig_controls", "the last pick counts")
+bpy.ops.m3d.rig_mode(mode='OBJECT')
+R.remember_tab(bpy.context, "rig_drive")   # Object Mode has no tab of its own: nothing is remembered
+check(list(R._state["picked"]) == ['POSE'], "Object Mode picks are not remembered")
+R._state["picked"].clear()
+
+# Every page panel draws, in every mode, without errors; operators and properties they use exist.
+def check_calls_ext(where, log):
+    check_calls(where, log)
+    for rec in log:
+        if rec._kind in {"prop_enum", "prop_search"}:
+            owner, name = rec._args[0], rec._args[1]
+            check(name in owner.bl_rna.properties, "%s: %r has no property %s" % (where, owner, name))
+
+
+def draw_rig_panels(label):
+    ctx = RCtx()
+    drawn = 0
+    for page in rig_pages:
+        side = 'LEFT' if page == "rig_bones" else 'RIGHT'
+        setattr(rig_ws, "m3d_page_" + side.lower(), page)
+        ctx = RCtx(side)
+        for cls in rig_panels(page):
+            if not cls.poll(ctx):
+                continue
+            drawn += 1
+            try:
+                check_calls_ext("%s %s" % (label, cls.__name__), draw_stub(cls, ctx))
+            except Exception as err:
+                check(False, "%s %s draw: %r" % (label, cls.__name__, err))
+    log = []
+    R.draw_status_line(Rec(log), RCtx())
+    check_calls_ext(label + " status line", log)
+    return drawn
+
+
+body.data.vertices[3].select = True
+for mode_name in ('OBJECT', 'EDIT', 'POSE', 'WEIGHT_PAINT'):
+    bpy.ops.m3d.rig_mode(mode=mode_name)
+    if mode_name == 'EDIT':
+        arm.edit_bones.active = arm.edit_bones[0]
+    if mode_name == 'POSE':
+        rig.data.bones.active = rig.data.bones[1]
+    check(draw_rig_panels(mode_name) > 10, "page panels drew in %s mode" % mode_name)
+    for key in ('RIG_SKELETON', 'RIG_CONTROLS', 'RIG_SKIN', 'CUSTOM'):
+        log = []
+        bpy.context.window_manager.m3d_shelf = key
+        m3d_ui.draw_shelf(Rec(log), RCtx())
+        check_calls_ext("shelf %s in %s" % (key, mode_name), log)
+bpy.ops.m3d.rig_mode(mode='OBJECT')
+status = []
+R.draw_status_line(Rec(status), RCtx())
+check({r.values().get("mode") for r in status if r._kind == "operator" and r.values().get("mode")}
+      >= {'OBJECT', 'EDIT', 'POSE', 'WEIGHT_PAINT'}, "Status Line has the four mode buttons")
+check([r._args[1] for r in status if r._kind == "prop_enum" and r._args[1] == "display_type"].__len__() == 5, "Status Line: five bone display types")
+check({r._args[1] for r in status if r._kind == "prop"} >= {"show_names", "show_axes", "show_in_front", "use_mirror_x"},
+      "Status Line: names, axes, in front, X-Mirror")
+check({r._args[2] for r in status if r._kind == "prop_enum" and r._args[1] == "pose_position"} == {'REST', 'POSE'}, "Status Line: Rest / Pose")
+
+# --- Control shapes with colors
+bpy.ops.m3d.rig_mode(mode='POSE')
+for pb in rig.pose.bones:
+    pb.select = False
+rig.pose.bones["Joint.001"].select = True
+rig.data.bones.active = rig.data.bones["Joint.001"]
+s.control_color = (0.2, 0.6, 0.9)
+s.control_scale = 1.5
+check(bpy.ops.m3d.rig_control(shape='CIRCLE') == {'FINISHED'}, "Circle control")
+pb = rig.pose.bones["Joint.001"]
+check(pb.custom_shape is not None and pb.custom_shape.name == "WGT-Circle" and len(pb.custom_shape.data.edges) == 32
+      and len(pb.custom_shape.data.vertices) == 32 and not pb.custom_shape.data.polygons, "circle widget: 32 edges, wire only")
+check(tuple(round(c, 3) for c in pb.custom_shape_scale_xyz) == (1.5, 1.5, 1.5), "scale applied")
+check(pb.color.palette == 'CUSTOM' and all(abs(a - b) < 0.01 for a, b in zip(pb.color.custom.normal, (0.2, 0.6, 0.9))), "color assigned")
+check(pb.color.custom.select[0] > pb.color.custom.normal[0] and pb.color.custom.active[2] > pb.color.custom.select[2], "selected / active colors are lighter")
+widgets = bpy.data.collections.get(R.WIDGETS)
+check(widgets is not None and pb.custom_shape.name in widgets.objects and widgets.name in bpy.context.scene.collection.children, "Widgets collection holds the shape")
+lc = next(c for c in bpy.context.view_layer.layer_collection.children if c.name == R.WIDGETS)
+check(lc.hide_viewport and widgets.hide_render, "...and it is hidden")
+expected = {'SQUARE': (4, 4), 'ARROW': (14, 14), 'CUBE': (8, 12), 'SPHERE': (96, 96)}
+for shape, (nv, ne) in expected.items():
+    bpy.ops.m3d.rig_control(shape=shape, use_color=False)
+    wobj = pb.custom_shape
+    check(wobj.name == "WGT-" + R.SHAPES[shape][0] and len(wobj.data.vertices) == nv and len(wobj.data.edges) == ne,
+          "%s widget has %d vertices, %d edges (%d, %d)" % (shape, nv, ne, len(wobj.data.vertices), len(wobj.data.edges)))
+bpy.ops.m3d.rig_control(shape='CIRCLE')
+check(pb.custom_shape == bpy.data.objects["WGT-Circle"] and len([o for o in bpy.data.objects if o.name.startswith("WGT-Circle")]) == 1,
+      "a widget is made once and shared")
+check(bpy.ops.m3d.rig_control_color(preset='RED') == {'FINISHED'} and all(abs(a - b) < 0.01 for a, b in zip(pb.color.custom.normal, R.PRESET_RGB['RED'])), "red preset")
+bpy.ops.m3d.rig_control_color(preset='DEFAULT')
+check(pb.color.palette == 'DEFAULT', "default colors")
+bpy.ops.m3d.rig_control(shape='NONE')
+check(pb.custom_shape is None, "No Shape clears the shape")
+other = rig.pose.bones["Joint.002"]
+check(other.custom_shape is None, "unselected bones are left alone")
+bpy.ops.m3d.rig_lock(channels='ALL', lock=True)
+check(all(pb.lock_location) and all(pb.lock_rotation) and all(pb.lock_scale) and not any(other.lock_location), "Lock All locks the selected bones")
+bpy.ops.m3d.rig_lock(channels='SCALE', lock=False)
+bpy.ops.m3d.rig_lock(channels='ALL', lock=False)
+check(not any(pb.lock_location) and not any(pb.lock_scale) and not pb.lock_rotation_w, "Unlock All")
+
+# --- Pose tools
+pb.rotation_mode = 'XYZ'
+pb.rotation_euler = (0.4, 0.1, 0.2)
+pb.location = (0.1, 0.2, 0.3)
+pb.scale = (2, 2, 2)
+other.rotation_quaternion = (0.9, 0.1, 0.0, 0.0)
+bpy.ops.m3d.rig_reset_pose(selected_only=True)
+check(tuple(pb.location) == (0, 0, 0) and tuple(pb.scale) == (1, 1, 1) and tuple(pb.rotation_euler) == (0, 0, 0)
+      and tuple(other.rotation_quaternion) != (1, 0, 0, 0), "Reset Selected resets only the selected bones")
+bpy.ops.m3d.rig_reset_pose(selected_only=False)
+check(tuple(other.rotation_quaternion) == (1, 0, 0, 0), "Reset Pose resets every bone")
+
+# --- IK with a pole: a bent two-bone limb
+bpy.ops.m3d.rig_mode(mode='EDIT')
+limb = [arm.edit_bones.new("Thigh"), arm.edit_bones.new("Shin")]
+limb[0].head, limb[0].tail = (0.5, 0, 2.0), (0.5, -0.1, 1.0)
+limb[1].head, limb[1].tail = (0.5, -0.1, 1.0), (0.5, 0.0, 0.1)
+limb[1].parent, limb[1].use_connect = limb[0], True
+bpy.ops.m3d.rig_mode(mode='POSE')
+rig.data.bones.active = rig.data.bones["Shin"]
+s.ik_chain, s.ik_pole = 2, 0.6
+check(bpy.ops.m3d.rig_ik_pole() == {'FINISHED'}, "IK with Pole")
+con = rig.pose.bones["Shin"].constraints[-1]
+check(con.type == 'IK' and con.target == rig and con.subtarget == "IK_Shin" and con.pole_target == rig and con.pole_subtarget == "Pole_Shin"
+      and con.chain_count == 2, "IK constraint with target and pole bones")
+check("IK_Shin" in rig.data.bones and "Pole_Shin" in rig.data.bones and not rig.data.bones["IK_Shin"].use_deform
+      and rig.data.bones["IK_Shin"].parent is None, "target and pole bones: not deforming, no parent")
+tip = rig.data.bones["Shin"].tail_local
+check((rig.data.bones["IK_Shin"].head_local - tip).length < 1e-5, "the target bone sits at the tip")
+pole_head = rig.data.bones["Pole_Shin"].head_local
+check(pole_head.y < -0.1, "the pole is out in front of the knee (-Y here): %s" % pole_head)
+# Pull the target up: the knee bends toward the pole.
+tpb = rig.pose.bones["IK_Shin"]
+tpb.location = (0, 0, 0.5)   # bones point +Z in their own space... the matrix is applied below in armature space
+tpb.location = tpb.bone.matrix_local.to_3x3().inverted() @ Vector((0, 0, 0.5))
+bpy.context.view_layer.update()
+ev = rig.evaluated_get(bpy.context.evaluated_depsgraph_get())
+knee = ev.pose.bones["Shin"].head
+line_point = Vector((0.5, 0, 2.0)) + (ev.pose.bones["Shin"].tail - Vector((0.5, 0, 2.0))) * 0.5
+check(knee.y < line_point.y - 0.05, "the knee bends toward the pole when the target comes up (knee %s)" % knee)
+pole_pb = rig.pose.bones["Pole_Shin"]
+pole_pb.location = pole_pb.bone.matrix_local.to_3x3().inverted() @ Vector((0, 2.5, 0)) + pole_pb.location
+bpy.context.view_layer.update()
+ev = rig.evaluated_get(bpy.context.evaluated_depsgraph_get())
+check(ev.pose.bones["Shin"].head.y > line_point.y - 0.05, "moving the pole behind turns the bend")
+tpb.location = (0, 0, 0)
+pole_pb.location = (0, 0, 0)
+# Chain of one bone: IK without a pole.
+rig.data.bones.active = rig.data.bones["Joint.002"]
+s.ik_chain = 1
+bpy.ops.m3d.rig_ik_pole()
+con1 = rig.pose.bones["Joint.002"].constraints[-1]
+check(con1.type == 'IK' and con1.chain_count == 1 and con1.pole_target is None, "chain length 1: no pole")
+bpy.ops.m3d.rig_mode(mode='OBJECT')
+check(not bpy.ops.m3d.rig_ik_pole.poll(), "IK with Pole needs Pose Mode")
+
+# --- Driven Key
+bpy.ops.m3d.rig_mode(mode='POSE')
+drv_pb, driven_pb = rig.pose.bones["Joint"], rig.pose.bones["Joint.001"]
+drv_pb.rotation_mode = 'QUATERNION'
+s.dk_driver_object, s.dk_driver_bone, s.dk_driver_channel = rig, "Joint", 'ROT_X'
+s.dk_kind, s.dk_driven_object, s.dk_driven_bone, s.dk_driven_channel = 'BONE', rig, "Joint.001", 'LOC_Y'
+s.dk_interp = 'LINEAR'
+driver, driven = R.driver_channel(s), R.driven_channel(s)
+check(driver and driven and driver.path == 'pose.bones["Joint"].rotation_euler' and driver.index == 0
+      and driven.path == 'pose.bones["Joint.001"].location' and driven.index == 1, "channels: %s / %s" % (driver, driven))
+for x_angle, value in ((0.0, 0.0), (math.pi / 2, 1.0), (math.pi, 0.25)):
+    drv_pb.rotation_euler[0] = x_angle
+    s.dk_value = value
+    check(bpy.ops.m3d.rig_driven_key(action='KEY') == {'FINISHED'}, "key pair %.2f -> %.2f" % (x_angle, value))
+check(drv_pb.rotation_mode == 'XYZ', "a quaternion driver bone switches to Euler")
+fc = R.driven_curve(driven)
+keys = R.driven_keys(driven)
+check(fc is not None and fc.driver.type == 'AVERAGE' and len(fc.driver.variables) == 1 and not fc.modifiers, "one driver, one variable, no modifiers")
+var = fc.driver.variables[0]
+check(var.targets[0].id == rig and var.targets[0].data_path == 'pose.bones["Joint"].rotation_euler[0]', "variable reads the driver channel: %s" % var.targets[0].data_path)
+check([round(k[0], 4) for k in keys] == [0.0, round(math.pi / 2, 4), round(math.pi, 4)] and [round(k[1], 4) for k in keys] == [0.0, 1.0, 0.25], "the three pairs are the keys: %s" % keys)
+for x_angle, value in ((0.0, 0.0), (math.pi / 2, 1.0), (math.pi, 0.25)):
+    check(abs(fc.evaluate(x_angle) - value) < 1e-4, "curve at the key %.2f is %.2f (%.4f)" % (x_angle, value, fc.evaluate(x_angle)))
+check(abs(fc.evaluate(math.pi / 4) - 0.5) < 1e-4 and abs(fc.evaluate(3 * math.pi / 4) - 0.625) < 1e-4, "linear in between: %s %s" % (fc.evaluate(math.pi / 4), fc.evaluate(3 * math.pi / 4)))
+check(abs(fc.evaluate(-1.0)) < 1e-6 and abs(fc.evaluate(10.0) - 0.25) < 1e-6, "outside the keys the curve holds the end values")
+# The scene follows: pose the driver bone, the driven bone moves.
+drv_pb.rotation_euler[0] = math.pi / 4
+bpy.context.view_layer.update()
+check(abs(driven_pb.location[1] - 0.5) < 1e-3, "posing the driver moves the driven bone: %s" % driven_pb.location[1])
+drv_pb.rotation_euler[0] = math.pi / 2
+bpy.context.view_layer.update()
+check(abs(driven_pb.location[1] - 1.0) < 1e-3, "...to the keyed value")
+# Smooth keys: through the keys, no overshoot between them.
+s.dk_interp = 'BEZIER'
+s.dk_value = 1.0
+drv_pb.rotation_euler[0] = math.pi / 2
+bpy.ops.m3d.rig_driven_key(action='KEY')
+fc = R.driven_curve(driven)
+check(len(fc.keyframe_points) == 3 and all(kp.interpolation == 'BEZIER' for kp in fc.keyframe_points), "keying the same value again replaces the key; curve is smooth")
+samples = [fc.evaluate(math.pi / 2 * i / 10) for i in range(11)]
+check(abs(samples[0]) < 1e-4 and abs(samples[-1] - 1.0) < 1e-4 and all(b >= a - 1e-6 for a, b in zip(samples, samples[1:])) and max(samples) <= 1.0 + 1e-6,
+      "smooth curve between keys rises 0 -> 1 without overshoot: %s" % [round(v, 3) for v in samples])
+check(0.0 < fc.evaluate(math.pi / 4) < 1.0, "smooth curve interpolates")
+bpy.ops.m3d.rig_driven_key(action='REMOVE', index=2)
+check(len(R.driven_keys(driven)) == 2, "Remove Key")
+s.dk_value = 7.0
+bpy.ops.m3d.rig_driven_key(action='READ')
+check(abs(s.dk_value - driven_pb.location[1]) < 1e-5, "Read Driven Value")
+check(bpy.ops.m3d.rig_driven_key(action='CLEAR') == {'FINISHED'} and R.driven_curve(driven) is None, "Clear removes the driver")
+# A custom property drives, a channel cannot drive itself.
+rig.pose.bones["Joint.002"]["fk_ik"] = 0.0
+s.dk_driver_bone, s.dk_driver_channel, s.dk_driver_prop = "Joint.002", 'PROP', "fk_ik"
+s.dk_driven_bone, s.dk_driven_channel = "Joint.001", 'SCL_X'
+s.dk_value = 3.0
+rig.pose.bones["Joint.002"]["fk_ik"] = 1.0
+check(R.driver_channel(s).path == 'pose.bones["Joint.002"]["fk_ik"]' and bpy.ops.m3d.rig_driven_key(action='KEY') == {'FINISHED'}, "custom property as the driver")
+check(abs(R.driven_curve(R.driven_channel(s)).evaluate(1.0) - 3.0) < 1e-5, "custom property key maps 1.0 -> 3.0")
+bpy.ops.m3d.rig_driven_key(action='CLEAR')
+s.dk_driven_bone, s.dk_driven_channel = "Joint.002", 'PROP'
+s.dk_driven_prop = "fk_ik"
+check(bpy.ops.m3d.rig_driven_key(action='KEY') == {'CANCELLED'}, "a channel cannot drive itself")
+# Shape key driven by a bone rotation.
+bpy.ops.m3d.rig_mode(mode='OBJECT')
+body.shape_key_add(name="Basis")
+body.shape_key_add(name="Smile")
+s.dk_driver_bone, s.dk_driver_channel = "Joint", 'ROT_X'
+s.dk_kind, s.dk_driven_object, s.dk_driven_shape, s.dk_interp = 'SHAPE_KEY', body, "Smile", 'LINEAR'
+shape_driven = R.driven_channel(s)
+check(shape_driven is not None and shape_driven.path == 'key_blocks["Smile"].value', "shape key channel: %s" % (shape_driven,))
+drv_pb.rotation_euler[0] = 0.0
+s.dk_value = 0.0
+bpy.ops.m3d.rig_driven_key(action='KEY')
+drv_pb.rotation_euler[0] = math.pi / 2
+s.dk_value = 1.0
+bpy.ops.m3d.rig_driven_key(action='KEY')
+bpy.context.view_layer.update()
+drv_pb.rotation_euler[0] = math.pi / 4
+bpy.context.view_layer.update()
+check(abs(body.data.shape_keys.key_blocks["Smile"].value - 0.5) < 1e-3, "a bone rotation drives a shape key: %s" % body.data.shape_keys.key_blocks["Smile"].value)
+check(len(R.drivers_of(body)) == 1 and R.drivers_of(body)[0][1] == body.data.shape_keys, "Drivers panel lists the shape key driver")
+bpy.context.view_layer.objects.active = body
+check(bpy.ops.m3d.rig_driver_remove(owner=body.data.shape_keys.name, path='key_blocks["Smile"].value', index=0) == {'FINISHED'}
+      and not R.drivers_of(body), "driver removed from the list")
+drv_pb.rotation_euler[0] = 0.0
+# Use Active fills the pickers.
+bpy.context.view_layer.objects.active = rig
+rig.data.bones.active = rig.data.bones["Joint.002"]
+bpy.ops.m3d.rig_driven_key(action='USE_DRIVER')
+check(s.dk_driver_object == rig and s.dk_driver_bone == "Joint.002", "Use Active as Driver")
+
+# --- Weights: limit, normalize, clean, mirror numbers
+bpy.ops.m3d.rig_mode(mode='OBJECT')
+bpy.context.view_layer.objects.active = body
+body.select_set(True)
+mid_i = min(body.data.vertices, key=lambda v: abs(v.co.z - 1.0) + abs(v.co.x) * 0.1).index
+vg = {g.name: g for g in body.vertex_groups}
+vg["Joint"].add([mid_i], 0.6, 'REPLACE')
+vg["Joint.001"].add([mid_i], 0.3, 'REPLACE')
+vg["Joint.002"].add([mid_i], 0.05, 'REPLACE')
+bpy.ops.object.vertex_group_limit_total(group_select_mode='BONE_DEFORM', limit=2)
+w = {body.vertex_groups[g.group].name: g.weight for g in body.data.vertices[mid_i].groups if g.weight > 0}
+check(len(w) == 2 and "Joint.002" not in w, "Limit Total keeps the two strongest influences: %s" % w)
+bpy.ops.object.vertex_group_normalize_all(group_select_mode='BONE_DEFORM', lock_active=False)
+w = {body.vertex_groups[g.group].name: g.weight for g in body.data.vertices[mid_i].groups if g.weight > 0}
+check(abs(sum(w.values()) - 1.0) < 1e-4 and abs(w["Joint"] - 0.6 / 0.9) < 1e-3, "Normalize All: the weights add up to 1 in the ratio 2:1: %s" % w)
+vg["Joint.001"].add([mid_i], 0.004, 'REPLACE')
+vg["Joint"].add([mid_i], 0.996, 'REPLACE')
+bpy.ops.object.vertex_group_clean(group_select_mode='BONE_DEFORM', limit=0.01, keep_single=False)
+w = {body.vertex_groups[g.group].name: g.weight for g in body.data.vertices[mid_i].groups if g.weight > 0}
+check(list(w) == ["Joint"], "Clean removes weights below the threshold: %s" % w)
+# Mirror: a flat grid with L / R groups.
+grid_mesh = bpy.data.meshes.new("Grid")
+bm_ = bmesh.new()
+bmesh.ops.create_grid(bm_, x_segments=4, y_segments=4, size=1.0)
+bm_.to_mesh(grid_mesh)
+bm_.free()
+gobj = bpy.data.objects.new("GridObj", grid_mesh)
+bpy.context.collection.objects.link(gobj)
+gl, gr = gobj.vertex_groups.new(name="Hand.L"), gobj.vertex_groups.new(name="Hand.R")
+for v in grid_mesh.vertices:
+    if v.co.x > 0.01:
+        gl.add([v.index], min(1.0, v.co.x), 'REPLACE')
+bpy.context.view_layer.objects.active = gobj
+gobj.select_set(True)
+def at(x, y):
+    return next(v for v in grid_mesh.vertices if abs(v.co.x - x) < 1e-3 and abs(v.co.y - y) < 1e-3)
+
+
+def weight_of(v, name):
+    gi = gobj.vertex_groups[name].index
+    return next((g.weight for g in v.groups if g.group == gi), 0.0)
+
+
+check(bpy.ops.m3d.rig_mirror_weights(direction='POSITIVE_X') == {'FINISHED'} and gobj.mode == 'OBJECT', "Mirror Weights from Object Mode")
+check(all(abs(weight_of(at(-x, y), "Hand.R") - weight_of(at(x, y), "Hand.L")) < 1e-3 for x in (0.5, 1.0) for y in (-1.0, -0.5, 0.0, 0.5, 1.0)),
+      "Mirror Weights: the .R group on the -X side copies the .L group")
+check(abs(weight_of(at(-1.0, 0.0), "Hand.R") - 1.0) < 1e-3 and abs(weight_of(at(-0.5, 0.0), "Hand.R") - 0.5) < 1e-3,
+      "...with the same numbers: %s" % [round(weight_of(at(-x, 0.0), "Hand.R"), 3) for x in (0.5, 1.0)])
+check(abs(weight_of(at(1.0, 0.0), "Hand.L") - 1.0) < 1e-3 and weight_of(at(1.0, 0.0), "Hand.R") == 0.0,
+      "...and the side it copies from is unchanged")
+check(not any(v.select for v in grid_mesh.vertices), "the selection is restored")
+# And back: clear the left side, copy from the right.
+for v in grid_mesh.vertices:
+    if v.co.x > 0.01:
+        gl.remove([v.index])
+bpy.ops.m3d.rig_mirror_weights(direction='NEGATIVE_X')
+check(abs(weight_of(at(1.0, 0.0), "Hand.L") - 1.0) < 1e-3 and abs(weight_of(at(0.5, 0.0), "Hand.L") - 0.5) < 1e-3, "-X to +X copies back")
+for v in grid_mesh.vertices:
+    if v.co.x > 0.01:
+        gl.remove([v.index])
+bpy.ops.object.mode_set(mode='EDIT')
+bpy.ops.m3d.rig_mirror_weights(direction='NEGATIVE_X')
+bpy.ops.object.mode_set(mode='OBJECT')
+check(abs(weight_of(at(1.0, 0.0), "Hand.L") - 1.0) < 1e-3, "Mirror Weights from Edit Mode")
+for v in grid_mesh.vertices:
+    if v.co.x < -0.01:
+        gr.remove([v.index])
+bpy.ops.object.mode_set(mode='WEIGHT_PAINT')
+bpy.ops.m3d.rig_mirror_weights(direction='POSITIVE_X')
+bpy.ops.object.mode_set(mode='OBJECT')
+check(abs(weight_of(at(-1.0, 0.0), "Hand.R") - 1.0) < 1e-3 and abs(weight_of(at(1.0, 0.0), "Hand.L") - 1.0) < 1e-3 and not grid_mesh.use_paint_mask_vertex,
+      "Mirror Weights from Weight Paint Mode (vertex select is put back)")
+
+# --- Transfer weights: copy from the bound body to a copy without groups
+twin = body.copy()
+twin.data = body.data.copy()
+twin.name = "Twin"
+twin.vertex_groups.clear()
+twin.location.x = 0.0
+bpy.context.collection.objects.link(twin)
+bpy.context.view_layer.objects.active = twin
+s.transfer_source = body
+check(bpy.ops.m3d.rig_transfer_weights() == {'FINISHED'}, "Transfer Weights")
+check({g.name for g in twin.vertex_groups} == {g.name for g in body.vertex_groups}, "missing groups are created: %s" % [g.name for g in twin.vertex_groups])
+probe = min(twin.data.vertices, key=lambda v: abs(v.co.z - 0.4) + v.co.x)
+src_w = {body.vertex_groups[g.group].name: g.weight for g in body.data.vertices[probe.index].groups}
+dst_w = {twin.vertex_groups[g.group].name: g.weight for g in probe.groups}
+check(all(abs(src_w.get(k, 0.0) - dst_w.get(k, 0.0)) < 0.05 for k in {*src_w, *dst_w}) and dst_w, "weights are copied: %s vs %s" % (src_w, dst_w))
+s.transfer_source = None
+check(not bpy.ops.m3d.rig_transfer_weights.poll(), "Transfer needs a source")
+bpy.data.objects.remove(twin)
+bpy.data.objects.remove(gobj)
+
+# --- Solo / lock influences
+bpy.context.view_layer.objects.active = body
+check(bpy.ops.m3d.rig_solo(index=1) == {'FINISHED'} and body.vertex_groups[1].lock_weight is False
+      and body.vertex_groups[0].lock_weight and body.vertex_groups[2].lock_weight and body.vertex_groups.active_index == 1 and R.solo_state(body, 1), "Solo locks the others")
+bpy.ops.m3d.rig_solo(index=1)
+check(not any(g.lock_weight for g in body.vertex_groups), "Solo again unlocks all")
+
+# --- Weight table: the active vertex
+for v in body.data.vertices:
+    v.select = False
+check(R.active_vertex(body) is None, "no vertex selected: no table")
+body.data.vertices[mid_i].select = True
+vg["Joint.001"].add([mid_i], 0.4, 'REPLACE')
+found = R.active_vertex(body)
+check(found and found[0] == mid_i and {n for n, _ in found[1]} >= {"Joint", "Joint.001"}, "weight table of the selected vertex: %s" % (found,))
+check(bpy.ops.m3d.rig_vertex_weight(group="Joint.001", weight=0.75) == {'FINISHED'}
+      and abs(dict(R.active_vertex(body)[1])["Joint.001"] - 0.75) < 1e-5, "set a weight from the table")
+check(bpy.ops.m3d.rig_vertex_weight(group="Joint.001", remove=True) == {'FINISHED'} and "Joint.001" not in dict(R.active_vertex(body)[1]),
+      "remove a vertex from a group from the table")
+bpy.ops.object.mode_set(mode='EDIT')
+bm_ = bmesh.from_edit_mesh(body.data)
+check(R.active_vertex(body) is not None, "the table works in Edit Mode too")
+bpy.ops.m3d.rig_vertex_weight(group="Joint.002", weight=0.2)
+bm_ = bmesh.from_edit_mesh(body.data)
+layer = bm_.verts.layers.deform.active
+bm_.verts.ensure_lookup_table()
+check(abs(bm_.verts[mid_i][layer][body.vertex_groups["Joint.002"].index] - 0.2) < 1e-5, "Edit Mode table sets a weight")
+bpy.ops.object.mode_set(mode='OBJECT')
+
+# --- Test poses: pose assets, flipped copy
+bpy.ops.object.select_all(action='DESELECT')
+rig.select_set(True)
+bpy.context.view_layer.objects.active = rig
+bpy.ops.m3d.rig_mode(mode='EDIT')
+for name, x in (("Wing.L", 0.5), ("Wing.R", -0.5)):
+    eb = arm.edit_bones.new(name)
+    eb.head, eb.tail = (x, 0, 1.5), (x * 1.5, 0, 1.5)
+bpy.ops.m3d.rig_mode(mode='POSE')
+wl, wr = rig.pose.bones["Wing.L"], rig.pose.bones["Wing.R"]
+wl.rotation_mode = wr.rotation_mode = 'XYZ'
+for pb_ in rig.pose.bones:
+    pb_.select = pb_.name in {"Wing.L"}
+wl.rotation_euler = (0.1, 0.4, 0.5)
+wl.location = (0.2, 0.3, 0.4)
+s.pose_name = "Flap"
+check(bpy.ops.m3d.rig_pose_save() == {'FINISHED'}, "Save Pose")
+assets = R.pose_assets()
+check([a.name for a in assets] == ["Flap"], "the saved pose is listed: %s" % [a.name for a in assets])
+wl.rotation_euler = (0, 0, 0)
+wl.location = (0, 0, 0)
+check(bpy.ops.m3d.rig_pose_apply(name="Flap") == {'FINISHED'} and tuple(round(v, 4) for v in wl.rotation_euler) == (0.1, 0.4, 0.5)
+      and tuple(round(v, 4) for v in wl.location) == (0.2, 0.3, 0.4), "Apply Pose restores the pose")
+check(tuple(wr.rotation_euler) == (0, 0, 0), "...and leaves other bones alone")
+bpy.ops.m3d.rig_pose_apply(name="Flap", flipped=True)
+check(tuple(round(v, 4) for v in wr.rotation_euler) == (0.1, -0.4, -0.5) and tuple(round(v, 4) for v in wr.location) == (-0.2, 0.3, 0.4),
+      "Apply Pose flipped puts it on the other side mirrored: %s %s" % (tuple(wr.rotation_euler), tuple(wr.location)))
+wr.rotation_euler = (0, 0, 0)
+wr.location = (0, 0, 0)
+bpy.ops.m3d.rig_pose_apply(name="Flap", blend=0.5)
+check(abs(wl.rotation_euler[1] - 0.4) < 1e-4, "blend 1 from the pose itself is unchanged")
+wl.rotation_euler = (0, 0, 0)
+bpy.ops.m3d.rig_pose_apply(name="Flap", blend=0.5)
+check(abs(wl.rotation_euler[1] - 0.2) < 1e-4, "Apply Pose with blend 0.5 goes half way")
+# Copy / paste flipped.
+wl.rotation_euler = (0.3, 0.2, 0.1)
+wr.rotation_euler = (0, 0, 0)
+for pb_ in rig.pose.bones:
+    pb_.select = pb_.name == "Wing.L"
+bpy.ops.pose.copy()
+for pb_ in rig.pose.bones:
+    pb_.select = pb_.name == "Wing.R"
+bpy.ops.pose.paste(flipped=True)
+check(abs(wr.rotation_euler[0] - 0.3) < 1e-4 and abs(wr.rotation_euler[1] + 0.2) < 1e-4, "Paste Flipped mirrors the pose: %s" % (tuple(wr.rotation_euler),))
+bpy.ops.m3d.rig_reset_pose()
+bpy.ops.m3d.rig_mode(mode='OBJECT')
+
+# --- Bone collections and selection sets (Blender's own operators, used by the Collections tab)
+bpy.ops.m3d.rig_mode(mode='POSE')
+check(bpy.ops.armature.collection_add() == {'FINISHED'} and len(rig.data.collections_all) == 1, "Bone collection added")
+for pb_ in rig.pose.bones:
+    pb_.select = pb_.name in {"Joint", "Joint.001"}
+check(bpy.ops.armature.collection_assign() == {'FINISHED'} and len(rig.data.collections_all[0].bones) == 2, "...and assigned")
+check(bpy.ops.pose.selection_set_add_and_assign() == {'FINISHED'} and len(rig.selection_sets) == 1, "Selection set added")
+bpy.ops.m3d.rig_mode(mode='OBJECT')
+
+# --- Drivers editor toggle works on a screen (the real windows are covered in gui_test.py)
+check(R.drivers_open(None) is False and R.bottom_area(NS(areas=[NS(ui_type='TIMELINE', y=10), NS(ui_type='VIEW_3D', y=100)])).ui_type == 'TIMELINE',
+      "bottom editor is the lowest Timeline / Drivers area")
+check(R.drivers_open(NS(areas=[NS(ui_type='DRIVERS', y=0)])) and not R.drivers_open(NS(areas=[NS(ui_type='TIMELINE', y=0)])), "drivers_open")
+
+# --- Rigify: off until asked, enabled on first use, failures handled
+for mod in ("rigify",):
+    try:
+        addon_utils.disable(mod, default_set=True)
+    except Exception:
+        pass
+check(not R.rigify_enabled(), "Rigify is off at first")
+check(not any(e.get("idname") == "pose.rigify_generate" for e in sum((m[1] for m in m3d_ui.MENUS.values()), [])), "no menu depends on Rigify being on")
+real_enable = addon_utils.enable
+
+
+def broken_enable(*args, **kwargs):
+    raise RuntimeError("no luck")
+
+
+addon_utils.enable = broken_enable
+check(bpy.ops.m3d.rig_rigify(action='ENABLE') == {'CANCELLED'} and "no luck" in s.rigify_note, "a Rigify that fails to load is reported, not raised: %r" % s.rigify_note)
+addon_utils.enable = lambda *a, **k: None
+check(bpy.ops.m3d.rig_rigify(action='ENABLE') == {'CANCELLED'}, "an add-on that does not load cancels")
+addon_utils.enable = real_enable
+check(bpy.ops.m3d.rig_rigify(action='ENABLE') == {'FINISHED'} and R.rigify_enabled() and s.rigify_note == "", "Enable Rigify")
+check(op_ok("pose.rigify_generate", {}) and op_ok("object.armature_human_metarig_add", {}), "Rigify operators exist once enabled")
+before = len(bpy.data.objects)
+check(bpy.ops.m3d.rig_rigify(action='META') == {'FINISHED'} and len(bpy.data.objects) == before + 1 and bpy.context.active_object.type == 'ARMATURE',
+      "Human Meta-Rig adds a meta-rig")
+meta = bpy.context.active_object
+check(bpy.ops.m3d.rig_rigify(action='GENERATE') in ({'FINISHED'}, {'CANCELLED'}), "Generate Rig runs (or reports)")
+for ob_ in list(bpy.data.objects):
+    if ob_ != rig and ob_ != body:
+        bpy.data.objects.remove(ob_)
+addon_utils.disable("rigify", default_set=True)
+check(not R.rigify_enabled(), "Rigify can be turned off again")
+# The Rigify panel draws in both states.
+real_state = R.rigify_enabled
+for state in (False, True):
+    R.rigify_enabled = lambda state=state: state
+    log = []
+    R.PROPERTIES_PT_m3d_rg_rigify.draw(type("Inst", (), {"layout": Rec(log)})(), RCtx())
+    check_calls_ext("rigify panel", log)
+    labels = [r._kw.get("text") for r in log if r._kind == "operator"]
+    check(labels == (["Human Meta-Rig", "Generate Rig"] if state else ["Enable Rigify"]), "Rigify panel buttons (enabled=%s): %s" % (state, labels))
+R.rigify_enabled = real_state
+
+# Constraint stack draws for the constraints we added (target, pole, influence).
+bpy.ops.m3d.rig_mode(mode='POSE')
+rig.data.bones.active = rig.data.bones["Shin"]
+log = []
+R.draw_constraint(Rec(log), rig.pose.bones["Shin"], rig.pose.bones["Shin"].constraints[0])
+check_calls_ext("constraint row", log)
+check({r._args[1] for r in log if r._kind == "prop"} >= {"mute", "name", "target", "pole_target", "chain_count", "pole_angle", "influence"}, "constraint row shows target, pole and influence")
+bpy.ops.m3d.rig_mode(mode='OBJECT')
 
 print("FAILS:", fails or "none")
 sys.exit(1 if fails else 0)

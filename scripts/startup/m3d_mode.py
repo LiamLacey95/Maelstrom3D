@@ -796,7 +796,10 @@ def _button(layout, context, label, idname, icon, props, depress=False):
         return o
     o = layout.operator(idname, text=label, icon=icon, depress=depress)
     for k, v in props.items():
-        setattr(o, k, v)
+        try:
+            setattr(o, k, v)
+        except TypeError:
+            pass   # An enum with no items for this object (a modifier on an armature): the button is greyed anyway.
     return o
 
 
@@ -1056,8 +1059,9 @@ def m3d_startup_layout(*_args, screens=None):
                 side = side_of_area(area.x, area.width, width)
                 space.context = dock_tabs(kind_of.get(screen.name, 'MODEL'), side)[0].context
             elif area.type == 'OUTLINER':
-                space.use_filter_object_content = False
-                space.use_filter_collection = False  # Flat object list, like Maya's Outliner.
+                # Flat object list, like Maya's Outliner; Rigging keeps the object contents: the bone hierarchy.
+                space.use_filter_object_content = kind_of.get(screen.name) == 'RIG'
+                space.use_filter_collection = False
             elif area.type == 'CONSOLE':
                 space.language = 'mel'
     bpy.app.timers.register(_timeline_controls_below, first_interval=0.3)

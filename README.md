@@ -46,6 +46,10 @@ Maelstrom3D keeps its settings apart from Blender's (`%APPDATA%\Maelstrom3D`), s
   Height, Emission), a paint layer stack (Paint and Fill layers, masks, blend modes, Merge Down, Flatten), Bake (Normal, AO,
   Curvature, Position, Thickness), Export (glTF, Unreal ORM, Unity; layers are flattened), HDRI and channel view, painted
   images saved with the file, C / Shift+C channel keys.
+- **Rigging workflow (F5):** Outliner with the bone hierarchy, a large viewport and a dock of Skeleton, Controls & Constraints, Skin,
+  Drive, Test and Collections tabs that follows the mode; Joint tool, Orient Joint, control shapes with colors, IK with pole,
+  bind with envelope fall back, weight tools (flood, smooth, normalize, limit, clean, mirror, transfer, weight table), Driven Key,
+  naming check, pose library, Rigify on demand; Ctrl+E extrude bone, Shift+N naming menu.
 - **Scripting:** `m3d.cmds` (`polyCube`, `move`, `setAttr`, `select`, `ls`, ...) and MEL in the command line.
   Existing scripts that `import maya.cmds` run through a compatibility alias.
 
