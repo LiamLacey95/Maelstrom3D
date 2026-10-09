@@ -22,7 +22,7 @@ named here only to describe compatibility.*
 | Shelf | Shelf tabs (Curves/Surfaces, Poly Modeling, Sculpting, Rigging, Animation, Rendering, FX, UV, Custom) and large buttons in the top rows; every workspace has a Custom tab (right-click any button, Add to Shelf) | `m3d_ui.py`, `m3d_user.py` |
 | Workspace Settings | **Settings** button next to the workspace picker in the Status Line (top right, same in every workspace): Reset Workspace (back to its factory layout, asks first), show / hide each dock tab of the workspace (also in the dock's own tab menu), **Show Shelf** (the shelf tabs and shelf rows of the top bar, per workspace: on everywhere except Sculpt; when off the top bar is two rows and the viewport grows), Edit Custom Shelf, the workspace's entry mode, Keyboard Shortcuts (Preferences > Keymap), and **Save Layouts as Default** (saves every workspace's layout, and the open scene, as the startup file for new files; File > Defaults has Save Startup File and Load Factory Settings for all). Extra workspaces (Shading, Compositing...) show what applies | `m3d_workspace.py` (`M3D_PT_workspace_settings`), `m3d_ui.py` (`draw_workspace_picker`) |
 | Viewport | Panel menus (View, Shading, Lighting, Show, Renderer, Panels) and panel toolbar only (Blender's menus under "..."), viewport HUD (camera name, axis triad) | `m3d_ui.py`, `m3d_hud.py`, `bl_ui/space_view3d.py` |
-| Right-hand dock | Tabs on the right edge: Channel Box / Layer Editor, Modeling Toolkit, Tool Settings, then the Attribute Editor tabs (Object, Modifiers, Material, ...) | `space_buttons.cc`, `buttons_context.cc`, `DNA_space_enums.h`, `rna_space.cc`, `m3d_mode.py` |
+| Right-hand dock | Tabs on the right edge: Channel Box / Layer Editor, Modeling Toolkit, Tool Settings, then the Attribute Editor tabs (Object, Modifiers, Material, ...). **Primitive inputs:** a polygon primitive (shelf, Create menu, marking menus, `polyCube` ...) lists its size and subdivisions under INPUTS in the Channel Box ("Cube inputs": width / height / depth and the divisions along each, radius and axis / height / cap divisions, torus section radius ...); changing one rebuilds the mesh at once (one undo step). Editing the mesh (components, applied modifiers, sculpting, Freeze Transformations with a scale) **freezes** the inputs: they turn grey with the note "Mesh edited: inputs no longer apply". **Delete History** (button there, or Edit > Delete All History, which also applies modifiers) clears them. Duplicates keep their own inputs. A rebuild resets UVs, face materials to the first slot (slots are kept) and keeps Shade Smooth | `space_buttons.cc`, `buttons_context.cc`, `DNA_space_enums.h`, `rna_space.cc`, `m3d_mode.py`, `m3d_inputs.py` |
 | Editor names | Attribute Editor, Shader Editor, Script Editor, Command Line, Command History, Time Editor | `rna_space.cc`, `node_shader_tree.cc` |
 | Marking menus | RMB, Shift+RMB, Ctrl+RMB in the viewport; RMB, Shift+RMB in the UV Editor; Space hotbox | `m3d_mode.py`, `m3d_uv.py` |
 | UV editing | UV workspace (F3): dock tabs, Status Line and shelf for Cut/Sew/Unfold/Optimize/Layout, texel density, Auto Unwrap, UDIMs, checker map; sidebar UV Toolkit in other workspaces | `scripts/startup/m3d_uv.py` |
@@ -378,7 +378,14 @@ Windows > Command Line: Python switches to Python, where `cmds` is ready (`cmds.
 `import m3d.cmds as cmds`. Supported commands: polyCube/Sphere/Cylinder/Cone/Plane/Torus, polySmooth, spaceLocator,
 group, parent, duplicate, delete, select, ls, move, rotate, scale, xform, setAttr, getAttr, rename, objExists, hide,
 showHidden, makeIdentity, currentTime, playbackOptions, setKeyframe, file, undo, redo. Blender is Z-up, so a cube's
-"height" runs along Z.
+"height" runs along Z (a plane's along Y).
+
+Primitive inputs are flags and attributes: `polyCube -w 2 -h 1 -d 3 -sx 4 -sy 2 -sz 1` (subdivisions width / height /
+depth), `polySphere -r 2 -sa 24 -sh 12`, `polyCylinder -r 1 -h 3 -sa 16 -sh 4 -sc 2` (axis / height / caps; caps 0 =
+open, 1 = one n-gon), `polyCone` (same), `polyPlane -w 4 -h 2 -sx 8 -sy 4`, `polyTorus -r 2 -sr 0.5 -sa 32 -sh 16`
+(`-sx` / `-sy` / `-sz` work too). Afterwards `setAttr box.subdivisionsWidth 6;` and `getAttr box.width;` read and
+rebuild them (attributes: width, height, depth, radius, sectionRadius, subdivisionsWidth / Height / Depth / Axis / Caps)
+until the mesh is edited; `delete -ch` clears them. Subdivisions go from 1 to 200.
 
 ## Build
 

@@ -214,6 +214,182 @@ _console_mel.run("polySphere -r 2 -n ball; select -cl; select -add ball; move -r
 check(bpy.data.objects["ball"].location.z == 1 and cmds.ls(sl=True) == ["ball"], "MEL run")
 check(set(cmds.ls("b*")) >= {"box", "ball"}, "cmds.ls wildcard")
 
+# Live primitive inputs (Channel Box > INPUTS): exact counts, sizes, UVs, materials, freezing, duplicate, cmds.
+import m3d_inputs as I
+import numpy as np
+objects_before = set(bpy.data.objects)
+
+def new_prim(kind):
+    bpy.ops.object.select_all(action='DESELECT')
+    bpy.ops.m3d.add_primitive(kind=kind)
+    return bpy.context.active_object
+
+def counts(ob):
+    return len(ob.data.vertices), len(ob.data.polygons)
+
+def expect(kind, p):
+    a, h, c = p.sub_axis, p.sub_height, p.sub_caps
+    if kind == 'CUBE':
+        x, y, z = p.sub_width, p.sub_depth, p.sub_height
+        return (x + 1) * (y + 1) * (z + 1) - (x - 1) * (y - 1) * (z - 1), 2 * (x * y + y * z + x * z)
+    if kind == 'SPHERE':
+        return a * (h - 1) + 2, a * h
+    if kind == 'CYLINDER':
+        if c < 2:
+            return a * (h + 1), a * h + 2 * c
+        return a * (h + 1) + 2 * (1 + a * (c - 1)), a * h + 2 * a * c
+    if kind == 'CONE':
+        if c < 2:
+            return a * h + 1, a * h + c
+        return a * h + 2 + a * (c - 1), a * h + a * c
+    if kind == 'PLANE':
+        return (p.sub_width + 1) * (h + 1), p.sub_width * h
+    return a * h, a * h   # Torus
+
+def volume(ob):
+    me = ob.data
+    me.calc_loop_triangles()
+    return sum(me.vertices[t.vertices[0]].co.dot(me.vertices[t.vertices[1]].co.cross(me.vertices[t.vertices[2]].co)) / 6
+               for t in me.loop_triangles)
+
+STEPS = {"sub_axis": (3, 4, 9), "sub_caps": (0, 1, 2, 4)}
+for kind, (_label, props) in I.KINDS.items():
+    ob = new_prim(kind)
+    inp = ob.m3d_input
+    check(inp.kind == kind and not inp.frozen and counts(ob) == expect(kind, inp), f"{kind} default inputs build {counts(ob)}")
+    for name in (n for n in props if n.startswith("sub_")):
+        values = STEPS.get(name) or ((2, 3, 6) if kind == 'SPHERE' and name == "sub_height" else
+                                     (3, 4, 6) if kind == 'TORUS' and name == "sub_height" else (1, 2, 5))
+        for value in values:
+            setattr(inp, name, value)
+            check(counts(ob) == expect(kind, inp), f"{kind} {name}={value}: {counts(ob)} not {expect(kind, inp)}")
+            check(len(ob.data.uv_layers) == 1, f"{kind} {name}={value} keeps one UV layer")
+            if kind != 'PLANE' and not (kind in {'CYLINDER', 'CONE'} and inp.sub_caps == 0):
+                check(volume(ob) > 0, f"{kind} {name}={value} faces point outwards")
+        setattr(inp, name, I.DEFAULTS[kind][name])
+    uv = np.empty(2 * len(ob.data.loops), np.float32)
+    ob.data.uv_layers[0].uv.foreach_get("vector", uv)
+    check(uv.min() >= -1e-5 and uv.max() <= 1 + 1e-5 and np.ptp(uv[::2]) > 0.2 and np.ptp(uv[1::2]) > 0.2, f"{kind} UVs fill 0..1")
+SIZES = {
+    'CUBE': (dict(width=2, height=3, depth=4), (2, 4, 3)),
+    'SPHERE': (dict(radius=2, sub_axis=8, sub_height=8), (4, 4, 4)),
+    'CYLINDER': (dict(radius=2, height=5, sub_axis=8), (4, 4, 5)),
+    'CONE': (dict(radius=2, height=5, sub_axis=8), (4, 4, 5)),
+    'PLANE': (dict(width=3, height=2), (3, 2, 0)),
+    'TORUS': (dict(radius=2, section_radius=0.5, sub_axis=8, sub_height=8), (5, 5, 1)),
+}
+for kind, (values, size) in SIZES.items():
+    ob = new_prim(kind)
+    for name, value in values.items():
+        setattr(ob.m3d_input, name, value)
+    bpy.context.view_layer.update()
+    check(all(abs(a - b) < 1e-4 for a, b in zip(ob.dimensions, size)), f"{kind} size {tuple(ob.dimensions)} not {size}")
+ob = new_prim('SPHERE')
+ob.m3d_input.sub_axis = 10000
+check(ob.m3d_input.sub_axis == 200 and counts(ob) == (200 * 19 + 2, 200 * 20), "huge subdivision clamps to 200")
+
+# Material slots, transform, Shade Smooth survive a rebuild; face materials reset to the first slot.
+ob = new_prim('CUBE')
+me = ob.data
+me.materials.append(bpy.data.materials.new("inpA")); me.materials.append(bpy.data.materials.new("inpB"))
+me.polygons.foreach_set("material_index", [1] * len(me.polygons))
+ob.location, ob.rotation_euler, ob.scale = (1, 2, 3), (0.1, 0.2, 0.3), (2, 1, 0.5)
+loc, rot, scl = tuple(ob.location), tuple(ob.rotation_euler), tuple(ob.scale)
+me.polygons.foreach_set("use_smooth", [True] * len(me.polygons))
+ob.m3d_input.sub_width = 3
+check(len(me.materials) == 2 and ob.data is me and all(p.material_index == 0 for p in me.polygons), "rebuild keeps material slots, resets face materials, same mesh")
+check((tuple(ob.location), tuple(ob.rotation_euler), tuple(ob.scale)) == (loc, rot, scl), "rebuild keeps the transform")
+check(all(p.use_smooth for p in me.polygons), "rebuild keeps Shade Smooth")
+check(not ob.m3d_input.frozen and not I.is_frozen(ob), "a rebuild does not freeze")
+
+# Editing the mesh freezes the inputs: component edit, Edit Mode round trip (no change: not frozen), modifier.
+ob = new_prim('CUBE')
+ob.m3d_input.sub_width = 3
+bpy.ops.object.mode_set(mode='EDIT'); bpy.ops.object.mode_set(mode='OBJECT')
+check(not I.is_frozen(ob), "an Edit Mode round trip without changes is not an edit")
+n_before = counts(ob)
+ob.data.vertices[0].co.x += 0.1
+ob.data.update()
+check(I.is_frozen(ob) and not ob.m3d_input.frozen, "a moved vertex is detected (read only)")
+ob.m3d_input.sub_width = 5
+x_moved = ob.data.vertices[0].co.x
+check(ob.m3d_input.frozen and counts(ob) == n_before and ob.data.vertices[0].co.x == x_moved, "frozen: no rebuild")
+bpy.ops.m3d.delete_history()
+check(ob.m3d_input.kind == 'NONE' and not ob.m3d_input.frozen and counts(ob) == n_before, "Delete History clears the inputs, keeps the mesh")
+ob.m3d_input.sub_width = 7
+check(counts(ob) == n_before, "no inputs: nothing rebuilds")
+ob = new_prim('CUBE')
+bpy.ops.object.mode_set(mode='EDIT')
+bm = bmesh.from_edit_mesh(ob.data); bm.verts.ensure_lookup_table(); bm.verts[0].co.z += 0.2; bmesh.update_edit_mesh(ob.data)
+bpy.ops.object.mode_set(mode='OBJECT')
+check(I.is_frozen(ob), "an Edit Mode move freezes the inputs")
+ob = new_prim('CYLINDER')
+ob.modifiers.new("sub", 'SUBSURF')
+bpy.ops.object.modifier_apply(modifier="sub")
+check(I.is_frozen(ob), "applying a modifier freezes the inputs")
+ob = new_prim('SPHERE')
+ob.modifiers.new("sub", 'SUBSURF')
+bpy.ops.m3d.delete_history(modifiers=True)
+check(ob.m3d_input.kind == 'NONE' and not ob.modifiers and len(ob.data.vertices) > 382, "Delete All History: inputs cleared, modifiers applied")
+
+# Duplicate: the copy rebuilds its own mesh.
+a = new_prim('CUBE')
+a.m3d_input.sub_width = 2
+bpy.ops.m3d.duplicate()
+b = bpy.context.active_object
+check(b is not a and b.data is not a.data and b.m3d_input.kind == 'CUBE' and b.m3d_input.sub_width == 2 and not I.is_frozen(b), "duplicate keeps the inputs")
+b.m3d_input.sub_width = 4
+check(counts(b) == expect('CUBE', b.m3d_input) and counts(a) == expect('CUBE', a.m3d_input) and a.m3d_input.sub_width == 2, "the copy rebuilds its own mesh")
+a.m3d_input.sub_height = 3
+check(counts(b) == expect('CUBE', b.m3d_input) and counts(a) == expect('CUBE', a.m3d_input) and not (I.is_frozen(a) or I.is_frozen(b)), "...and the original its own")
+
+# cmds flags, setAttr / getAttr, MEL.
+def prim_ok(name, kind, **dims):
+    ob = bpy.data.objects[name]
+    p = ob.m3d_input
+    bpy.context.view_layer.update()
+    check(p.kind == kind and counts(ob) == expect(kind, p) and not I.is_frozen(ob), f"cmds {name} builds {counts(ob)} {expect(kind, p)}")
+    for attr, size in dims.items():
+        check(abs(getattr(ob.dimensions, attr) - size) < 1e-4, f"cmds {name} dimension {attr}={getattr(ob.dimensions, attr)} not {size}")
+    return ob
+cmds.polyCube(w=2, h=3, d=4, sx=2, sy=3, sz=4, n="icube")
+ob = prim_ok("icube", 'CUBE', x=2, y=4, z=3)
+check((ob.m3d_input.sub_width, ob.m3d_input.sub_height, ob.m3d_input.sub_depth) == (2, 3, 4), "polyCube sx / sy / sz = width / height / depth divisions")
+cmds.polySphere(r=2, sa=8, sh=4, n="isphere"); prim_ok("isphere", 'SPHERE', x=4)
+cmds.polyCylinder(r=1, h=3, sa=6, sh=2, sc=2, n="icyl"); prim_ok("icyl", 'CYLINDER', x=2, z=3)
+cmds.polyCone(r=1, h=3, sa=7, sh=3, sc=0, n="icone"); prim_ok("icone", 'CONE', z=3)
+cmds.polyPlane(w=3, h=2, sx=3, sy=2, n="iplane"); prim_ok("iplane", 'PLANE', x=3, y=2)
+cmds.polyTorus(r=2, sr=0.5, sa=10, sh=4, n="itorus"); prim_ok("itorus", 'TORUS', z=1)
+cmds.polyCube(width=1, subdivisionsWidth=3, name="ilong"); prim_ok("ilong", 'CUBE')
+cmds.polyPlane(n="iplane0"); check(counts(bpy.data.objects["iplane0"]) == (121, 100), "polyPlane keeps its 10 x 10 default")
+cmds.polyCylinder(n="icyl0"); check(counts(bpy.data.objects["icyl0"]) == (40, 22), "polyCylinder default as before")
+cmds.setAttr("icube.subdivisionsWidth", 5); cmds.setAttr("icube.height", 1); cmds.setAttr("icube.subdivisionsDepth", 1)
+ob = prim_ok("icube", 'CUBE', z=1)
+check(cmds.getAttr("icube.subdivisionsWidth") == 5 and cmds.getAttr("icube.height") == 1 and cmds.getAttr("icube.depth") == 4, "setAttr / getAttr on the inputs")
+cmds.setAttr("isphere.subdivisionsAxis", 12); cmds.setAttr("isphere.radius", 1.5)
+prim_ok("isphere", 'SPHERE', x=3)
+cmds.setAttr("itorus.sectionRadius", 0.25)
+check(abs(cmds.getAttr("itorus.sectionRadius") - 0.25) < 1e-6, "sectionRadius")
+cmds.setAttr("icyl.subdivisionsCaps", 1); prim_ok("icyl", 'CYLINDER')
+for bad in ("isphere.depth", "iplane.subdivisionsCaps"):
+    try:
+        cmds.getAttr(bad)
+        check(False, "getAttr " + bad + " should fail")
+    except ValueError:
+        pass
+_console_mel.run("polyCylinder -r 2 -h 4 -sa 12 -sc 0 -n mcyl; setAttr mcyl.subdivisionsHeight 3;")
+ob = prim_ok("mcyl", 'CYLINDER', x=4, z=4)
+check(ob.m3d_input.sub_height == 3 and counts(ob) == (48, 36), "MEL flags and setAttr")
+check(_console_mel.run("polyCube -w 2 -sx 3 -n mcube; getAttr mcube.subdivisionsWidth;") == 3, "MEL getAttr on an input")
+cmds.setAttr("icube.rotateZ", 30); prim_ok("icube", 'CUBE')   # Other attributes still work.
+bpy.data.objects["icube"].data.vertices[0].co.x += 0.1
+cmds.setAttr("icube.width", 4)
+check(bpy.data.objects["icube"].m3d_input.frozen and abs(bpy.data.objects["icube"].dimensions.x - 4) > 1e-3, "setAttr on an edited mesh does not rebuild")
+cmds.delete("icyl", ch=True)
+check(bpy.data.objects["icyl"].m3d_input.kind == 'NONE', "delete -ch clears the inputs")
+for ob in [o for o in bpy.data.objects if o not in objects_before]:
+    bpy.data.objects.remove(ob)
+
 # Tangents, hide / show last hidden.
 bpy.ops.object.select_all(action='DESELECT')
 ball = bpy.data.objects["ball"]
@@ -3059,6 +3235,27 @@ R._select_only(bpy.context, cube_)
 log = channel_box_log()
 check({r._args[0] for r in log if r._kind == "prop" and r._args[1] == "location"} == {cube_}, "Channel Box shows the object in Object Mode")
 check_calls("channel box object", log)
+
+# Channel Box INPUTS: "<Kind> inputs" with the kind's rows above the modifiers; frozen shows the note and Delete History.
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.m3d.add_primitive(kind='CYLINDER')
+prim_ = bpy.context.active_object
+prim_.modifiers.new("Bevel", 'BEVEL')
+log = channel_box_log()
+labels_ = [r._kw.get("text") for r in log if r._kind == "label"]
+check("INPUTS" in labels_ and "Cylinder inputs" in labels_ and labels_.index("INPUTS") < labels_.index("Cylinder inputs"), "Channel Box: INPUTS > Cylinder inputs: %s" % labels_)
+rows_ = [(r._args[1], r._kw.get("text")) for r in log if r._kind == "prop" and r._args[0] == prim_.m3d_input]
+check([n for n, _t in rows_] == list(I.KINDS['CYLINDER'][1]) and rows_[3] == ("sub_height", "Subdivisions Height"), "Channel Box: the cylinder's inputs: %s" % rows_)
+check(not any(t == "Mesh edited: inputs no longer apply" for t in labels_), "Channel Box: no frozen note on a live primitive")
+check_calls("channel box inputs", log)
+prim_.data.vertices[0].co.x += 0.1
+prim_.data.update()
+log = channel_box_log()
+check("Mesh edited: inputs no longer apply" in [r._kw.get("text") for r in log if r._kind == "label"]
+      and any(r._kind == "operator" and r._args[0] == "m3d.delete_history" for r in log), "Channel Box: frozen note and Delete History")
+check_calls("channel box frozen", log)
+bpy.data.objects.remove(prim_)
+R._select_only(bpy.context, cube_)
 
 # --- Tween math: keys at 1 (0) and 11 (10), 0.25 at frame 6 sets 2.5 and keys it
 scn.frame_set(6)

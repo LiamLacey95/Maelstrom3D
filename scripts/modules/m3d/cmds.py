@@ -10,7 +10,8 @@ A subset of Maya's `maya.cmds` for Maelstrom3D, so Maya habits and simple Maya s
     cmds.move(0, 0, 2, cube, relative=True)
     cmds.setAttr(cube + ".rotateZ", 45)
 
-Flags accept Maya's long and short names. Note: Blender is Z-up, so "height" runs along Z.
+Flags accept Maya's long and short names. Note: Blender is Z-up, so "height" runs along Z (a plane's along Y).
+Primitives keep their creation settings: `setAttr("box.subdivisionsWidth", 4)` rebuilds the mesh until it is edited.
 """
 
 import fnmatch
@@ -63,60 +64,69 @@ def _object_mode():
         bpy.ops.object.mode_set(mode='OBJECT')
 
 
-def _primitive(prefix, node, add, kw):
+# Flag names per input (Maya's long and short names, plus the attribute-style ones), per primitive.
+_AXIS = ("subdivisionsAxis", "subdivisionsX", "sa", "sx")
+_HEIGHT_DIVS = ("subdivisionsHeight", "subdivisionsY", "sh", "sy")
+_CAPS = ("subdivisionsCaps", "subdivisionsZ", "sc", "sz")
+_RADIUS, _HEIGHT = ("radius", "r"), ("height", "h")
+_FLAGS = {
+    'CUBE': {"width": ("width", "w"), "height": _HEIGHT, "depth": ("depth", "d"),
+             "sub_width": ("subdivisionsWidth", "subdivisionsX", "sx"), "sub_height": _HEIGHT_DIVS,
+             "sub_depth": ("subdivisionsDepth", "subdivisionsZ", "sz")},
+    'SPHERE': {"radius": _RADIUS, "sub_axis": _AXIS, "sub_height": _HEIGHT_DIVS},
+    'CYLINDER': {"radius": _RADIUS, "height": _HEIGHT, "sub_axis": _AXIS, "sub_height": _HEIGHT_DIVS, "sub_caps": _CAPS},
+    'CONE': {"radius": _RADIUS, "height": _HEIGHT, "sub_axis": _AXIS, "sub_height": _HEIGHT_DIVS, "sub_caps": _CAPS},
+    'PLANE': {"width": ("width", "w"), "height": _HEIGHT, "sub_width": ("subdivisionsWidth", "subdivisionsX", "sx"),
+              "sub_height": _HEIGHT_DIVS},
+    'TORUS': {"radius": _RADIUS, "section_radius": ("sectionRadius", "sr"), "sub_axis": _AXIS,
+              "sub_height": _HEIGHT_DIVS},
+}
+
+
+def _primitive(prefix, node, kind, kw, **defaults):
+    """A polygon primitive with live inputs (see m3d_inputs); `defaults` are the command's own starting values."""
+    import m3d_inputs
     _object_mode()
     bpy.ops.object.select_all(action='DESELECT')
-    add()
+    bpy.ops.m3d.add_primitive(kind=kind)
     ob = bpy.context.active_object
+    values = dict(defaults)
+    for prop, names in _FLAGS[kind].items():
+        for name in names:
+            if name in kw:
+                values[prop] = kw[name]
+    m3d_inputs.set_inputs(ob, **values)
+    bpy.context.view_layer.update()   # So dimensions read right away.
     ob.name = _flag(kw, "name", "n") or _unique(prefix)
     ob.data.name = ob.name + "Shape"
     return [ob.name, _unique(node)]
 
 
 # -----------------------------------------------------------------------------
-# Creation
+# Creation: the inputs stay on the object, so setAttr box.subdivisionsWidth 4 rebuilds it.
 
 def polyCube(**kw):
-    def add():
-        bpy.ops.mesh.primitive_cube_add(size=1)
-        bpy.context.active_object.scale = (_flag(kw, "width", "w", 1), _flag(kw, "depth", "d", 1),
-                                           _flag(kw, "height", "h", 1))
-        bpy.ops.object.transform_apply(scale=True)
-    return _primitive("pCube", "polyCube", add, kw)
+    return _primitive("pCube", "polyCube", 'CUBE', kw)
 
 
 def polySphere(**kw):
-    return _primitive("pSphere", "polySphere", lambda: bpy.ops.mesh.primitive_uv_sphere_add(
-        radius=_flag(kw, "radius", "r", 1), segments=_flag(kw, "subdivisionsX", "sx", 20),
-        ring_count=_flag(kw, "subdivisionsY", "sy", 20)), kw)
+    return _primitive("pSphere", "polySphere", 'SPHERE', kw)
 
 
 def polyCylinder(**kw):
-    return _primitive("pCylinder", "polyCylinder", lambda: bpy.ops.mesh.primitive_cylinder_add(
-        radius=_flag(kw, "radius", "r", 1), depth=_flag(kw, "height", "h", 2),
-        vertices=_flag(kw, "subdivisionsX", "sx", 20)), kw)
+    return _primitive("pCylinder", "polyCylinder", 'CYLINDER', kw)
 
 
 def polyCone(**kw):
-    return _primitive("pCone", "polyCone", lambda: bpy.ops.mesh.primitive_cone_add(
-        radius1=_flag(kw, "radius", "r", 1), depth=_flag(kw, "height", "h", 2),
-        vertices=_flag(kw, "subdivisionsX", "sx", 20)), kw)
+    return _primitive("pCone", "polyCone", 'CONE', kw)
 
 
 def polyPlane(**kw):
-    def add():
-        bpy.ops.mesh.primitive_grid_add(x_subdivisions=_flag(kw, "subdivisionsX", "sx", 10),
-                                        y_subdivisions=_flag(kw, "subdivisionsY", "sy", 10), size=1)
-        bpy.context.active_object.scale = (_flag(kw, "width", "w", 1), _flag(kw, "height", "h", 1), 1)
-        bpy.ops.object.transform_apply(scale=True)
-    return _primitive("pPlane", "polyPlane", add, kw)
+    return _primitive("pPlane", "polyPlane", 'PLANE', kw, sub_width=10, sub_height=10)
 
 
 def polyTorus(**kw):
-    return _primitive("pTorus", "polyTorus", lambda: bpy.ops.mesh.primitive_torus_add(
-        major_radius=_flag(kw, "radius", "r", 1), minor_radius=_flag(kw, "sectionRadius", "sr", 0.5),
-        major_segments=_flag(kw, "subdivisionsX", "sx", 20), minor_segments=_flag(kw, "subdivisionsY", "sy", 20)),
-        kw)
+    return _primitive("pTorus", "polyTorus", 'TORUS', kw, sub_axis=20, sub_height=20)
 
 
 def spaceLocator(**kw):
@@ -179,10 +189,12 @@ def duplicate(*args, **kw):
 def delete(*args, **kw):
     obs = _targets(args)
     if _flag(kw, "constructionHistory", "ch", False):
+        import m3d_inputs
         for ob in obs:
             with bpy.context.temp_override(active_object=ob, selected_objects=[ob],
                                            selected_editable_objects=[ob]):
                 bpy.ops.object.convert(target='MESH')
+            m3d_inputs.clear(ob)
         return
     for ob in obs:
         bpy.data.objects.remove(ob)
@@ -281,8 +293,25 @@ def _split(plug):
     return _get(name), attr
 
 
+def _input(ob, attr):
+    """The primitive input behind "<object>.<attr>" (Maya attribute names), or None for another attribute."""
+    import m3d_inputs
+    prop = m3d_inputs.ATTRS.get(attr)
+    if prop is None:
+        return None
+    if prop not in m3d_inputs.KINDS.get(ob.m3d_input.kind, ("", ()))[1]:
+        raise ValueError("%s has no attribute %s (no history, or not a primitive that has it)" % (ob.name, attr))
+    return prop
+
+
 def setAttr(plug, *values, **_kw):
     ob, attr = _split(plug)
+    prop = _input(ob, attr)
+    if prop:
+        import m3d_inputs
+        m3d_inputs.set_inputs(ob, **{prop: values[0]})
+        bpy.context.view_layer.update()
+        return
     if attr in {"visibility", "v"}:
         ob.hide_viewport = not values[0]
         return
@@ -296,6 +325,9 @@ def setAttr(plug, *values, **_kw):
 
 def getAttr(plug, **_kw):
     ob, attr = _split(plug)
+    prop = _input(ob, attr)
+    if prop:
+        return getattr(ob.m3d_input, prop)
     if attr in {"visibility", "v"}:
         return not ob.hide_viewport
     prop, index = _ATTRS[attr]

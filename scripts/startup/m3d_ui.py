@@ -198,7 +198,7 @@ MENUS = {
         op("Paste", "view3d.pastebuffer", modes=OBJECT),
         SEP,
         op("Delete", "object.delete", 'X', modes=OBJECT),
-        op("Delete All History", "object.convert", modes=OBJECT, target='MESH'),
+        op("Delete All History", "m3d.delete_history", modes=OBJECT, modifiers=True),
         op("Duplicate", "m3d.duplicate", 'DUPLICATE', modes=OBJECT),
         op("Duplicate with Transform", "m3d.duplicate", modes=OBJECT, with_transform=True),
         op("Duplicate Special (Instance)", "object.duplicate_move_linked", modes=OBJECT),

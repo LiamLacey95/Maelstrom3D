@@ -11,6 +11,7 @@ import bpy
 from bpy.types import Menu, Operator, Panel
 from mathutils import Vector
 
+import m3d_inputs
 from m3d_workspace import _PagePanel
 
 SMOOTH_MOD = "SmoothPreview"
@@ -74,7 +75,7 @@ class M3D_OT_group(Operator):
 
 
 class M3D_OT_add_primitive(Operator):
-    """Create a standard-size polygon primitive at the origin"""
+    """Create a standard-size polygon primitive at the origin, with live inputs (Channel Box > INPUTS)"""
     bl_idname = "m3d.add_primitive"
     bl_label = "Polygon Primitive"
     bl_options = {'REGISTER', 'UNDO'}
@@ -96,6 +97,7 @@ class M3D_OT_add_primitive(Operator):
             'PLANE': lambda: mesh.primitive_plane_add(size=1, location=(0, 0, 0)),
             'TORUS': lambda: mesh.primitive_torus_add(major_radius=1, minor_radius=0.5, location=(0, 0, 0)),
         }[self.kind]()
+        m3d_inputs.attach(context.active_object, self.kind)
         return {'FINISHED'}
 
     @classmethod
@@ -815,8 +817,9 @@ class PROPERTIES_PT_m3d_channel_box(_DockPanel, Panel):
         if owner is ob and ob.data is not None:
             layout.label(text="SHAPES")
             layout.prop(ob.data, "name", text="")
-        if owner is ob and ob.modifiers:
+        if owner is ob and (ob.modifiers or ob.m3d_input.kind != 'NONE'):
             layout.label(text="INPUTS")
+            m3d_inputs.draw(layout, ob)
             col = layout.column(align=True)
             for mod in ob.modifiers:
                 row = col.row(align=True)

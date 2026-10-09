@@ -597,6 +597,88 @@ def dock_tabs_back():
         bpy.ops.object.mode_set(mode='OBJECT')
 
 
+# --- Primitive inputs: shelf cube, change Subdivisions Width, undo, edit a face (inputs freeze).
+@step
+def inputs_shelf_cube():
+    check(any(it and not callable(it) and it[0] == "m3d.add_primitive" and it[2].get("kind") == 'CUBE'
+              for _label, items, _kinds in m3d_ui.SHELVES.values() for it in items), "a shelf button makes the cube")
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        for ob in list(bpy.data.objects):
+            bpy.data.objects.remove(ob)
+        bpy.ops.m3d.add_primitive('INVOKE_DEFAULT', kind='CUBE')   # What the shelf button runs.
+        bpy.ops.ed.undo_push(message="Polygon Cube")
+    ob = bpy.context.active_object
+    check(ob.m3d_input.kind == 'CUBE' and len(ob.data.vertices) == 8, "shelf cube has Cube inputs")
+    next(a for a in window().screen.areas if a.type == 'PROPERTIES').spaces.active.context = 'CHANNEL_BOX'
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def inputs_edit_width():
+    check(not tracebacks(), "Python error drawing the Cube inputs in the Channel Box")
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        # The property edit of the Channel Box field (data path set, then one undo step as a button edit does).
+        bpy.ops.wm.context_set_int(data_path="active_object.m3d_input.sub_width", value=4)
+        bpy.ops.ed.undo_push(message="Subdivisions Width")
+    ob = bpy.context.active_object
+    check(ob.m3d_input.sub_width == 4 and len(ob.data.vertices) == 20 and len(ob.data.polygons) == 18,
+          "Subdivisions Width 4 rebuilt the cube: %d verts" % len(ob.data.vertices))
+
+
+@step
+def inputs_undo():
+    bpy.ops.ed.undo()
+
+
+@step
+def inputs_undone():
+    ob = bpy.context.active_object
+    check(ob.m3d_input.sub_width == 1 and len(ob.data.vertices) == 8 and not ob.m3d_input.frozen,
+          "undo restored the input and the mesh (%d, %d verts)" % (ob.m3d_input.sub_width, len(ob.data.vertices)))
+    bpy.ops.ed.redo()
+
+
+@step
+def inputs_redone():
+    ob = bpy.context.active_object
+    check(ob.m3d_input.sub_width == 4 and len(ob.data.vertices) == 20, "redo brought the rebuilt mesh back")
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.object.mode_set_with_submode(mode='EDIT', mesh_select_mode={'FACE'})
+        bpy.ops.mesh.select_all(action='DESELECT')
+        bm = bmesh.from_edit_mesh(ob.data)
+        bm.faces.ensure_lookup_table()
+        bm.faces[0].select_set(True)
+        bmesh.update_edit_mesh(ob.data)
+        bpy.ops.transform.translate(value=(0, 0, 0.3))
+        bpy.ops.object.mode_set(mode='OBJECT')
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def inputs_frozen():
+    import m3d_inputs
+    ob = bpy.context.active_object
+    check(m3d_inputs.is_frozen(ob), "editing a face freezes the inputs")
+    ob.m3d_input.sub_width = 6
+    check(ob.m3d_input.frozen and len(ob.data.vertices) == 20, "a frozen cube does not rebuild")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def inputs_frozen_drawn():
+    check(not tracebacks(), "Python error drawing frozen inputs in the Channel Box")
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.m3d.delete_history()
+    check(bpy.context.active_object.m3d_input.kind == 'NONE', "Delete History from the Channel Box")
+
+
 @step
 def startup_panels():
     viewport_sidebars = [a.spaces.active.show_region_ui for a in workspace_screen('MODEL').areas

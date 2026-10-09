@@ -10,7 +10,7 @@ mesh, `+unwrap` runs Auto Unwrap (Edit Mode, UV workspace), `+checker` toggles t
 the UV Editor's distortion, `+paint` (Texture workspace: a material, four painted channels), `+bake` (bakes Normal and
 AO at 128 px), `+layers` (like `+paint`, then a paint layer with a mask and a fill layer), `+fillsel` (select the fill layer), `+rig` (Rigging workspace: a cylinder bound to a spine and two legs, control shapes on the
 legs, a Driven Key, a saved pose), `+rigedit` / `+rigpose` / `+rigweight` / `+rigobject` (the mode buttons), `+anim` (the rig keyed over 48 frames with a camera;
-then F6 shows it in Pose Mode), `+toolkit` / `+chanbox` (the Animation dock on its pages / the Channel Box), `+graph` / `+dope` (the
+then F6 shows it in Pose Mode), `+toolkit` / `+chanbox` (the Animation dock on its pages / the Channel Box), `+inputs` (a cube with its INPUTS in the Channel Box), `+graph` / `+dope` (the
 bottom editor), `+paths` (motion path of the active bone), `+animlayers` (push down + additive layer), `+animobject` (Object Mode), `+render` (Rendering workspace: a lit scene with a
 camera, three lights, an HDRI and a 480 x 270 render), `+ipr` (the viewport renders: IPR), `+renderblank` (nothing selected).
 """
@@ -194,6 +194,13 @@ def anim_dock(context_name):
     return run
 
 
+def inputs():
+    bpy.ops.m3d.add_primitive(kind='CUBE')
+    inp = bpy.context.active_object.m3d_input
+    inp.width, inp.sub_width, inp.sub_height = 2, 3, 2
+    anim_dock('CHANNEL_BOX')()
+
+
 def anim_paths():
     bpy.ops.m3d.anim_paths(action='CALCULATE')
 
@@ -304,6 +311,7 @@ SETUP = {
     "+anim": anim,
     "+toolkit": anim_dock('MODELING_TOOLKIT'),
     "+chanbox": anim_dock('CHANNEL_BOX'),
+    "+inputs": inputs,
     "+graph": anim_editor('GRAPH'),
     "+dope": anim_editor('DOPESHEET'),
     "+paths": anim_paths,
