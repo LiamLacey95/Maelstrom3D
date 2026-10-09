@@ -152,11 +152,11 @@ def _follow_workspace():
 # Dock tabs and pages
 
 # A dock tab shows a native Properties context, or a page: panels with bl_context "modeling_toolkit" whose
-# page id is the active one for that workspace and side.
-Tab = namedtuple("Tab", "id label context page")
-_CHANNEL_BOX = Tab("channel_box", "Channel Box / Layer Editor", 'CHANNEL_BOX', None)
-_TOOLKIT = Tab("modeling_toolkit", "Modeling Toolkit", 'MODELING_TOOLKIT', "modeling_toolkit")
-_TOOL = Tab("tool", "Tool Settings", 'TOOL', None)
+# page id is the active one for that workspace and side. `short_label` is drawn when the dock is too narrow for the labels.
+Tab = namedtuple("Tab", "id label context page short_label", defaults=("",))
+_CHANNEL_BOX = Tab("channel_box", "Channel Box / Layer Editor", 'CHANNEL_BOX', None, "Channel Box")
+_TOOLKIT = Tab("modeling_toolkit", "Modeling Toolkit", 'MODELING_TOOLKIT', "modeling_toolkit", "Toolkit")
+_TOOL = Tab("tool", "Tool Settings", 'TOOL', None, "Tool")
 
 # kind -> side -> tabs (an empty side uses the right-hand tabs). Phases 1-6 replace the entries of their kind.
 DOCK_TABS = {kind: {'RIGHT': (_CHANNEL_BOX, _TOOLKIT, _TOOL), 'LEFT': ()} for kind in KINDS}
@@ -182,28 +182,28 @@ DOCK_TABS['TEXTURE'] = {
 }
 # Rigging: task tabs on the right, bone collections under the Outliner on the left (pages: m3d_rig.py).
 DOCK_TABS['RIG'] = {
-    'RIGHT': tuple(Tab("rig_" + page, label, 'MODELING_TOOLKIT', "rig_" + page) for page, label in (
-        ("skeleton", "Skeleton"), ("controls", "Controls & Constraints"), ("skin", "Skin"), ("drive", "Drive"),
+    'RIGHT': tuple(Tab("rig_" + page, label, 'MODELING_TOOLKIT', "rig_" + page, *short) for page, label, *short in (
+        ("skeleton", "Skeleton"), ("controls", "Controls & Constraints", "Controls"), ("skin", "Skin"), ("drive", "Drive"),
         ("test", "Test"), ("collections", "Collections"))),
     'LEFT': (Tab("rig_bones", "Bones", 'MODELING_TOOLKIT', "rig_bones"),),
 }
 # Animation: Channel Box first, then the task tabs (pages: m3d_anim.py).
 DOCK_TABS['ANIM'] = {
     'RIGHT': (Tab("channel_box", "Channel Box", 'CHANNEL_BOX', None),
-              *(Tab("anim_" + page, label, 'MODELING_TOOLKIT', "anim_" + page) for page, label in (
-                  ("pick", "Pick"), ("tween", "Tween & Poses"), ("motion", "Motion"), ("layers", "Layers"),
+              *(Tab("anim_" + page, label, 'MODELING_TOOLKIT', "anim_" + page, *short) for page, label, *short in (
+                  ("pick", "Pick"), ("tween", "Tween & Poses", "Tween"), ("motion", "Motion"), ("layers", "Layers"),
                   ("playback", "Playback")))),
     'LEFT': (),
 }
 # Rendering: task tabs on the right (pages: m3d_render.py).
 DOCK_TABS['RENDER'] = {
-    'RIGHT': tuple(Tab("render_" + page, label, 'MODELING_TOOLKIT', "render_" + page) for page, label in (
+    'RIGHT': tuple(Tab("render_" + page, label, 'MODELING_TOOLKIT', "render_" + page, *short) for page, label, *short in (
         ("camera", "Camera"), ("lighting", "Lighting"), ("materials", "Materials"), ("render", "Render"),
-        ("output", "Output"), ("passes", "Passes & Layers"), ("advanced", "Advanced"))),
+        ("output", "Output"), ("passes", "Passes & Layers", "Passes"), ("advanced", "Advanced"))),
     'LEFT': (),
 }
 # The last tab of every row: the stock Properties tabs.
-ALL_SETTINGS = {'MODEL': "Attribute Editor"}
+ALL_SETTINGS = {'MODEL': ("Attribute Editor", "Attributes")}
 DOCK_CONTEXTS = {'CHANNEL_BOX', 'MODELING_TOOLKIT', 'TOOL'}
 
 
@@ -249,23 +249,77 @@ class _PagePanel:
         return True
 
 
-def draw_dock_tabs(layout, context):
-    """Dock header: the tabs of this workspace's kind (hidden ones left out), All Settings, tab menu.
-    False when the dock shows one of the stock tabs instead."""
+def all_tab(kind):
+    """The stock Properties tabs, as the last tab of the row."""
+    label, short = ALL_SETTINGS.get(kind, ("All Settings", "Settings"))
+    return Tab('OBJECT', label, 'OBJECT', None, short)
+
+
+# Header pixels at UI scale 1: around a tab's label, the "more" button, the buttons beside the tabs (editor type, tab menu).
+TAB_PAD, MORE_WIDTH, HEADER_RESERVED = 30, 24, 76
+
+
+def text_width(text, scale):
+    """Width in pixels of a tab button showing `text`."""
+    import blf
+    blf.size(0, 11 * scale)
+    return blf.dimensions(0, text)[0] + TAB_PAD * scale
+
+
+def fit_tabs(tabs, active, avail, width, more):
+    """Split `tabs` for a header `avail` pixels wide: ([(tab, label drawn)], [tabs for the overflow menu]).
+    `width(label)` is a button's width, `more` the overflow button's. The short labels are used when the full ones
+    don't fit. The active tab (an id) is always drawn: when it would be in the overflow it takes the last place."""
+    for compact in (False, True):
+        labels = [(t.short_label or t.label) if compact else t.label for t in tabs]
+        w = [width(label) for label in labels]
+        if sum(w) <= avail:
+            return list(zip(tabs, labels)), []
+    room = avail - more
+    shown = []
+    while len(shown) < len(w) and sum(w[:len(shown) + 1]) <= room:
+        shown.append(len(shown))
+    i = next((i for i, t in enumerate(tabs) if t.id == active), None)
+    if i is not None and i not in shown:
+        shown[-1:] = []
+        while shown and sum(w[j] for j in shown) + w[i] > room:
+            shown.pop()
+        shown.append(i)
+    return [(tabs[j], labels[j]) for j in shown], [t for j, t in enumerate(tabs) if j not in shown]
+
+
+def split_dock_tabs(context):
+    """(drawn tabs, overflow tabs, active tab id) of this dock's header: its width decides how many tabs fit."""
     from m3d_user import hidden_tabs
+    kind, side = current_kind(context), side_of(context)
+    space, hidden, page = context.area.spaces.active, hidden_tabs(kind), active_page(context)
+    tabs = [t for t in dock_tabs(kind, side) if t.id not in hidden] + [all_tab(kind)]
+    active = next((t.id for t in tabs if space.context == t.context and t.page in {None, page}), None)
+    scale = context.preferences.system.ui_scale
+    header = next(r for r in context.area.regions if r.type == 'HEADER')
+    shown, more = fit_tabs(tabs, active, header.width - HEADER_RESERVED * scale,
+                           lambda label: text_width(label, scale), MORE_WIDTH * scale)
+    return shown, more, active
+
+
+def tab_button(layout, tab, label, **props):
+    op = layout.operator("m3d.dock_tab" if tab.id == 'OBJECT' else "m3d.dock_page", text=label, **props)
+    op.tab = tab.id   # m3d.dock_tab: 'OBJECT' shows the Scene settings when nothing is active (no Object tab then)
+
+
+def draw_dock_tabs(layout, context):
+    """Dock header: the tabs of this workspace's kind (hidden ones left out) and All Settings, as many as fit
+    (the rest are in the "more" menu), then the tab menu. False when the dock shows one of the stock tabs instead."""
     space = context.space_data
     kind, side = current_kind(context), side_of(context)
-    tabs = dock_tabs(kind, side)
-    if space.context not in {t.context for t in tabs} | DOCK_CONTEXTS:
+    if space.context not in {t.context for t in dock_tabs(kind, side)} | DOCK_CONTEXTS:
         return False
-    hidden, page = hidden_tabs(kind), active_page(context)
+    shown, more, active = split_dock_tabs(context)
     row = layout.row(align=True)
-    for tab in tabs:
-        if tab.id not in hidden:
-            on = space.context == tab.context and tab.page in {None, page}
-            row.operator("m3d.dock_page", text=tab.label, depress=on).tab = tab.id
-    o = row.operator("m3d.dock_tab", text=ALL_SETTINGS.get(kind, "All Settings"))
-    o.tab = 'OBJECT'   # m3d.dock_tab: the Scene settings when nothing is active (no Object tab then)
+    for tab, label in shown:
+        tab_button(row, tab, label, depress=tab.id == active)
+    if more:
+        row.menu("M3D_MT_dock_more", text="»")
     row.menu("M3D_MT_dock_tabs", text="", icon='DOWNARROW_HLT')
     return True
 
@@ -311,6 +365,15 @@ class M3D_OT_dock_tab_toggle(Operator):
         for area in context.screen.areas:
             area.tag_redraw()
         return {'FINISHED'}
+
+
+class M3D_MT_dock_more(Menu):
+    """The dock tabs that don't fit in the header"""
+    bl_label = "More Tabs"
+
+    def draw(self, context):
+        for tab in split_dock_tabs(context)[1]:
+            tab_button(self.layout, tab, tab.label)
 
 
 class M3D_MT_dock_tabs(Menu):
@@ -393,6 +456,7 @@ classes = (
     M3D_OT_workspace,
     M3D_OT_dock_page,
     M3D_OT_dock_tab_toggle,
+    M3D_MT_dock_more,
     M3D_MT_dock_tabs,
     M3D_OT_workspace_reset,
 )

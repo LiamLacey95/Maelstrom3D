@@ -851,6 +851,124 @@ def left_tray_check():
     left.ui_type = 'OUTLINER'
 
 
+# Dock tab overflow: a narrow dock draws the tabs that fit, the "more" menu has the rest, and a tab picked there
+# is shown at once (the active tab is always drawn).
+
+def _dock_of(side):
+    areas = sorted(props_areas(), key=lambda a: a.x)
+    return areas[0] if side == 'LEFT' else areas[-1]
+
+
+def _dock_header(area):
+    return next(r for r in area.regions if r.type == 'HEADER')
+
+
+def _dock_split(side):
+    area = _dock_of(side)
+    with bpy.context.temp_override(window=window(), area=area, region=_dock_header(area)):
+        return m3d_workspace.split_dock_tabs(bpy.context)
+
+
+def _resize_steps(name, side, width):
+    """Steps: drag the dock's inner edge until the dock is `width()` px wide."""
+    edge = {}
+
+    def aim():
+        area, want = _dock_of(side), width()
+        mid = area.y + area.height // 2
+        # Moving an edge needs the mouse on it (no active region): put it there with a simulated event.
+        edge["xy"], edge["delta"] = ((area.x + area.width, mid), want - area.width) if side == 'LEFT'             else ((area.x - 1, mid), area.width - want)
+        event('MOUSEMOVE', xy=edge["xy"])
+
+    def move():
+        with bpy.context.temp_override(window=window(), screen=window().screen):
+            bpy.ops.screen.area_move(x=edge["xy"][0], y=edge["xy"][1], delta=edge["delta"])
+    aim.__name__, move.__name__ = name + "_aim", name + "_move"
+    return [aim, move, wait_until(lambda: abs(_dock_of(side).width - width()) <= 2, name + " dock resize")]
+
+
+def _overflow_steps():
+    for kind, side, narrow in (('MODEL', 'RIGHT', 260), ('RIG', 'RIGHT', 230), ('SCULPT', 'LEFT', 190),
+                               ('ANIM', 'RIGHT', 300)):
+        name, ctx = "overflow_" + kind, {}
+
+        def switch(kind=kind):
+            bpy.ops.m3d.workspace(kind=kind)
+
+        def remember(side=side, ctx=ctx):
+            ctx["full"] = _dock_of(side).width
+
+        def check_narrow(kind=kind, side=side, ctx=ctx):
+            area = _dock_of(side)
+            shown, more, active = _dock_split(side)
+            shown_ids, more_ids = [t.id for t, _label in shown], [t.id for t in more]
+            check(more_ids, "%s dock at %d px has no overflow" % (kind, area.width))
+            check(shown_ids and not set(shown_ids) & set(more_ids), "%s dock tabs drawn twice or none" % kind)
+            check(active is None or active in shown_ids, "%s: the active tab %s is not drawn" % (kind, active))
+            scale = bpy.context.preferences.system.ui_scale
+            ctx["shown_w"] = sum(m3d_workspace.text_width(label, scale) for _t, label in shown)
+            used = ctx["shown_w"] + (m3d_workspace.MORE_WIDTH + m3d_workspace.HEADER_RESERVED) * scale
+            check(used <= _dock_header(area).width, "%s: tabs need %d px in a %d px header" % (kind, used, area.width))
+            check(not tracebacks(), "Python error drawing the narrow %s dock" % kind)
+            ctx["more"] = more[0]
+
+        def click_more(side=side, ctx=ctx):
+            area = _dock_of(side)
+            header = _dock_header(area)
+            ctx["xy"] = (area.x + 48 + int(ctx["shown_w"]) + m3d_workspace.MORE_WIDTH // 2, header.y + header.height // 2)
+            event('MOUSEMOVE', xy=ctx["xy"])
+            event('LEFTMOUSE', 'PRESS', ctx["xy"])
+            event('LEFTMOUSE', 'RELEASE', ctx["xy"])
+
+        def pick_first(ctx=ctx):
+            xy = (ctx["xy"][0], ctx["xy"][1] - 30)   # The menu opens under the button: its first row.
+            event('MOUSEMOVE', xy=xy)
+            event('LEFTMOUSE', 'PRESS', xy)
+            event('LEFTMOUSE', 'RELEASE', xy)
+
+        def picked(kind=kind, side=side, ctx=ctx):
+            tab, context = ctx["more"], _dock_of(side).spaces.active.context
+            if tab.id == 'OBJECT':   # All Settings: the stock tabs (the Scene's when nothing is active)
+                check(context in {'OBJECT', 'SCENE'}, "%s: the more menu opened %s, not All Settings" % (kind, context))
+            else:
+                check(context == tab.context, "%s: the more menu did not open %s (%s)" % (kind, tab.id, context))
+                if tab.page:
+                    check(getattr(window().workspace, "m3d_page_" + side.lower()) == tab.page, "%s: page of %s" % (kind, tab.id))
+                shown, _more, active = _dock_split(side)
+                check(active == tab.id and shown[-1][0].id == tab.id, "%s: picked tab %s is not drawn last" % (kind, tab.id))
+            check(not tracebacks(), "Python error picking a tab from the %s more menu" % kind)
+            area = _dock_of(side)   # Back to the first tab.
+            with bpy.context.temp_override(window=window(), area=area, region=_dock_header(area)):
+                bpy.ops.m3d.dock_page(tab=m3d_workspace.dock_tabs(kind, side)[0].id)
+
+        def restored(kind=kind, side=side, ctx=ctx):
+            check(_dock_of(side).width >= ctx["full"] - 2, "%s dock was not widened again" % kind)
+            check(kind != 'MODEL' or not _dock_split(side)[1], "Modeling dock at its normal width has an overflow")
+
+        for fn in (switch, remember, check_narrow, click_more, pick_first, picked, restored):
+            fn.__name__ = "%s_%s" % (name, fn.__name__)
+        yield switch
+        yield wait_until(lambda kind=kind: m3d_workspace.workspace_kind(window().workspace) == kind, name + " workspace")
+        yield remember
+        yield from _resize_steps(name + "_narrow", side, lambda narrow=narrow: narrow)
+        yield check_narrow
+        yield click_more
+        yield pick_first
+        yield picked
+        yield from _resize_steps(name + "_full", side, lambda ctx=ctx: ctx["full"])
+        yield restored
+
+
+for _fn in _overflow_steps():
+    step(_fn)
+
+
+@step
+def overflow_done():
+    check(not tracebacks(), "Python error in the dock overflow tests")
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
 @step
 def custom_shelf_setup():
     # Point the store at a temp folder, add a button to the Sculpt Custom shelf and draw it with Edit Shelf on.

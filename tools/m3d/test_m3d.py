@@ -3709,6 +3709,30 @@ _s = _Space()
 check(_mm.set_dock_context(_s, 'OBJECT') == 'SCENE' and _s.context == 'SCENE', "All Settings with nothing active")
 check(_mm.set_dock_context(_s, 'TOOL') == 'TOOL', "dock tab switch")
 
+# Dock tab overflow: as many tabs as fit, the rest in the "more" menu, the active tab always drawn.
+_tw = lambda label: len(label) * 10   # a button is 10 px per character
+_t = [W.Tab(c, c * 5, 'TOOL', None, c * 2) for c in "abcd"]   # labels of 5 px chars, short labels of 2
+check(W.Tab("x", "X", 'TOOL', None).short_label == "", "Tab short_label defaults to none")
+check(W.fit_tabs(_t, 'a', 200, _tw, 20) == ([(t, t.label) for t in _t], []), "all tabs fit")
+_shown, _more = W.fit_tabs(_t, 'a', 160, _tw, 20)   # 4 x 50 = 200 full, 4 x 20 = 80 short: short labels fit
+check([l for _x, l in _shown] == ["aa", "bb", "cc", "dd"] and _more == [], "short labels when the full ones don't fit")
+_t = [W.Tab(c, c * 5, 'TOOL', None) for c in "abcd"]       # no short labels: 4 x 50
+_shown, _more = W.fit_tabs(_t, 'a', 130, _tw, 20)          # room for 2 next to the more button
+check([x.id for x, _l in _shown] == ["a", "b"] and [x.id for x in _more] == ["c", "d"], "some tabs overflow")
+_shown, _more = W.fit_tabs(_t, 'd', 130, _tw, 20)          # the active tab takes the last visible place
+check([x.id for x, _l in _shown] == ["a", "d"] and [x.id for x in _more] == ["b", "c"], "active tab in the overflow is drawn")
+_shown, _more = W.fit_tabs(_t, 'd', 70, _tw, 20)           # room for one
+check([x.id for x, _l in _shown] == ["d"] and [x.id for x in _more] == ["a", "b", "c"], "very narrow: the active tab only")
+_shown, _more = W.fit_tabs(_t, 'd', 0, _tw, 20)
+check([x.id for x, _l in _shown] == ["d"], "no room at all: the active tab is still drawn")
+_shown, _more = W.fit_tabs(_t, None, 0, _tw, 20)
+check(_shown == [] and len(_more) == 4, "no active tab, no room: everything in the menu")
+_shown, _more = W.fit_tabs(_t, 'b', 130, _tw, 20)
+check([x.id for x, _l in _shown] == ["a", "b"], "active tab already drawn keeps the order")
+check(all(t.short_label for k in W.KINDS for s in W.DOCK_TABS[k].values() for t in s if len(t.label) > 12),
+      "long dock tab labels have a short label")
+check(W.all_tab('MODEL').label == "Attribute Editor" and W.all_tab('SCULPT').short_label == "Settings", "All Settings tab")
+
 print("FAILS:", fails or "none")
 sys.exit(1 if fails else 0)
 
