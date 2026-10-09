@@ -3715,7 +3715,7 @@ def lay_fill_check():
 def lay_mask_check():
     m = lay_mat()
     fill = m.m3d_layers[2]
-    check(fill.mask is not None and m.texture_paint_images[m.paint_active_slot] == fill.mask, "Add Mask: the brush is on the mask")
+    check(LY.paint_effect(fill) is not None and m.texture_paint_images[m.paint_active_slot] == LY.paint_effect(fill).image, "Add Mask: the brush is on the mask")
     check(m3d_texture.active_channel(m) == 'BASE_COLOR', "the channel stays")
     check(not tracebacks(), "Python error drawing a fill layer with a mask")
     lay_show_tab()
@@ -3737,14 +3737,14 @@ def lay_visible_check():
 def lay_move_check():
     m = lay_mat()
     check(lay_names() == ["Base", "Fill Layer", "Paint Layer"] and m.m3d_layer_index == 1, "Move Layer Down: %s" % lay_names())
-    check(m.texture_paint_images[m.paint_active_slot] == m.m3d_layers[1].mask, "the brush follows the moved layer (its mask)")
+    check(m.texture_paint_images[m.paint_active_slot] == LY.paint_effect(m.m3d_layers[1]).image, "the brush follows the moved layer (its mask)")
     top = LY.principled_of(m).inputs["Base Color"].links[0].from_node
     check(top.name == LY.part('BASE_COLOR', m.m3d_layers[2].uid, "mix"), "the Paint Layer is on top of the Base Color chain")
     check(np.array_equal(px(lay_image(2)), GIZMO["stroked"]), "moving layers keeps their pixels")
     m.m3d_layer_index = 2
     check(m.texture_paint_images[m.paint_active_slot] == lay_image(2), "selecting a layer aims the brush at it")
     GIZMO["images"] = {i.name for i in bpy.data.images}
-    GIZMO["fill_mask"] = m.m3d_layers[1].mask.name
+    GIZMO["fill_mask"] = LY.paint_effect(m.m3d_layers[1]).image.name
     GIZMO["stroke_img"] = lay_image(2).name
     press_ok("m3d.layer_merge_down", _area=tex_areas()[1])
 
@@ -3754,7 +3754,7 @@ def lay_merge_check():
     m = lay_mat()
     check(lay_names() == ["Base", "Fill Layer"] and m.m3d_layer_index == 1, "Merge Down: %s" % lay_names())
     low = m.m3d_layers[1]
-    check(low.kind == 'PAINT' and low.mask is None and low.opacity == 1.0 and lay_image(1) is not None,
+    check(low.kind == 'PAINT' and not low.mask_stack and low.opacity == 1.0 and lay_image(1) is not None,
           "the fill layer became a paint layer without mask or opacity")
     check(GIZMO["stroke_img"] not in bpy.data.images and GIZMO["fill_mask"] not in bpy.data.images, "the merged layer's and the old mask images are gone")
     merged = px(lay_image(1))
@@ -3801,7 +3801,7 @@ def lay_fill_stroke_setup():
 @step
 def lay_fill_stroke_aim():
     m = lay_mat()
-    check(lay_names() == ["Base", "Fill Layer"] and m.m3d_layers[1].kind == 'FILL' and m.m3d_layers[1].mask is None,
+    check(lay_names() == ["Base", "Fill Layer"] and m.m3d_layers[1].kind == 'FILL' and not m.m3d_layers[1].mask_stack,
           "a fill layer without a mask is active: %s" % lay_names())
     now = m.texture_paint_images[m.paint_active_slot]
     check(now.name == LY.SCRATCH and now not in LY.stack_images(m), "the brush is aimed at the scratch image, not at a layer image (%s)" % now.name)
@@ -3837,6 +3837,307 @@ def lay_fill_stroke_check():
 @step
 def lay_done():
     check(not tracebacks(), "Python error drawing the Layers tab")
+
+
+# ----------------------------------------------------------------------------------------------------
+# Phase 7a: mask effects in the Texture workspace: the Add menu by key presses, generators baked from the cube, a stroke on
+# the Paint effect, order, Show Mask.
+
+import m3d_masks as MK
+
+
+def mk_layer():
+    m = lay_mat()
+    return m.m3d_layers[m.m3d_layer_index]
+
+
+def mk_menu():
+    """Open the Add Mask Effect menu in the dock the way its button does (a real popup that takes key presses)."""
+    dock = tex_areas()[1]
+    region = next(r for r in dock.regions if r.type == 'WINDOW')
+    event('MOUSEMOVE', xy=GIZMO["mk_xy"])
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=dock, region=region,
+                                   space_data=dock.spaces.active):
+        bpy.ops.wm.call_menu(name="M3D_MT_mask_add")
+
+
+def mk_key(key):
+    event(key, 'PRESS', GIZMO["mk_xy"])
+    event(key, 'RELEASE', GIZMO["mk_xy"])
+
+
+def mk_mask():
+    return MK.stack_value(mk_layer(), 128)
+
+
+def mk_state(mat):
+    nt = mat.node_tree
+    return (sorted(n.name for n in nt.nodes),
+            sorted((l.from_node.name, l.from_socket.identifier, l.to_node.name, l.to_socket.identifier) for l in nt.links))
+
+
+@step
+def mk_setup():
+    lay_show_tab()
+    m = lay_mat()
+    ob = bpy.context.active_object
+    ob.m3d_bake.resolution, ob.m3d_bake.samples = '64', 4
+    m.m3d_layer_index = len(m.m3d_layers) - 1
+    layer = mk_layer()
+    check(layer.kind == 'FILL' and not layer.mask_stack, "mask tests start on a Fill Layer without a mask (%s)" % lay_names())
+    layer.channels[0].color, layer.opacity, layer.blend, layer.visible = (0.1, 0.6, 0.2, 1.0), 1.0, 'MIX', False
+    GIZMO["mk_base"] = LY.composite(m, 'BASE_COLOR', 128)   # What the base layer alone looks like.
+    layer.visible = True
+    dock = tex_areas()[1]
+    GIZMO["mk_xy"] = (dock.x + dock.width // 2, dock.y + dock.height // 2)
+    GIZMO["mk_images"] = {i.name for i in bpy.data.images}
+
+
+@step
+def mk_open_fill():
+    mk_menu()
+
+
+@step
+def mk_key_fill():
+    mk_key('F')
+
+
+step(wait_until(lambda: len(mk_layer().mask_stack) >= 1, "Fill from the Add menu (F key)"))
+
+
+@step
+def mk_fill_check():
+    layer = mk_layer()
+    check([e.kind for e in layer.mask_stack] == ['FILL'] and layer.mask_stack[0].value == 0.0 and layer.mask_index == 0,
+          "F in the Add menu added a black Fill effect: %s" % [e.kind for e in layer.mask_stack])
+    check(np.abs(LY.composite(lay_mat(), 'BASE_COLOR', 128) - GIZMO["mk_base"]).max() < 1e-5, "a black Fill hides the layer: the result is the base layer alone")
+    layer.mask_stack[0].value = 1.0
+    shown = LY.composite(lay_mat(), 'BASE_COLOR', 128)
+    check(np.abs(shown - np.array((0.1, 0.6, 0.2), np.float32)).max() < 1e-4, "a white Fill shows the layer: the result is its color (%s)" % shown[0, 0])
+    layer.mask_stack[0].value = 0.0
+    check(not tracebacks(), "Python error drawing the Mask panel with a Fill effect")
+    mk_menu()
+
+
+@step
+def mk_key_edges():
+    mk_key('E')
+
+
+step(wait_until(lambda: len(mk_layer().mask_stack) >= 2, "Edges from the Add menu (E key, bakes the Curvature map)", tries=60))
+
+
+@step
+def mk_edges_check():
+    layer = mk_layer()
+    ob = bpy.context.active_object
+    edges = layer.mask_stack[1]
+    check([e.kind for e in layer.mask_stack] == ['FILL', 'EDGES'] and edges.blend == 'MULTIPLY', "E added an Edges effect above the Fill: %s" % [e.kind for e in layer.mask_stack])
+    curv = bpy.data.images.get("Crate_Curvature")
+    check(edges.image == curv and curv is not None and tuple(curv.size) == (64, 64) and curv.get("m3d_map") == 64,
+          "the Curvature map was baked at the Bake tab's resolution and the effect reads it")
+    check(bpy.context.mode == 'PAINT_TEXTURE' and not tracebacks(), "baking from the menu left Texture Paint Mode on (%s)" % bpy.context.mode)
+    check(not [m for m in bpy.data.materials if m.name.startswith("m3dBake")] and ob.active_material == lay_mat(), "the bake left no temporary material")
+    GIZMO["mk_stamp"] = curv["m3d_stamp"]
+    edges.blend, edges.amount = 'ADD', 0.3
+    mk_menu()
+
+
+@step
+def mk_key_levels():
+    mk_key('L')
+
+
+step(wait_until(lambda: len(mk_layer().mask_stack) >= 3, "Levels from the Add menu (L key)"))
+
+
+@step
+def mk_levels_check():
+    layer = mk_layer()
+    check([e.kind for e in layer.mask_stack] == ['FILL', 'EDGES', 'LEVELS'], "L added a Levels filter on top: %s" % [e.kind for e in layer.mask_stack])
+    layer.mask_stack[2].black_out = 0.5   # The mask can no longer go below 0.5 above this point.
+    layer.mask_stack[0].value = 1.0
+    check(mk_mask().min() >= 0.5 - 1e-6, "Levels keeps the mask at 0.5 or more (%.3f)" % mk_mask().min())
+    mk_menu()
+
+
+@step
+def mk_key_paint():
+    mk_key('P')
+
+
+step(wait_until(lambda: len(mk_layer().mask_stack) >= 4, "Paint from the Add menu (P key)"))
+
+
+@step
+def mk_paint_check():
+    m = lay_mat()
+    layer = mk_layer()
+    paint = layer.mask_stack[3]
+    check([e.kind for e in layer.mask_stack] == ['FILL', 'EDGES', 'LEVELS', 'PAINT'] and paint.blend == 'MULTIPLY' and layer.paint_mask,
+          "P added a white Paint effect that multiplies, and turned Paint Mask on: %s" % [(e.kind, e.blend) for e in layer.mask_stack])
+    check(m.texture_paint_images[m.paint_active_slot] == paint.image, "the brush is aimed at the Paint effect's image")
+    check(px(paint.image)[:, :3].min() == 1.0, "a new Paint effect is white")
+    check(np.abs(mk_mask() - mk_mask().max()).max() < 1e-6, "...so it changes nothing yet")
+    ups = bpy.context.tool_settings.image_paint.unified_paint_settings
+    ups.color = (0.0, 0.0, 0.0)
+    GIZMO["mk_before"] = LY.composite(m, 'BASE_COLOR', 128).copy()
+    GIZMO["mk_paint_before"] = px(paint.image).copy()
+    GIZMO["mk_layer_pixels"] = {i.name: px(i).copy() for i in LY.stack_images(m) if i != paint.image}
+    GIZMO["mk_depsgraph"] = []
+    bpy.app.handlers.depsgraph_update_post.append(mk_probe)
+    event('MOUSEMOVE', xy=GIZMO["stroke"][0])
+
+
+def mk_probe(*args):
+    GIZMO["mk_depsgraph"].append([u.id.name for u in args[-1].updates if isinstance(u.id, bpy.types.Image)])
+
+
+@step
+def mk_stroke_press():
+    event('LEFTMOUSE', 'PRESS', GIZMO["stroke"][0])
+    for xy in GIZMO["stroke"][1:]:
+        event('MOUSEMOVE', xy=xy)
+
+
+@step
+def mk_stroke_release():
+    event('LEFTMOUSE', 'RELEASE', GIZMO["stroke"][-1])
+
+
+@step
+def mk_stroke_check():
+    m = lay_mat()
+    layer = mk_layer()
+    paint = layer.mask_stack[3]
+    now = px(paint.image)
+    check(now[:, :3].min() < 0.3 and np.abs(now - GIZMO["mk_paint_before"]).max() > 0.5, "the stroke painted the Paint effect black (min %.3f)" % now[:, :3].min())
+    check(all(np.array_equal(px(i), GIZMO["mk_layer_pixels"][i.name]) for i in LY.stack_images(m) if i.name in GIZMO["mk_layer_pixels"])
+          and not [i for i in LY.stack_images(m) if i.name not in GIZMO["mk_layer_pixels"] and i != paint.image],
+          "...and no other layer, mask or map image")
+    after = LY.composite(m, 'BASE_COLOR', 128)
+    mask = mk_mask()
+    changed = np.abs(after - GIZMO["mk_before"]).max(axis=-1) > 1e-4
+    check(changed.any() and changed.mean() < 0.5, "the result changes only where the stroke went (%.1f%% of the texels)" % (100 * changed.mean()))
+    hidden = mask < 1e-3
+    check(hidden.any() and np.abs(after - GIZMO["mk_base"])[hidden].max() < 1e-3, "where the mask is black the layer is gone: the base shows")
+    check((mask[~changed] > 0.99).all(), "...and the rest still shows the layer")
+    check(bpy.app.handlers.depsgraph_update_post.count(mk_probe) == 1, "probe")
+    bpy.app.handlers.depsgraph_update_post.remove(mk_probe)
+    print("depsgraph updates with an Image during the stroke:", sum(1 for u in GIZMO["mk_depsgraph"] if u))
+    check(not tracebacks(), "Python error during the stroke on a Paint effect")
+    GIZMO["mk_stroked"] = (after.copy(), mask.copy())
+    press_ok("m3d.mask_effect_move", _area=tex_areas()[1], delta=-1)
+
+
+@step
+def mk_order_check():
+    layer = mk_layer()
+    check([e.kind for e in layer.mask_stack] == ['FILL', 'EDGES', 'PAINT', 'LEVELS'] and layer.mask_index == 2,
+          "Move Down put the Paint effect below Levels: %s" % [e.kind for e in layer.mask_stack])
+    after, before = LY.composite(lay_mat(), 'BASE_COLOR', 128), GIZMO["mk_stroked"][0]
+    mask = mk_mask()
+    stroke = GIZMO["mk_stroked"][1] < 1e-3
+    check(stroke.any() and np.abs(mask[stroke] - 0.5).max() < 2e-3, "now Levels lifts the stroke to 0.5 (%.3f)" % mask[stroke].mean())
+    check(np.abs(after - before)[stroke].max() > 0.05, "the order changes the result under the stroke")
+    m = lay_mat()
+    check(m.texture_paint_images[m.paint_active_slot] == layer.mask_stack[2].image, "the brush stays on the Paint effect")
+    top = LY.mask_top(m.node_tree, layer)
+    check(top is not None and top.node == LY.mask_node(m.node_tree, layer, "mix", layer.mask_stack[3]), "the nodes follow the order (Levels is on top)")
+    GIZMO["mk_state"] = mk_state(m)
+    m.m3d_show_mask = True
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def mk_show_check():
+    m = lay_mat()
+    emit = m.node_tree.nodes.get(LY.MASKVIEW)
+    out = next(n for n in m.node_tree.nodes if n.type == 'OUTPUT_MATERIAL')
+    check(emit is not None and out.inputs["Surface"].links[0].from_node == emit
+          and emit.inputs["Color"].links[0].from_socket == LY.mask_top(m.node_tree, mk_layer()), "Show Mask on: the viewport shows the layer's mask")
+    check(not tracebacks(), "Python error with Show Mask on")
+    m.m3d_show_mask = False
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def mk_show_off_check():
+    m = lay_mat()
+    check(mk_state(m) == GIZMO["mk_state"] and LY.MASKVIEW not in m.node_tree.nodes, "Show Mask off: the material is exactly as it was")
+    paint_name = mk_layer().mask_stack[2].image.name
+    GIZMO["mk_paint_name"] = paint_name
+    press_ok("m3d.mask_effect_remove", _area=tex_areas()[1])
+
+
+@step
+def mk_remove_check():
+    layer = mk_layer()
+    check([e.kind for e in layer.mask_stack] == ['FILL', 'EDGES', 'LEVELS'] and GIZMO["mk_paint_name"] not in bpy.data.images
+          and not layer.paint_mask, "Remove deleted the Paint effect and its image: %s" % [e.kind for e in layer.mask_stack])
+    check(bpy.data.images["Crate_Curvature"].get("m3d_stamp") == GIZMO["mk_stamp"], "the baked map was kept, not baked again")
+    check(not tracebacks(), "Python error in the mask effect tests")
+    lay_show_tab()
+    mk_menu()
+
+
+@step
+def mk_key_paint2():
+    mk_key('P')
+
+
+step(wait_until(lambda: len(mk_layer().mask_stack) >= 4, "a second Paint effect (P key)"))
+
+
+@step
+def mk_add_blur():
+    press_ok("m3d.mask_effect_add", _area=tex_areas()[1], kind='BLUR')   # (B in the menu belongs to Paint (Black))
+
+
+step(wait_until(lambda: len(mk_layer().mask_stack) >= 5, "Blur from the Add menu (B key)"))
+
+
+@step
+def mk_blur_setup():
+    layer = mk_layer()
+    check([e.kind for e in layer.mask_stack] == ['FILL', 'EDGES', 'LEVELS', 'PAINT', 'BLUR'] and layer.mask_index == 4,
+          "P and B added a Paint effect and a Blur filter: %s" % [e.kind for e in layer.mask_stack])
+    blur = layer.mask_stack[4]
+    check(blur.image is not None and blur.image.is_float and blur.image.get("m3d_fp"), "the Blur effect has its cache image")
+    m = lay_mat()
+    check(m.texture_paint_images[m.paint_active_slot] == layer.mask_stack[3].image, "the brush is on the Paint effect below the Blur")
+    GIZMO["mk_cache"] = px(blur.image).copy()
+    GIZMO["mk_stroke2"] = [(x, y + 25) for x, y in GIZMO["stroke"]]
+    event('MOUSEMOVE', xy=GIZMO["mk_stroke2"][0])
+
+
+@step
+def mk_blur_press():
+    event('LEFTMOUSE', 'PRESS', GIZMO["mk_stroke2"][0])
+    for xy in GIZMO["mk_stroke2"][1:]:
+        event('MOUSEMOVE', xy=xy)
+
+
+@step
+def mk_blur_release():
+    event('LEFTMOUSE', 'RELEASE', GIZMO["mk_stroke2"][-1])
+
+
+step(wait_until(lambda: np.abs(px(mk_layer().mask_stack[4].image) - GIZMO["mk_cache"]).max() > 0.01, "the Blur cache to follow the stroke", tries=20))
+
+
+@step
+def mk_blur_check():
+    layer = mk_layer()
+    paint, blur = layer.mask_stack[3], layer.mask_stack[4]
+    check(px(paint.image)[:, :3].min() < 0.3, "the second stroke painted the Paint effect")
+    want = MK.blur(MK.stack_value(layer, 128, 4), blur.amount)
+    got = px(blur.image).reshape(128, 128, 4)[..., 0]
+    check(tuple(blur.image.size) == (128, 128) and np.abs(got - want).max() < 1e-5, "the Blur cache is the blur of the stack below it (error %.6f)" % np.abs(got - want).max())
+    check(not tracebacks(), "Python error while the Blur cache followed a stroke")
 
 
 @step

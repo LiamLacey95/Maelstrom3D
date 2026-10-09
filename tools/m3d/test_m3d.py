@@ -10,8 +10,8 @@ def check(cond, msg):
 # Icons used in m3d_mode exist.
 import re, m3d_mode
 icons = set(bpy.types.UILayout.bl_rna.functions['operator'].parameters['icon'].enum_items.keys())
-import m3d_layers, m3d_marking, m3d_sculpt, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv
-src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_layers, m3d_marking, m3d_sculpt, m3d_texture, _maya_ui, _maya_uv))
+import m3d_layers, m3d_marking, m3d_masks, m3d_sculpt, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv
+src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_layers, m3d_marking, m3d_masks, m3d_sculpt, m3d_texture, _maya_ui, _maya_uv))
 for ic in set(re.findall(r"icon='([A-Z_0-9]+)'", src)):
     check(ic in icons, "missing icon " + ic)
 
@@ -1876,6 +1876,14 @@ def small(name, values, srgb=False, alpha=True):
     return im
 
 
+def set_mask(layer, image, invert=False):
+    """The layer's mask: a Paint effect holding `image` (and an Invert effect on top)."""
+    with LY.muted():
+        LY.add_effect(layer, 'PAINT').image = image
+        if invert:
+            LY.add_effect(layer, 'INVERT')
+
+
 # --- Migration: the 3a paint slots become the Base layer, nothing painted is lost
 cube, mat = fresh_cube("Stack")
 for cid in ('BASE_COLOR', 'ROUGHNESS', 'NORMAL', 'HEIGHT', 'EMISSION'):
@@ -2037,19 +2045,21 @@ check(mat.node_tree.nodes.get("%s.scratch" % LY.TAG) is not None, "rebuilds keep
 check(all(i not in LY.stack_images(mat) for i in [mat.texture_paint_images[mat.paint_active_slot]]), "paint_active_slot is not a layer image")
 check(T.active_channel(mat) == 'ROUGHNESS' and not LY.entry_of(fill, 'ROUGHNESS').image, "a fill layer never gets an image")
 check(not (bpy.ops.m3d.layer_mask_remove.poll()), "no mask to remove yet")
-check(bpy.ops.m3d.layer_mask_add(fill='BLACK') == {'FINISHED'} and fill.mask is not None and fill.paint_mask
-      and fill.mask.colorspace_settings.name == 'Non-Color' and fill.mask.size[0] == 64, "Add Mask (black)")
-check(read(fill.mask)[:, :3].max() == 0.0, "a black mask hides the layer")
-check(slot_image(mat) == fill.mask, "Paint Mask: the brush paints the mask of the fill layer")
+check(bpy.ops.m3d.layer_mask_add(fill='BLACK') == {'FINISHED'} and [e.kind for e in fill.mask_stack] == ['PAINT'] and fill.paint_mask
+      and LY.paint_effect(fill).image.colorspace_settings.name == 'Non-Color' and LY.paint_effect(fill).image.size[0] == 64, "Add Mask (black)")
+fmask = LY.paint_effect(fill).image
+check(read(fmask)[:, :3].max() == 0.0, "a black mask hides the layer")
+check(slot_image(mat) == fmask, "Paint Mask: the brush paints the mask of the fill layer")
 mix = expect_chain(mat, 'BASE_COLOR', "masked")[-1]
-mask_nodes = [n for n in mat.node_tree.nodes if n.name.startswith(LY.part('BASE_COLOR', fill.uid, "mask"))]
-check(any(n.type == 'TEX_IMAGE' and n.image == fill.mask for n in mask_nodes), "the mask is an image node in the chain")
-check(bpy.ops.m3d.layer_mask_invert() == {'FINISHED'} and fill.mask_invert
-      and any(n.name.endswith("maskinv") for n in mat.node_tree.nodes), "Invert Mask adds the invert node")
-check(not bpy.ops.m3d.layer_mask_add.poll(), "one mask per layer")
-check(bpy.ops.m3d.layer_paint_mask() == {'FINISHED'} and not fill.paint_mask and slot_image(mat) == fill.mask,
-      "Paint Mask toggles off, but a fill layer's only paintable image is its mask")
-check(bpy.ops.m3d.tex_channel(channel='METALLIC') == {'FINISHED'} and slot_image(mat) == fill.mask and T.active_channel(mat) == 'METALLIC',
+mask_nodes = [n for n in mat.node_tree.nodes if n.get(LY.TAG) == "MASK" and n.get("m3d_mask") == fill.uid]
+check(any(n.type == 'TEX_IMAGE' and n.image == fmask for n in mask_nodes), "the mask's Paint effect is an image node in its chain")
+check(bpy.ops.m3d.layer_mask_invert() == {'FINISHED'} and fill.mask_stack[-1].kind == 'INVERT'
+      and any(n.type == 'GROUP' and n.node_tree.name == "m3d_mask.invert" for n in mat.node_tree.nodes if n.get("m3d_mask") == fill.uid),
+      "Invert Mask adds an Invert effect (a node group in the mask chain)")
+check(not bpy.ops.m3d.layer_mask_add.poll(), "Add Mask is for a layer without a mask")
+check(bpy.ops.m3d.layer_paint_mask() == {'FINISHED'} and not fill.paint_mask and slot_image(mat) == fmask,
+      "Paint Mask toggles off, but a fill layer's only paintable image is its mask's Paint effect")
+check(bpy.ops.m3d.tex_channel(channel='METALLIC') == {'FINISHED'} and slot_image(mat) == fmask and T.active_channel(mat) == 'METALLIC',
       "channels can be picked while a masked fill layer is active")
 # A paint layer: mask target vs channel target.
 mat.m3d_layer_index = 1
@@ -2057,7 +2067,9 @@ paint_layer = mat.m3d_layers[1]
 bpy.ops.m3d.tex_channel(channel='BASE_COLOR')
 check(slot_image(mat) == LY.entry_of(paint_layer, 'BASE_COLOR').image, "target: active layer, active channel")
 bpy.ops.m3d.layer_mask_add(fill='WHITE')
-check(slot_image(mat) == paint_layer.mask and read(paint_layer.mask)[:, :3].min() == 1.0, "target: the layer's mask after Add Mask")
+pmask = LY.paint_effect(paint_layer).image
+pmask_name = pmask.name
+check(slot_image(mat) == pmask and read(pmask)[:, :3].min() == 1.0, "target: the layer's mask after Add Mask")
 bpy.ops.m3d.tex_channel(channel='ROUGHNESS')
 check(not paint_layer.paint_mask and slot_image(mat) == LY.entry_of(paint_layer, 'ROUGHNESS').image,
       "picking a channel goes back to painting the channel")
@@ -2065,9 +2077,9 @@ paint_layer.paint_mask = True
 mat.m3d_layer_index = 0
 check(slot_image(mat) == LY.entry_of(mat.m3d_layers[0], 'ROUGHNESS').image, "target: another layer, same channel")
 mat.m3d_layer_index = 1
-check(slot_image(mat) == paint_layer.mask, "target: Paint Mask is remembered per layer")
-check(bpy.ops.m3d.layer_mask_remove() == {'FINISHED'} and paint_layer.mask is None and not paint_layer.paint_mask
-      and not [n for n in mat.node_tree.nodes if ".%s.mask" % paint_layer.uid in n.name], "Remove Mask")
+check(slot_image(mat) == pmask, "target: Paint Mask is remembered per layer")
+check(bpy.ops.m3d.layer_mask_remove() == {'FINISHED'} and not paint_layer.mask_stack and not paint_layer.paint_mask
+      and not [n for n in mat.node_tree.nodes if n.get("m3d_mask") == paint_layer.uid] and pmask_name not in bpy.data.images, "Remove Mask")
 check(slot_image(mat) == LY.entry_of(paint_layer, 'ROUGHNESS').image, "...and the brush is back on the channel")
 check(bpy.ops.m3d.layer_convert.poll() is False, "Convert needs a fill layer")
 mat.m3d_layer_index = 2
@@ -2137,7 +2149,7 @@ for mode in ('MIX', 'MULTIPLY', 'ADD', 'OVERLAY'):
 o, m, low_img, high_img = two_layers('ROUGHNESS', 'MULTIPLY', 1.0)
 mask_vals = np.array([1.0, 0.5, 0.0, 1.0])
 mask_img = small("maskImg", grid_rgba(lambda x, y: (mask_vals[x],) * 3, lambda y: 1.0), alpha=False)
-m.m3d_layers[1].mask = mask_img
+set_mask(m.m3d_layers[1], mask_img)
 mask_name = mask_img.name
 lo_px, hi_px, mk = read(low_img).reshape(4, 4, 4), read(high_img).reshape(4, 4, 4), read(mask_img).reshape(4, 4, 4)
 m.m3d_layer_index = 1
@@ -2171,11 +2183,11 @@ for i in range(3):
     e = LY.entry_of(m.m3d_layers[i], 'ROUGHNESS')
     e.image, e.use = imgs[i], True
     m.m3d_layers[i].blend, m.m3d_layers[i].opacity = modes[i], opacities[i]
-m.m3d_layers[1].mask = small("fm", grid_rgba(lambda x, y: (mask_vals[x],) * 3, lambda y: 1.0), alpha=False)
+set_mask(m.m3d_layers[1], small("fm", grid_rgba(lambda x, y: (mask_vals[x],) * 3, lambda y: 1.0), alpha=False))
 LY.rebuild_all(m)
 old_names = [im.name for im in imgs] + ["fm"]
 px = [read(im).reshape(4, 4, 4) for im in imgs]
-mk = read(m.m3d_layers[1].mask).reshape(4, 4, 4)
+mk = read(LY.paint_effect(m.m3d_layers[1]).image).reshape(4, 4, 4)
 want = np.zeros((4, 4))
 for y in range(4):
     for x in range(4):
@@ -2187,7 +2199,7 @@ flat = LY.flatten_channel(m, 'ROUGHNESS', 4)
 check(np.abs(flat[..., 0] - want).max() < 1e-5 and flat.shape == (4, 4, 4), "composite of three layers matches the hand-worked pixels (error %.2e)" % np.abs(flat[..., 0] - want).max())
 m.m3d_layer_index = 2
 check(bpy.ops.m3d.layer_flatten() == {'FINISHED'} and [l.name for l in m.m3d_layers] == ["Base"], "Flatten leaves one layer")
-check(not any(n in bpy.data.images for n in old_names) and not m.m3d_layers[0].mask, "Flatten removes the old images")
+check(not any(n in bpy.data.images for n in old_names) and not m.m3d_layers[0].mask_stack, "Flatten removes the old images")
 fimg = LY.entry_of(m.m3d_layers[0], 'ROUGHNESS').image
 check(tuple(fimg.size) == (4, 4) and np.abs(read(fimg).reshape(4, 4, 4)[..., 0] - want).max() <= 1.0 / 255 + 1e-5
       and read(fimg)[:, 3].min() == 1.0, "the flattened layer holds the result")
@@ -2258,9 +2270,8 @@ for ch_id, srgb in (('BASE_COLOR', True), ('ROUGHNESS', False)):
                 e = LY.entry_of(layer, ch_id)
                 e.image, e.use = noise_image("nc%d" % i, srgb, opaque=i == 0), True
                 layer.blend, layer.opacity = (mode if i else 'MIX'), (0.65 if i == 1 else 0.9)
-            pmat.m3d_layers[1].mask = noise_image("ncm", False, alpha=False)
-            pmat.m3d_layers[2].mask_invert = True
-            pmat.m3d_layers[2].mask = noise_image("ncm2", False, alpha=False)
+            set_mask(pmat.m3d_layers[1], noise_image("ncm", False, alpha=False))
+            set_mask(pmat.m3d_layers[2], noise_image("ncm2", False, alpha=False), invert=True)
             pmat.m3d_layers[2].blend = 'SCREEN' if mode != 'SCREEN' else 'DARKEN'
         LY.rebuild_all(pmat)
         nodes_lin = bake_chain(plane, pmat, ch_id)
@@ -2406,7 +2417,7 @@ bpy.ops.m3d.tex_channel(channel='BASE_COLOR')
 bpy.ops.m3d.layer_add(kind='PAINT')
 bpy.ops.m3d.layer_mask_add(fill='WHITE')
 layer_a, layer_b = sv_mat.m3d_layers[0], sv_mat.m3d_layers[1]
-img_a, img_b, mask_b = LY.entry_of(layer_a, 'BASE_COLOR').image, LY.entry_of(layer_b, 'BASE_COLOR').image, layer_b.mask
+img_a, img_b, mask_b = LY.entry_of(layer_a, 'BASE_COLOR').image, LY.entry_of(layer_b, 'BASE_COLOR').image, LY.paint_effect(layer_b).image
 img_b = img_b or LY.entry_of(layer_b, 'BASE_COLOR').image
 spare = bpy.data.images.new("m3dSpare", 8, 8)
 LY.entry_of(layer_a, 'METALLIC').image = spare
@@ -2424,9 +2435,9 @@ check(img_a.packed_file is not None and mask_b.packed_file is not None and spare
       "saving packed the layer, mask and spare images")
 bpy.ops.wm.open_mainfile(filepath=sv_path)
 sm = bpy.data.materials["Safe_Material"] if "Safe_Material" in bpy.data.materials else bpy.data.objects["Safe"].active_material
-check(len(sm.m3d_layers) == 2 and sm.m3d_layers[1].name == layer_b_name and sm.m3d_layers[1].mask is not None
-      and sm.m3d_layers[1].mask.name == sv_names[1], "layers, names and mask are in the saved file")
-check(abs(read(sm.m3d_layers[0].channels[0].image)[0, 0] - 0.7) < 2 / 255 and abs(read(sm.m3d_layers[1].mask)[0, 0] - 0.25) < 2 / 255,
+check(len(sm.m3d_layers) == 2 and sm.m3d_layers[1].name == layer_b_name and LY.paint_effect(sm.m3d_layers[1]) is not None
+      and LY.paint_effect(sm.m3d_layers[1]).image.name == sv_names[1], "layers, names and mask are in the saved file")
+check(abs(read(sm.m3d_layers[0].channels[0].image)[0, 0] - 0.7) < 2 / 255 and abs(read(LY.paint_effect(sm.m3d_layers[1]).image)[0, 0] - 0.25) < 2 / 255,
       "painted layer and mask pixels come back")
 check(sv_names[2] in bpy.data.images and abs(read(bpy.data.images[sv_names[2]])[0, 0] - 0.4) < 2 / 255,
       "an image only a disabled channel points at is kept")
@@ -2487,6 +2498,494 @@ check(not [n for n in mem_mat.node_tree.nodes if LY.TAG in n.keys()], "deleting 
 check(mem_mat.node_tree.nodes.get("%s.scratch" % LY.TAG) is None, "...and the scratch node (its image goes when no material uses it)")
 check(not tex_gated("tex_layers") and "PROPERTIES_PT_m3d_tx_stack" in tex_shown("tex_layers")
       and "PROPERTIES_PT_m3d_tx_layer" not in tex_shown("tex_layers"), "no layers: the stack panel offers the add buttons only")
+
+# ----------------------------------------------------------------------------------------------------
+# Phase 7a: mask stacks on layers (data, node chains, numpy == nodes, baked maps, Blur caches, Show Mask, migration,
+# merge / export, saving).
+import m3d_masks as MK
+
+check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in (
+    LY.M3D_UL_mask_effects, T.M3D_MT_mask_add, LY.M3D_OT_mask_effect_add, LY.M3D_OT_mask_effect_remove,
+    LY.M3D_OT_mask_effect_move, LY.M3D_OT_mask_effect_duplicate, LY.M3D_OT_mask_rebake))
+      and "mask_stack" in LY.M3D_Layer.bl_rna.properties and MK.M3D_MaskEffect.bl_rna.properties["kind"].type == 'ENUM', "mask classes registered")
+check([k.id for k in MK.KINDS] == ['PAINT', 'FILL', 'EDGES', 'CAVITY', 'TOPDOWN', 'THICKNESS', 'NOISE', 'LEVELS', 'BLUR', 'INVERT',
+                                   'SHARPEN'], "mask effect types")
+check(all(k.icon in icons for k in MK.KINDS), "mask effect icons exist")
+check(all(k.maps == () or all(m in MK.MAP_LABELS for m in k.maps) for k in MK.KINDS), "baked maps of the generators are known")
+check([b for b, _l in MK.BLENDS] == ['MIX', 'MULTIPLY', 'ADD', 'SUBTRACT', 'LIGHTEN', 'DARKEN']
+      and {b for b, _l in MK.BLENDS} <= node_blends and set(MK.BLEND_FUNCTIONS) == {b for b, _l in MK.BLENDS},
+      "mask blend modes are Mix node blend types with numpy math")
+check({"m3d.layer_mask_add", "m3d.layer_mask_remove", "m3d.layer_mask_invert", "m3d.layer_paint_mask"} <= {e.get("idname") for e in m3d_ui.MENUS["M3D_MT_layers"][1]},
+      "the Layers menu still has the mask operators")
+
+MN = 64
+N_saved, N = N, MN       # bake_out and noise_image work on N x N pixels
+clean_scene()
+bpy.ops.mesh.primitive_plane_add()
+mplane = bpy.context.active_object
+mplane.name = "MaskPlane"
+bpy.ops.m3d.tex_add_material()
+mm = mplane.active_material
+bpy.context.scene.m3d_tex.resolution = '64'
+mplane.m3d_bake.resolution, mplane.m3d_bake.samples = '64', 4
+mrng = np.random.default_rng(21)
+mnodes = mm.node_tree.nodes
+
+
+def mimg(name, size=MN):
+    im = bpy.data.images.new(name, size, size, alpha=True, float_buffer=True, is_data=True)
+    px = mrng.random((size, size, 4)).astype(np.float32)
+    px[..., 3] = 1.0
+    LY.write_pixels(im, px)
+    return im
+
+
+with LY.muted():
+    LY.add_layer(mm, 'PAINT', "Base")
+    LY.add_layer(mm, 'FILL', "Top")
+    LY.entry_of(mm.m3d_layers[0], 'BASE_COLOR').use = True
+    LY.entry_of(mm.m3d_layers[0], 'BASE_COLOR').image = noise_image("mkBase", True, opaque=True)
+    mm.m3d_layer_index = 1
+LY.rebuild_all(mm)
+mtop = mm.m3d_layers[1]
+check(not mtop.mask_stack and LY.mask_top(mm.node_tree, mtop) is None and not [n for n in mnodes if n.get(LY.TAG) == "MASK"],
+      "a layer without mask effects has no mask nodes")
+check(MK.stack_value(mtop, 4).min() == 1.0, "no effects: the mask is white")
+
+
+def mask_nodes(layer):
+    return [n for n in mnodes if n.get(LY.TAG) == "MASK" and n.get("m3d_mask") == layer.uid and n.type != 'FRAME']
+
+
+def snapshot():
+    return {n.name: n.as_pointer() for n in mnodes if LY.TAG in n.keys()}
+
+
+# --- Add effects with the operator: the nodes of every kind that needs no baked map
+for kind in ('PAINT', 'FILL', 'NOISE', 'LEVELS', 'BLUR', 'INVERT', 'SHARPEN'):
+    check(bpy.ops.m3d.mask_effect_add(kind=kind) == {'FINISHED'}, "add mask effect " + kind)
+stack = mtop.mask_stack
+check([e.kind for e in stack] == ['PAINT', 'FILL', 'NOISE', 'LEVELS', 'BLUR', 'INVERT', 'SHARPEN']
+      and [e.name for e in stack] == ["Paint", "Fill", "Noise", "Levels", "Blur", "Invert", "Sharpen"] and mtop.mask_index == 6,
+      "effects are added above the selected one: %s" % [e.kind for e in stack])
+check([e.blend for e in stack] == ['MIX', 'MIX', 'MULTIPLY', 'MIX', 'MIX', 'MIX', 'MIX'], "blend defaults: the first mixes, generators multiply: %s" % [e.blend for e in stack])
+check(stack[0].image is not None and stack[0].image.colorspace_settings.name == 'Non-Color' and mtop.paint_mask
+      and stack[4].image is not None and stack[4].image.is_float, "Paint and Blur effects have their images")
+roles = {e.kind: sorted(n.name.split(".")[-2] for n in mask_nodes(mtop) if n.name.endswith("." + e.uid)) for e in stack}
+check(roles == {'PAINT': ['bw', 'mix', 'tex'], 'FILL': ['mix'], 'NOISE': ['coord', 'grp', 'mix'], 'LEVELS': ['grp', 'mix'],
+                'BLUR': ['bw', 'mix', 'tex'], 'INVERT': ['grp', 'mix'], 'SHARPEN': ['grp', 'mix']}, "nodes per effect type: %s" % roles)
+below = None
+for e in stack:
+    mix = LY.mask_node(mm.node_tree, mtop, "mix", e)
+    first = below is None
+    check(mix.type == 'MIX' and mix.data_type == 'RGBA' and mix.clamp_result, "%s: a Mix node (color, clamped)" % e.name)
+    check((not mix.inputs[6].links and tuple(mix.inputs[6].default_value) == (1.0, 1.0, 1.0, 1.0)) if first else
+          mix.inputs[6].links[0].from_node == below, "%s: mixes over %s" % (e.name, "white" if first else "the effect below"))
+    grp = LY.mask_node(mm.node_tree, mtop, "grp", e)
+    if e.kind in MK.GROUPED:
+        check(grp.node_tree.name == "m3d_mask." + e.kind.lower() and grp.outputs["Value"].links[0].to_node == mix,
+              "%s: its node group feeds the Mix node" % e.name)
+    if e.kind in MK.FILTERS and e.kind != 'BLUR':
+        check((grp.inputs["Value"].default_value == 1.0 and not grp.inputs["Value"].links) if first else
+              grp.inputs["Value"].links[0].from_node == below, "%s: the filter reads the result below" % e.name)
+    below = mix
+mul = mnodes[LY.part('BASE_COLOR', mtop.uid, "maskmul")]
+check(mul.inputs[1].links[0].from_node == below and LY.mask_top(mm.node_tree, mtop) == below.outputs[2], "the mask multiplies the layer's factor")
+check(mnodes[LY.part('BASE_COLOR', mtop.uid, "opv")].outputs[0].links[0].to_node == mul and mul.outputs[0].links[0].to_node == mnodes[LY.part('BASE_COLOR', mtop.uid, "mix")],
+      "...between the layer's opacity and its Mix node")
+check(sorted(g.name for g in bpy.data.node_groups if g.name.startswith("m3d_mask.")) == ["m3d_mask.invert", "m3d_mask.levels", "m3d_mask.noise", "m3d_mask.sharpen"],
+      "one node group per effect type, made when first used")
+frame = mnodes["%s.MASK.%s" % (LY.TAG, mtop.uid)]
+check(frame.type == 'FRAME' and all(n.parent == frame for n in mask_nodes(mtop)), "the mask chain lives in one frame per layer")
+check(len({n for n in bpy.data.node_groups if n.name == "m3d_mask.noise"}) == 1, "a group exists once")
+
+# --- Values only set node values; structure changes rebuild only the mask frame
+before = snapshot()
+stack[1].value, stack[1].opacity, stack[1].blend = 0.4, 0.5, 'ADD'
+stack[2].scale, stack[2].seed, stack[2].noise_contrast = 9.0, 3, 5.0
+stack[3].gamma, stack[3].black_in, stack[3].white_in = 2.0, 0.1, 0.9
+stack[5].visible = False
+stack[6].amount = 0.9
+stack[0].name = "Dirt"
+mtop.opacity = 0.5
+check(snapshot() == before, "value edits only set node values (no node was made again)")
+mix = LY.mask_node(mm.node_tree, mtop, "mix", stack[1])
+check(abs(mix.inputs[0].default_value - 0.5) < 1e-6 and mix.blend_type == 'ADD'
+      and abs(mix.inputs[7].default_value[0] - 0.4) < 1e-6, "Fill: factor, blend and value are on the Mix node")
+grp = LY.mask_node(mm.node_tree, mtop, "grp", stack[2])
+check(abs(grp.inputs["Scale"].default_value - 9.0) < 1e-6 and abs(grp.inputs["Contrast"].default_value - 5.0) < 1e-6
+      and abs(grp.inputs["Seed Offset"].default_value[0] - 3 * 13.731) < 1e-4, "Noise: its values are on the group node")
+grp = LY.mask_node(mm.node_tree, mtop, "grp", stack[3])
+check(abs(grp.inputs["Gamma"].default_value - 2.0) < 1e-6 and abs(grp.inputs["White In"].default_value - 0.9) < 1e-6, "Levels: its values are on the group node")
+check(LY.mask_node(mm.node_tree, mtop, "mix", stack[5]).inputs[0].default_value == 0.0, "a hidden effect has factor 0")
+check(LY.mask_node(mm.node_tree, mtop, "mix", stack[0]).label == "Dirt", "renaming sets the node label")
+check(abs(mnodes[LY.part('BASE_COLOR', mtop.uid, "opv")].inputs[1].default_value - 0.5) < 1e-6, "the layer's own opacity is still its own")
+mtop.opacity = 1.0
+
+before = snapshot()
+mtop.mask_index = 1
+check(bpy.ops.m3d.mask_effect_add(kind='SHARPEN') == {'FINISHED'} and [e.kind for e in mtop.mask_stack][:3] == ['PAINT', 'FILL', 'SHARPEN']
+      and mtop.mask_index == 2, "a new effect goes above the selected one")
+after = snapshot()
+check(all(after[k] == before[k] for k in before if ".MASK." not in k) and set(after) > set(before)
+      and any(after.get(k) != v for k, v in before.items() if ".MASK." in k), "adding an effect makes the mask chain again, not the layer's chains")
+check(LY.mask_top(mm.node_tree, mtop).node == LY.mask_node(mm.node_tree, mtop, "mix", mtop.mask_stack[-1])
+      and mnodes[LY.part('BASE_COLOR', mtop.uid, "maskmul")].inputs[1].links[0].from_socket == LY.mask_top(mm.node_tree, mtop), "...and the layer is fed from the new chain")
+check(bpy.ops.m3d.mask_effect_move(delta=1) == {'FINISHED'} and [e.kind for e in mtop.mask_stack][:4] == ['PAINT', 'FILL', 'NOISE', 'SHARPEN']
+      and mtop.mask_index == 3, "Move Up")
+check(LY.mask_node(mm.node_tree, mtop, "grp", mtop.mask_stack[3]).inputs["Value"].links[0].from_node == LY.mask_node(mm.node_tree, mtop, "mix", mtop.mask_stack[2]),
+      "...and the nodes follow the new order")
+check(bpy.ops.m3d.mask_effect_move(delta=-1) == {'FINISHED'} and bpy.ops.m3d.mask_effect_move(delta=-1) == {'FINISHED'}
+      and [e.kind for e in mtop.mask_stack][:3] == ['PAINT', 'SHARPEN', 'FILL'] and mtop.mask_index == 1, "Move Down")
+check(bpy.ops.m3d.mask_effect_remove() == {'FINISHED'} and [e.kind for e in mtop.mask_stack][:3] == ['PAINT', 'FILL', 'NOISE']
+      and mtop.mask_index == 1, "Remove the selected effect")
+mtop.mask_index = 0
+paint_name = mtop.mask_stack[0].image.name
+check(bpy.ops.m3d.mask_effect_duplicate() == {'FINISHED'} and mtop.mask_stack[1].name == "Dirt Copy" and mtop.mask_index == 1
+      and mtop.mask_stack[1].image is not None and mtop.mask_stack[1].image != mtop.mask_stack[0].image
+      and mtop.mask_stack[1].uid != mtop.mask_stack[0].uid, "Duplicate copies the effect and its paint image")
+copy_name = mtop.mask_stack[1].image.name
+check(np.array_equal(read(mtop.mask_stack[1].image), read(mtop.mask_stack[0].image)), "...with the same pixels")
+check(bpy.ops.m3d.mask_effect_remove() == {'FINISHED'} and copy_name not in bpy.data.images and paint_name in bpy.data.images,
+      "removing a Paint effect deletes its image, only its own")
+# Duplicate Layer copies the stack: paint images are copied, blur caches made again, baked maps shared.
+check(bpy.ops.m3d.layer_duplicate() == {'FINISHED'}, "Duplicate Layer with a mask stack")
+dup = mm.m3d_layers[2]
+check([e.kind for e in dup.mask_stack] == [e.kind for e in mtop.mask_stack] and [e.uid for e in dup.mask_stack] != [e.uid for e in mtop.mask_stack]
+      and dup.mask_stack[0].image != mtop.mask_stack[0].image and np.array_equal(read(dup.mask_stack[0].image), read(mtop.mask_stack[0].image))
+      and all(a.opacity == b.opacity and a.blend == b.blend for a, b in zip(dup.mask_stack, mtop.mask_stack)),
+      "...the copy has its own effects and paint image")
+blur_dup = next(e for e in dup.mask_stack if e.kind == 'BLUR')
+blur_src = next(e for e in mtop.mask_stack if e.kind == 'BLUR')
+check(blur_dup.image is not None and blur_dup.image != blur_src.image, "...and its own blur cache")
+bpy.ops.m3d.layer_remove()
+mm.m3d_layer_index = 1
+mtop = mm.m3d_layers[1]
+check(len(mm.m3d_layers) == 2, "the copy is gone again")
+check(not [n for n in mnodes if n.get(LY.TAG) == "MASK" and n.get("m3d_mask") not in {l.uid for l in mm.m3d_layers}],
+      "deleting a layer removes its mask nodes")
+
+# --- numpy == nodes, effect by effect (a Cycles emission bake of the layer's mask, against MK.stack_value)
+def mask_socket(temp):
+    layer = temp.m3d_layers[1]
+    return temp.node_tree.nodes[LY.part("MASK", layer.uid, "mix." + layer.mask_stack[len(layer.mask_stack) - 1].uid)].outputs[2]
+
+
+def setup(spec):
+    """The top layer's mask: [(kind, settings)], with random images for the paint and the maps."""
+    with LY.muted():
+        mtop.mask_stack.clear()
+        for kind, props in spec:
+            e = LY.add_effect(mtop, kind)
+            for key, value in props.items():
+                setattr(e, key, value)
+            if kind == 'PAINT':
+                e.image = noise_image("mkp_%s" % e.uid, False, alpha=False, opaque=True)
+            for key in MK.needed_maps(e):
+                LY.assign_map(e, key, mimg("mkm_%s_%s" % (key, e.uid)))
+        mtop.mask_index = len(mtop.mask_stack) - 1
+    LY.rebuild_all(mm)
+
+
+def mask_error(label, tol):
+    got = bake_out(mplane, mm, mask_socket)[..., 0]
+    mine = MK.stack_value(mtop, MN)
+    err = float(np.abs(got - mine).max())
+    check(err < tol, "numpy matches the node chain for %s (error %.6f, mask range %.2f-%.2f)" % (label, err, mine.min(), mine.max()))
+    return err
+
+
+mask_worst = {}
+for label, spec, tol in (
+        ("Fill", [('FILL', dict(value=0.3))], 1e-5),
+        ("Paint", [('PAINT', {})], 1e-5),
+        ("Edges", [('EDGES', dict(amount=0.7, softness=0.2))], 1e-4),
+        ("Edges (inverted)", [('EDGES', dict(amount=0.4, softness=0.05, invert=True))], 1e-4),
+        ("Cavity", [('CAVITY', dict(amount=0.6, contrast=0.7))], 1e-4),
+        ("Cavity (inverted)", [('CAVITY', dict(amount=0.3, contrast=0.2, invert=True))], 1e-4),
+        ("Thickness", [('THICKNESS', dict(amount=0.5, contrast=0.9))], 1e-4),
+        ("Top-down", [('TOPDOWN', {})], 1e-4),
+        ("Top-down (tilted)", [('TOPDOWN', dict(direction=(1, 0.5, 0.7), offset=0.3, softness=0.4, height_falloff=0.8))], 1e-4),
+        ("Noise (UV)", [('NOISE', dict(scale=5.0, detail=3.0, noise_contrast=3.0, seed=2))], 2e-3),
+        ("Noise (UV, fractional detail)", [('NOISE', dict(scale=3.0, detail=2.5, noise_contrast=1.0))], 2e-3),
+        ("Levels", [('PAINT', {}), ('LEVELS', dict(black_in=0.2, white_in=0.8, gamma=2.0, black_out=0.1, white_out=0.9))], 1e-4),
+        ("Levels (reversed output)", [('PAINT', {}), ('LEVELS', dict(black_in=0.1, white_in=0.9, gamma=0.5, black_out=0.9, white_out=0.2))], 1e-4),
+        ("Invert", [('PAINT', {}), ('INVERT', {})], 1e-4),
+        ("Invert at 50%", [('PAINT', {}), ('INVERT', dict(opacity=0.5))], 1e-4),
+        ("Sharpen", [('PAINT', {}), ('SHARPEN', dict(amount=0.6))], 1e-4),
+        ("Blur", [('PAINT', {}), ('BLUR', dict(amount=0.3))], 1e-4),
+        ("Blur at 50% then Sharpen", [('PAINT', {}), ('BLUR', dict(amount=0.5, opacity=0.5)), ('SHARPEN', {})], 1e-4),
+        ("Edges hidden, Invert hidden", [('PAINT', {}), ('EDGES', dict(visible=False)), ('CAVITY', {}), ('INVERT', dict(visible=False)),
+                                         ('FILL', dict(value=0.8, blend='SUBTRACT', opacity=0.3))], 1e-4)):
+    setup(spec)
+    mask_worst[label] = mask_error(label, tol)
+for mode, _label in MK.BLENDS:
+    for opacity in (1.0, 0.45):
+        setup([('PAINT', {}), ('FILL', dict(value=0.35, blend=mode, opacity=opacity)), ('EDGES', dict(blend=mode, opacity=opacity))])
+        mask_worst["blend %s" % mode] = max(mask_worst.get("blend %s" % mode, 0), mask_error("blend %s at %.2f" % (mode, opacity), 1e-4))
+print("mask effects vs Cycles bake: worst error %.6f (Noise), %.6f (every other effect and blend)" % (
+    max(v for k, v in mask_worst.items() if k.startswith("Noise")), max(v for k, v in mask_worst.items() if not k.startswith("Noise"))))
+
+# --- Blur: the cache follows what is below it, and is only made again when that changed
+setup([('PAINT', {}), ('BLUR', dict(amount=0.3))])
+paint_e, blur_e = mtop.mask_stack[0], mtop.mask_stack[1]
+cache = blur_e.image
+want = MK.blur(MK.sample(paint_e.image, cache.size[0]), 0.3)
+check(tuple(cache.size) == (64, 64) and cache.is_float and np.abs(read(cache).reshape(64, 64, 4)[..., 0] - want).max() < 1e-5,
+      "the Blur cache holds the blurred paint image")
+raw = MK.sample(paint_e.image, 64)
+check(np.abs(want - raw).max() > 0.1 and want.std() < raw.std() * 0.6, "...and is really softer than it (std %.3f against %.3f)" % (want.std(), raw.std()))
+calls = []
+real_blur = MK.blur
+MK.blur = lambda a, amount: (calls.append(1), real_blur(a, amount))[1]
+LY.rebuild_all(mm)
+check(not calls and not MK.refresh_blurs(mtop), "nothing changed: the cache is not made again")
+LY.write_pixels(paint_e.image, np.full(64 * 64 * 4, 0.25, np.float32))
+LY.rebuild_all(mm)
+check(len(calls) == 1 and abs(read(cache)[0, 0] - 64 / 255) < 1e-5, "painting below the Blur makes the cache again")
+blur_e.amount = 0.8
+check(len(calls) == 2, "so does its amount")
+mtop.opacity = 0.5
+check(len(calls) == 2, "...but not an edit of the layer")
+MK.blur = real_blur
+mtop.opacity = 1.0
+
+# --- Migration: a layer's single mask image (and Invert Mask) becomes a Paint effect (and an Invert effect), same look
+for invert in (False, True):
+    with LY.muted():
+        mtop.mask_stack.clear()
+        legacy = mimg("mkLegacy%d" % invert)
+        mtop.mask, mtop.mask_invert = legacy, invert
+        mtop.opacity, mtop.blend = 0.8, 'MULTIPLY'
+        mtop.channels[0].color = (0.9, 0.3, 0.1, 1.0)
+    lum = read(legacy).reshape(MN, MN, 4)[..., :3] @ MK.LUMA
+    want_alpha = np.clip(1.0 - lum if invert else lum, 0.0, 1.0) * 0.8
+    base_lin = LY.to_linear(MK.pixels_of(LY.entry_of(mm.m3d_layers[0], 'BASE_COLOR').image, MN)[..., :3])
+    old_look = base_lin * (1 - want_alpha[..., None]) + (base_lin * np.array([0.9, 0.3, 0.1], np.float32)) * want_alpha[..., None]
+    LY.rebuild_all(mm)
+    check(mtop.mask is None and not mtop.mask_invert and [e.kind for e in mtop.mask_stack] == (['PAINT', 'INVERT'] if invert else ['PAINT'])
+          and mtop.mask_stack[0].image == legacy and mtop.mask_stack[0].name == "Mask", "migration (invert %s): the mask is a Paint effect%s" % (invert, " and an Invert effect" if invert else ""))
+    check(np.abs(MK.stack_value(mtop, MN) - np.clip(1.0 - lum if invert else lum, 0, 1)).max() < 1e-6, "migration (invert %s): same mask" % invert)
+    mine = LY.composite(mm, 'BASE_COLOR', MN)
+    nodes_look = bake_chain(mplane, mm, 'BASE_COLOR')
+    check(np.abs(mine - nodes_look).max() < 1e-4, "migration (invert %s): numpy composite == node bake (%.6f)" % (invert, np.abs(mine - nodes_look).max()))
+    check(np.abs(nodes_look - old_look).max() < 1e-4, "migration (invert %s): the look is what the old chain made (%.6f)" % (invert, np.abs(nodes_look - old_look).max()))
+    check(not [n for n in mnodes if n.name.endswith("maskinv")], "migration (invert %s): no old nodes are left" % invert)
+mtop.opacity, mtop.blend = 1.0, 'MIX'
+bpy.ops.m3d.layer_mask_remove()
+check(not mtop.mask_stack, "Remove Mask clears the stack")
+
+# --- Baked maps: baked once, reused by every effect and layer, again after Rebake or a new resolution
+mplane.rotation_euler.x = math.radians(90)   # the plane faces -Y, and has some height
+bpy.context.view_layer.update()
+s0 = {k: bpy.data.images.get("MaskPlane_" + label) for k, label in MK.MAP_LABELS.items()}
+check(not any(s0.values()), "no baked maps before the first generator")
+mats_before = sorted(m.name for m in bpy.data.materials)
+slot_before = [s.material for s in mplane.material_slots]
+nodes_before = sorted(n.name for n in mnodes)
+for kind in ('EDGES', 'CAVITY', 'TOPDOWN', 'THICKNESS'):
+    check(bpy.ops.m3d.mask_effect_add(kind=kind) == {'FINISHED'}, "add mask effect " + kind + " (bakes its maps)")
+maps = {k: bpy.data.images.get("MaskPlane_" + label) for k, label in MK.MAP_LABELS.items()}
+check(all(maps.values()) and all(tuple(i.size) == (64, 64) for i in maps.values()), "the maps are baked at the Bake tab's resolution: %s" % {k: v and tuple(v.size) for k, v in maps.items()})
+st = mtop.mask_stack
+check(st[0].image == maps['CURVATURE'] and st[1].image == maps['AO'] and st[2].image == maps['WORLDNORMAL'] and st[2].image2 == maps['POSITION']
+      and st[3].image == maps['THICKNESS'] and all(i.use_fake_user for i in maps.values()), "effects point at the baked maps (kept in the file)")
+check(sorted(m.name for m in bpy.data.materials) == mats_before and [s.material for s in mplane.material_slots] == slot_before
+      and set(nodes_before) <= {n.name for n in mnodes}, "baking left the materials alone")
+check(maps['POSITION'].is_float and maps['WORLDNORMAL'].is_float and np.asarray(maps['POSITION'].get("m3d_bounds")).shape == (6,)
+      and np.asarray(maps['POSITION'].get("m3d_inv")).shape == (16,), "Position and WorldNormal are float maps; the Position map keeps its bounds")
+wn = read(maps['WORLDNORMAL']).reshape(64, 64, 4)[..., :3]
+decoded = wn[32, 32] * 2 - 1
+check(np.abs(decoded - np.array([0, -1, 0])).max() < 0.02, "WorldNormal holds the world normal n * 0.5 + 0.5 (%s)" % decoded)
+pos = read(maps['POSITION']).reshape(64, 64, 4)[..., :3]
+check(pos.min() >= 0 and pos.max() <= 1.0 + 1e-6 and pos[..., 0].max() > 0.9 and pos[..., 2].max() > 0.9, "Position is within the bounds (0-1)")
+stamps = {k: i.get("m3d_stamp") for k, i in maps.items()}
+mtop.mask_index = 0
+check(bpy.ops.m3d.mask_effect_add(kind='EDGES') == {'FINISHED'} and {k: i.get("m3d_stamp") for k, i in maps.items()} == stamps
+      and mtop.mask_stack[1].image == maps['CURVATURE'], "a second Edges effect reuses the baked map (no rebake)")
+mplane.m3d_bake.resolution = '128'
+check(bpy.ops.m3d.mask_effect_add(kind='CAVITY') == {'FINISHED'} and maps['AO'].get("m3d_stamp") != stamps['AO'] and tuple(maps['AO'].size) == (128, 128)
+      and maps['CURVATURE'].get("m3d_stamp") == stamps['CURVATURE'], "a new resolution rebakes the map that is needed, only that one")
+check(bpy.ops.m3d.mask_rebake() == {'FINISHED'} and all(i.get("m3d_stamp") != stamps[k] and tuple(i.size) == (128, 128) for k, i in maps.items()),
+      "Rebake Maps bakes them all again")
+mplane.m3d_bake.resolution = '64'
+check(bpy.ops.m3d.mask_rebake() == {'FINISHED'} and all(tuple(i.size) == (64, 64) for i in maps.values()), "...also back to a smaller size")
+# The effects read the real baked maps: numpy still equals the nodes.
+real_maps_error = mask_error("the real baked maps (Edges, Cavity, Top-down, Thickness)", 1e-4)
+
+# --- Noise in Object space reads the Position map; numpy evaluates the same noise at the same object coordinates
+bpy.ops.m3d.layer_mask_remove()
+check(bpy.ops.m3d.mask_effect_add(kind='NOISE') == {'FINISHED'}, "add Noise")
+nz = mtop.mask_stack[0]
+nz.space = 'OBJECT'
+nz.scale, nz.detail, nz.noise_contrast = 1.5, 3.0, 3.0
+check(nz.image == maps['POSITION'] and not MK.missing_maps(mtop), "switching Noise to Object space picks up the baked Position map")
+check(any(n.type == 'TEX_COORD' and n.outputs["Object"].links for n in mask_nodes(mtop)), "...and reads the Object texture coordinates")
+object_noise_error = mask_error("Noise (object space)", 4e-3)
+mplane.rotation_euler.x = 0
+bpy.context.view_layer.update()
+bpy.ops.m3d.layer_mask_remove()
+
+# --- Show Mask: the material shows the mask, then is exactly as it was
+def material_state(mat):
+    nt = mat.node_tree
+    return (sorted(n.name for n in nt.nodes),
+            sorted((l.from_node.name, l.from_socket.identifier, l.to_node.name, l.to_socket.identifier) for l in nt.links))
+
+
+setup([('PAINT', {}), ('EDGES', dict(amount=0.5)), ('LEVELS', {})])
+state = material_state(mm)
+out_node = next(n for n in mnodes if n.type == 'OUTPUT_MATERIAL')
+check(out_node.inputs["Surface"].links[0].from_node.type == 'BSDF_PRINCIPLED', "the shader feeds the output")
+mm.m3d_show_mask = True
+emit = mnodes[LY.MASKVIEW]
+check(out_node.inputs["Surface"].links[0].from_node == emit and emit.inputs["Color"].links[0].from_socket == LY.mask_top(mm.node_tree, mtop)
+      and emit[LY.TAG] == "MASKVIEW", "Show Mask: the output shows an Emission node fed by the layer's mask")
+shown = bake_out(mplane, mm, lambda t: t.node_tree.nodes[LY.MASKVIEW].inputs["Color"].links[0].from_socket)[..., 0]
+check(np.abs(shown - MK.stack_value(mtop, MN)).max() < 1e-4, "...which is the numpy mask")
+bpy.ops.m3d.mask_effect_add(kind='INVERT')
+check(emit.inputs["Color"].links[0].from_socket == LY.mask_top(mm.node_tree, mtop), "an edit of the stack keeps it on the new mask")
+other = mm.m3d_layers[0]
+mm.m3d_layer_index = 0
+check(not emit.inputs["Color"].links and tuple(emit.inputs["Color"].default_value) == (1.0, 1.0, 1.0, 1.0), "a layer without a mask shows white")
+mm.m3d_layer_index = 1
+check(emit.inputs["Color"].links[0].from_socket == LY.mask_top(mm.node_tree, mtop), "...and the mask returns with the layer")
+with LY.flattened_material(mplane, mm, 8) as temp:
+    surface = next(n for n in temp.node_tree.nodes if n.type == 'OUTPUT_MATERIAL').inputs["Surface"]
+    check(surface.links and surface.links[0].from_node.type == 'BSDF_PRINCIPLED', "an exporter sees the shader, not the mask view")
+check(mm.m3d_show_mask and out_node.inputs["Surface"].links[0].from_node == emit, "...and the view is still on afterwards")
+mm.m3d_show_mask = False
+bpy.ops.m3d.layer_mask_invert()   # the Invert added above is the top effect: this removes it
+check(material_state(mm) == state and LY.MASKVIEW not in mnodes and "m3d_maskview" not in mm.keys(),
+      "Show Mask off: the material is exactly as it was (nodes and links)")
+mm.m3d_show_mask = True
+emit = mnodes[LY.MASKVIEW]
+bpy.ops.m3d.layer_mask_remove()
+check(out_node.inputs["Surface"].links[0].from_node == emit and not emit.inputs["Color"].links, "removing the mask while it is shown keeps the view (white)")
+mm.m3d_show_mask = False
+check(out_node.inputs["Surface"].links[0].from_node.type == 'BSDF_PRINCIPLED' and LY.MASKVIEW not in mnodes, "...and off restores the shader")
+mm.m3d_show_mask = True
+mm.m3d_show_mask = False
+check(out_node.inputs["Surface"].links[0].from_node.type == 'BSDF_PRINCIPLED', "on and off again: still the shader")
+
+# --- Merge Down and the flattening use the mask stack
+setup([('EDGES', dict(amount=0.6, softness=0.3)), ('NOISE', dict(scale=4.0, noise_contrast=2.0, blend='MULTIPLY'))])
+mtop.opacity = 0.8
+mtop.channels[0].color = (0.2, 0.7, 0.4, 1.0)
+mask_now = MK.stack_value(mtop, MN)
+base_px = MK.pixels_of(LY.entry_of(mm.m3d_layers[0], 'BASE_COLOR').image, MN)
+base_srgb_lin = LY.to_linear(base_px[..., :3])
+fill_lin = np.array([0.2, 0.7, 0.4], np.float32)
+a = (mask_now * 0.8)[..., None]
+want_flat = LY.encode(LY.CHANNEL_BY_ID['BASE_COLOR'], np.clip(base_srgb_lin + a * (fill_lin - base_srgb_lin), 0, 1))
+got_flat = LY.flatten_channel(mm, 'BASE_COLOR', MN)
+check(np.abs(got_flat - want_flat).max() < 1e-4, "flattening includes the mask stack (error %.6f)" % np.abs(got_flat - want_flat).max())
+check(np.abs(got_flat[..., :3] - want_flat[..., :3]).max() < 1e-4 and mask_now.std() > 0.05, "...a mask that varies")
+exp_dir2 = tempfile.mkdtemp(prefix="m3d_masks_export_")
+tx = bpy.context.scene.m3d_tex
+tx.export_folder, tx.export_size, tx.export_preset = exp_dir2, 'SAME', 'UNREAL'
+check(bpy.ops.m3d.tex_export() == {'FINISHED'}, "export of a stack with a mask stack runs")
+bc2, _ = load_png(exp_dir2, "T_MaskPlane_BC.png")
+check(np.abs(bc2.reshape(MN, MN, 4)[..., :3] - want_flat[..., :3]).max() < 3 / 255, "the exported base color has the mask applied (%.4f)" % np.abs(bc2.reshape(MN, MN, 4)[..., :3] - want_flat[..., :3]).max())
+tx.export_preset, tx.export_folder = 'UNITY', "//textures/"
+mat_images = {i.name for i in LY.stack_images(mm)}
+mtop.blend = 'MIX'
+mm.m3d_layer_index = 1
+check(bpy.ops.m3d.layer_merge_down() == {'FINISHED'} and [l.name for l in mm.m3d_layers] == ["Base"], "Merge Down of a layer with a mask stack")
+merged = read(LY.entry_of(mm.m3d_layers[0], 'BASE_COLOR').image).reshape(MN, MN, 4)
+check(np.abs(merged[..., :3] - want_flat[..., :3]).max() < 2 / 255 and not mm.m3d_layers[0].mask_stack, "...the pixels have the mask baked in (%.4f)" % np.abs(merged[..., :3] - want_flat[..., :3]).max())
+
+# --- The Mask panel draws for every kind of effect
+LY.rebuild_all(mm)
+bpy.ops.m3d.layer_add(kind='FILL')
+mtop = mm.m3d_layers[1]
+bpy.context.view_layer.objects.active = mplane
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+setup([(k.id, {}) for k in MK.KINDS])
+mctx = TCtx()
+tex_ws.m3d_page_right = "tex_layers"
+check("PROPERTIES_PT_m3d_tx_mask" in tex_shown("tex_layers"), "the Mask panel is shown")
+shown_kinds = []
+for i, e in enumerate(mtop.mask_stack):
+    mtop.mask_index = i
+    log = draw_stub(T.PROPERTIES_PT_m3d_tx_mask, mctx)
+    check_calls("Mask panel (%s)" % e.kind, log)
+    props_drawn = [r._args[1] for r in log if r._kind == "prop" and r._args[0] == e]
+    check(props_drawn == [p for p, _l in MK.PARAM_UI.get(e.kind, ())], "the Mask panel shows the settings of %s: %s" % (e.kind, props_drawn))
+    shown_kinds.append(e.kind)
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_mask, mctx)
+check(T.MASK_HELP == "White shows the layer, black hides it. Effects combine from the bottom up."
+      and {"White shows the layer, black hides it.", "Effects combine from the bottom up."} <= {r._kw.get("text") for r in log if r._kind == "label"},
+      "the Mask panel explains how masks work")
+check(LY.depsgraph_post in bpy.app.handlers.depsgraph_update_post and LY.load_post in bpy.app.handlers.load_post, "stroke and load handlers are registered")
+check(any(r._kind == "template_list" and r._args[0] == "M3D_UL_mask_effects" for r in log) and any(r._kind == "menu" for r in log), "...lists the effects and has the Add menu")
+check(any(r._kind == "operator" and r._args[0] == "m3d.mask_rebake" for r in log) and any(r._kind == "prop" and r._args[1] == "m3d_show_mask" for r in log),
+      "...has Rebake maps and Show Mask")
+log = []
+LY.M3D_UL_mask_effects.draw_item(None, mctx, Rec(log), None, mtop.mask_stack[2], 0, None, "", 0)
+check_calls("mask effect row", log)
+check({r._args[1] for r in log if r._kind == "prop"} >= {"visible", "name", "blend", "opacity"}, "the effect row shows eye, name, blend and opacity")
+log = []
+LY.M3D_UL_mask_effects.draw_item(None, mctx, Rec(log), None, mtop.mask_stack[8], 0, None, "", 0)
+check("blend" not in {r._args[1] for r in log if r._kind == "prop"}, "a filter's row has no blend mode")
+log = []
+T.M3D_MT_mask_add.draw(NS(layout=Rec(log)), mctx)
+added = [r for r in log if r._kind == "operator"]
+check({r._kw["text"] if "text" in r._kw else "" for r in added} >= {"Paint (White)", "Paint (Black)", "Edges", "Cavity", "Top-down", "Thickness", "Noise", "Levels", "Blur", "Invert", "Sharpen"},
+      "the Add menu lists Paint, Fill, the generators and the filters")
+check_calls("mask add menu", log)
+mtop.mask_stack.clear()
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_mask, mctx)
+check(sum(1 for r in log if r._kind == "operator" and r._args[0] == "m3d.layer_mask_add") == 2, "a layer without a mask offers White and Black")
+check_calls("Mask panel (no mask)", log)
+check(all(isinstance(MK.M3D_MaskEffect.bl_rna.properties[p], bpy.types.Property) for k in MK.PARAM_UI for p, _l in MK.PARAM_UI[k]), "every shown setting exists")
+check(all(LY.M3D_OT_mask_effect_add.description(None, NS(kind=k.id, fill='WHITE')) for k in MK.KINDS), "every effect type has a tooltip")
+
+# --- Saving: the stack, its images, the baked maps and the nodes come back as they were
+setup([('PAINT', {}), ('EDGES', dict(amount=0.7, invert=True)), ('NOISE', dict(scale=7.0, seed=4, space='UV')), ('BLUR', dict(amount=0.4)),
+       ('LEVELS', dict(gamma=1.7)), ('INVERT', dict(opacity=0.6, visible=False))])
+mtop.mask_stack[0].name, mtop.mask_index = "Dirt paint", 3
+mm.m3d_show_mask = True
+keep = [(e.name, e.kind, e.visible, round(e.opacity, 5), e.blend, e.image.name if e.image else None, e.image2.name if e.image2 else None,
+         round(e.amount, 5), e.invert, round(e.scale, 5), e.seed, e.space, round(e.gamma, 5)) for e in mtop.mask_stack]
+img_keep = {e.name: read(e.image).copy() for e in mtop.mask_stack if e.image is not None and e.kind in {'PAINT', 'BLUR'}}
+node_keep = material_state(mm)
+fp_keep = mtop.mask_stack[3].image["m3d_fp"]
+mask_path = os.path.join(tempfile.mkdtemp(prefix="m3d_masks_save_"), "masks.blend")
+bpy.ops.wm.save_as_mainfile(filepath=mask_path)
+bpy.ops.wm.open_mainfile(filepath=mask_path)
+tex_ws = bpy.data.workspaces["Texture"]
+rm = bpy.data.materials["MaskPlane_Material"] if "MaskPlane_Material" in bpy.data.materials else bpy.data.objects["MaskPlane"].active_material
+rl = rm.m3d_layers[1]
+check([(e.name, e.kind, e.visible, round(e.opacity, 5), e.blend, e.image.name if e.image else None, e.image2.name if e.image2 else None,
+        round(e.amount, 5), e.invert, round(e.scale, 5), e.seed, e.space, round(e.gamma, 5)) for e in rl.mask_stack] == keep and rl.mask_index == 3,
+      "the mask stack comes back from the file")
+check(all(np.abs(read(e.image) - img_keep[e.name]).max() < 1e-6 for e in rl.mask_stack if e.name in img_keep), "...with its paint image and blur cache pixels")
+check(material_state(rm) == node_keep and rm.m3d_show_mask, "...and the same nodes and links (Show Mask included)")
+rb = rl.mask_stack[3]
+check(rb.image["m3d_fp"] == fp_keep and not MK.refresh_blurs(rl), "...the blur cache is still current (nothing is made again)")
+check([i for i in bpy.data.images if i.name.startswith("MaskPlane_") and i.get("m3d_map") and i.get("m3d_stamp")], "...and the baked maps with their marks")
+check(LY.rebuild_all(rm) is False, "a rebuild after loading changes nothing")
+rm.m3d_show_mask = False
+
+# --- A file from before mask stacks (a mask image and Invert Mask on the layer) is upgraded when it opens
+with LY.muted():
+    rl.mask_stack.clear()
+    old_mask = bpy.data.images.new("mkOldFile", 8, 8, alpha=False, is_data=True)
+    LY.write_pixels(old_mask, np.concatenate([np.random.default_rng(9).random((8, 8, 3)), np.ones((8, 8, 1))], axis=-1).astype(np.float32))
+    rl.mask, rl.mask_invert = old_mask, True
+old_lum = read(old_mask)[:, :3] @ MK.LUMA
+old_path = os.path.join(tempfile.mkdtemp(prefix="m3d_masks_old_"), "old.blend")
+bpy.ops.wm.save_as_mainfile(filepath=old_path)
+bpy.ops.wm.open_mainfile(filepath=old_path)
+tex_ws = bpy.data.workspaces["Texture"]
+om = bpy.data.materials["MaskPlane_Material"] if "MaskPlane_Material" in bpy.data.materials else bpy.data.objects["MaskPlane"].active_material
+ol = om.m3d_layers[1]
+check(ol.mask is None and not ol.mask_invert and [e.kind for e in ol.mask_stack] == ['PAINT', 'INVERT'] and ol.mask_stack[0].image.name == "mkOldFile",
+      "opening an old file turns the layer's mask into a Paint and an Invert effect: %s" % [e.kind for e in ol.mask_stack])
+check(np.abs(MK.stack_value(ol, 8).reshape(-1) - np.clip(1.0 - old_lum, 0, 1)).max() < 1e-6, "...which makes the same mask (inverted)")
+check(LY.mask_top(om.node_tree, ol) is not None, "...and the nodes are built")
+N = N_saved
 
 # ----------------------------------------------------------------------------------------------------
 # Phase 4: Rigging workspace (tabs, pages, gates, modes, Joint tool, Orient Joint, controls, IK, skin, Driven Key, names).

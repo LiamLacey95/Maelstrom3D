@@ -28,6 +28,7 @@ from bl_ui.properties_paint_common import (
 from mathutils import Vector
 
 import m3d_layers as L
+import m3d_masks as MK
 import m3d_uv
 from m3d_layers import (CHANNEL_BY_ID, CHANNEL_ITEMS, CHANNELS, active_layer, entry_of, pixels_of, principled_of,
                         set_channel_space)
@@ -489,7 +490,8 @@ BAKE_MAPS = (   # (id, label, flag in M3D_BakeSettings)
     ('NORMAL', "Normal", "use_normal"), ('AO', "AO", "use_ao"), ('CURVATURE', "Curvature", "use_curvature"),
     ('POSITION', "Position", "use_position"), ('THICKNESS', "Thickness", "use_thickness"),
 )
-BAKE_TYPES = {'NORMAL': 'NORMAL', 'AO': 'AO', 'CURVATURE': 'EMIT', 'POSITION': 'POSITION', 'THICKNESS': 'EMIT'}
+BAKE_TYPES = {'NORMAL': 'NORMAL', 'AO': 'AO', 'CURVATURE': 'EMIT', 'POSITION': 'POSITION', 'THICKNESS': 'EMIT',
+              'WORLDNORMAL': 'EMIT'}   # The last is only for mask effects (Top-down): the world space normal, n * 0.5 + 0.5.
 
 
 def bake_material(image=None, emission=None, distance=1.0):
@@ -507,6 +509,12 @@ def bake_material(image=None, emission=None, distance=1.0):
             rng.inputs["From Min"].default_value, rng.inputs["From Max"].default_value = 0.45, 0.55
             links.new(geo.outputs["Pointiness"], rng.inputs["Value"])
             links.new(rng.outputs["Result"], emit.inputs["Color"])
+        elif emission == 'WORLDNORMAL':
+            geo, vec = nodes.new("ShaderNodeNewGeometry"), nodes.new("ShaderNodeVectorMath")
+            vec.operation = 'MULTIPLY_ADD'
+            vec.inputs[1].default_value = vec.inputs[2].default_value = (0.5, 0.5, 0.5)
+            links.new(geo.outputs["Normal"], vec.inputs[0])
+            links.new(vec.outputs["Vector"], emit.inputs["Color"])
         else:   # Ambient occlusion from inside the mesh: the shorter the way out, the darker.
             ao = nodes.new("ShaderNodeAmbientOcclusion")
             ao.inside, ao.samples = True, 16
@@ -545,8 +553,9 @@ def bake_image(ob, label, size, float_buffer):
     image = bpy.data.images.get(name)
     if image is None or image.source != 'GENERATED':
         image = bpy.data.images.new(name, size, size, alpha=False, float_buffer=float_buffer, is_data=True)
+        image.use_half_precision = False   # (float maps keep all 32 bits, in the file too)
     elif tuple(image.size) != (size, size):
-        image.scale(size, size)
+        image.generated_width = image.generated_height = size   # (scale() would not stick: the bake clears to this size)
     image.use_fake_user = True   # Nothing uses it yet: keep it in the file.
     image.colorspace_settings.name = 'Non-Color'
     image["m3d_bake"] = label
@@ -558,9 +567,13 @@ def world_bounds(ob):
     return corners.min(axis=0), corners.max(axis=0)
 
 
-def normalise_position(image, ob):
-    """Position bakes world coordinates: scale them to 0-1 within the object's bounds so any image format keeps them."""
+def normalise_position(image, ob, owner):
+    """Position bakes world coordinates: scale them to 0-1 within the object's bounds so any image format keeps them.
+    The bounds and the inverse matrix of `owner` (the baked mesh) stay with the image: mask effects turn the map back
+    into object space coordinates with them."""
     lo, hi = world_bounds(ob)
+    image["m3d_bounds"] = [float(x) for x in (*lo, *hi)]
+    image["m3d_inv"] = [float(x) for row in owner.matrix_world.inverted() for x in row]
     px = np.empty(len(image.pixels), np.float32)
     image.pixels.foreach_get(px)
     rgba = px.reshape(-1, 4)
@@ -611,9 +624,10 @@ def bake_scene(context, ob, high):
 def bake_maps(context, ob, high, s, maps):
     """Bake the ticked maps of `ob` (from `high` when set) into images. Returns the images."""
     size, images = int(s.resolution), []
-    context.scene.cycles.samples = s.samples
     for key, label, _flag in maps:
-        image = bake_image(ob, label, size, key == 'POSITION')
+        # The Position pass adds up its samples instead of averaging them: one sample, and it is exact anyway.
+        context.scene.cycles.samples = 1 if key == 'POSITION' else s.samples
+        image = bake_image(ob, label, size, key in {'POSITION', 'WORLDNORMAL'})
         emission = key if BAKE_TYPES[key] == 'EMIT' else None
         # Without a high-poly mesh the low-poly one carries both the emission and the bake target.
         target = bake_material(image, None if high else emission, s.thickness_distance)
@@ -625,9 +639,33 @@ def bake_maps(context, ob, high, s, maps):
                     cage_extrusion=s.extrusion, max_ray_distance=s.ray_distance, normal_space='TANGENT',
                     use_clear=True, target='IMAGE_TEXTURES', save_mode='INTERNAL')
         if key == 'POSITION':
-            normalise_position(image, high or ob)
+            normalise_position(image, high or ob, ob)
+        image["m3d_map"] = size   # Baked at this size: mask effects reuse it until the resolution changes.
+        image["m3d_stamp"] = MK.new_uid()
         images.append(image)
     return images
+
+
+def ensure_maps(context, ob, keys, force=False):
+    """The baked maps (MK.MAP_LABELS keys) mask effects read, as {key: image}: the ones the mesh has at the Bake tab's
+    resolution are reused, the others are baked (together, in one go; `force`: all of them again)."""
+    s = ob.m3d_bake
+    size = int(s.resolution)
+    todo = []
+    for key in keys:
+        image = bpy.data.images.get("%s_%s" % (ob.name, MK.MAP_LABELS[key]))
+        if force or image is None or image.get("m3d_map") != size:
+            todo.append((key, MK.MAP_LABELS[key], None))
+    if todo:
+        wm = context.window_manager
+        wm.progress_begin(0, 1)
+        try:
+            with bake_scene(context, ob, s.high):
+                bake_maps(context, ob, s.high, s, todo)
+        finally:
+            wm.progress_end()
+        s.baked = "|".join(dict.fromkeys([*filter(None, s.baked.split("|")), *("%s_%s" % (ob.name, label) for _k, label, _f in todo)]))
+    return {key: bpy.data.images["%s_%s" % (ob.name, MK.MAP_LABELS[key])] for key in keys}
 
 
 class M3D_OT_tex_bake_pick(Operator):
@@ -732,6 +770,8 @@ def export_textures(context, ob):
     name = bpy.path.clean_name(ob.name)
     mat = ob.active_material
     stacked = bool(mat.m3d_layers)
+    if stacked:
+        L.prepare(context, mat)
     found = {ch: img for ch, (_i, img) in channel_slots(mat).items()}
     present = set(L.content_channels(mat)) if stacked else set(found)
     native = L.stack_size(mat) if stacked else max((max(img.size) for img in found.values()), default=0)
@@ -986,11 +1026,11 @@ class PROPERTIES_PT_m3d_tx_stack(_Page, Panel):
             n = len(paint_slots(mat))
             reason(layout, "The %d paint slots become the Base layer" % n if n else "Add a layer to start painting")
             return
-        if layer.kind == 'FILL' and not layer.mask:
-            box = layout.box()
-            box.alert = True
-            box.label(text="A Fill Layer cannot be painted", icon='ERROR')
-            box.operator("m3d.layer_convert", icon='IMAGE_DATA')
+        if layer.kind == 'FILL' and L.paint_effect(layer) is None and context.mode == 'PAINT_TEXTURE':
+            # A fill layer is normal; only say where strokes can go while painting.
+            row = layout.row(align=True)
+            row.label(text="Fill layer: paint its Mask, or", icon='INFO')
+            row.operator("m3d.layer_convert", text="Convert to Paint", icon='IMAGE_DATA')
         row = layout.row()
         row.template_list("M3D_UL_layers", "", mat, "m3d_layers", mat, "m3d_layer_index", rows=5,
                           sort_reverse=True, sort_lock=True)
@@ -1003,7 +1043,9 @@ class PROPERTIES_PT_m3d_tx_stack(_Page, Panel):
         row = layout.row(align=True)
         row.operator("m3d.layer_merge_down", icon='TRIA_DOWN_BAR')
         row.operator("m3d.layer_flatten", icon='IMAGE_DATA')
-        target = layer.name + (" mask" if layer.paint_mask and layer.mask else ": " + CHANNEL_BY_ID[mat.m3d_channel].label)
+        effect = L.paint_effect(layer)
+        target = layer.name + (" mask" if effect is not None and (layer.paint_mask or layer.kind == 'FILL')
+                               else ": " + CHANNEL_BY_ID[mat.m3d_channel].label)
         reason(layout, "Painting " + target)
         equivalent = L.memory_equivalent(mat)
         row = layout.row()
@@ -1053,6 +1095,36 @@ class PROPERTIES_PT_m3d_tx_layer(_Page, Panel):
                 layout.prop(e, "color", text=ch.label)
 
 
+MASK_HELP = "White shows the layer, black hides it. Effects combine from the bottom up."
+
+
+class M3D_MT_mask_add(Menu):
+    bl_label = "Add Mask Effect"
+
+    def draw(self, _context):
+        layout = self.layout
+
+        def add(kind, text=None, **props):
+            o = layout.operator("m3d.mask_effect_add", text=text or MK.KIND_BY_ID[kind].label,
+                                icon=MK.KIND_BY_ID[kind].icon)
+            o.kind = kind
+            for key, value in props.items():
+                setattr(o, key, value)
+
+        layout.label(text="Paint and Fill")
+        add('PAINT', "Paint (White)", fill='WHITE')
+        add('PAINT', "Paint (Black)", fill='BLACK')
+        add('FILL')
+        layout.separator()
+        layout.label(text="Generators (from the mesh)")
+        for kind in ('EDGES', 'CAVITY', 'TOPDOWN', 'THICKNESS', 'NOISE'):
+            add(kind)
+        layout.separator()
+        layout.label(text="Filters (change everything below)")
+        for kind in ('LEVELS', 'BLUR', 'INVERT', 'SHARPEN'):
+            add(kind)
+
+
 class PROPERTIES_PT_m3d_tx_mask(_Page, Panel):
     page = "tex_layers"
     bl_label = "Mask"
@@ -1063,22 +1135,57 @@ class PROPERTIES_PT_m3d_tx_mask(_Page, Panel):
 
     def draw(self, context):
         layout = self.layout
-        layer = active_layer(mesh_of(context).active_material)
-        if layer.mask is None:
+        mat = mesh_of(context).active_material
+        layer = active_layer(mat)
+        first, _dot, second = MASK_HELP.partition(". ")   # (two lines: the dock can be narrow)
+        reason(layout, first + ".")
+        layout.label(text=second)
+        if not layer.mask_stack:
             row = layout.row(align=True)
             row.operator("m3d.layer_mask_add", text="White (Show All)", icon='ADD').fill = 'WHITE'
             row.operator("m3d.layer_mask_add", text="Black (Hide All)", icon='ADD').fill = 'BLACK'
-            reason(layout, "A mask limits the layer; paint it like a channel")
+            layout.menu("M3D_MT_mask_add", icon='ADD')
+            reason(layout, "No mask: the layer shows everywhere")
             return
-        w, h = L.image_size(layer.mask)
-        layout.label(text="%s  %d x %d" % (layer.mask.name, w, h), icon='MOD_MASK')
-        if layer.kind == 'PAINT':
-            layout.prop(layer, "paint_mask", text="Paint Mask", toggle=True, icon='BRUSH_DATA')
-        else:
-            reason(layout, "Strokes on a Fill Layer paint its mask")
+        row = layout.row()
+        row.template_list("M3D_UL_mask_effects", "", layer, "mask_stack", layer, "mask_index", rows=4,
+                          sort_reverse=True, sort_lock=True)
+        col = row.column(align=True)
+        col.operator("m3d.mask_effect_move", text="", icon='TRIA_UP').delta = 1
+        col.operator("m3d.mask_effect_move", text="", icon='TRIA_DOWN').delta = -1
+        col.separator()
+        col.operator("m3d.mask_effect_duplicate", text="", icon='DUPLICATE')
+        col.operator("m3d.mask_effect_remove", text="", icon='TRASH')
+        layout.menu("M3D_MT_mask_add", icon='ADD')
         row = layout.row(align=True)
-        row.operator("m3d.layer_mask_invert", icon='ARROW_LEFTRIGHT', depress=layer.mask_invert)
-        row.operator("m3d.layer_mask_remove", icon='X')
+        row.operator("m3d.layer_paint_mask", text="Paint Mask", icon='BRUSH_DATA', depress=layer.paint_mask)
+        row.prop(mat, "m3d_show_mask", text="Show Mask", toggle=True, icon='HIDE_OFF')
+        row = layout.row(align=True)
+        row.operator("m3d.mask_rebake", icon='FILE_REFRESH')
+        row.operator("m3d.layer_mask_invert", icon='ARROW_LEFTRIGHT',
+                     depress=layer.mask_stack[len(layer.mask_stack) - 1].kind == 'INVERT')
+        row.operator("m3d.layer_mask_remove", text="", icon='X')
+        for e, key in MK.missing_maps(layer):
+            reason(layout, "%s needs the %s map: Rebake maps" % (e.name, MK.MAP_LABELS[key]))
+        effect = L.active_effect(layer)
+        if effect is None:
+            return
+        box = layout.box()
+        kind = MK.KIND_BY_ID[effect.kind]
+        box.label(text=effect.name, icon=kind.icon)
+        col = box.column()
+        split_props(col)
+        if effect.kind in {'PAINT', 'BLUR'} and effect.image is not None:
+            w, h = L.image_size(effect.image)
+            col.label(text="%s  %d x %d" % (effect.image.name, w, h), icon='IMAGE_DATA')
+        for prop, label in MK.PARAM_UI.get(effect.kind, ()):
+            col.prop(effect, prop, text=label, slider=prop not in {"direction", "space", "invert", "seed"})
+        if effect.kind == 'PAINT':
+            reason(col, "Turn on Paint Mask to paint it")
+        elif effect.kind == 'BLUR':
+            reason(col, "Blurs the stack below; it follows brush strokes after a moment")
+        elif effect.kind == 'INVERT':
+            reason(col, "Opacity sets how much is swapped")
 
 
 class PROPERTIES_PT_m3d_tx_channels(_Page, Panel):
@@ -1520,6 +1627,7 @@ classes = (
     PROPERTIES_PT_m3d_tx_advanced,
     PROPERTIES_PT_m3d_tx_stack,
     PROPERTIES_PT_m3d_tx_layer,
+    M3D_MT_mask_add,
     PROPERTIES_PT_m3d_tx_mask,
     PROPERTIES_PT_m3d_tx_channels,
     PROPERTIES_PT_m3d_tx_slots,

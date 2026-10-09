@@ -8,7 +8,8 @@ Each name is a workspace name or kind (MODEL, SCULPT, ...); writes <prefix><name
 `KIND/page` also shows that dock page (e.g. SCULPT/sculpt_mask). Setup steps (no picture): `+sphere` / `+cube` add a
 mesh, `+unwrap` runs Auto Unwrap (Edit Mode, UV workspace), `+checker` toggles the checker map, `+distortion` shows
 the UV Editor's distortion, `+paint` (Texture workspace: a material, four painted channels), `+bake` (bakes Normal and
-AO at 128 px), `+layers` (like `+paint`, then a paint layer with a mask and a fill layer), `+fillsel` (select the fill layer), `+rig` (Rigging workspace: a cylinder bound to a spine and two legs, control shapes on the
+AO at 128 px), `+layers` (like `+paint`, then a paint layer with a mask and a fill layer), `+fillsel` (select the fill layer), `+monkey` (a smooth Suzanne, unwrapped; use it before `+paint`), `+masks` (`+paint`, then a rust Fill layer
+whose mask is Fill, Edges, Noise and Levels, with the maps baked at 128 px), `+maskshow` (Show Mask on), `+frame` (frame the object in the 3D view), `+rig` (Rigging workspace: a cylinder bound to a spine and two legs, control shapes on the
 legs, a Driven Key, a saved pose), `+rigedit` / `+rigpose` / `+rigweight` / `+rigobject` (the mode buttons), `+anim` (the rig keyed over 48 frames with a camera;
 then F6 shows it in Pose Mode), `+toolkit` / `+chanbox` (the Animation dock on its pages / the Channel Box), `+inputs` (a cube with its INPUTS in the Channel Box), `+graph` / `+dope` (the
 bottom editor), `+paths` (motion path of the active bone), `+animlayers` (push down + additive layer), `+animobject` (Object Mode), `+render` (Rendering workspace: a lit scene with a
@@ -62,7 +63,7 @@ def layers():
     px[..., 3] = (((xs + ys) // 24) % 3 == 0)
     L.write_pixels(image, px)
     bpy.ops.m3d.layer_mask_add(fill='WHITE')
-    mask = mat.m3d_layers[1].mask
+    mask = L.paint_effect(mat.m3d_layers[1]).image
     ramp = np.ones((n, n, 4), np.float32)
     ramp[..., :3] = np.clip(1.6 - 1.6 * xs[..., None] / n, 0.0, 1.0)
     L.write_pixels(mask, ramp)
@@ -75,6 +76,50 @@ def layers():
 
 def fillsel():
     bpy.context.active_object.active_material.m3d_layer_index = 2
+
+
+def monkey():
+    bpy.ops.object.select_all(action='SELECT')
+    bpy.ops.object.delete()
+    bpy.ops.mesh.primitive_monkey_add()
+    bpy.ops.object.shade_smooth()
+    bpy.ops.m3d.tex_unwrap()
+
+
+def masks():
+    import m3d_layers as L
+    paint()
+    ob = bpy.context.active_object
+    mat = ob.active_material
+    ob.m3d_bake.resolution, ob.m3d_bake.samples = '128', 16
+    bpy.ops.m3d.layer_add(kind='FILL')
+    import numpy as np
+    base = L.entry_of(mat.m3d_layers[0], 'BASE_COLOR').image
+    L.write_pixels(base, np.tile(np.array([0.55, 0.62, 0.7, 1.0], np.float32), (base.size[0] * base.size[1], 1)))
+    rust = mat.m3d_layers[-1]
+    rust.name = "Rust"
+    rust.channels[0].color = (0.32, 0.1, 0.03, 1.0)
+    bpy.ops.m3d.mask_effect_add(kind='FILL')
+    bpy.ops.m3d.mask_effect_add(kind='EDGES')
+    bpy.ops.m3d.mask_effect_add(kind='NOISE')
+    bpy.ops.m3d.mask_effect_add(kind='LEVELS')
+    fill, edges, noise, levels = rust.mask_stack
+    edges.blend, edges.amount, edges.softness = 'ADD', 0.75, 0.25
+    noise.scale, noise.noise_contrast, noise.detail = 9.0, 3.5, 4.0
+    levels.black_in, levels.white_in = 0.25, 0.7
+    rust.mask_index = 1
+
+
+def maskshow():
+    bpy.context.active_object.active_material.m3d_show_mask = True
+
+
+def frame():
+    win = bpy.context.window_manager.windows[0]
+    for area in win.screen.areas:
+        if area.type == 'VIEW_3D':
+            with bpy.context.temp_override(window=win, screen=win.screen, area=area, region=next(r for r in area.regions if r.type == 'WINDOW')):
+                bpy.ops.view3d.view_all(center=True)
 
 
 def rig():
@@ -303,6 +348,10 @@ SETUP = {
     "+bake": bake,
     "+layers": layers,
     "+fillsel": fillsel,
+    "+monkey": monkey,
+    "+masks": masks,
+    "+maskshow": maskshow,
+    "+frame": frame,
     "+rig": rig,
     "+rigedit": rig_mode('EDIT'),
     "+rigpose": rig_mode('POSE'),

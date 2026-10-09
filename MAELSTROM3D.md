@@ -193,7 +193,7 @@ Add Material, Texture Paint Mode).
 | Brush tray (left) | Brush picker, a grid of 10 brushes (Paint Soft, Paint Hard, Airbrush, Blur, Smear, Clone, Fill, Erase Soft, Erase Hard, Mask), Size, Strength, color picker with the second color and swap, Blend Mode, Stencil and Projection (stencil image, Occlude, Backface Culling, Normal Falloff). Closed panels: Brush Settings, Advanced |
 | Status Line | Object / Texture Paint Mode, the paint channels (Base Color, Roughness, Metallic, Normal, Height, Emission), Mirror X/Y/Z, viewport display (Material Preview, Solid, Rendered) and Channel View, size of new slots, Save All |
 | Shelves | Paint (the brushes, swap colors), Channels (add or pick a channel, Auto Unwrap, Add Material), Bake / Export, Custom |
-| Layers tab | The layer stack of the active material: a list (top layer first: eye, name, blend mode, opacity, channel letters), buttons to add a Paint Layer or Fill Layer, move, duplicate, delete, **Merge Down** and **Flatten**; below it the active layer's settings (name, blend, opacity, channels, fill values), its Mask, and closed panels Channels (the paint slots by channel) and All Paint Slots |
+| Layers tab | The layer stack of the active material: a list (top layer first: eye, name, blend mode, opacity, channel letters), buttons to add a Paint Layer or Fill Layer, move, duplicate, delete, **Merge Down** and **Flatten**; below it the active layer's settings (name, blend, opacity, channels, fill values), its **Mask** (the stack of mask effects, see below), and closed panels Channels (the paint slots by channel) and All Paint Slots |
 | Brush tab | Stroke and Stabilize, Falloff, Texture, Texture Mask, Stencil, Clone, Options (seam bleed, dither, cavity mask), Cursor, Color Palette |
 | Shelf tab | All texture brushes (also the pressure and pixel art ones) and Blender's brush library popover (favorites live there); materials marked as assets, applied with a click, and a button to mark the active one |
 | Bake tab | High Poly picker (or Use Selected as High Poly), maps Normal, AO, Curvature, Position, Thickness, size, margin, ray settings, **Bake**, and the list of baked images |
@@ -211,7 +211,8 @@ and switches back; the mesh's materials are not changed (a temporary material ta
 high-poly mesh set, detail is baked from it onto the active mesh (selected to active); without one, the mesh bakes
 itself. Curvature uses the shader's Pointiness (needs enough polygons), Thickness uses ambient occlusion from inside
 the mesh (closed meshes only; white where the mesh is thicker than the Thickness Distance), Position is scaled to 0-1
-within the object's bounds. The window waits while it bakes.
+within the object's bounds (and is always baked with one sample: Cycles adds a position pass up over its samples). The
+window waits while it bakes. Mask effects use these maps too (see Masks).
 
 **Export** writes the active mesh's channels: **glTF** one `.glb` with the mesh, material and textures; **Unreal**
 `T_Name_BC`, `_N` (green channel flipped for DirectX), `_ORM` (red occlusion from the baked AO map, green roughness, blue
@@ -224,10 +225,10 @@ metallic) and `_E`; **Unity** `Name_Albedo`, `_Normal`, `_MetallicSmoothness` (m
 "Base" (nothing painted is lost; the new image nodes keep the old ones' interpolation, extension, Mapping link and
 the Normal Map / Bump settings, and the Base layer ignores image alpha so the look does not change). A Paint Layer is transparent and holds one image per channel; the image of a channel
 is only made (at the "new slot" size) when that layer and channel are first picked for painting, so unused channels cost
-no memory. A Fill Layer is a value or color over the whole mesh; limit it with a **Mask**. A mask is a greyscale image
-(white shows the layer, black hides it); **Paint Mask** sends strokes to the mask instead of the channel (on a Fill
-Layer strokes always go to its mask; a Fill Layer without a mask can be turned into a Paint Layer with Convert, and
-until then the brush is aimed at a tiny hidden scratch image so no layer is painted by mistake).
+no memory. A Fill Layer is a value or color over the whole mesh; limit it with a **Mask** (next paragraphs).
+**Paint Mask** sends strokes to the mask's Paint effect instead of the channel (on a Fill Layer strokes always go to
+it; a Fill Layer without a Paint effect can be turned into a Paint Layer with Convert, and until then the brush is
+aimed at a tiny hidden scratch image so no layer is painted by mistake).
 The brush always paints the active layer's image of the active channel (Status Line buttons, C / Shift+C). Blend modes
 are Mix, Multiply, Add, Overlay, Screen, Soft Light, Subtract, Difference, Color, Darken and Lighten (the Normal channel
 always mixes). Double-click a name to rename it. In the shader each channel has a frame with one Image Texture and Mix
@@ -236,6 +237,52 @@ its blend mode, opacity and mask baked in (exact when the lower layer is opaque 
 layer keeps the lower layer's blend mode); **Flatten** replaces the stack by one layer holding what it looks like.
 Export, glTF included, uses the flattened visible stack of each channel and does not change the layers. The tab warns
 when the layer images add up to more than twelve 4K images of memory.
+
+**Masks.** A mask decides where a layer shows: white shows the layer, black hides it, grey shows it partly. A layer's
+mask is a list of **effects** that combine from the bottom up (the list shows the top effect first, like the layer
+list). The result starts out white, so a layer without effects shows everywhere; each effect then changes the result
+below it. In the Mask panel: **White (Show All)** / **Black (Hide All)** start a mask with a Paint effect (an image you
+paint: black hides, white shows); **Add Mask Effect** adds one above the selected effect; the arrows move it, the
+buttons beside the list duplicate and delete it. Every effect has an eye, a name, an opacity (how strongly it applies;
+at 0 it does nothing) and, for the sources, a blend mode (Normal, Multiply, Add, Subtract, Max, Min: Multiply keeps
+only what both agree on, Add and Max grow the white). A new effect on top of others multiplies (a black Paint adds),
+so it starts out gentle; the first one simply sets the mask.
+
+| Effect | What it makes |
+|---|---|
+| Paint | An image you paint with the brush (Paint Mask on). Starts white (paint black to hide) or black (paint white to show) |
+| Fill | One value, 0 (black) to 1 (white), over the whole mesh |
+| Edges | White on convex edges, for edge wear: Amount, Softness, Invert. Needs the Curvature map, so it works best on meshes with enough polygons |
+| Cavity | White in crevices, for dirt: Amount, Contrast, Invert (from the ambient occlusion map) |
+| Top-down | White on surfaces facing a direction (default up, +Z in the world), for dust and snow: Direction, Offset (higher also covers steeper surfaces), Softness, Height Falloff (less toward the bottom of the mesh) |
+| Thickness | White where the mesh is thin: Amount, Contrast, Invert (closed meshes only) |
+| Noise | Procedural noise: Scale, Detail, Contrast, Seed, and Space: UV (breaks where UV islands meet) or Object (follows the 3D position, no breaks) |
+| Levels | Filter: Black In / White In stretch the range, Gamma bends the midtones, Black Out / White Out limit the result |
+| Blur | Filter: softens everything below it (Amount is the width) |
+| Invert | Filter: swaps black and white (opacity sets how much) |
+| Sharpen | Filter: steeper steps between black and white |
+
+Filters work on everything below them, so their place in the list matters; sources and generators are combined with
+the result below by their blend mode. **Show Mask** shows the active layer's mask in the 3D view (white where the layer
+shows); switching it off puts the material back exactly as it was. **Invert Mask** adds an Invert effect on top (or
+takes it off again), **X** next to it removes the whole mask. **Rebake Maps** makes the maps again after the mesh or the
+Bake tab's settings changed.
+
+The generators read maps baked from the mesh (Curvature, AO, Position, Thickness, plus the world normal). The first time
+an effect needs one, it is baked with Cycles at the Bake tab's resolution, like the Bake tab does (named
+`<mesh>_<Map>`, with the high-poly mesh when one is set) and kept with the file; every layer and effect then reuses it,
+and only a new resolution, Rebake Maps or the Bake tab bake it again. Nothing in the mesh's materials changes while
+baking. A mesh without UVs shows the usual "Auto Unwrap" message first.
+
+In the shader each layer's mask is one more chain in a frame of its own ("Mask: layer name"), made of one node group
+per effect type (Edges, Cavity, Top-down, Thickness, Noise, Levels, Invert, Sharpen: made once and shared) and one Mix
+node per effect; it multiplies the layer's strength in every channel the layer has. Editing a value only sets node
+values, adding, removing or moving an effect makes that layer's mask chain again. Merge Down, Flatten and Export
+compute the same masks in numpy (including the noise, which is Cycles' own Perlin noise ported, and the maps), so what
+you export is what the shader shows. Blur cannot be done per pixel in the shader, so it keeps a small image (a blurred
+copy of everything below it, kept as `<material>_<layer>_Blur`); it is made again when anything below the Blur changes,
+a moment after a brush stroke ends, and before Merge Down, Flatten and Export. Files from before mask stacks open with
+each mask as a Paint effect (and Invert Mask as an Invert effect), looking the same.
 
 Painted images never get lost: before a file is saved, images with changes are written to their files, or packed into
 the .blend when they have none. Save All Images does the same on demand. Large images use a lot of memory: new slots
