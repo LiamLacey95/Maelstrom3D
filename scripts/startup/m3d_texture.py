@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 """
-Texture workspace (F4) for Maelstrom3D: the brush tray (left), the dock pages (Layers, Brush, Shelf, Bake, Export,
+Texture workspace (F4) for Maelstrom3D: the brush tray (left), the dock pages (Layers, Brush, Library, Bake, Export,
 Display), the Texture Status Line, shelf items, paint channels, Bake and Export, and the save handler that keeps
 painted images.
 
@@ -12,7 +12,7 @@ m3d_workspace.py, the menus and shelves in m3d_ui.py. Brush, stroke, falloff and
 panel classes re-used on the pages. A channel is a paint slot of the active material (Base Color, Roughness,
 Metallic, Normal, Height, Emission). The Layers tab is the layer stack (data, node chains and operators: m3d_layers.py);
 a material without layers works on its paint slots directly, and gets its slots as the bottom layer on the first layer
-operation.
+operation. The Library tab (materials, mask presets, brushes, alphas, your own items) is m3d_library.py.
 """
 
 import os
@@ -23,7 +23,7 @@ import numpy as np
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, PointerProperty, StringProperty
 from bpy.types import Menu, Operator, Panel, PropertyGroup
 from bl_ui.properties_paint_common import (
-    BrushAssetShelf, BrushSelectPanel, ClonePanel, ColorPalettePanel, DisplayPanel, FalloffPanel, SmoothStrokePanel,
+    BrushSelectPanel, ClonePanel, ColorPalettePanel, DisplayPanel, FalloffPanel, SmoothStrokePanel,
     StrokePanel, TextureMaskPanel, UnifiedPaintPanel, brush_settings, brush_settings_advanced, brush_texture_settings)
 from mathutils import Vector
 
@@ -33,7 +33,7 @@ import m3d_uv
 from m3d_layers import (CHANNEL_BY_ID, CHANNEL_ITEMS, CHANNELS, active_layer, entry_of, pixels_of, principled_of,
                         set_channel_space)
 from m3d_mode import _button
-from m3d_sculpt import active_brush_id, brush_tiles, grid, mesh_of, reason, split_props, viewport
+from m3d_sculpt import brush_tiles, mesh_of, reason, split_props, viewport
 from m3d_workspace import _PagePanel
 
 # -----------------------------------------------------------------------------
@@ -46,7 +46,7 @@ BRUSHES = (
     ("Smear", "Smear"), ("Clone", "Clone"), ("Fill", "Fill"), ("Erase Soft", "Erase Soft"),
     ("Erase Hard", "Erase Hard"), ("Mask", "Mask"),
 )
-# The Shelf tab adds the pressure and pixel art variants.
+# The Library tab adds the pressure and pixel art variants.
 MORE_BRUSHES = tuple((name, name) for name in (
     "Paint Soft Pressure", "Paint Hard Pressure", "Erase Hard Pressure", "Paint Pixel Art", "Erase Pixel Art"))
 
@@ -462,24 +462,6 @@ class M3D_OT_tex_apply_material(Operator):
             ob.material_slots[ob.active_material_index].material = mat
         else:
             ob.data.materials.append(mat)
-        return {'FINISHED'}
-
-
-class M3D_OT_tex_mark_material(Operator):
-    """Mark the active material as an asset, so the Shelf tab lists it"""
-    bl_idname = "m3d.tex_mark_material"
-    bl_label = "Mark Material as Asset"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        ob = mesh_of(context)
-        return ob is not None and ob.active_material is not None and ob.active_material.asset_data is None
-
-    def execute(self, context):
-        mat = mesh_of(context).active_material
-        mat.asset_mark()
-        mat.asset_generate_preview()
         return {'FINISHED'}
 
 
@@ -1114,6 +1096,7 @@ class PROPERTIES_PT_m3d_tx_layer(_Page, Panel):
         mat = mesh_of(context).active_material
         layer = active_layer(mat)
         layout = frozen_banner(layout, mat, layer)
+        layout.operator("m3d.library_save", text="Save to Library", icon='ASSET_MANAGER').kind = 'MATERIAL'
         if layer.kind == 'FOLDER':
             draw_folder(layout, layer)
             return
@@ -1208,6 +1191,7 @@ class PROPERTIES_PT_m3d_tx_mask(_Page, Panel):
         col.operator("m3d.mask_effect_duplicate", text="", icon='DUPLICATE')
         col.operator("m3d.mask_effect_remove", text="", icon='TRASH')
         layout.menu("M3D_MT_mask_add", icon='ADD')
+        layout.operator("m3d.library_save", text="Save to Library", icon='ASSET_MANAGER').kind = 'MASK'
         row = layout.row(align=True)
         row.operator("m3d.layer_paint_mask", text="Paint Mask", icon='BRUSH_DATA', depress=layer.paint_mask)
         row.prop(mat, "m3d_show_mask", text="Show Mask", toggle=True, icon='HIDE_OFF')
@@ -1367,46 +1351,6 @@ class PROPERTIES_PT_m3d_tx_cursor(_Brush, DisplayPanel, Panel):
 
 class PROPERTIES_PT_m3d_tx_palette(_Brush, ColorPalettePanel, Panel):
     pass
-
-
-# --- Shelf: brushes and materials
-
-class _Shelf(_Page):
-    page = "tex_shelf"
-    need = None
-
-
-class PROPERTIES_PT_m3d_tx_shelf_brushes(_Shelf, Panel):
-    bl_label = "Brushes"
-
-    def draw(self, context):
-        layout = self.layout
-        if context.mode != 'PAINT_TEXTURE':
-            reason(layout, "Enter Texture Paint Mode to pick a brush")
-            return
-        BrushAssetShelf.draw_popup_selector(layout, context, paint_settings(context).brush)
-        grid(layout, context, [(label, "brush.asset_activate", 'NONE', brush_props(name))
-                               for label, name in (*BRUSHES, *MORE_BRUSHES)],
-             active=lambda idname, props: idname == "brush.asset_activate" and
-             props["relative_asset_identifier"] == active_brush_id(context))
-        reason(layout, "Favorites: in the brush library above")
-
-
-class PROPERTIES_PT_m3d_tx_shelf_materials(_Shelf, Panel):
-    bl_label = "Materials"
-
-    def draw(self, context):
-        layout = self.layout
-        mats = [m for m in bpy.data.materials if m.asset_data is not None]
-        if not mats:
-            layout.label(text="No materials marked as assets")
-        col = layout.column(align=True)
-        for mat in mats:
-            icon = mat.preview.icon_id if mat.preview else 0
-            o = col.operator("m3d.tex_apply_material", text=mat.name, icon_value=icon) if icon else \
-                col.operator("m3d.tex_apply_material", text=mat.name, icon='MATERIAL')
-            o.name = mat.name
-        layout.operator("m3d.tex_mark_material", icon='ASSET_MANAGER')
 
 
 # --- Bake
@@ -1663,7 +1607,6 @@ classes = (
     M3D_OT_tex_save_all,
     M3D_OT_tex_channel_view,
     M3D_OT_tex_apply_material,
-    M3D_OT_tex_mark_material,
     M3D_OT_tex_bake_pick,
     M3D_OT_tex_bake,
     M3D_OT_tex_show_image,
@@ -1692,8 +1635,6 @@ classes = (
     PROPERTIES_PT_m3d_tx_options,
     PROPERTIES_PT_m3d_tx_cursor,
     PROPERTIES_PT_m3d_tx_palette,
-    PROPERTIES_PT_m3d_tx_shelf_brushes,
-    PROPERTIES_PT_m3d_tx_shelf_materials,
     PROPERTIES_PT_m3d_tx_bake_high,
     PROPERTIES_PT_m3d_tx_bake_maps,
     PROPERTIES_PT_m3d_tx_bake_settings,

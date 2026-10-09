@@ -10,8 +10,8 @@ def check(cond, msg):
 # Icons used in m3d_mode exist.
 import re, m3d_mode
 icons = set(bpy.types.UILayout.bl_rna.functions['operator'].parameters['icon'].enum_items.keys())
-import m3d_layers, m3d_marking, m3d_masks, m3d_sculpt, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv
-src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_layers, m3d_marking, m3d_masks, m3d_sculpt, m3d_texture, _maya_ui, _maya_uv))
+import m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_sculpt, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv
+src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_sculpt, m3d_texture, _maya_ui, _maya_uv))
 for ic in set(re.findall(r"icon='([A-Z_0-9]+)'", src)):
     check(ic in icons, "missing icon " + ic)
 
@@ -1373,12 +1373,12 @@ import numpy as np
 
 tex_ws = bpy.data.workspaces["Texture"]
 tex_tabs = W.DOCK_TABS['TEXTURE']
-check([t.label for t in tex_tabs['RIGHT']] == ["Layers", "Brush", "Shelf", "Bake", "Export", "Display"], "Texture dock tabs")
+check([t.label for t in tex_tabs['RIGHT']] == ["Layers", "Brush", "Library", "Bake", "Export", "Display"], "Texture dock tabs")
 check([t.label for t in tex_tabs['LEFT']] == ["Brushes"], "Texture left tray tab")
 for tab in (*tex_tabs['RIGHT'], *tex_tabs['LEFT']):
     check(tab.context == 'MODELING_TOOLKIT' and tab.page == tab.id and tab.id.startswith("tex_"), "Texture page tab " + tab.id)
 tex_pages = {t.page for side in tex_tabs.values() for t in side}
-check({c.page for c in T.classes if hasattr(c, "page")} == tex_pages, "every Texture page has panels and the other way round")
+check({c.page for c in (*T.classes, *m3d_library.classes) if hasattr(c, "page")} == tex_pages, "every Texture page has panels and the other way round")
 check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in T.classes
           if not issubclass(c, bpy.types.PropertyGroup)), "Texture classes registered")
 check(m3d_ui.shelves_for('TEXTURE') == ['TEXTURE_BRUSHES', 'TEXTURE_CHANNELS', 'TEXTURE_OUTPUT', 'CUSTOM']
@@ -1432,7 +1432,7 @@ class TCtx(SCtx):
 
 
 def tex_panels(page):
-    return [c for c in T.classes if getattr(c, "page", None) == page and hasattr(c, "poll")]
+    return [c for c in (*T.classes, *m3d_library.classes) if getattr(c, "page", None) == page and hasattr(c, "poll")]
 
 
 def tex_shown(page):
@@ -1449,7 +1449,7 @@ def tex_gated(page):
 
 for page in T.GATES:
     check(tex_gated("tex_" + page), "tex_%s without a mesh shows its message only: %s" % (page, tex_shown("tex_" + page)))
-check(not any(n.endswith("_gate") for n in tex_shown("tex_shelf") + tex_shown("tex_display")), "Shelf and Display need no mesh")
+check(not any(n.endswith("_gate") for n in tex_shown("tex_library") + tex_shown("tex_display")), "Library and Display need no mesh")
 check(T.missing(bpy.context) == ['MESH'], "missing without a mesh")
 bpy.ops.m3d.add_primitive(kind='CUBE')
 cube = bpy.context.active_object
@@ -1525,7 +1525,7 @@ for page in sorted(tex_pages):
 # ...also the gates and the panels that do not need paint mode, in Object Mode too.
 for mode in ('OBJECT', 'TEXTURE_PAINT'):
     bpy.ops.object.mode_set(mode=mode)
-    for cls in (*T.PAGE_GATES, T.PROPERTIES_PT_m3d_tx_shelf_brushes, T.PROPERTIES_PT_m3d_tx_shelf_materials,
+    for cls in (*T.PAGE_GATES, m3d_library.PROPERTIES_PT_m3d_lib_browse, m3d_library.PROPERTIES_PT_m3d_lib_assets,
                 T.PROPERTIES_PT_m3d_tx_channel_view, T.PROPERTIES_PT_m3d_tx_checker):
         try:
             check_calls(cls.__name__ + " " + mode, draw_stub(cls, ctx))
@@ -3621,6 +3621,507 @@ check(shape(rf) == shape_fo and well_formed(rf) and material_state(rf) == state_
 check(chain_names(rz, 'BASE_COLOR') == expected_nodes(LY.kids_of(rz), 'BASE_COLOR'), "the chain after loading is the expected one")
 LY.unfreeze_folder(rz, LY.index_of(rz, named(rz, "Folder").uid))
 check(not [i for i in bpy.data.images if i.name.endswith("Frozen")] and not named(rz, "Folder").frozen, "...and Unfreeze after loading removes the frozen images")
+
+# ----------------------------------------------------------------------------------------------------
+# Phase 7c: the Library (starter materials and mask presets, your own items, thumbnails, alphas, the tab).
+import json
+import shutil
+import m3d_library as LIB
+import m3d_library_data as LD
+
+check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in LIB.classes if not issubclass(c, bpy.types.PropertyGroup)),
+      "Library classes registered")
+check(hasattr(bpy.types.Scene, "m3d_library") and {"category", "search", "mask_mode"} <= set(LIB.M3D_LibrarySettings.bl_rna.properties.keys())
+      and {i.identifier for i in LIB.M3D_LibrarySettings.bl_rna.properties["category"].enum_items} == {'MATERIALS', 'MASKS', 'BRUSHES', 'ALPHAS', 'MINE'},
+      "Scene library settings and the five categories")
+check(LIB.library_dir().startswith(TEST_CONFIG) and LIB.library_dir().replace("\\", "/").endswith("datafiles/m3d_library"),
+      "the library is in the user data folder: %s" % LIB.library_dir())
+check('UNDO' in LIB.M3D_OT_library_apply.bl_options, "applying an item is an undo step")
+LIB._gen.update(running=False, done=False, stage=None)   # (the page panels drawn earlier started the timer)
+if bpy.app.timers.is_registered(LIB._tick):
+    bpy.app.timers.unregister(LIB._tick)
+
+# --- The starter items are plain data: names, values and structure
+lb_mats = {e.item["name"]: e for e in LIB.STARTERS if e.item["type"] == 'MATERIAL'}
+lb_masks = {e.item["name"]: e for e in LIB.STARTERS if e.item["type"] == 'MASK'}
+check({"Painted Metal", "Rusty Iron", "Brushed Steel", "Chrome", "Gold", "Copper", "Rubber", "Plastic", "Dirty Plastic", "Concrete", "Dusty",
+       "Snow Cover", "Mud"} <= set(lb_mats), "the starter materials: %s" % sorted(lb_mats))
+check({"Edge Wear", "Dirt in Cavities", "Top-down Dust", "Noise Breakup", "Thickness Glow"} <= set(lb_masks) and len(lb_masks) >= 5,
+      "the starter mask presets: %s" % sorted(lb_masks))
+check(len({e.ref for e in LIB.STARTERS}) == len(LIB.STARTERS) and all(e.directory is None for e in LIB.STARTERS), "starter ids are unique, they need no folder")
+check(all(json.loads(json.dumps(e.item)) == e.item and e.item["format"] == 1 and e.item.get("description") for e in LIB.STARTERS), "starter items are JSON with a description")
+banned = re.compile(r"substance|smart ?material|smart ?mask|adobe|painter|megascans|quixel", re.I)
+check(not banned.search(json.dumps([e.item for e in LIB.STARTERS])) and not banned.search(open(LIB.__file__).read() + open(LD.__file__).read()),
+      "neutral names only")
+KIND_SET = {'PAINT', 'FILL', 'FOLDER'}
+
+
+def lib_valid_effect(spec):
+    ok = spec["kind"] in MK.KIND_BY_ID and set(spec) <= {"kind", "name", "visible", "opacity", "blend", "image"} | set(MK.PARAM_PROPS)
+    ok = ok and spec.get("blend", 'MIX') in dict(MK.BLENDS) and 0 <= spec.get("opacity", 1.0) <= 1
+    for key in set(spec) & set(MK.PARAM_PROPS):
+        prop = MK.M3D_MaskEffect.bl_rna.properties[key]
+        if prop.type in {'FLOAT', 'INT'} and not prop.is_array:
+            ok = ok and prop.hard_min <= spec[key] <= prop.hard_max
+        if prop.type == 'ENUM':
+            ok = ok and spec[key] in {i.identifier for i in prop.enum_items}
+    return ok
+
+
+def lib_valid_layer(spec):
+    ok = spec["kind"] in KIND_SET and set(spec) <= {"name", "kind", "visible", "opacity", "blend", "use_alpha", "channels", "layers", "mask"}
+    ok = ok and spec.get("blend", 'MIX') in dict(LY.BLENDS) and all(lib_valid_effect(e) for e in spec.get("mask", ()))
+    for ch, value in spec.get("channels", {}).items():
+        ok = ok and ch in LY.CHANNEL_BY_ID and (value is None or isinstance(value, str) or (isinstance(value, list) and len(value) == 4
+                                                                                             and all(0 <= c <= 1 for c in value))
+                                                or (isinstance(value, float) and 0 <= value <= 1))
+    return ok and all(lib_valid_layer(k) for k in spec.get("layers", ()))
+
+
+check(all(lib_valid_layer(e.item["layer"]) and e.item["layer"]["kind"] == 'FOLDER' for e in lb_mats.values()), "starter materials are folders of valid layers")
+check('"image' not in json.dumps([e.item for e in LIB.STARTERS]) and all(isinstance(v, (float, list)) or v is None for e in lb_mats.values()
+      for k in e.item["layer"]["layers"] for v in k["channels"].values()), "...made of fills and mask generators, no image files")
+check(all(all(lib_valid_effect(x) for x in e.item["mask"]) and e.item["mask"] for e in lb_masks.values()), "starter mask presets hold valid effects")
+first = lambda name: lb_mats[name].item["layer"]["layers"][0]["channels"]
+check(all(first(n)["METALLIC"] == 1.0 for n in ("Chrome", "Gold", "Copper", "Brushed Steel", "Aluminium"))
+      and all(first(n)["METALLIC"] == 0.0 for n in ("Rubber", "Plastic", "Matte Black", "Ceramic", "Concrete"))
+      and first("Chrome")["ROUGHNESS"] < 0.1 and first("Plastic")["ROUGHNESS"] < 0.25 and first("Rubber")["ROUGHNESS"] > 0.7
+      and first("Concrete")["ROUGHNESS"] > 0.8 and min(first("Gold")["BASE_COLOR"][:3]) < 0.4 < first("Gold")["BASE_COLOR"][0],
+      "plausible PBR values: metals metallic, plastics glossy, rubber and concrete rough, gold tinted")
+check(sum(1 for e in lb_mats.values() for k in e.item["layer"]["layers"] if k.get("mask")) >= 8
+      and all(any(x["kind"] in {'EDGES', 'CAVITY', 'TOPDOWN'} for k in lb_mats[n].item["layer"]["layers"] for x in k.get("mask", ()))
+              for n in ("Painted Metal", "Copper", "Dusty", "Snow Cover", "Mud", "Dirty Plastic"))
+      and any(x["kind"] == 'NOISE' for k in lb_mats["Concrete"].item["layer"]["layers"] for x in k.get("mask", ())),
+      "the generators drive the masks: edges, cavities, top-down, noise")
+
+# --- Apply every starter material on a cube: a folder named after the item with its layers, masks and values, one rebuild
+lb_ob, lb_mat = fresh_cube("Lib", '64')
+lb_ob.m3d_bake.resolution, lb_ob.m3d_bake.samples, lb_ob.m3d_bake.margin = '128', 4, 4
+lb_counts = {"rebuild": 0, "bake": 0}
+_rebuild_all, _bake_maps = LY.rebuild_all, T.bake_maps
+
+
+def _counting_rebuild(m):
+    lb_counts["rebuild"] += 1
+    return _rebuild_all(m)
+
+
+def _counting_bake(*args, **kw):
+    lb_counts["bake"] += 1
+    return _bake_maps(*args, **kw)
+
+
+LY.rebuild_all, T.bake_maps = _counting_rebuild, _counting_bake
+
+
+def lib_shape(layer, name=None):
+    return (name or layer.name, layer.kind, tuple(e.kind for e in layer.mask_stack), tuple(lib_shape(k) for k in LY.children(layer)))
+
+
+def lib_spec_shape(spec, name=None):
+    return (name or spec["name"], spec["kind"], tuple(e["kind"] for e in spec.get("mask", ())), tuple(lib_spec_shape(k) for k in spec.get("layers", ())))
+
+
+def lib_values_ok(layer, spec):
+    """The fill values and the enabled channels of a layer are the item's; so are blend, opacity and the effect settings."""
+    ok = layer.blend == spec.get("blend", 'MIX') and abs(layer.opacity - spec.get("opacity", 1.0)) < 1e-6 and layer.visible == spec.get("visible", True)
+    for ch in LY.CHANNELS if layer.kind != 'FOLDER' else ():
+        e, value = LY.entry_of(layer, ch.id), spec.get("channels", {}).get(ch.id, "absent")
+        ok = ok and e.use == (value != "absent")
+        if layer.kind == 'FILL' and isinstance(value, float):
+            ok = ok and abs(e.value - value) < 1e-6
+        if layer.kind == 'FILL' and isinstance(value, list):
+            ok = ok and all(abs(a - b) < 1e-6 for a, b in zip(e.color, value))
+    for e, x in zip(layer.mask_stack, spec.get("mask", ())):
+        ok = ok and e.name == x.get("name", MK.KIND_BY_ID[x["kind"]].label) and abs(e.opacity - x.get("opacity", 1.0)) < 1e-6
+        for key in set(x) & set(MK.PARAM_PROPS):
+            v = getattr(e, key)
+            ok = ok and (v == x[key] if isinstance(v, (str, bool)) else all(abs(a - b) < 1e-6 for a, b in zip(v, x[key]))
+                         if isinstance(x[key], list) else abs(v - x[key]) < 1e-6)
+    return ok and all(lib_values_ok(k, s) for k, s in zip(LY.children(layer), spec.get("layers", ())))
+
+
+lb_times = []
+for entry in lb_mats.values():
+    spec, name = entry.item["layer"], entry.item["name"]
+    layers_before, look_before = len(lb_mat.m3d_layers), LY.composite(lb_mat, 'BASE_COLOR', 64).copy()
+    lb_counts.update(rebuild=0, bake=0)
+    t0 = time.time()
+    res = bpy.ops.m3d.library_apply(item=entry.ref)
+    lb_times.append(time.time() - t0)
+    folder = LY.active_layer(lb_mat)
+    check(res == {'FINISHED'} and folder is not None and folder.name == name and folder.parent == "" and lb_mat.m3d_layers[-1].uid == folder.uid,
+          "%s: a folder named after the item on top of the stack" % name)
+    check(lib_shape(folder) == lib_spec_shape(spec, name) and lib_values_ok(folder, spec), "%s: the folder holds the item's layers, values, masks and effects" % name)
+    check(len(lb_mat.m3d_layers) == layers_before + 1 + len(LY.descendants(folder)) and well_formed(lb_mat), "%s: a well formed stack" % name)
+    check(lb_counts["rebuild"] == 1 and lb_counts["bake"] <= 1, "%s: one rebuild and at most one bake (%s)" % (name, lb_counts))
+    check(_rebuild_all(lb_mat) is False, "%s: the nodes are in step with the layers" % name)
+    check(np.abs(LY.composite(lb_mat, 'BASE_COLOR', 64) - look_before).max() > 1e-3, "%s changes the look" % name)
+    check(all(not MK.missing_maps(l) for l in lb_mat.m3d_layers), "%s: the generators have their maps" % name)
+check(max(lb_times) < 10.0, "applying is quick (%.2f s at most)" % max(lb_times))
+print("library: %d starter materials applied, the first (bakes the maps) %.2f s, the others %.2f s at most" % (len(lb_times), lb_times[0], max(lb_times[1:])))
+lb_counts.update(rebuild=0, bake=0)
+check(bpy.ops.m3d.library_apply(item="starter:painted_metal") == {'FINISHED'} and LY.active_layer(lb_mat).name == "Painted Metal 2"
+      and lb_counts["bake"] == 0 and lb_counts["rebuild"] == 1, "applying twice: a second folder, the maps are not baked again (%s)" % lb_counts)
+check(bpy.ops.m3d.library_apply(item="starter:chrome") == {'FINISHED'} and np.abs(LY.composite(lb_mat, 'ROUGHNESS', 16) - 0.02).max() < 1e-3
+      and np.abs(LY.composite(lb_mat, 'METALLIC', 16) - 1.0).max() < 1e-3, "Chrome sets roughness 0.02 and metallic 1 over everything below")
+lb_ob2, lb_mat2 = fresh_cube("NoUV", '64')
+lb_ob2.data.uv_layers.remove(lb_ob2.data.uv_layers[0])
+check(bpy.ops.m3d.library_apply(item="starter:rusty_iron") == {'CANCELLED'} and not lb_mat2.m3d_layers, "a generator material on a mesh without UVs is refused and leaves the stack alone")
+check(bpy.ops.m3d.library_apply(item="starter:gold") == {'FINISHED'}, "a material without generators needs no UVs")
+lb_ob, lb_mat = fresh_cube("Lib", '64')
+lb_ob.m3d_bake.resolution, lb_ob.m3d_bake.samples, lb_ob.m3d_bake.margin = '128', 4, 4
+for entry in lb_mats.values():
+    bpy.ops.m3d.library_apply(item=entry.ref)   # (maps for the cube)
+
+# --- Mask presets: replace or add on top
+bpy.ops.m3d.layer_add(kind='FILL')
+lb_fill = LY.active_layer(lb_mat)
+lb_fill.name = "Target"
+for entry in lb_masks.values():
+    lb_counts.update(rebuild=0, bake=0)
+    res = bpy.ops.m3d.library_apply(item=entry.ref, mode='REPLACE')
+    layer = named(lb_mat, "Target")
+    check(res == {'FINISHED'} and [e.kind for e in layer.mask_stack] == [x["kind"] for x in entry.item["mask"]] and lib_values_ok(layer, {"mask": entry.item["mask"], "channels": {"BASE_COLOR": None}}),
+          "%s replaces the mask with its effects" % entry.item["name"])
+    check(layer.mask_stack[0].blend == 'MIX' and layer.mask_index == len(layer.mask_stack) - 1 and lb_counts["rebuild"] == 1 and lb_counts["bake"] <= 1,
+          "%s: the first effect sets the mask, one rebuild (%s)" % (entry.item["name"], lb_counts))
+    mask = MK.stack_value(layer, 32)
+    check(np.isfinite(mask).all() and mask.min() >= 0 and mask.max() <= 1, "%s is a mask" % entry.item["name"])
+    check(all(not MK.missing_maps(l) for l in lb_mat.m3d_layers) and _rebuild_all(lb_mat) is False, "%s: maps and nodes are there" % entry.item["name"])
+layer = named(lb_mat, "Target")
+LY.add_effect(layer, 'PAINT', "Hand")
+layer.mask_stack[len(layer.mask_stack) - 1].image = LY.make_mask_image(lb_mat, layer, 16, True)
+hand_image = layer.mask_stack[len(layer.mask_stack) - 1].image.name
+LY.rebuild_all(lb_mat)
+paint_count = len(layer.mask_stack)
+check(bpy.ops.m3d.library_apply(item="starter:edge_wear", mode='REPLACE') == {'FINISHED'} and [e.kind for e in layer.mask_stack] == ["EDGES", "NOISE"]
+      and [e.name for e in layer.mask_stack] == ["Edges", "Breakup"] and hand_image not in bpy.data.images,
+      "Replace removes the old effects, their names are free again and a painted mask's image goes")
+check(bpy.ops.m3d.library_apply(item="starter:dirt_in_cavities", mode='ADD') == {'FINISHED'}
+      and [e.kind for e in layer.mask_stack] == ["EDGES", "NOISE", "CAVITY", "NOISE"] and [e.name for e in layer.mask_stack] == ["Edges", "Breakup", "Cavity", "Breakup 2"]
+      and layer.mask_stack[2].blend == 'MULTIPLY' and layer.mask_index == 3, "Add on Top puts the effects above the mask, combined with it, with free names")
+both = MK.stack_value(layer, 32)
+only = MK.stack_value(layer, 32, upto=2)
+check(np.all(both <= only + 1e-6), "...so the mask can only lose coverage")
+bpy.ops.m3d.layer_mask_remove()
+check(bpy.ops.m3d.library_apply(item="starter:noise_breakup", mode='ADD') == {'FINISHED'} and layer.mask_stack[0].blend == 'MIX' and len(layer.mask_stack) == 1,
+      "Add on Top without a mask is the same as Replace")
+check(bpy.ops.m3d.library_apply(item="starter:noise_breakup", mode='REPLACE') == {'FINISHED'} and len(layer.mask_stack) == 1, "Replace with the same preset keeps one effect")
+LY.freeze_folder(lb_mat, LY.index_of(lb_mat, named(lb_mat, "Chrome").uid), 32)
+select(lb_mat, "Chrome")
+check(LY.in_frozen(LY.active_layer(lb_mat)) is False and bpy.ops.m3d.library_apply(item="starter:speckle", mode='ADD') == {'FINISHED'}, "a frozen folder itself can be masked")
+lb_mat.m3d_layer_index = LY.index_of(lb_mat, LY.descendants(named(lb_mat, "Chrome"))[0].uid)
+check(bpy.ops.m3d.library_apply(item="starter:speckle") == {'CANCELLED'}, "a layer inside a frozen folder is refused")
+LY.unfreeze_folder(lb_mat, LY.index_of(lb_mat, named(lb_mat, "Chrome").uid))
+check(bpy.ops.m3d.library_apply(item="starter:nothing") == {'CANCELLED'} and bpy.ops.m3d.library_apply(item="user:nothing") == {'CANCELLED'}, "an item that is not there is refused")
+LY.rebuild_all, T.bake_maps = _rebuild_all, _bake_maps
+lb_ob2, lb_mat2 = fresh_cube("NoLayers", '64')
+check(bpy.ops.m3d.library_apply(item="starter:edge_wear") == {'CANCELLED'} and not lb_mat2.m3d_layers, "a mask preset needs a layer")
+lb_ob2.data.materials.clear()
+check(bpy.ops.m3d.library_apply(item="starter:gold") == {'FINISHED'} and lb_ob2.active_material is not None
+      and [l.name for l in lb_ob2.active_material.m3d_layers] == ["Surface", "Gold"], "a mesh without a material gets one")
+
+# --- Save your own: a paint layer, fills, masks (paint, generators, filters) in nested folders; delete it, apply it back: the same pixels
+rt_ob, rt_mat = fresh_cube("RT", '64')
+rt_ob.m3d_bake.resolution, rt_ob.m3d_bake.samples, rt_ob.m3d_bake.margin = '128', 4, 4
+bpy.ops.m3d.layer_add(kind='PAINT')
+rt_rock = LY.active_layer(rt_mat)
+rt_rock.name = "Rock"
+for ch_id in ('BASE_COLOR', 'ROUGHNESS'):
+    bpy.ops.m3d.tex_channel(channel=ch_id)
+    rand_image(LY.entry_of(rt_rock, ch_id).image, opaque=True)
+bpy.ops.m3d.layer_folder_add()
+LY.active_layer(rt_mat).name = "Outer"
+for kind, name in (('FILL', "Tint"), ('PAINT', "Brush"), ('FILL', "Gold")):
+    bpy.ops.m3d.layer_add(kind=kind)
+    LY.active_layer(rt_mat).name = name
+bpy.ops.m3d.layer_folder_add()
+LY.active_layer(rt_mat).name = "Inner"
+LY.move_into(rt_mat, named(rt_mat, "Inner"), named(rt_mat, "Outer"))
+LY.move_into(rt_mat, named(rt_mat, "Tint"), named(rt_mat, "Inner"))
+LY.move_into(rt_mat, named(rt_mat, "Brush"), named(rt_mat, "Inner"))
+LY.move_into(rt_mat, named(rt_mat, "Gold"), named(rt_mat, "Outer"))
+check(shape(rt_mat) == "Rock Outer[Inner[Tint Brush] Gold]" and well_formed(rt_mat), "the stack to save: %s" % shape(rt_mat))
+select(rt_mat, "Brush")
+bpy.ops.m3d.tex_channel(channel='BASE_COLOR')
+rand_image(LY.entry_of(named(rt_mat, "Brush"), 'BASE_COLOR').image)
+tint, gold, outer, inner = (named(rt_mat, n) for n in ("Tint", "Gold", "Outer", "Inner"))
+with LY.muted():
+    LY.entry_of(tint, 'BASE_COLOR').color = (0.1, 0.4, 0.7, 1.0)
+    LY.entry_of(tint, 'ROUGHNESS').use = True
+    LY.entry_of(tint, 'ROUGHNESS').value = 0.37
+    tint.blend, tint.opacity = 'MULTIPLY', 0.7
+    for ch_id, value in (('BASE_COLOR', (1.0, 0.77, 0.34, 1.0)), ('ROUGHNESS', 0.21), ('METALLIC', 1.0)):
+        LY.entry_of(gold, ch_id).use = True
+        if ch_id == 'BASE_COLOR':
+            LY.entry_of(gold, ch_id).color = value
+        else:
+            LY.entry_of(gold, ch_id).value = value
+    gold.blend, gold.opacity = 'OVERLAY', 0.8
+    outer.blend, outer.opacity, inner.opacity, inner.visible = 'SOFT_LIGHT', 0.9, 0.6, True
+LY.rebuild_all(rt_mat)
+select(rt_mat, "Tint")
+bpy.ops.m3d.mask_effect_add(kind='PAINT', fill='WHITE')
+LY.write_pixels(tint.mask_stack[0].image, np.dstack([fold_rng.random((64, 64, 3)), np.ones((64, 64, 1))]).astype(np.float32))
+for kind in ('EDGES', 'NOISE', 'LEVELS', 'INVERT'):
+    bpy.ops.m3d.mask_effect_add(kind=kind)
+with LY.muted():
+    for e, settings in zip(tint.mask_stack, ({}, dict(amount=0.37, invert=True, blend='LIGHTEN'), dict(scale=7.5, seed=3, detail=2.5, opacity=0.8),
+                                             dict(gamma=1.7, black_in=0.2), dict(opacity=0.6))):
+        for key, value in settings.items():
+            setattr(e, key, value)
+    tint.mask_stack[0].name = "Hand mask"
+LY.rebuild_all(rt_mat)
+select(rt_mat, "Outer")
+bpy.ops.m3d.layer_mask_add(fill='BLACK')
+LY.write_pixels(outer.mask_stack[0].image, np.dstack([fold_rng.random((64, 64, 3)) * 0.8 + 0.2, np.ones((64, 64, 1))]).astype(np.float32))
+
+
+def rt_look():
+    return [LY.composite(rt_mat, c, 64).copy() for c in ('BASE_COLOR', 'ROUGHNESS', 'METALLIC')]
+
+
+def rt_effects(layer):
+    return [(e.name, e.kind, e.visible, e.opacity, e.blend, round(e.amount, 6), e.invert, round(e.scale, 6), e.seed, e.space, round(e.gamma, 6),
+             round(e.black_in, 6), read(e.image).copy() if e.kind == 'PAINT' else None) for e in layer.mask_stack]
+
+
+def same_effects(a, b):
+    return len(a) == len(b) and all(x[:-1] == y[:-1] and (x[-1] is None) == (y[-1] is None) and (x[-1] is None or np.array_equal(x[-1], y[-1])) for x, y in zip(a, b))
+
+
+rt_before, rt_tint_fx, rt_tint_mask, rt_outer_fx = rt_look(), rt_effects(tint), MK.stack_value(tint, 64).copy(), rt_effects(outer)
+rt_shape, rt_layers = shape(rt_mat), len(rt_mat.m3d_layers)
+rt_brush_px = read(LY.entry_of(named(rt_mat, "Brush"), 'BASE_COLOR').image).copy()
+check(bpy.ops.m3d.library_save(kind='MATERIAL', name="Outer") == {'FINISHED'}, "Save to Library: the active folder")
+rt_entry = next(e for e in LIB.user_entries() if e.item["name"] == "Outer")
+rt_files = sorted(os.listdir(rt_entry.directory))
+check(rt_entry.ref == "user:outer" and rt_files == ["image1.png", "image2.png", "image3.png", "image4.png", "item.json"],
+      "the item is a folder of its JSON and its paint images (two of the Brush layer, two masks): %s" % rt_files)
+check(rt_entry.item["type"] == 'MATERIAL' and rt_entry.item["layer"]["kind"] == 'FOLDER' and lib_valid_layer(rt_entry.item["layer"])
+      and lib_spec_shape(rt_entry.item["layer"]) == lib_spec_shape({"name": "Outer", "kind": 'FOLDER', "layers": [
+          {"name": "Inner", "kind": 'FOLDER', "layers": [{"name": "Tint", "kind": 'FILL', "mask": [{"kind": k} for k in ("PAINT", "EDGES", "NOISE", "LEVELS", "INVERT")]},
+                                                       {"name": "Brush", "kind": 'PAINT'}]}, {"name": "Gold", "kind": 'FILL'}], "mask": [{"kind": 'PAINT'}]}),
+      "the item describes the folder, its nested folder, layers and masks")
+check(json.load(open(os.path.join(rt_entry.directory, "item.json"))) == rt_entry.item, "item.json is what the library reads")
+check(shape(rt_mat) == rt_shape and rt_look()[0].tobytes() == rt_before[0].tobytes(), "saving changes nothing in the stack")
+select(rt_mat, "Outer")
+bpy.ops.m3d.layer_remove()
+check(shape(rt_mat) == "Rock" and np.abs(rt_look()[0] - rt_before[0]).max() > 1e-3, "the folder is gone from the scene")
+check(bpy.ops.m3d.library_apply(item=rt_entry.ref) == {'FINISHED'}, "...and applied back")
+check(shape(rt_mat) == rt_shape and well_formed(rt_mat) and len(rt_mat.m3d_layers) == rt_layers, "the same layers: %s" % shape(rt_mat))
+rt_after = rt_look()
+check(LIB.describe_material("Outer", named(rt_mat, "Outer"), LIB.Files()) == rt_entry.item, "describing the applied folder gives the saved item again")
+check(all(np.abs(a - b).max() < 1e-6 for a, b in zip(rt_before, rt_after)), "the same composite in Base Color, Roughness and Metallic (differences %s)"
+      % [float(np.abs(a - b).max()) for a, b in zip(rt_before, rt_after)])
+tint2, outer2 = named(rt_mat, "Tint"), named(rt_mat, "Outer")
+check(same_effects(rt_tint_fx, rt_effects(tint2)) and same_effects(rt_outer_fx, rt_effects(outer2)), "the mask effects, their settings and their paint images")
+check(np.array_equal(rt_tint_mask, MK.stack_value(tint2, 64)), "the same mask values")
+check(np.array_equal(rt_brush_px, read(LY.entry_of(named(rt_mat, "Brush"), 'BASE_COLOR').image)), "the paint layer's pixels")
+check((outer2.blend, round(outer2.opacity, 5), tint2.blend, round(tint2.opacity, 5), round(named(rt_mat, "Inner").opacity, 5)) == ('SOFT_LIGHT', 0.9, 'MULTIPLY', 0.7, 0.6),
+      "blend modes and opacities")
+check(_rebuild_all(rt_mat) is False, "the nodes of the applied item are in step")
+# a mask preset: the same
+select(rt_mat, "Tint")
+rt_stack = rt_effects(named(rt_mat, "Tint"))
+check(bpy.ops.m3d.library_save(kind='MASK', name="My Mask") == {'FINISHED'}, "Save to Library: the active layer's mask")
+rt_mask_entry = next(e for e in LIB.user_entries() if e.item["name"] == "My Mask")
+check(rt_mask_entry.item["type"] == 'MASK' and [e["kind"] for e in rt_mask_entry.item["mask"]] == ["PAINT", "EDGES", "NOISE", "LEVELS", "INVERT"]
+      and sorted(os.listdir(rt_mask_entry.directory)) == ["image1.png", "item.json"], "the mask preset is its effects and the paint image")
+bpy.ops.m3d.layer_mask_remove()
+check(bpy.ops.m3d.library_apply(item=rt_mask_entry.ref, mode='REPLACE') == {'FINISHED'}
+      and same_effects(rt_stack, rt_effects(named(rt_mat, "Tint"))), "the mask preset applies back as it was")
+check(bpy.ops.m3d.library_save(kind='MASK', name="") == {'CANCELLED'} and bpy.ops.m3d.library_save(kind='MASK', name="   ") == {'CANCELLED'}, "a name is needed")
+select(rt_mat, "Rock")
+check(bpy.ops.m3d.library_save(kind='MASK', name="Nothing") == {'CANCELLED'}, "a layer without a mask has no preset to save")
+check(bpy.ops.m3d.library_save(kind='MATERIAL', name="Rock") == {'FINISHED'}
+      and next(e for e in LIB.user_entries() if e.item["name"] == "Rock").item["layer"]["layers"][0]["name"] == "Rock",
+      "a single layer is saved as a material of one layer in a folder")
+check(bpy.ops.m3d.library_apply(item="user:rock") == {'FINISHED'} and LY.active_layer(rt_mat).name == "Rock 2"
+      and [l.name for l in LY.children(LY.active_layer(rt_mat))] == ["Rock"], "...which applies as a folder named after it")
+
+# --- Your items persist in the user folder; rename, delete; the starters are read-only
+LIB._user["entries"] = None
+check(sorted(e.ref for e in LIB.user_entries()) == ["user:my_mask", "user:outer", "user:rock"], "the items are read from the folder again: %s" % [e.ref for e in LIB.user_entries()])
+check(next(e for e in LIB.user_entries() if e.ref == "user:outer").item == rt_entry.item, "...as saved")
+select(rt_mat, "Outer")
+check(bpy.ops.m3d.library_save(kind='MATERIAL', name="Outer") == {'FINISHED'} and sorted(os.listdir(os.path.join(LIB.library_dir(), "user")))
+      == ["my_mask", "outer", "outer_2", "rock"], "a second item of the same name gets a folder of its own")
+check(bpy.ops.m3d.library_rename(item="user:outer_2", name="Renamed") == {'FINISHED'}
+      and next(e for e in LIB.user_entries() if e.ref == "user:outer_2").item["name"] == "Renamed"
+      and next(e for e in LIB.user_entries() if e.ref == "user:outer_2").item["layer"]["name"] == "Renamed"
+      and json.load(open(os.path.join(LIB.library_dir(), "user", "outer_2", "item.json")))["name"] == "Renamed", "rename (in the file too)")
+check(bpy.ops.m3d.library_apply(item="user:outer_2") == {'FINISHED'} and LY.active_layer(rt_mat).name == "Renamed", "a renamed material applies under its new name")
+check(bpy.ops.m3d.library_rename(item="user:outer_2", name="  ") == {'CANCELLED'}, "rename needs a name")
+check(bpy.ops.m3d.library_delete(item="user:outer_2") == {'FINISHED'} and not os.path.exists(os.path.join(LIB.library_dir(), "user", "outer_2"))
+      and "user:outer_2" not in [e.ref for e in LIB.user_entries()] and "user:outer" in [e.ref for e in LIB.user_entries()], "delete removes the folder, not the others")
+for op, kw in ((bpy.ops.m3d.library_delete, {}), (bpy.ops.m3d.library_rename, {"name": "x"})):
+    check(op(item="starter:chrome", **kw) == {'CANCELLED'} and "starter:chrome" in [e.ref for e in LIB.entries()], "a starter item cannot be changed with %s" % op.idname_py())
+check(bpy.ops.m3d.library_delete(item="user:../../datafiles") == {'CANCELLED'} and os.path.isdir(os.path.join(LIB.library_dir(), "user", "outer")),
+      "delete only reaches the library's own items")
+# a damaged item does not break the library or an apply
+bad = os.path.join(LIB.library_dir(), "user", "bad_layer")
+os.makedirs(bad)
+json.dump({"format": 1, "type": 'MATERIAL', "name": "Bad", "layer": {"name": "Bad", "kind": 'FOLDER', "layers": [{"name": "x", "kind": 'FILL', "blend": "NOPE"}]}}, open(os.path.join(bad, "item.json"), "w"))
+os.makedirs(os.path.join(LIB.library_dir(), "user", "bad_json"))
+open(os.path.join(LIB.library_dir(), "user", "bad_json", "item.json"), "w").write("{nope")
+LIB._user["entries"] = None
+check("user:bad_layer" in [e.ref for e in LIB.user_entries()] and "user:bad_json" not in [e.ref for e in LIB.user_entries()], "an item that is not valid JSON is skipped")
+rt_n = len(rt_mat.m3d_layers)
+check(bpy.ops.m3d.library_apply(item="user:bad_layer") == {'CANCELLED'} and len(rt_mat.m3d_layers) == rt_n and well_formed(rt_mat), "an item with a bad value is refused and leaves the stack as it was")
+shutil.rmtree(os.path.join(LIB.library_dir(), "user", "bad_json"))
+
+# --- Thumbnails: made from the item on a preview sphere (a Cycles render), cached in the user folder, the scene put back
+LIB.STARTERS, lib_starters = (lb_mats["Chrome"], lb_masks["Edge Wear"]), LIB.STARTERS
+LIB._user["entries"] = None
+engine_before, scenes_before, objects_before = bpy.context.scene.render.engine, len(bpy.data.scenes), len(bpy.data.objects)
+lib_pending = LIB.pending()
+check(sorted(e.ref for e in lib_pending) == sorted(["starter:chrome", "starter:edge_wear", "user:bad_layer", "user:my_mask", "user:outer", "user:rock"]),
+      "all of them wait for a thumbnail: %s" % [e.ref for e in lib_pending])
+check(isinstance(LIB.thumb_icon(lb_mats["Chrome"]), int) and "ph:starter:chrome" in LIB.icons() and "t:starter:chrome:0" not in LIB.icons(), "a placeholder tile meanwhile")
+check(LIB.thumb_path(lb_mats["Chrome"]).startswith(os.path.join(LIB.library_dir(), "thumbs")) and LIB.thumb_path(rt_entry) == os.path.join(rt_entry.directory, "thumb.png"),
+      "starter thumbnails are cached in thumbs, yours next to the item")
+t0 = time.time()
+made = LIB.generate_pending()
+print("thumbnails:", made, "made in %.1f s" % (time.time() - t0))
+check(made == 5 and LIB._gen["failed"] == {"user:bad_layer"}, "five thumbnails made, the damaged item has none (%s, %s)" % (made, LIB._gen["failed"]))
+for e in (lb_mats["Chrome"], lb_masks["Edge Wear"], rt_entry, rt_mask_entry):
+    path = LIB.thumb_path(e)
+    check(os.path.isfile(path), "thumbnail of %s" % e.ref)
+    if os.path.isfile(path):
+        im = bpy.data.images.load(path)
+        px = np.empty(len(im.pixels), np.float32)
+        im.pixels.foreach_get(px)
+        px = px.reshape(128, 128, 4)
+        check(tuple(im.size) == (128, 128) and px[64, 64, 3] > 0.9 and px[0, 0, 3] == 0 and px[..., :3].std() > 0.03, "%s: 128 x 128, a sphere on a transparent background" % e.ref)
+        bpy.data.images.remove(im)
+check(not [d.name for c in (bpy.data.scenes, bpy.data.objects, bpy.data.meshes, bpy.data.materials, bpy.data.worlds, bpy.data.cameras, bpy.data.images)
+           for d in c if d.name.startswith(LIB.RIG)] and len(bpy.data.scenes) == scenes_before and len(bpy.data.objects) == objects_before
+      and bpy.context.scene.render.engine == engine_before, "the preview scene is gone and the scene is as it was")
+lib_thumb_files = os.listdir(os.path.join(LIB.library_dir(), "thumbs"))
+check(len(lib_thumb_files) == 2 and not any("_tmp" in f for f in lib_thumb_files), "two starter thumbnails in the cache, no half-written files: %s" % lib_thumb_files)
+check(LIB.pending() == [] and LIB._gen["done"] and not LIB._gen["running"] and LIB.generate_pending() == 0, "cached: nothing is made twice")
+LIB.thumb_icon(lb_mats["Chrome"]), LIB.thumb_icon(lb_masks["Edge Wear"])
+check("t:starter:chrome:1" in LIB.icons() and "t:starter:edge_wear:1" in LIB.icons(), "the tiles show the thumbnails now")
+# the timer does the same a step at a time; saving takes the preview scene away
+for p in (LIB.thumb_path(lb_mats["Chrome"]), LIB.thumb_path(lb_masks["Edge Wear"])):
+    os.remove(p)
+LIB._gen["done"] = False
+LIB.start_thumbnails()
+check(LIB._gen["running"] and bpy.app.timers.is_registered(LIB._tick), "the Library draws: the timer starts")
+steps_taken = 0
+while steps_taken < 3:
+    LIB._tick()
+    steps_taken += 1
+check(bpy.data.scenes.get(LIB.RIG) is not None and LIB._gen["stage"] in {'MAPS', 'JOBS'}, "the preview scene exists in between")
+LIB.save_pre()
+check(bpy.data.scenes.get(LIB.RIG) is None and len(bpy.data.scenes) == scenes_before, "saving takes the preview scene away")
+while LIB._tick() is not None:
+    steps_taken += 1
+bpy.app.timers.unregister(LIB._tick)
+check(steps_taken >= 5 and LIB.pending() == [] and bpy.data.scenes.get(LIB.RIG) is None and not LIB._gen["running"],
+      "a step at a time (%d steps), then it is done and the scene is gone" % steps_taken)
+check(bpy.ops.m3d.library_refresh() == {'FINISHED'} and len(LIB.pending()) == 6 and not LIB._gen["done"], "Refresh Previews forgets every thumbnail")
+LIB.STARTERS = lib_starters
+LIB._gen["failed"].clear()
+
+# --- Alphas and brushes: the Sculpt alpha library, applied to the texture brush
+S_alphas = tempfile.mkdtemp(prefix="m3d_alpha_")
+S.alpha_dir = lambda create=False: S_alphas
+bpy.ops.object.mode_set(mode='OBJECT')
+tx_ob, tx_mat = fresh_cube("Alpha", '64')
+bpy.ops.brush.asset_activate(**T.brush_props("Paint Soft"))
+paint_brush = bpy.context.tool_settings.image_paint.brush
+check(bpy.context.mode == 'PAINT_TEXTURE' and S.alpha_brush(bpy.context) == paint_brush and paint_brush.library is not None,
+      "in Texture Paint Mode the alpha goes to the paint brush")
+check(bpy.ops.m3d.alpha_pick(name="Clouds") == {'FINISHED'} and paint_brush.mask_texture is not None and paint_brush.mask_texture.name == "Clouds"
+      and paint_brush.mask_texture.library is not None and paint_brush.mask_texture_slot.mask_map_mode == 'VIEW_PLANE'
+      and paint_brush.mask_texture.image.size[0] == S.ALPHA_SIZE and paint_brush.texture is None,
+      "a starter alpha is linked from the shared library and is the texture brush's Texture Mask (it follows the cursor)")
+check(bpy.ops.m3d.alpha_pick(name="") == {'FINISHED'} and paint_brush.mask_texture is None, "None clears the alpha")
+check(all(os.path.isfile(os.path.join(S_alphas, "Clouds" + ext)) for ext in (".blend", ".png")), "...from the same folder the Sculpt tab uses")
+lib_png = os.path.join(S_alphas, "tex_source.png")
+img = bpy.data.images.new("src", 32, 32)
+img.pixels.foreach_set(np.ones(32 * 32 * 4, np.float32) * 0.6)
+img.filepath_raw, img.file_format = lib_png, 'PNG'
+img.save()
+bpy.data.images.remove(img)
+check(bpy.ops.m3d.alpha_load(filepath=lib_png) == {'FINISHED'} and paint_brush.mask_texture.name == "tex_source" and "tex_source" in S.alpha_names(),
+      "Load Alpha from the Library adds it to the shared list and uses it")
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.ops.object.mode_set(mode='SCULPT')
+bpy.ops.brush.asset_activate(**S.brush_props("Draw"))
+check(S.alpha_brush(bpy.context) == bpy.context.tool_settings.sculpt.brush and bpy.ops.m3d.alpha_pick(name="tex_source") == {'FINISHED'}
+      and bpy.context.tool_settings.sculpt.brush.texture.name == "tex_source", "...and the Sculpt tab uses the same alpha")
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+shutil.rmtree(S_alphas, ignore_errors=True)
+
+# --- The Library tab draws in every category, with and without the mode it needs; Save to Library buttons in the Layer and Mask panels
+lctx = TCtx()
+lib_s = bpy.context.scene.m3d_library
+for mode in ('TEXTURE_PAINT', 'OBJECT'):
+    bpy.ops.object.mode_set(mode=mode)
+    for cat in ('MATERIALS', 'MASKS', 'BRUSHES', 'ALPHAS', 'MINE'):
+        lib_s.category = cat
+        for search in ("", "gold", "zzzz"):
+            lib_s.search = search
+            for cls in tex_panels("tex_library"):
+                if cls.poll(lctx):
+                    try:
+                        log = draw_stub(cls, lctx)
+                        check_calls("Library %s %s %r %s" % (cls.__name__, cat, search, mode), log)
+                    except Exception as err:
+                        check(False, "%s draw (%s, %r, %s): %r" % (cls.__name__, cat, search, mode, err))
+lib_s.search = ""
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+lib_s.category = 'MATERIALS'
+log = draw_stub(LIB.PROPERTIES_PT_m3d_lib_browse, lctx)
+tiles = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.library_apply"]
+check(len(tiles) == len(lb_mats) and {r.values()["item"] for r in tiles} == {e.ref for e in lb_mats.values()}
+      and all("icon_value" in r._kw for r in tiles) and all(r._kw.get("text") == "" for r in tiles), "the Materials grid: a tile with a thumbnail icon per material")
+check(sum(1 for r in log if r._kind == "label" and r._kw.get("text") in lb_mats) == len(lb_mats), "...with the name under each")
+check(any(r._kind == "prop" and r._args[1] == "category" for r in log) and any(r._kind == "prop" and r._args[1] == "search" for r in log), "...the categories and the search field")
+lib_s.search = "gold"
+log = draw_stub(LIB.PROPERTIES_PT_m3d_lib_browse, lctx)
+check([r.values()["item"] for r in log if r._kind == "operator" and r._args[0] == "m3d.library_apply"] == ["starter:gold"], "search filters the tiles")
+lib_s.search = ""
+lib_s.category = 'MASKS'
+log = draw_stub(LIB.PROPERTIES_PT_m3d_lib_browse, lctx)
+check(len([r for r in log if r._kind == "operator" and r._args[0] == "m3d.library_apply"]) == len(lb_masks) and any(r._kind == "prop" and r._args[1] == "mask_mode" for r in log),
+      "the Masks grid and the Replace / Add on Top choice")
+lib_s.mask_mode = 'ADD'
+log = draw_stub(LIB.PROPERTIES_PT_m3d_lib_browse, lctx)
+check({r.values()["mode"] for r in log if r._kind == "operator" and r._args[0] == "m3d.library_apply"} == {'ADD'}, "...the tiles apply the chosen way")
+lib_s.mask_mode = 'REPLACE'
+lib_s.category = 'BRUSHES'
+log = draw_stub(LIB.PROPERTIES_PT_m3d_lib_browse, lctx)
+check(len([r for r in log if r._kind == "operator" and r._args[0] == "m3d.brush_pick"]) == len(T.BRUSHES) + len(T.MORE_BRUSHES), "the Brushes grid: every texture brush")
+lib_s.category = 'ALPHAS'
+log = draw_stub(LIB.PROPERTIES_PT_m3d_lib_browse, lctx)
+check({r.values()["name"] for r in log if r._kind == "operator" and r._args[0] == "m3d.alpha_pick"} == {"", *S.alpha_names()}
+      and any(r._kind == "operator" and r._args[0] == "m3d.alpha_load" for r in log), "the Alphas grid: None, the shared alphas, Load Alpha...")
+lib_s.category = 'MINE'
+log = draw_stub(LIB.PROPERTIES_PT_m3d_lib_browse, lctx)
+check({r.values()["item"] for r in log if r._kind == "operator" and r._args[0] == "m3d.library_apply"} == {e.ref for e in LIB.user_entries()}
+      and {r.values()["kind"] for r in log if r._kind == "operator" and r._args[0] == "m3d.library_save"} == {'MATERIAL', 'MASK'}, "Mine: your items and the Save buttons")
+log = draw_stub(LIB.PROPERTIES_PT_m3d_lib_manage, lctx)
+check({r.values()["item"] for r in log if r._kind == "operator" and r._args[0] == "m3d.library_rename"} == {e.ref for e in LIB.user_entries()}
+      and {r.values()["item"] for r in log if r._kind == "operator" and r._args[0] == "m3d.library_delete"} == {e.ref for e in LIB.user_entries()},
+      "Your Items: rename and delete for each of your items, none for a starter")
+lib_s.category = 'MATERIALS'
+bpy.ops.m3d.library_apply(item="starter:chrome")
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_layer, lctx)
+check(any(r._kind == "operator" and r._args[0] == "m3d.library_save" and r.values()["kind"] == 'MATERIAL' for r in log), "the Layer panel has Save to Library (for a folder)")
+tx_mat.m3d_layer_index = 0
+bpy.ops.m3d.library_apply(item="starter:noise_breakup")
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_layer, lctx)
+check(any(r._kind == "operator" and r._args[0] == "m3d.library_save" and r.values()["kind"] == 'MATERIAL' for r in log), "...and for a layer")
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_mask, lctx)
+check(any(r._kind == "operator" and r._args[0] == "m3d.library_save" and r.values()["kind"] == 'MASK' for r in log), "the Mask panel has Save to Library")
+check(LIB.M3D_OT_library_apply.description(None, NS(item="starter:chrome")).startswith("Chrome: ") and LIB.M3D_OT_library_apply.description(None, NS(item="user:zzz")) == "Apply a library item"
+      and all(LIB.M3D_OT_library_apply.description(None, NS(item=e.ref)) for e in LIB.STARTERS), "the tooltip names the item")
+check(LIB.load_pre in bpy.app.handlers.load_pre and LIB.save_pre in bpy.app.handlers.save_pre, "library handlers are registered")
 
 # ----------------------------------------------------------------------------------------------------
 # Phase 4: Rigging workspace (tabs, pages, gates, modes, Joint tool, Orient Joint, controls, IK, skin, Driven Key, names).

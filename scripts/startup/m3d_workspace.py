@@ -182,10 +182,10 @@ DOCK_TABS['UV'] = {
         ("unwrap", "Unwrap"), ("arrange", "Arrange"), ("check", "Check"), ("create", "Create"), ("udim", "UDIM"))),
     'LEFT': (),
 }
-# Texture: the brush tray on the left, task tabs on the right (pages: m3d_texture.py).
+# Texture: the brush tray on the left, task tabs on the right (pages: m3d_texture.py; the Library page: m3d_library.py).
 DOCK_TABS['TEXTURE'] = {
     'RIGHT': tuple(Tab("tex_" + page, label, 'MODELING_TOOLKIT', "tex_" + page) for page, label in (
-        ("layers", "Layers"), ("brush", "Brush"), ("shelf", "Shelf"), ("bake", "Bake"), ("export", "Export"),
+        ("layers", "Layers"), ("brush", "Brush"), ("library", "Library"), ("bake", "Bake"), ("export", "Export"),
         ("display", "Display"))),
     'LEFT': (Tab("tex_brushes", "Brushes", 'MODELING_TOOLKIT', "tex_brushes"),),
 }

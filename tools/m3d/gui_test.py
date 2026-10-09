@@ -77,6 +77,7 @@ def step(fn):
 
 @step
 def setup():
+    lb_sandbox()   # (the Library tab: temporary folders and no thumbnails for the tests of the other phases, see lb_setup)
     win, area, region = view3d()
     with bpy.context.temp_override(window=win, area=area, region=region):
         bpy.ops.m3d.add_primitive(kind='CUBE')
@@ -960,7 +961,10 @@ def _resize_steps(name, side, width):
         area, want = _dock_of(side), width()
         mid = area.y + area.height // 2
         # Moving an edge needs the mouse on it (no active region): put it there with a simulated event.
-        edge["xy"], edge["delta"] = ((area.x + area.width, mid), want - area.width) if side == 'LEFT'             else ((area.x - 1, mid), area.width - want)
+        if side == 'LEFT':
+            edge["xy"], edge["delta"] = (area.x + area.width, mid), want - area.width
+        else:
+            edge["xy"], edge["delta"] = (area.x - 1, mid), area.width - want
         event('MOUSEMOVE', xy=edge["xy"])
 
     def move():
@@ -4381,6 +4385,398 @@ def fo_delete_check():
     check(fo_shape() == "A", "Delete Folder removed the folder and its layers: %s" % fo_shape())
     check(not [n for n in GIZMO["fo_doomed"] if n in bpy.data.images], "...and their images")
     check(not tracebacks(), "Python error while the folders were edited in the Texture workspace")
+
+
+# ----------------------------------------------------------------------------------------------------
+# Phase 7c: the Library tab in the Texture workspace: thumbnails that fill in over time (a step at a time on a timer), a material
+# tile (folder, new look, undo), a mask preset (replace, add on top), Save to Library, Mine, rename, delete, a brush tile and an alpha
+# with a real stroke; screenshots of the tab and of a material on a mesh.
+
+import shutil
+import time
+
+import m3d_library as LIB
+
+
+def lb_dock():
+    return tex_areas()[1]
+
+
+def lb_show(category):
+    dock = lb_dock()
+    dock.spaces.active.context = 'MODELING_TOOLKIT'
+    press_ok("m3d.dock_page", _area=dock, tab="tex_library")
+    bpy.context.scene.m3d_library.category = category
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+def lb_mat():
+    return bpy.context.active_object.active_material
+
+
+def lb_layer(name):
+    return next(l for l in lb_mat().m3d_layers if l.name == name)
+
+
+def lb_folder(name):
+    return next(l for l in lb_mat().m3d_layers if l.name == name and l.kind == 'FOLDER')
+
+
+def lb_select(layer):
+    lb_mat().m3d_layer_index = LY.index_of(lb_mat(), layer.uid)
+
+
+def lb_look():
+    return LY.composite(lb_mat(), 'BASE_COLOR', 64).copy()
+
+
+def lb_sandbox():
+    """The thumbnails, your items and the alphas of this run go to temporary folders (never the real user folder); every step
+    of the thumbnail generator is timed. Done once, by the first step: the other phases draw every dock tab, the Library tab
+    too, with the thumbnails switched off; `lb_setup` switches them on."""
+    if "lb_saved" in GIZMO:
+        return
+    GIZMO["lb_dir"] = tempfile.mkdtemp(prefix="m3d_lib_gui_")
+    GIZMO["lb_alphas"] = tempfile.mkdtemp(prefix="m3d_lib_alphas_")
+    GIZMO["lb_saved"] = (LIB.library_dir, LIB.step, m3d_sculpt.alpha_dir)
+    LIB.library_dir = lambda create=False: GIZMO["lb_dir"]
+    m3d_sculpt.alpha_dir = lambda create=False: GIZMO["lb_alphas"]
+    GIZMO["lb_times"] = []
+    real_step = LIB.step
+
+    def timed_step():
+        t0 = time.time()
+        try:
+            return real_step()
+        finally:
+            GIZMO["lb_times"].append(time.time() - t0)
+    LIB.step = timed_step
+    LIB._user["entries"] = None
+    LIB._gen.update(running=False, done=True, stage=None, failed=set())
+
+
+@step
+def lb_setup():
+    lb_sandbox()
+    m3d_sculpt.alpha_dir = lambda create=False: GIZMO["lb_alphas"]   # (the Sculpt phase put a folder of its own there)
+    if bpy.app.timers.is_registered(LIB._tick):
+        bpy.app.timers.unregister(LIB._tick)
+    LIB._gen.update(running=False, done=False, stage=None, failed=set())
+    if bpy.context.active_object is None or bpy.context.active_object.type != 'MESH':
+        win, area, region = view3d()
+        with bpy.context.temp_override(window=win, area=area, region=region):
+            bpy.ops.m3d.add_primitive(kind='CUBE')
+    if window().workspace.name != "Texture":
+        bpy.ops.m3d.workspace(kind='TEXTURE')
+
+
+step(wait_until(lambda: window().workspace.name == "Texture", "the Texture workspace", tries=20))
+
+
+@step
+def lb_setup_mesh():
+    ob = bpy.context.active_object
+    if ob.active_material is None:
+        press_ok("m3d.tex_add_material", _area=lb_dock())
+    if bpy.context.mode != 'PAINT_TEXTURE':
+        bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+    ob.m3d_bake.resolution, ob.m3d_bake.samples, ob.m3d_bake.margin = '128', 4, 4
+    bpy.context.scene.m3d_tex.resolution = '128'
+    check(LIB.pending() and not os.listdir(GIZMO["lb_dir"]), "no thumbnail exists yet")
+    check("tex_library" in {t.id for t in m3d_workspace.DOCK_TABS['TEXTURE']['RIGHT']}, "the Texture dock has a Library tab")
+    lb_show('MATERIALS')
+
+
+step(wait_until(lambda: LIB._gen["running"], "the Library tab to start making thumbnails", tries=10))
+
+
+@step
+def lb_placeholders():
+    check(window().workspace.m3d_page_right == "tex_library", "the dock shows the Library tab")
+    check(LIB.pending() or LIB._gen["stage"] is not None, "the thumbnails are still being made: the tiles show placeholders meanwhile")
+    check(any(k.startswith("ph:") for k in LIB.icons().keys()), "placeholder icons were drawn")
+    check(not tracebacks(), "Python error drawing the Library tab")
+
+
+step(wait_until(lambda: not LIB.pending() and not LIB._gen["running"], "the thumbnails to be made", tries=140))
+
+
+@step
+def lb_thumbs_check():
+    times = GIZMO["lb_times"]
+    check(not LIB._gen["failed"], "no thumbnail failed: %s" % LIB._gen["failed"])
+    check(all(os.path.isfile(LIB.thumb_path(e)) for e in LIB.entries()), "every starter item has its thumbnail in the user folder")
+    check(len(times) >= 28 and max(times) < 3.0, "thumbnails come one small step at a time (%d steps, the longest %.2f s)" % (len(times), max(times)))
+    check(bpy.data.scenes.get(LIB.RIG) is None and len(bpy.data.scenes) == 1, "the preview scene is gone")
+    check(len([k for k in LIB.icons().keys() if k.startswith("t:")]) >= len([e for e in LIB.STARTERS if e.item["type"] == 'MATERIAL']),
+          "the Materials tiles use the thumbnails")
+    print("library thumbnails: %d steps, %.1f s in all, longest step %.2f s" % (len(times), sum(times), max(times)))
+    check(not tracebacks(), "Python error while the thumbnails were made")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def lb_shot_tab():
+    e_screenshot("F:/AI/m3d_item7c.png")
+
+
+# --- A material tile: the operator of the button. A folder of fill layers, a new look, one undo step.
+@step
+def lb_apply_material():
+    m = lb_mat()
+    GIZMO["lb_before"], GIZMO["lb_layers"] = lb_look(), len(m.m3d_layers)
+    res = press_ok("m3d.library_apply", _area=lb_dock(), item="starter:painted_metal")
+    check(res == {'FINISHED'}, "the Painted Metal tile applies")
+
+
+@step
+def lb_material_check():
+    m = lb_mat()
+    folder = LY.active_layer(m)
+    check(folder.name == "Painted Metal" and folder.kind == 'FOLDER' and m.m3d_layers[-1].uid == folder.uid
+          and [l.name for l in LY.children(folder)] == ["Bare Metal", "Paint", "Dirt"], "a folder named after the item with its layers: %s" % [l.name for l in m.m3d_layers])
+    check([e.kind for e in lb_layer("Paint").mask_stack] == ["EDGES", "NOISE", "INVERT"] and lb_layer("Dirt").mask_stack[0].kind == 'CAVITY', "...the masks use the generators")
+    check(np.abs(lb_look() - GIZMO["lb_before"]).max() > 0.01, "the material changed")
+    check(all(not MK.missing_maps(l) for l in m.m3d_layers) and LY.rebuild_all(m) is False, "the maps were baked and the nodes are in step")
+    check(not tracebacks(), "Python error applying a material")
+    press_ok("m3d.dock_page", _area=lb_dock(), tab="tex_layers")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def lb_layers_tab_check():
+    check(not tracebacks(), "Python error drawing the Layers tab with the applied folder")
+    lb_show('MATERIALS')
+
+
+# --- Undo and redo of a tile (Object Mode: Texture Paint Mode keeps its own undo steps)
+@step
+def lb_undo_setup():
+    bpy.ops.object.mode_set(mode='OBJECT')
+    GIZMO["lb_names"] = [l.name for l in lb_mat().m3d_layers]
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.ed.undo_push(message="Before the tile")   # (the test's own operator calls push no steps: Undo needs one to go back to)
+        bpy.ops.m3d.library_apply('EXEC_DEFAULT', True, item="starter:gold")
+
+
+@step
+def lb_undo():
+    check(lb_mat().m3d_layers[-1].name == "Gold" and len(lb_mat().m3d_layers) == len(GIZMO["lb_names"]) + 2, "a second tile: the Gold folder is on top")
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.ed.undo()
+
+
+@step
+def lb_undo_check():
+    check([l.name for l in lb_mat().m3d_layers] == GIZMO["lb_names"], "Undo takes the whole folder away in one step: %s" % [l.name for l in lb_mat().m3d_layers])
+    check(LY.rebuild_all(lb_mat()) is False and not tracebacks(), "...with the nodes in step")
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.ed.redo()
+
+
+@step
+def lb_redo_check():
+    check(lb_mat().m3d_layers[-1].name == "Gold" and len(lb_mat().m3d_layers) == len(GIZMO["lb_names"]) + 2, "Redo brings it back")
+    bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+    lb_select(lb_folder("Gold"))
+    press_ok("m3d.layer_remove", _area=lb_dock())
+
+
+# --- A mask preset on a layer: replace, then add on top
+@step
+def lb_mask_setup():
+    press_ok("m3d.layer_add", _area=lb_dock(), kind='FILL')
+    LY.active_layer(lb_mat()).name = "Target"
+    lb_show('MASKS')
+    res = press_ok("m3d.library_apply", _area=lb_dock(), item="starter:edge_wear", mode='REPLACE')
+    check(res == {'FINISHED'}, "the Edge Wear tile applies")
+
+
+@step
+def lb_mask_check():
+    layer = lb_layer("Target")
+    check([e.kind for e in layer.mask_stack] == ["EDGES", "NOISE"] and layer.mask_stack[0].blend == 'MIX', "Edge Wear is the layer's mask: %s" % [e.kind for e in layer.mask_stack])
+    check(LY.rebuild_all(lb_mat()) is False and not tracebacks(), "...with the nodes in step")
+    press_ok("m3d.library_apply", _area=lb_dock(), item="starter:dirt_in_cavities", mode='ADD')
+
+
+@step
+def lb_mask_add_check():
+    layer = lb_layer("Target")
+    check([e.kind for e in layer.mask_stack] == ["EDGES", "NOISE", "CAVITY", "NOISE"] and layer.mask_stack[2].blend == 'MULTIPLY',
+          "Add on Top: Dirt in Cavities goes above, combined with it: %s" % [e.kind for e in layer.mask_stack])
+    press_ok("m3d.library_apply", _area=lb_dock(), item="starter:large_patches", mode='REPLACE')
+
+
+@step
+def lb_mask_replace_check():
+    check([e.kind for e in lb_layer("Target").mask_stack] == ["NOISE", "LEVELS"], "Replace: only the new preset is left")
+    check(not tracebacks(), "Python error applying mask presets")
+
+
+# --- Save to Library: the mask of the layer, the folder; they are in Mine and get thumbnails; rename; delete
+@step
+def lb_save():
+    check(press_ok("m3d.library_save", 'EXEC_DEFAULT', _area=lb_dock(), kind='MASK', name="GUI Patches") == {'FINISHED'}, "Save the layer's mask to the library")
+    lb_select(lb_folder("Painted Metal"))
+    check(press_ok("m3d.library_save", 'EXEC_DEFAULT', _area=lb_dock(), kind='MATERIAL', name="GUI Metal") == {'FINISHED'}, "Save the folder to the library")
+    lb_show('MINE')
+
+
+@step
+def lb_mine_check():
+    refs = [e.ref for e in LIB.user_entries()]
+    check(refs == ["user:gui_metal", "user:gui_patches"], "both are under Mine: %s" % refs)
+    check(not LIB._gen["done"], "new items wait for a thumbnail")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+step(wait_until(lambda: not LIB.pending() and not LIB._gen["running"], "the thumbnails of your items", tries=80))
+
+
+@step
+def lb_mine_thumbs():
+    check(all(os.path.isfile(LIB.thumb_path(e)) for e in LIB.user_entries()), "your items got their thumbnails: %s" % LIB.pending())
+    check(not LIB._gen["failed"] and not tracebacks(), "Python error making the thumbnails of your items")
+    check(press_ok("m3d.library_rename", 'EXEC_DEFAULT', _area=lb_dock(), item="user:gui_metal", name="Worn Red") == {'FINISHED'}
+          and LIB.find_entry("user:gui_metal").item["name"] == "Worn Red", "Rename")
+    check(press_ok("m3d.library_apply", _area=lb_dock(), item="user:gui_metal") == {'FINISHED'} and LY.active_layer(lb_mat()).name == "Worn Red",
+          "your material applies from Mine (a folder named after it)")
+    press_ok("m3d.library_apply", _area=lb_dock(), item="user:gui_patches", mode='ADD')
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def lb_delete():
+    check(not tracebacks(), "Python error drawing Mine and applying your items")
+    for ref in ("user:gui_metal", "user:gui_patches"):
+        check(press_ok("m3d.library_delete", 'EXEC_DEFAULT', _area=lb_dock(), item=ref) == {'FINISHED'}, "Delete " + ref)
+    check(LIB.user_entries() == [] and os.listdir(os.path.join(GIZMO["lb_dir"], "user")) == [], "your items are gone from the folder")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+# --- A brush tile and an alpha: the alpha is the brush's Texture Mask; a real stroke with it paints less than one without
+@step
+def lb_brush_tile():
+    lb_show('BRUSHES')
+    check(press_ok("m3d.brush_pick", _area=lb_dock(), identifier=m3d_texture.BRUSH_ASSET + "Paint Hard") == {'FINISHED'}
+          and m3d_sculpt.active_brush_id(bpy.context) == m3d_texture.BRUSH_ASSET + "Paint Hard", "a brush tile picks its brush")
+    lb_show('ALPHAS')
+    ups = bpy.context.tool_settings.image_paint.unified_paint_settings
+    ups.color = (1.0, 0.0, 0.0)
+    ups.use_unified_size, ups.size = True, 60
+    press_ok("m3d.layer_add", _area=lb_dock(), kind='PAINT')
+    LY.active_layer(lb_mat()).name = "Plain"
+    press_ok("m3d.tex_channel", _area=lb_dock(), channel='BASE_COLOR')
+    view, region = tex_view()
+    p = location_3d_to_region_2d(region, view.spaces.active.region_3d, Vector((0, 0, 0)))
+    cx, cy = (int(region.x + p.x), int(region.y + p.y)) if p is not None else tex_xy()
+    GIZMO["lb_stroke"] = [(cx - 40 + i * 8, cy) for i in range(11)]
+    GIZMO["lb_plain"] = px(LY.entry_of(LY.active_layer(lb_mat()), 'BASE_COLOR').image).copy()
+    event('MOUSEMOVE', xy=GIZMO["lb_stroke"][0])
+
+
+@step
+def lb_plain_press():
+    event('LEFTMOUSE', 'PRESS', GIZMO["lb_stroke"][0])
+    for xy in GIZMO["lb_stroke"][1:]:
+        event('MOUSEMOVE', xy=xy)
+
+
+@step
+def lb_plain_release():
+    event('LEFTMOUSE', 'RELEASE', GIZMO["lb_stroke"][-1])
+
+
+@step
+def lb_alpha_setup():
+    image = LY.entry_of(LY.active_layer(lb_mat()), 'BASE_COLOR').image
+    GIZMO["lb_plain_cover"] = float(px(image)[:, 3].sum())
+    check(GIZMO["lb_plain_cover"] > 50, "a stroke without an alpha painted (coverage %.0f)" % GIZMO["lb_plain_cover"])
+    check(press_ok("m3d.alpha_pick", _area=lb_dock(), name="Clouds") == {'FINISHED'}
+          and bpy.context.tool_settings.image_paint.brush.mask_texture.name == "Clouds", "an alpha tile sets the brush's Texture Mask")
+    press_ok("m3d.layer_add", _area=lb_dock(), kind='PAINT')
+    LY.active_layer(lb_mat()).name = "Stamped"
+    press_ok("m3d.tex_channel", _area=lb_dock(), channel='BASE_COLOR')
+    event('MOUSEMOVE', xy=GIZMO["lb_stroke"][0])
+
+
+@step
+def lb_alpha_press():
+    event('LEFTMOUSE', 'PRESS', GIZMO["lb_stroke"][0])
+    for xy in GIZMO["lb_stroke"][1:]:
+        event('MOUSEMOVE', xy=xy)
+
+
+@step
+def lb_alpha_release():
+    event('LEFTMOUSE', 'RELEASE', GIZMO["lb_stroke"][-1])
+
+
+@step
+def lb_alpha_check():
+    image = LY.entry_of(LY.active_layer(lb_mat()), 'BASE_COLOR').image
+    cover = float(px(image)[:, 3].sum())
+    check(LY.active_layer(lb_mat()).name == "Stamped" and 0 < cover < 0.85 * GIZMO["lb_plain_cover"],
+          "the same stroke with the alpha paints less (coverage %.0f against %.0f without)" % (cover, GIZMO["lb_plain_cover"]))
+    check(press_ok("m3d.alpha_pick", _area=lb_dock(), name="") == {'FINISHED'} and bpy.context.tool_settings.image_paint.brush.mask_texture is None, "None clears the alpha")
+    check(not tracebacks(), "Python error with the brush and alpha tiles")
+
+
+# --- A starter material on a mesh with edges and cavities: the screenshot of the result
+@step
+def lb_monkey():
+    win, area, region = view3d()
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.object.select_all(action='SELECT')
+    bpy.ops.object.delete()
+    with bpy.context.temp_override(window=win, area=tex_view()[0], region=tex_view()[1]):
+        bpy.ops.mesh.primitive_monkey_add()
+        bpy.ops.object.shade_smooth()
+        bpy.ops.object.modifier_add(type='SUBSURF')
+        bpy.context.active_object.modifiers[0].levels = 2
+        bpy.ops.object.modifier_apply(modifier="Subdivision")
+    press_ok("m3d.tex_unwrap", _area=lb_dock())
+    press_ok("m3d.tex_add_material", _area=lb_dock())
+    ob = bpy.context.active_object
+    ob.m3d_bake.resolution, ob.m3d_bake.samples, ob.m3d_bake.margin = '512', 16, 8
+    bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+    lb_show('MATERIALS')
+    check(press_ok("m3d.library_apply", _area=lb_dock(), item="starter:painted_metal") == {'FINISHED'}, "Painted Metal on Suzanne")
+    from mathutils import Euler
+    tex_view()[0].spaces.active.region_3d.view_rotation = Euler((math.radians(78), 0.0, math.radians(32))).to_quaternion()   # (from the front, a little from the side and above)
+    with bpy.context.temp_override(window=win, area=tex_view()[0], region=tex_view()[1]):
+        bpy.ops.view3d.view_all(center=True)
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def lb_monkey_look():
+    check(not tracebacks(), "Python error applying a material to Suzanne")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def lb_shot_applied():
+    e_screenshot("F:/AI/m3d_item7c_applied.png")
+
+
+@step
+def lb_done():
+    LIB.library_dir, LIB.step, m3d_sculpt.alpha_dir = GIZMO["lb_saved"]
+    shutil.rmtree(GIZMO["lb_dir"], ignore_errors=True)
+    shutil.rmtree(GIZMO["lb_alphas"], ignore_errors=True)
+    LIB._user["entries"] = None
+    LIB._gen.update(running=False, done=False, stage=None, failed=set())
+    check(not tracebacks(), "Python error in the Library tests")
 
 
 @step

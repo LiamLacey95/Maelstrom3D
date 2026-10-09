@@ -26,7 +26,7 @@ named here only to describe compatibility.*
 | Editor names | Attribute Editor, Shader Editor, Script Editor, Command Line, Command History, Time Editor | `rna_space.cc`, `node_shader_tree.cc` |
 | Marking menus | RMB, Shift+RMB, Ctrl+RMB in the viewport; RMB, Shift+RMB in the UV Editor; Space hotbox | `m3d_mode.py`, `m3d_uv.py` |
 | UV editing | UV workspace (F3): dock tabs, Status Line and shelf for Cut/Sew/Unfold/Optimize/Layout, texel density, Auto Unwrap, UDIMs, checker map; sidebar UV Toolkit in other workspaces | `scripts/startup/m3d_uv.py` |
-| Texturing | Texture workspace (F4): brush tray, paint channels, Bake, Export, Display, Status Line and shelves; paint layer stack, painted images are saved or packed with the file | `scripts/startup/m3d_texture.py`, `scripts/startup/m3d_layers.py` |
+| Texturing | Texture workspace (F4): brush tray, paint channels, Bake, Export, Display, Status Line and shelves; paint layer stack, painted images are saved or packed with the file; a Library of materials (layer setups), mask presets, brushes, alphas and your own items | `scripts/startup/m3d_texture.py`, `scripts/startup/m3d_layers.py`, `scripts/startup/m3d_masks.py`, `scripts/startup/m3d_library.py` (data: `m3d_library_data.py`) |
 | Rigging | Rigging workspace (F5): Outliner with the bone hierarchy and bone collections on the left, a large viewport, a dock of Skeleton, Controls & Constraints, Skin, Drive, Test and Collections tabs that follows the mode, Timeline that switches to the Drivers editor; Joint tool, Orient Joint, control shapes, IK with pole, bind with fallback, weight tools, Driven Key, naming check, Rigify on demand; Ctrl+E, Shift+N | `scripts/startup/m3d_rig.py` |
 | Animation | Animation workspace (F6): a large viewport and a camera view, one bottom editor that switches between the Graph Editor and the Dope Sheet, a short Timeline, a dock of Channel Box, Pick, Tween & Poses, Motion, Layers and Playback tabs; Status Line with Auto Key, key type, new key interpolation, keying set, range, FPS, loop mode, Blocking / Polish, Playblast; Tween (Alt+Q), Push / Relax / Breakdown, object selection sets, motion paths, ghost curves, NLA layers, Playblast | `scripts/startup/m3d_anim.py` |
 | Rendering | Rendering workspace (F7): a 3D view and a Render View, a dock of Camera, Lighting, Materials, Render, Output, Passes & Layers and Advanced tabs; Status Line with engine, camera, Draft / Medium / Final presets, Render, IPR; light table, HDRI sky, camera from view; Shift+F12 | `scripts/startup/m3d_render.py` |
@@ -195,7 +195,7 @@ Add Material, Texture Paint Mode).
 | Shelves | Paint (the brushes, swap colors), Channels (add or pick a channel, Auto Unwrap, Add Material), Bake / Export, Custom |
 | Layers tab | The layer stack of the active material: a list (top layer first: eye, name, blend mode, opacity, channel letters; folders have a triangle and a snowflake), buttons to add a Paint Layer, Fill Layer or **New Folder**, move, duplicate, delete, **Merge Down** and **Flatten**, **Group** / **Move In** / **Move Out** for folders; below it the active layer's settings (name, blend, opacity, channels, fill values, or for a folder Freeze / Unfreeze and Merge Folder), its **Mask** (the stack of mask effects, see below), and closed panels Channels (the paint slots by channel) and All Paint Slots |
 | Brush tab | Stroke and Stabilize, Falloff, Texture, Texture Mask, Stencil, Clone, Options (seam bleed, dither, cavity mask), Cursor, Color Palette |
-| Shelf tab | All texture brushes (also the pressure and pixel art ones) and Blender's brush library popover (favorites live there); materials marked as assets, applied with a click, and a button to mark the active one |
+| Library tab | Materials, Masks, Brushes, Alphas and Mine as a tile grid with a search field; **Save to Library** is in the Layer and Mask panels (see Library below). Materials of the file that are marked as assets are listed in a closed panel when there are some |
 | Bake tab | High Poly picker (or Use Selected as High Poly), maps Normal, AO, Curvature, Position, Thickness, size, margin, ray settings, **Bake**, and the list of baked images |
 | Export tab | Presets glTF, Unreal, Unity; folder; size; **Export**; Save All Images |
 | Display tab | Material Preview environment (HDRI, rotation, intensity), Channel View of each channel, UV checker map, wireframe |
@@ -321,6 +321,43 @@ Down and Export does too (the comparison with a Cycles bake of the chain agrees 
 to about 1% for sRGB images with alpha, which Cycles keeps with the color multiplied by the alpha in 8 bits). A layer in
 a folder after the first needs about four more nodes than a layer on its own, which freezing takes away. Materials from
 before folders open unchanged.
+
+**Library.** The Library tab holds ready-made things to apply and the things you saved. Five categories, a search field,
+and square tiles with the name under each (the full name and a description are the tooltip):
+
+| Category | What a click does |
+|---|---|
+| Materials | Adds the material as a **new folder on top of the layer stack**, named after it, and makes it the active layer: it is a folder of Fill Layers (Base Color, Roughness, Metallic values) whose masks use the Edges, Cavity, Top-down and Noise generators, so it can be toggled, faded, masked, frozen or deleted as one. A mesh without a material gets one. One click is one undo step and one rebuild of the nodes; the maps the generators read are baked once (Rebake Maps keeps them current) |
+| Masks | Gives the **active layer** (or folder) the preset's mask effects. **Replace** swaps them for the layer's mask, **Add on Top** puts them above it, combined with it (multiplied) |
+| Brushes | Picks the texture paint brush (all of them, also the pressure and pixel art ones), with the brush library popover on top (favorites live there) |
+| Alphas | The Sculpt alphas: the same starter set and **Load Alpha...**, in the same user folder, so an alpha loaded in Sculpt is here too. In Texture Paint Mode the alpha is the active brush's **Texture Mask** (it follows the cursor; angle and mapping in the Brush tab), None clears it |
+| Mine | Your own items, and **Save Layer** / **Save Mask** |
+
+The starter **materials** are Painted Metal (worn through at the edges, dirt in the crevices), Rusty Iron, Brushed Steel,
+Chrome, Gold, Copper (patina in the cavities), Rubber, Plastic (glossy), Dirty Plastic, Concrete (noise), Dusty and Snow
+Cover (top-down, to add over any material), Mud (cavity and noise), Aluminium, Matte Black and Ceramic, with plausible PBR
+values (metals have metallic 1 and a tinted color, the rest 0). The starter **mask presets** are Edge Wear, Dirt in
+Cavities, Top-down Dust, Noise Breakup, Thickness Glow, Speckle, Grunge, Light Dust, Snow Cap and Large Patches. They are
+built from fills and the mask generators only, no image files, and are read-only.
+
+**Saving your own.** **Save to Library** in the Layer panel saves the active layer, or the active folder with everything
+in it (nested folders, fills, paint layers with their pixels, blend modes, opacities, masks), as a material; in the Mask
+panel it saves the layer's mask stack as a mask preset. You are asked for a name. Under Mine, each item has a rename and
+a delete button (Your Items); the starter items have neither. An item is a folder in the user data folder
+`datafiles/m3d_library/user/<name>/` (inside the portable folder in a portable install): `item.json` describes the
+layers (kind, name, visible, opacity, blend, per channel the fill color or value or the PNG of a paint layer, the mask
+effects with all their settings) and any paint images are saved beside it as PNG, so applying an item makes the layers
+again with the same pixels and values (a saved folder applied back gives the same composite exactly). Applying one
+checks nothing is half done: a damaged item is refused and leaves the stack as it was.
+
+**Previews.** The tile pictures are small Cycles renders of a sphere with grooves (so edges and cavities exist) lit by
+Blender's courtyard HDRI, 128 px, with the item applied; a mask preset is shown as the mask on the sphere. They are made
+the first time the Library tab is drawn, one small step at a time on a timer (the preview scene, then each baked map,
+then one item per step: the longest step is about a second, 26 starter items take about 15 s in all), and a tile shows a
+shaded disc in the material's color until its picture is ready. Starter previews are cached in
+`datafiles/m3d_library/thumbs` (made again when an item or the preview look changes), yours are `thumb.png` in the item's
+folder. The temporary preview scene is removed when it is done (and when you save the file in between); **Refresh
+Previews** (Mine, Your Items) makes them all again.
 
 Painted images never get lost: before a file is saved, images with changes are written to their files, or packed into
 the .blend when they have none. Save All Images does the same on demand. Large images use a lot of memory: new slots

@@ -422,6 +422,15 @@ def sculpt_brush(context):
     return sculpt.brush if sculpt else None
 
 
+def alpha_brush(context):
+    """The brush an alpha goes to: the active brush of Texture Paint Mode (the Library tab of the Texture workspace
+    shares the alphas), else the sculpt brush."""
+    if context.mode == 'PAINT_TEXTURE':
+        paint = context.tool_settings.image_paint
+        return paint.brush if paint else None
+    return sculpt_brush(context)
+
+
 def draw_size_strength(layout, context, brush, header=False, only=None):
     """Size and Strength sliders of the brush (`only`: just one of them): the scene-wide ones when Unified Size /
     Strength is on. In a header (the Status Line) the pressure and Unified buttons are left out."""
@@ -866,9 +875,20 @@ class M3D_OT_stroke_pick(Operator):
         return {'FINISHED'}
 
 
-def set_alpha(brush, texture):
+def set_alpha(brush, texture, mask=False):
     """Use `texture` (or none) as the brush's alpha: it is mapped onto the brush, once. (A brush from the asset
-    library is linked data, which can only point at linked data: the alphas are linked from the alpha library.)"""
+    library is linked data, which can only point at linked data: the alphas are linked from the alpha library.)
+    `mask`: a texture paint brush has no area mapping for its texture: the alpha is its Texture Mask, which follows the
+    cursor."""
+    if mask:
+        brush.mask_texture = texture
+        if texture is not None:
+            slot = brush.mask_texture_slot
+            slot.mask_map_mode = 'VIEW_PLANE'
+            slot.offset = (0.0, 0.0, 0.0)
+            slot.scale = (1.0, 1.0, 1.0)
+            slot.angle = 0.0
+        return
     brush.texture = texture
     if texture is not None:
         slot = brush.texture_slot
@@ -936,14 +956,14 @@ class M3D_OT_alpha_pick(Operator):
 
     @classmethod
     def poll(cls, context):
-        return sculpt_brush(context) is not None
+        return alpha_brush(context) is not None
 
     def execute(self, context):
         tex = link_alpha(self.name) if self.name else None
         if self.name and tex is None:
             self.report({'WARNING'}, "Can't read the alpha %s from %s" % (self.name, alpha_dir()))
             return {'CANCELLED'}
-        set_alpha(sculpt_brush(context), tex)
+        set_alpha(alpha_brush(context), tex, context.mode == 'PAINT_TEXTURE')
         return {'FINISHED'}
 
 
@@ -959,7 +979,7 @@ class M3D_OT_alpha_load(Operator):
 
     @classmethod
     def poll(cls, context):
-        return sculpt_brush(context) is not None
+        return alpha_brush(context) is not None
 
     def invoke(self, context, _event):
         context.window_manager.fileselect_add(self)
@@ -984,7 +1004,7 @@ class M3D_OT_alpha_load(Operator):
         if not store_alpha(name, image, thumb):
             self.report({'WARNING'}, "Can't write to the alpha library %s" % alpha_dir())
             return {'CANCELLED'}
-        set_alpha(sculpt_brush(context), link_alpha(name))
+        set_alpha(alpha_brush(context), link_alpha(name), context.mode == 'PAINT_TEXTURE')
         return {'FINISHED'}
 
 
