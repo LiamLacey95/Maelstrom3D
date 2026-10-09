@@ -11,7 +11,7 @@ import os
 from collections import namedtuple
 
 import bpy
-from bpy.types import Menu, Operator
+from bpy.types import Menu, Operator, Panel
 
 # kind -> (workspace name, key, object mode on entry, menu set)
 KINDS = {
@@ -376,22 +376,57 @@ class M3D_MT_dock_more(Menu):
             tab_button(self.layout, tab, tab.label)
 
 
+def draw_tab_toggles(layout, kind, tabs):
+    """A checkbox row per tab: ticked tabs are shown, a click shows / hides it (the same for the whole kind)."""
+    from m3d_user import hidden_tabs
+    hidden = hidden_tabs(kind)
+    for tab in tabs:
+        layout.operator("m3d.dock_tab_toggle", text=tab.label,
+                        icon='CHECKBOX_DEHLT' if tab.id in hidden else 'CHECKBOX_HLT').tab = tab.id
+
+
 class M3D_MT_dock_tabs(Menu):
-    """Dock tabs: show or hide them, reset the workspace"""
+    """Dock tabs: show or hide them (Reset Workspace and the rest are in Workspace Settings, top right)"""
     bl_label = "Dock Tabs"
 
     def draw(self, context):
-        from m3d_user import hidden_tabs
-        layout = self.layout
-        kind = current_kind(context)
-        hidden = hidden_tabs(kind)
-        layout.label(text="Tabs")
-        for tab in dock_tabs(kind, side_of(context)):
-            o = layout.operator("m3d.dock_tab_toggle", text=tab.label,
-                                icon='CHECKBOX_DEHLT' if tab.id in hidden else 'CHECKBOX_HLT')
-            o.tab = tab.id
-        layout.separator()
+        self.layout.label(text="Tabs")
+        draw_tab_toggles(self.layout, current_kind(context), dock_tabs(current_kind(context), side_of(context)))
+
+
+class M3D_PT_workspace_settings(Panel):
+    """Settings of this workspace: reset it, show or hide its dock tabs, shelf, entry mode, shortcuts, defaults"""
+    bl_space_type = 'TOPBAR'
+    bl_region_type = 'HEADER'
+    bl_label = "Workspace Settings"
+    bl_ui_units_x = 15
+
+    def draw(self, context):
+        layout, ws, wm = self.layout, context.workspace, context.window_manager
+        kind = workspace_kind(ws)
         layout.operator("m3d.workspace_reset", icon='FILE_REFRESH')
+        layout.separator()
+        if kind is None:   # Shading, Compositing...: no task dock, so no tabs to choose.
+            layout.label(text="Dock tabs: this workspace has none")
+        else:
+            sides = DOCK_TABS[kind]
+            left = sides['LEFT']
+            layout.label(text="Right dock tabs" if left else "Dock tabs")
+            draw_tab_toggles(layout, kind, sides['RIGHT'])
+            if left:
+                layout.label(text="Left tray tabs")
+                draw_tab_toggles(layout, kind, left)
+        layout.separator()
+        layout.prop(wm, "m3d_shelf_edit", text="Edit Custom Shelf", toggle=True)
+        layout.label(text="Right-click any button > Add to Shelf")
+        layout.separator()
+        row = layout.row()
+        row.label(text="Entry mode")
+        row.prop(ws, "object_mode", text="")
+        layout.separator()
+        layout.operator("screen.userpref_show", text="Keyboard Shortcuts...", icon='KEYINGSET').section = 'KEYMAP'
+        layout.operator("wm.save_homefile", text="Save Layouts as Default", icon='FILE_TICK')
+        layout.label(text="All workspaces, for new files")
 
 
 # -----------------------------------------------------------------------------
@@ -406,6 +441,11 @@ class M3D_OT_workspace_reset(Operator):
     """Replace this workspace by its factory layout (docks, shelves and tabs you changed are reset)"""
     bl_idname = "m3d.workspace_reset"
     bl_label = "Reset Workspace"
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(
+            self, event, title="Reset Workspace", confirm_text="Reset",
+            message="Replace \"%s\" by its factory layout?" % context.workspace.name)
 
     def execute(self, context):
         ws = context.workspace
@@ -458,6 +498,7 @@ classes = (
     M3D_OT_dock_tab_toggle,
     M3D_MT_dock_more,
     M3D_MT_dock_tabs,
+    M3D_PT_workspace_settings,
     M3D_OT_workspace_reset,
 )
 

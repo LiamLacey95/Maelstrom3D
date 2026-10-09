@@ -893,6 +893,7 @@ def draw_workspace_picker(layout, context):
     layout.separator_spacer()
     layout.label(text="Workspace:")
     layout.template_ID(context.window, "workspace", new="workspace.add", unlink="workspace.delete")
+    layout.popover("M3D_PT_workspace_settings", text="Settings", icon='PREFERENCES')
 
 
 def draw_status_line_sculpt(layout, context):

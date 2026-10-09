@@ -788,7 +788,7 @@ for _fn in _dock_steps():
 
 @step
 def tab_menu_open():
-    # The dock's tab menu draws (and Reset Workspace is in it).
+    # The dock's tab menu draws.
     bpy.ops.m3d.workspace(kind='MODEL')
 
 
@@ -1062,6 +1062,108 @@ def reset_workspace_check():
     check(any(a.type == 'VIEW_3D' for a in window().screen.areas), "reset did not restore the 3D viewport")
     check(len([w for w in bpy.data.workspaces if w.name.startswith("Sculpt")]) == 1, "duplicate Sculpt workspace")
     check(not tracebacks(), "Python error during Reset Workspace")
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
+# Workspace Settings: the Settings button at the right end of the Status Line (a popover; the rows are clicked at
+# fixed offsets from the window's top right: Reset Workspace, then the tabs of the dock).
+WS_SETTINGS_X, WS_SETTINGS_Y = 51, 38           # the button, from the right / top edge (UI scale 1)
+WS_ROWS = {"reset": 78, "tab0": 138, "tab1": 164, "tab2": 189}   # rows of the popover, from the top edge
+WS_ROWS_X = 163                                  # their middle, from the right edge
+
+
+def ws_event(type, value='NOTHING', xy=None):
+    """Like event(), without needing a 3D viewport (the layout may be scrambled)."""
+    win = window()
+    x, y = xy or (win.width // 2, win.height // 2)
+    win.event_simulate(type=type, value=value, x=x, y=y)
+
+
+def ws_click(xy):
+    ws_event('MOUSEMOVE', xy=xy)
+    ws_event('LEFTMOUSE', 'PRESS', xy)
+    ws_event('LEFTMOUSE', 'RELEASE', xy)
+
+
+def ws_open():
+    """Click Settings (a fresh popover: ESC closes one that is still open)."""
+    win = window()
+    ws_event('ESC', 'PRESS')
+    ws_click((win.width - WS_SETTINGS_X, win.height - WS_SETTINGS_Y))
+
+
+def ws_row(name):
+    win = window()
+    ws_click((win.width - WS_ROWS_X, win.height - WS_ROWS[name]))
+
+
+def _ws_toggle_steps():
+    # Modeling: its third tab (Tool Settings); Sculpt: its first (Geometry). Click it hidden, then shown again.
+    for kind, row, tab in (('MODEL', "tab2", "tool"), ('SCULPT', "tab0", "sculpt_geometry")):
+        def switch(kind=kind):
+            bpy.ops.m3d.workspace(kind=kind)
+
+        def open_(kind=kind):
+            check(window().workspace.name == m3d_workspace.KINDS[kind][0], "Workspace Settings test is in %s" % kind)
+            ws_open()
+
+        def hide(row=row):
+            ws_row(row)
+
+        def hidden(kind=kind, tab=tab):
+            check(m3d_user.hidden_tabs(kind) == {tab}, "%s: Settings popover did not hide tab %s (%s)" % (kind, tab, m3d_user.hidden_tabs(kind)))
+            check(not tracebacks(), "Python error in the Workspace Settings popover (%s)" % kind)
+            ws_open()
+
+        def show(row=row):
+            ws_row(row)
+
+        def shown(kind=kind):
+            check(m3d_user.hidden_tabs(kind) == set(), "%s: Settings popover did not show the tab again" % kind)
+            ws_event('ESC', 'PRESS')
+        for fn in (switch, open_, hide, hidden, show, shown):
+            fn.__name__ = "ws_%s_%s" % (kind, fn.__name__)
+            yield fn
+
+
+for _fn in _ws_toggle_steps():
+    step(_fn)
+
+
+@step
+def ws_reset_setup():
+    # Sculpt: scramble the layout, then Reset Workspace from the popover (the confirm dialog takes Enter).
+    bpy.ops.m3d.workspace(kind='SCULPT')
+    for area in window().screen.areas:
+        if area.type == 'VIEW_3D':
+            area.ui_type = 'OUTLINER'
+
+
+@step
+def ws_reset_open():
+    ws_open()
+
+
+@step
+def ws_reset_click():
+    ws_row("reset")
+
+
+@step
+def ws_reset_confirm():
+    ws_event('RET', 'PRESS')
+    ws_event('RET', 'RELEASE')
+
+
+step(wait_until(lambda: [w.name for w in bpy.data.workspaces if w.name.startswith("Sculpt")] == ["Sculpt"]
+                and window().workspace.name == "Sculpt" and any(a.type == 'VIEW_3D' for a in window().screen.areas),
+                "Reset Workspace from the Settings popover to finish"))
+
+
+@step
+def ws_reset_check():
+    check(len(m3d_workspace.workspace_screens('SCULPT')) == 1, "Settings reset left screens: %s" % [s.name for s in bpy.data.screens])
+    check(not tracebacks(), "Python error resetting from the Settings popover")
     bpy.ops.m3d.workspace(kind='MODEL')
 
 

@@ -3733,6 +3733,74 @@ check(all(t.short_label for k in W.KINDS for s in W.DOCK_TABS[k].values() for t 
       "long dock tab labels have a short label")
 check(W.all_tab('MODEL').label == "Attribute Editor" and W.all_tab('SCULPT').short_label == "Settings", "All Settings tab")
 
+# Workspace Settings (the popover next to the workspace picker): draws for every kind and for extra workspaces,
+# its operators and properties exist, tab toggles / entry mode / hidden tabs work from there.
+class WsCtx:
+    def __init__(self, ws):
+        self.workspace, self.window_manager = ws, bpy.context.window_manager
+        self.window = bpy.context.window_manager.windows[0] if bpy.context.window_manager.windows else None
+
+
+def ws_settings_log(ws):
+    log = []
+    W.M3D_PT_workspace_settings.draw(type("Inst", (), {"layout": Rec(log)})(), WsCtx(ws))
+    check_calls("workspace settings " + ws.name, log)
+    return log
+
+
+def ws_ops(log):
+    return [(r._args[0], r.values(), r._kw) for r in log if r._kind == "operator"]
+
+
+log = []
+m3d_ui.draw_workspace_picker(Rec(log), WsCtx(bpy.data.workspaces[0]))
+check(any(r._kind == "popover" and r._args[0] == "M3D_PT_workspace_settings" for r in log), "Status Line has the Workspace Settings popover")
+check(hasattr(W.M3D_OT_workspace_reset, "invoke"), "Reset Workspace asks for confirmation")
+check(hasattr(bpy.types, "M3D_PT_workspace_settings"), "settings panel registered")
+for kind_, (wname_, *_rest) in W.KINDS.items():
+    ws_ = W.find_workspace(kind_)
+    check(ws_ is not None, "workspace for " + kind_)
+    ops_ = ws_ops(ws_settings_log(ws_))
+    names_ = [o[0] for o in ops_]
+    check("m3d.workspace_reset" in names_ and "wm.save_homefile" in names_, "%s settings: reset and save as default" % kind_)
+    check(any(o[0] == "screen.userpref_show" and o[1].get("section") == 'KEYMAP' for o in ops_), "%s settings: keyboard shortcuts" % kind_)
+    shown_ = [o[1]["tab"] for o in ops_ if o[0] == "m3d.dock_tab_toggle"]
+    want_ = [t.id for t in W.DOCK_TABS[kind_]['RIGHT'] + W.DOCK_TABS[kind_]['LEFT']]
+    check(shown_ == want_, "%s settings: a toggle per dock tab (%s)" % (kind_, shown_))
+    log = []
+    W.M3D_PT_workspace_settings.draw(type("Inst", (), {"layout": Rec(log)})(), WsCtx(ws_))
+    props_ = {(r._args[0], r._args[1]) for r in log if r._kind == "prop"}
+    check((bpy.context.window_manager, "m3d_shelf_edit") in props_ and (ws_, "object_mode") in props_, "%s settings: Edit Shelf and entry mode" % kind_)
+    # Entry mode sticks.
+    old_ = ws_.object_mode
+    ws_.object_mode = 'EDIT' if old_ != 'EDIT' else 'OBJECT'
+    check(ws_.object_mode != old_, "%s entry mode changes" % kind_)
+    ws_.object_mode = old_
+shading_ = bpy.data.workspaces.get("Shading")
+check(shading_ is not None and W.workspace_kind(shading_) is None, "Shading is an extra workspace")
+ops_ = ws_ops(ws_settings_log(shading_))
+check("m3d.workspace_reset" in [o[0] for o in ops_] and not any(o[0] == "m3d.dock_tab_toggle" for o in ops_), "extra workspace: reset, no dock tabs")
+
+# Hidden tabs round trip from the new place: the toggle shows in the next draw, and persists.
+model_ws_ = W.find_workspace('MODEL')
+with bpy.context.temp_override(workspace=model_ws_):
+    bpy.ops.m3d.dock_tab_toggle(tab="tool")
+m3d_user.reset_cache()
+check(m3d_user.hidden_tabs('MODEL') == {"tool"}, "toggle from Workspace Settings hides the tab")
+icons_ = {o[1]["tab"]: o[2].get("icon") for o in ws_ops(ws_settings_log(model_ws_)) if o[0] == "m3d.dock_tab_toggle"}
+check(icons_["tool"] == 'CHECKBOX_DEHLT' and icons_["modeling_toolkit"] == 'CHECKBOX_HLT', "hidden tab drawn unticked: %s" % icons_)
+with bpy.context.temp_override(workspace=model_ws_):
+    bpy.ops.m3d.dock_tab_toggle(tab="tool")
+m3d_user.reset_cache()
+check(m3d_user.hidden_tabs('MODEL') == set(), "toggle from Workspace Settings shows the tab again")
+
+# Save Layouts as Default writes the startup file (into the temp config folder here, never the real one).
+startup_ = os.path.join(TEST_CONFIG, "config", "startup.blend")
+check(not os.path.exists(startup_), "no startup file before saving")
+bpy.ops.wm.save_homefile()
+check(os.path.exists(startup_), "Save Layouts as Default wrote " + startup_)
+os.remove(startup_)
+
 print("FAILS:", fails or "none")
 sys.exit(1 if fails else 0)
 
