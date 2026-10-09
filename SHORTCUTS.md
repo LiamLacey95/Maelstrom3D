@@ -89,6 +89,11 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 | Shift+5 | — | Brush: Inflate/Deflate |
 | Shift+6 | — | Brush: Pinch/Magnify |
 | Shift+7 | — | Brush: Crease Sharp |
+| Ctrl+LMB | Sculpt (mode='INVERT') | Mask / Hide Gesture (mode='MASK') |
+| Ctrl+Alt+LMB | Sculpt (brush_toggle='MASK') | Mask / Hide Gesture (mode='UNMASK') |
+| Ctrl+Shift+LMB | — | Mask / Hide Gesture (mode='HIDE_OUTSIDE') |
+| Ctrl+Shift+Alt+LMB | Sculpt (mode='INVERT', brush_toggle='MASK') | Mask / Hide Gesture (mode='HIDE_INSIDE') |
+| N | — | Toggle brush direction |
 
 ## Image Paint
 

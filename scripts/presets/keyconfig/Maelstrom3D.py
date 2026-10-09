@@ -116,12 +116,20 @@ OVERRIDES = {
         ("REMOVE", {"type": 'PERIOD', "value": 'PRESS'}, None),
     ],
     # Shift+1 ... Shift+7 pick a brush (the names are m3d_sculpt.BRUSH_KEYS; test_m3d.py checks them).
+    # Ctrl is masking: Ctrl+LMB (+Alt: unmask, +Shift: hide) runs m3d.sculpt_ctrl, which looks at what is under the
+    # cursor and at click or drag. It replaces Blender's Ctrl+LMB inverted stroke, Ctrl+Alt+LMB mask stroke and
+    # Ctrl+Shift+Alt+LMB inverted mask stroke. N switches the brush between Add and Subtract.
     "Sculpt": [
         *(_kmi("brush.asset_activate", k, props={
             "asset_library_type": 'ESSENTIALS',
             "relative_asset_identifier": "brushes/essentials_brushes-mesh_sculpt.blend/Brush/" + name}, shift=True)
           for k, name in zip(('ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN'), (
               "Draw", "Clay Strips", "Smooth", "Grab", "Inflate/Deflate", "Pinch/Magnify", "Crease Sharp"))),
+        *(_kmi("m3d.sculpt_ctrl", 'LEFTMOUSE', props={"mode": mode}, ctrl=True, **mods) for mode, mods in (
+            ('MASK', {}), ('UNMASK', {"alt": True}), ('HIDE_OUTSIDE', {"shift": True}),
+            ('HIDE_INSIDE', {"shift": True, "alt": True}))),
+        _kmi("wm.context_toggle_enum", 'N', props={"data_path": "tool_settings.sculpt.brush.direction",
+                                                    "value_1": 'ADD', "value_2": 'SUBTRACT'}),
     ],
     # Texture paint (3D view and 2D view): colour swap moves to Shift+X (X is hold-to-snap here), C cycles the channel.
     "Image Paint": [

@@ -830,6 +830,262 @@ check(len([o for o in bpy.data.objects if o.type == 'MESH']) == count + 1 and bp
       and bpy.context.active_object not in {ob, second}, "Objects: duplicate")
 
 # ----------------------------------------------------------------------------------------------------
+# Phase 1b: Ctrl gestures (mask / hide), Add / Subtract, Status Line brush controls, Remesh popover, matcap /
+# stroke / alpha pickers, Lazy Mouse.
+
+
+def phase1b():
+    import numpy as np
+
+    # Ctrl+LMB in the Sculpt keymap: one m3d.sculpt_ctrl per Alt / Shift combination, nothing else on Ctrl+LMB.
+    sculpt_km = kc.keymaps["Sculpt"]
+    for mode, mods in (('MASK', dict(shift=False, alt=False)), ('UNMASK', dict(shift=False, alt=True)),
+                       ('HIDE_OUTSIDE', dict(shift=True, alt=False)), ('HIDE_INSIDE', dict(shift=True, alt=True))):
+        item = find("Sculpt", "m3d.sculpt_ctrl", "LEFTMOUSE", ctrl=True, **mods)
+        check(len(item) == 1 and item[0].value == 'PRESS' and item[0].properties.mode == mode, "Ctrl gesture %s: %s" % (mode, item))
+        check(mode in S.BOX_OPS and mode in {m for m, _l, _d in S.CTRL_MODES}, "Ctrl gesture %s has its rectangle operator" % mode)
+    ctrl_lmb = [k for k in sculpt_km.keymap_items if k.type == 'LEFTMOUSE' and k.ctrl]
+    check(len(ctrl_lmb) == 4 and all(k.idname == "m3d.sculpt_ctrl" for k in ctrl_lmb),
+          "Ctrl+LMB in Sculpt is only the gesture operator: %s" % [(k.idname, k.shift, k.alt) for k in ctrl_lmb])
+    check(not [k for k in sculpt_km.keymap_items if k.idname == "sculpt.brush_stroke" and k.ctrl], "no inverted / mask stroke on Ctrl")
+    plain = [k for k in sculpt_km.keymap_items if k.idname == "sculpt.brush_stroke" and not k.ctrl]
+    check(sorted((k.shift, k.properties.mode if not k.shift else k.properties.brush_toggle) for k in plain)
+          == [(False, 'NORMAL'), (True, 'SMOOTH')], "plain and Shift strokes are as before")
+    toggle = find("Sculpt", "wm.context_toggle_enum", "N", shift=False, ctrl=False, alt=False)
+    check(len(toggle) == 1 and toggle[0].properties.data_path == "tool_settings.sculpt.brush.direction"
+          and {toggle[0].properties.value_1, toggle[0].properties.value_2} == {'ADD', 'SUBTRACT'}, "N toggles Add / Subtract")
+    check(not [k for name in ("3D View", "3D View Generic", "Window", "Screen", "Screen Editing", "Frames", "Object Non-modal")
+               for k in kc.keymaps[name].keymap_items if k.type == 'N' and not (k.shift or k.ctrl or k.alt or k.oskey)],
+          "N is free outside the Sculpt keymap")
+    seen = {}
+    for k in sculpt_km.keymap_items:
+        if k.active:
+            seen.setdefault((k.type, k.value, k.shift, k.ctrl, k.alt, k.oskey, k.any, k.key_modifier), []).append(k.idname)
+    dupes = {key: names for key, names in seen.items() if len(names) > 1}
+    # Blender's own pairs, told apart by their polls: Ctrl+D (Dyntopo flood fill / Voxel Remesh), Ctrl+Shift+D (their size
+    # edits), Shift+RMB (set pivot / stencil), RMB (stencil / context panel).
+    STOCK_PAIRS = {('D', 'PRESS', False, True, False, False, False, 'NONE'), ('D', 'PRESS', True, True, False, False, False, 'NONE'),
+                   ('RIGHTMOUSE', 'PRESS', True, False, False, False, False, 'NONE'), ('RIGHTMOUSE', 'PRESS', False, False, False, False, False, 'NONE')}
+    check(set(dupes) <= STOCK_PAIRS,
+          "no conflicting items left in the Sculpt keymap: %s" % dupes)
+    check(all(S.CTRL_MODES[i][2] == S.M3D_OT_sculpt_ctrl.description(None, NS(mode=S.CTRL_MODES[i][0])) for i in range(4)), "gesture tooltips")
+    for mode, (op, options) in S.BOX_OPS.items():
+        rna = getattr(getattr(bpy.ops, op.split(".")[0]), op.split(".")[1]).get_rna_type()
+        check(all(k in rna.properties for k in (*options, "xmin", "xmax", "ymin", "ymax")), "rectangle operator %s for %s" % (op, mode))
+        if "area" in options:
+            check(options["area"] in rna.properties["area"].enum_items.keys(), "hide area %s exists" % options["area"])
+    check(op_ok("paint.mask_flood_fill", {"mode": 'INVERT'}) and op_ok("sculpt.mask_filter", {"filter_type": 'SMOOTH'})
+          and op_ok("sculpt.face_set_change_visibility", {"mode": 'TOGGLE'}) and op_ok("paint.hide_show_all", {"action": 'SHOW'}),
+          "gesture click operators")
+    check(S.ui_scale_factor(bpy.context) > 0, "UI scale factor without a window")
+
+    # Mask tab: a big Invert button first, Clear and Fill, the Ctrl hints.
+    check([b[0] for b in S.MASK_FILL] == ["Invert", "Clear", "Fill"], "Mask buttons")
+    log = []
+    ctx = SCtx()
+    S.PROPERTIES_PT_m3d_sc_mask.draw(type("Inst", (), {"layout": Rec(log)})(), ctx)
+    def op_props(r):
+        """Options of a recorded button: its m3d.call props, or the operator's own."""
+        v = r.values()
+        return literal_eval(v["props"]) if "props" in v else v
+
+
+    ops_ = [r for r in log if r._kind == "operator"]
+    check(op_props(ops_[0]).get("mode") == 'INVERT' and "Invert" in ops_[0]._kw["text"], "Mask tab starts with Invert Mask")
+    check(any(r._kind == "row" and r.values().get("scale_y", 1) > 1.4 for r in log), "the Invert button is big")
+    check(len([o for o in ops_ if "Clear" in o._kw["text"] or "Fill" in o._kw["text"]]) == 2, "Clear and Fill follow")
+    check(any(r._kind == "label" and "Ctrl+drag" in r._kw["text"] for r in log), "Mask tab lists the Ctrl gestures")
+    log = []
+    S.PROPERTIES_PT_m3d_sc_mask_hide.draw(type("Inst", (), {"layout": Rec(log)})(), ctx)
+    check(any(r._kind == "label" and "Ctrl+Shift" in r._kw["text"] for r in log), "Hide panel lists the Ctrl+Shift gestures")
+
+    # Status Line: the brush controls by width, Unified Size / Strength aware, the popovers.
+    sculpt_brush_ = lambda: bpy.context.tool_settings.sculpt.brush
+    brush = sculpt_brush_()
+    ups = bpy.context.tool_settings.sculpt.unified_paint_settings
+
+
+    def status(width, unified=False):
+        c = SCtx()
+        c.region = NS(type='TOOL_HEADER', width=width)
+        c.space_data = NS(type='TOPBAR')   # (the header has no brush tool: the stock brush helpers find no paint settings)
+        ups.use_unified_size = ups.use_unified_strength = unified
+        log = []
+        S.draw_status_line(Rec(log), c)
+        check_calls("status line %d" % width, log)
+        props = [(r._args[0], r._args[1]) for r in log if r._kind == "prop"]
+        popovers = [r._args[0] for r in log if r._kind == "popover"]
+        return log, props, popovers
+
+
+    for width, tier in ((3200, 2), (1800, 1), (1000, 0)):
+        check(S.header_tier(type("C", (), {"region": NS(width=width), "preferences": bpy.context.preferences})()) == tier,
+              "Status Line tier of %d px" % width)
+        log, props, popovers = status(width)
+        names = {name for _owner, name in props}
+        check({"size", "strength"} <= names or {"unprojected_size", "strength"} <= names, "Status Line %d: Size and Strength" % width)
+        check(any(o == brush and n in {"size", "unprojected_size"} for o, n in props), "Status Line %d: Size is the brush's" % width)
+        check(any(r._kind == "prop_enum" and r._args[1] == "direction" for r in log), "Status Line %d: Add / Subtract" % width)
+        check(("hardness" in names) == (tier == 2) and ("remesh_voxel_size" in names) == (tier == 2), "Status Line %d: wide extras" % width)
+        check({"M3D_PT_sculpt_brush", "M3D_PT_sculpt_remesh", "M3D_PT_sculpt_shading", "M3D_PT_sculpt_automasking"} <= set(popovers),
+              "Status Line %d: popovers %s" % (width, popovers))
+        check(any(r._kind == "prop" and r._args[1] == "use_smooth_stroke" for r in log), "Status Line %d: Lazy Mouse" % width)
+    log, props, _popovers = status(1800, unified=True)
+    check(any(o == ups and n in {"size", "unprojected_size"} for o, n in props) and any(o == ups and n == "strength" for o, n in props),
+          "Status Line sliders follow Unified Size / Strength")
+    ups.use_unified_size = ups.use_unified_strength = False
+    # A color brush shows its two colors and Swap in the Status Line.
+    bpy.ops.brush.asset_activate(**S.brush_props("Paint Soft"))
+    check(sculpt_brush_().sculpt_capabilities.has_color, "Paint Soft is a color brush")
+    log, props, _popovers = status(3200)
+    check([n for o, n in props if n in {"color", "secondary_color"}] == ["color", "secondary_color"]
+          and any(r._kind == "operator" and r._args[0] == "paint.brush_colors_flip" for r in log), "Status Line: the colors of a color brush")
+    bpy.ops.brush.asset_activate(**S.brush_props("Draw"))
+    brush = sculpt_brush_()   # (activating a brush again may give a new data-block)
+    for pname in ("M3D_PT_sculpt_brush", "M3D_PT_sculpt_remesh", "M3D_PT_sculpt_shading"):
+        check(getattr(bpy.types, pname).bl_space_type == 'TOPBAR', pname + " is a Status Line popover")
+    log = []
+    S.M3D_PT_sculpt_remesh.draw(type("Inst", (), {"layout": Rec(log)})(), ctx)
+    check_calls("remesh popover", log)
+    check(any(r._kind == "prop" and r._args[1] == "remesh_voxel_size" for r in log), "Remesh popover: Voxel size")
+    check(any(r._kind == "operator" and "voxel_remesh" in str(r.values().get("idname", r._args)) for r in log), "Remesh popover: Voxel Remesh button")
+    check(not [r for r in log if r._kind == "operator" and r._args[0] == "m3d.multires_level"], "no Multires level buttons without a Multires modifier")
+    log = []
+    ctx_mr = SCtx()
+    mr_ob = bpy.context.active_object
+    bpy.ops.m3d.multires_subdivide(mode='SIMPLE')
+    S.draw_multires(Rec(log), ctx_mr)
+    check({r.values()["delta"] for r in log if r._kind == "operator" and r._args[0] == "m3d.multires_level"} == {-1, 1},
+          "Multires Lower / Higher buttons")
+    log = []
+    S.draw_status_line(Rec(log), ctx_mr)
+    check(len([r for r in log if r._kind == "operator" and r._args[0] == "m3d.multires_level"]) == 2, "Status Line: Multires level arrows")
+    mr_ob.modifiers.remove(S.multires_of(mr_ob))
+
+    # Add / Subtract: both buttons exist on the brush, a tile click and the direction toggle flip it.
+    check({i.identifier for i in bpy.types.Brush.bl_rna.properties["direction"].enum_items} == {'ADD', 'SUBTRACT'}, "brush directions")
+    brush.direction = 'SUBTRACT'
+    bpy.ops.wm.context_toggle_enum(data_path="tool_settings.sculpt.brush.direction", value_1='ADD', value_2='SUBTRACT')
+    check(brush.direction == 'ADD', "the N key's toggle goes back to Add")
+
+    # Lazy Mouse: the toggle, radius and factor are brush properties.
+    for prop in ("use_smooth_stroke", "smooth_stroke_radius", "smooth_stroke_factor"):
+        check(prop in brush.bl_rna.properties, "Lazy Mouse property " + prop)
+    brush.use_smooth_stroke = True
+    brush.smooth_stroke_radius = 120
+    check(brush.use_smooth_stroke and brush.smooth_stroke_radius == 120, "Lazy Mouse settings stick")
+    log = []
+    S.draw_lazy(Rec(log), brush)
+    check({r._args[1] for r in log if r._kind == "prop"} == {"use_smooth_stroke", "smooth_stroke_radius"}, "draw_lazy")
+    log = []
+    S.PROPERTIES_PT_m3d_sc_lazy.draw_header(type("Inst", (), {"layout": Rec(log)})(), ctx)
+    check(any(r._kind == "prop" and r._args[1] == "use_smooth_stroke" for r in log), "Lazy Mouse panel header toggle")
+    brush.use_smooth_stroke = False
+
+    # Stroke type tiles.
+    check({k for k, _l, _d in S.STROKES} == {i.identifier for i in bpy.types.Brush.bl_rna.properties["stroke_method"].enum_items},
+          "a stroke tile for every stroke type")
+    icons = S.stroke_icons()
+    check(len(icons) == 7 and all(isinstance(i, int) for i in icons.values()), "stroke thumbnails %s" % icons)
+    pics = [S.stroke_pixels(k) for k, _l, _d in S.STROKES]
+    check(all(p.shape == (64, 64, 4) and 0 <= p.min() and p.max() <= 1 for p in pics)
+          and len({p.tobytes() for p in pics}) == 7 and all(p[..., :3].std() > 0.05 for p in pics), "stroke pictures are drawn and differ")
+    for kind, _label, _desc in S.STROKES:
+        bpy.ops.m3d.stroke_pick(stroke=kind)
+        check(brush.stroke_method == kind, "stroke tile " + kind)
+        check(S.M3D_OT_stroke_pick.description(None, NS(stroke=kind)).startswith(S.STROKES[[k for k, _l, _d in S.STROKES].index(kind)][1]), "stroke tooltip " + kind)
+    bpy.ops.m3d.stroke_pick(stroke='SPACE')
+    log = []
+    S.stroke_tiles(Rec(log), ctx, brush)
+    tiles = [r for r in log if r._kind == "operator"]
+    check(len(tiles) == 7 and sum(bool(r._kw.get("depress")) for r in tiles) == 1, "stroke tiles: one pressed")
+
+    # Matcap tiles.
+    matcaps = S.studio_lights(bpy.context, 'MATCAP')
+    check(len(matcaps) >= 10 and all(sl.type == 'MATCAP' for sl in matcaps) and "basic_bright.exr" in {sl.name for sl in matcaps},
+          "matcap list (%d)" % len(matcaps))
+    check(S.studio_lights(bpy.context, 'STUDIO'), "studio light list")
+    shading = S.viewport(bpy.context).shading
+    shading.light = 'MATCAP'
+    shading.studio_light = matcaps[2].name
+    log = []
+    S.light_tiles(Rec(log), ctx, shading, 16)
+    tiles = [r for r in log if r._kind == "operator"]
+    check(len(tiles) == len(matcaps) and sum(bool(r._kw.get("depress")) for r in tiles) == 1
+          and [r.values()["name"] for r in tiles if r._kw.get("depress")] == [matcaps[2].name], "matcap tiles: the picked one is pressed")
+    for sl in (matcaps[5], matcaps[0]):
+        bpy.ops.m3d.light_pick(name=sl.name, kind='MATCAP')
+        check(shading.light == 'MATCAP' and shading.studio_light == sl.name, "matcap pick " + sl.name)
+    bpy.ops.m3d.light_pick(name=S.studio_lights(bpy.context, 'STUDIO')[1].name, kind='STUDIO')
+    check(shading.light == 'STUDIO', "studio light pick")
+    check(S.M3D_OT_light_pick.description(None, NS(name="clay_brown.exr")) == "Clay Brown", "matcap tooltip")
+    log = []
+    S.draw_shading(Rec(log), ctx, 16)
+    check_calls("shading", log)
+    shading.light = 'MATCAP'
+
+    # Alpha library: the starter set is made on first use and linked (a brush asset is linked data and can only point
+    # at linked data), loaded images join it, None clears.
+    import shutil
+    alpha_folder = tempfile.mkdtemp(prefix="m3d_alpha_")
+    S.alpha_dir = lambda create=False: alpha_folder
+    check(S.alpha_names() == list(S.STARTER_ALPHAS), "alphas before any is made")
+    pix = [S.alpha_pixels(n, 64) for n in S.STARTER_ALPHAS]
+    check(all(p.shape == (64, 64, 4) and 0 <= p.min() and p.max() <= 1 and p[..., 0].std() > 0.05 for p in pix)
+          and len({p.tobytes() for p in pix}) == len(pix), "starter alphas are drawn and differ")
+    check(np.array_equal(S.alpha_pixels("Clouds", 64), S.alpha_pixels("Clouds", 64)), "starter alphas are the same each time")
+    check(len(S.alpha_icons(S.alpha_names())) == len(S.STARTER_ALPHAS), "starter alpha thumbnails")
+    check(brush.library is not None, "the sculpt brush is linked data (why the alphas are linked)")
+    for name in S.STARTER_ALPHAS:
+        bpy.ops.m3d.alpha_pick(name=name)
+        tex = brush.texture
+        check(tex is not None and tex.name == name and tex.library is not None and tex.image is not None and tex.image.size[0] == S.ALPHA_SIZE
+              and tex.extension == 'CLIP' and brush.texture_slot.map_mode == 'AREA_PLANE', "alpha pick " + name)
+    import os
+    check(all(os.path.isfile(os.path.join(alpha_folder, n + ext)) for n in S.STARTER_ALPHAS for ext in (".blend", ".png")), "alphas are in the library folder")
+    bpy.ops.m3d.alpha_pick(name="Clouds")
+    check(brush.texture.name == "Clouds" and len([t for t in bpy.data.textures if t.name == "Clouds"]) == 1, "picking again re-uses the linked alpha")
+    # Load Alpha: an image file becomes an alpha.
+    img = bpy.data.images.new("src", 48, 48)
+    gradient = np.ones((48, 48, 4), np.float32)
+    gradient[..., :3] = np.linspace(0, 1, 48, dtype=np.float32)[None, :, None]
+    img.pixels.foreach_set(gradient.ravel())
+    png = os.path.join(alpha_folder, "ramp_source.png")
+    img.filepath_raw, img.file_format = png, 'PNG'
+    img.save()
+    bpy.data.images.remove(img)
+    check(bpy.ops.m3d.alpha_load(filepath=png) == {'FINISHED'}, "Load Alpha runs")
+    tex = brush.texture
+    check(tex is not None and tex.name == "ramp_source" and tex.library is not None and tex.image.size[0] == 48 and tex.image.packed_file is not None
+          and brush.texture_slot.map_mode == 'AREA_PLANE' and tex.image.colorspace_settings.name == 'Non-Color', "Load Alpha sets the brush texture")
+    check(S.alpha_names()[-1] == "ramp_source" and "ramp_source" in S.alpha_icons(S.alpha_names()), "the loaded alpha is a tile with a thumbnail")
+    check(bpy.ops.m3d.alpha_load(filepath=os.path.join(alpha_folder, "nothing.png")) == {'CANCELLED'}, "Load Alpha: a missing file is refused")
+    log = []
+    S.alpha_tiles(Rec(log), ctx, brush)
+    tiles = [r for r in log if r._kind == "operator"]
+    check(len(tiles) == len(S.STARTER_ALPHAS) + 2 and sum(bool(r._kw.get("depress")) for r in tiles) == 1
+          and tiles[-1].values()["name"] == "ramp_source" and tiles[-1]._kw.get("depress"), "alpha tiles: None, the starter set, the loaded one")
+    bpy.ops.m3d.alpha_pick(name="")
+    check(brush.texture is None, "None alpha")
+    log = []
+    S.PROPERTIES_PT_m3d_sc_alpha.draw(type("Inst", (), {"layout": Rec(log)})(), ctx)
+    check_calls("alpha panel", log)
+    check(any(r._kind == "operator" and r._args[0] == "m3d.alpha_load" for r in log), "Alpha panel has Load Alpha")
+    shutil.rmtree(alpha_folder, ignore_errors=True)
+
+    # The tray: essentials first (open), the rest closed.
+    tray = [c for c in S.classes if getattr(c, "page", None) == "sculpt_brushes" and hasattr(c, "poll")]
+    order = [c.bl_label for c in tray if c.__name__.startswith("PROPERTIES_PT_m3d_sc_") and not c.__name__.endswith("_gate")]
+    check(order[:6] == ["Brush Asset", "Brushes", "Size and Strength", "Lazy Mouse", "Stroke Type", "Alpha"], "tray order: %s" % order)
+    closed = {c.bl_label for c in tray if 'DEFAULT_CLOSED' in getattr(c, "bl_options", ())}
+    check({"Alpha Settings", "Brush Settings", "Falloff", "Stroke Options", "Advanced", "Custom"} <= closed
+          and not closed & {"Brushes", "Size and Strength", "Lazy Mouse", "Stroke Type", "Alpha"}, "tray: closed panels %s" % closed)
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+
+phase1b()
+
+# ----------------------------------------------------------------------------------------------------
 # Phase 2: UV workspace (tabs, pages, buttons, texel density, Auto Unwrap, checker, keys).
 import m3d_uv as U
 import math
@@ -4190,7 +4446,7 @@ check(not log, "no panel header controls outside edit mode")
 m3d_user.toggle_panel_hidden('MODEL', panel_)
 check(not m3d_user.panel_hidden('MODEL', panel_) and m3d_mode.PROPERTIES_PT_m3d_mtk_mesh.poll(mctx_()), "shown again")
 # A sub-panel follows its parent.
-check(E.panel_root(S.PROPERTIES_PT_m3d_sc_stabilize) is S.PROPERTIES_PT_m3d_sc_stroke and E.panel_root(m3d_mode.PROPERTIES_PT_m3d_mtk_mesh)
+check(E.panel_root(T.PROPERTIES_PT_m3d_tx_stabilize) is T.PROPERTIES_PT_m3d_tx_stroke and E.panel_root(m3d_mode.PROPERTIES_PT_m3d_mtk_mesh)
       is m3d_mode.PROPERTIES_PT_m3d_mtk_mesh, "panel_root")
 # Deleting a tab returns its panels; ids aren't reused.
 check(m3d_user.delete_user_tab('MODEL', "user_1") and m3d_user.panel_page('MODEL', panel_, "modeling_toolkit") == "modeling_toolkit"

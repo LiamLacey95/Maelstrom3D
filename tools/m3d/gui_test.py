@@ -2185,6 +2185,719 @@ def sculpt_done():
 
 
 # ----------------------------------------------------------------------------------------------------
+# Phase 1b: the Sculpt Ctrl gestures (mask / hide), Add / Subtract, Lazy Mouse, stroke and alpha tiles, matcaps,
+# with real mouse and key events on a fine sphere.
+
+import numpy as np
+
+
+def sg_context():
+    win, area, region = view3d()
+    return area.spaces.active.region_3d, region
+
+
+def sg_project(co):
+    """Window position (x, y) of a world point."""
+    rv3d, region = sg_context()
+    p = location_3d_to_region_2d(region, rv3d, Vector(co))
+    return (int(region.x + p.x), int(region.y + p.y))
+
+
+def sg_verts():
+    """Arrays over the vertices of the active mesh: window positions, facing (1 toward the camera, -1 away), the
+    sculpt mask (0 when there is none), hidden."""
+    ob = bpy.context.active_object
+    me = ob.data
+    n = len(me.vertices)
+    co = np.empty(n * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    nor = np.empty(n * 3, np.float32)
+    me.vertices.foreach_get("normal", nor)
+    co, nor = co.reshape(n, 3), nor.reshape(n, 3)
+    rv3d, _region = sg_context()
+    eye = np.array(rv3d.view_matrix.inverted().translation)
+    to_eye = eye - co
+    to_eye /= np.linalg.norm(to_eye, axis=1)[:, None]
+    mask = np.zeros(n, np.float32)
+    attr = me.attributes.get(".sculpt_mask")
+    if attr is not None:
+        attr.data.foreach_get("value", mask)
+    hidden = np.zeros(n, bool)
+    attr = me.attributes.get(".hide_vert")
+    if attr is not None:
+        attr.data.foreach_get("value", hidden)
+    return {"co": co, "px": np.array([sg_project(c) for c in co]), "facing": (nor * to_eye).sum(axis=1),
+            "mask": mask, "hidden": hidden}
+
+
+def sg_path_distance(px, a, b):
+    """Distance in pixels from each of the points `px` to the segment a-b."""
+    a, b = np.array(a, float), np.array(b, float)
+    t = np.clip(((px - a) @ (b - a)) / ((b - a) @ (b - a)), 0, 1)
+    return np.linalg.norm(px - (a + t[:, None] * (b - a)), axis=1)
+
+
+SG_KEYS = (('LEFT_CTRL', 'ctrl'), ('LEFT_SHIFT', 'shift'), ('LEFT_ALT', 'alt'))
+
+
+def sg_press(xy, **mods):
+    """Move there, hold the modifier keys (real key events: the keymap reads the modifier state) and press the left button."""
+    xy = pt(xy)
+    event('MOUSEMOVE', xy=xy, **mods)
+    held = {}
+    for key, name in SG_KEYS:
+        if mods.get(name):
+            held[name] = True
+            event(key, 'PRESS', xy, **held)
+    event('LEFTMOUSE', 'PRESS', xy, **mods)
+
+
+def sg_move(a, b, steps=10, **mods):
+    for i in range(1, steps + 1):
+        event('MOUSEMOVE', xy=pt((a[0] + (b[0] - a[0]) * i / steps, a[1] + (b[1] - a[1]) * i / steps)), **mods)
+
+
+def sg_release(xy, **mods):
+    xy = pt(xy)
+    event('LEFTMOUSE', 'RELEASE', xy, **mods)
+    held = {name: True for _key, name in SG_KEYS if mods.get(name)}
+    for key, name in reversed(SG_KEYS):
+        if name in held:
+            del held[name]
+            event(key, 'RELEASE', xy, **held)
+
+
+def sg_click(xy, **mods):
+    sg_press(xy, **mods)
+    sg_release(xy, **mods)
+
+
+def sg_geometry():
+    """Window positions that matter: the sphere's centre, its radius in pixels, a point of empty space on the left of
+    the viewport, and the right edge of the region."""
+    rv3d, region = sg_context()
+    center = sg_project((0, 0, 0))
+    right = rv3d.view_rotation @ Vector((1, 0, 0))
+    radius = abs(sg_project(right)[0] - center[0])
+    return {"c": center, "r": radius, "empty": (region.x + 50, region.y + region.height // 2)}
+
+
+def pt(xy):
+    return (int(round(xy[0])), int(round(xy[1])))
+
+
+def sg_wait(cond, what):
+    return wait_until(cond, what)
+
+
+SG = GIZMO.setdefault("sg", {})
+
+
+@step
+def sg_setup():
+    # The alpha library goes to a temporary folder, a clean scene with one fine sphere, then F2.
+    import tempfile
+    SG["alphas"] = tempfile.mkdtemp(prefix="m3d_alphas_")
+    m3d_sculpt.alpha_dir = lambda create=False: SG["alphas"]
+    bpy.ops.m3d.workspace(kind='MODEL')
+    for ob in list(bpy.data.objects):
+        if ob.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.data.objects.remove(ob)
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.mesh.primitive_uv_sphere_add(radius=1, segments=64, ring_count=32)
+        bpy.context.active_object.name = "Fine"
+    GIZMO["center"] = (region.x + region.width // 2, region.y + region.height // 2)
+    event('MOUSEMOVE', xy=GIZMO["center"])
+    event('F2', 'PRESS', GIZMO["center"])
+    event('F2', 'RELEASE', GIZMO["center"])
+
+
+step(wait_until(lambda: window().workspace.name == "Sculpt" and bpy.context.mode == 'SCULPT', "F2 to enter Sculpt Mode (gestures)"))
+
+
+@step
+def sg_prepare():
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.view3d.view_all(center=True)
+    area.spaces.active.region_3d.view_distance *= 2.2   # room for empty space around the sphere
+    press_ok("brush.asset_activate", **m3d_sculpt.brush_props("Draw"))
+    brush = bpy.context.tool_settings.sculpt.brush
+    brush.size, brush.strength, brush.direction = 60, 1.0, 'ADD'
+    ups = bpy.context.tool_settings.sculpt.unified_paint_settings
+    ups.use_unified_size = ups.use_unified_strength = False
+    SG["brush_size"] = brush.size
+    for a in window().screen.areas:
+        a.tag_redraw()
+    event('MOUSEMOVE', xy=GIZMO["center"])
+
+
+@step
+def sg_ready():
+    SG.update(sg_geometry())
+    SG["base"] = sg_verts()
+    check(60 < SG["r"] < 600, "sphere radius on screen %s" % SG["r"])
+    check(SG["base"]["mask"].max() == 0 and not SG["base"]["hidden"].any(), "a new sphere has no mask and nothing hidden")
+    SG["path"] = ((SG["c"][0] - 0.5 * SG["r"], SG["c"][1] + 0.1 * SG["r"]), (SG["c"][0] + 0.5 * SG["r"], SG["c"][1] + 0.1 * SG["r"]))
+    # The tool must be a brush for the Sculpt keymap's strokes to apply.
+    check(active_tool_id() == "builtin.brush", "the brush tool is active (%s)" % active_tool_id())
+
+
+# --- Ctrl+drag on the mesh paints mask; the geometry stays as it was
+
+@step
+def sg_mask_drag():
+    a, b = SG["path"]
+    sg_press(a, ctrl=True)
+    sg_move(a, b, ctrl=True)
+
+
+@step
+def sg_mask_release():
+    sg_release(SG["path"][1], ctrl=True)
+
+
+step(wait_until(lambda: sg_verts()["mask"].max() > 0, "Ctrl+drag on the mesh to paint mask"))
+
+
+@step
+def sg_mask_check():
+    v = sg_verts()
+    a, b = SG["path"]
+    dist = sg_path_distance(v["px"], a, b)
+    near = (dist < 0.2 * SG["brush_size"]) & (v["facing"] > 0.3)
+    far = dist > 2.2 * SG["brush_size"]
+    check(near.sum() > 3 and v["mask"][near].mean() > 0.5, "Ctrl+drag masks along the stroke (%d verts, mean %.2f)" % (
+        near.sum(), v["mask"][near].mean() if near.any() else -1))
+    check(v["mask"][far].max() < 0.01, "Ctrl+drag leaves the far side unmasked (max %.2f)" % v["mask"][far].max())
+    check(np.abs(v["co"] - SG["base"]["co"]).max() < 1e-4, "Ctrl+drag does not move the geometry")
+    check(not tracebacks(), "Python error in the Ctrl+drag gesture")
+    SG["masked"] = v["mask"].sum()
+    check(not any("sculpt_ctrl" in o.bl_idname.lower() for o in window().modal_operators), "the gesture operator has finished")
+
+
+# --- Ctrl+Alt+drag along the same path erases it
+
+@step
+def sg_unmask_drag():
+    a, b = SG["path"]
+    sg_press(a, ctrl=True, alt=True)
+    sg_move(a, b, ctrl=True, alt=True)
+
+
+@step
+def sg_unmask_release():
+    sg_release(SG["path"][1], ctrl=True, alt=True)
+
+
+step(wait_until(lambda: sg_verts()["mask"].sum() < 0.5 * SG["masked"], "Ctrl+Alt+drag to erase the mask"))
+
+
+@step
+def sg_unmask_check():
+    v = sg_verts()
+    dist = sg_path_distance(v["px"], *SG["path"])
+    near = (dist < 0.2 * SG["brush_size"]) & (v["facing"] > 0.3)
+    check(v["mask"][near].mean() < 0.15, "Ctrl+Alt+drag erases the mask along the stroke (mean %.2f)" % v["mask"][near].mean())
+    check(not tracebacks(), "Python error in the Ctrl+Alt+drag gesture")
+
+
+# --- Ctrl+click on empty space inverts the mask
+
+@step
+def sg_invert_setup():
+    a, b = SG["path"]
+    sg_press(a, ctrl=True)
+    sg_move(a, b, ctrl=True)
+
+
+@step
+def sg_invert_setup2():
+    sg_release(SG["path"][1], ctrl=True)
+
+
+step(wait_until(lambda: sg_verts()["mask"].max() > 0, "the mask to invert"))
+
+
+@step
+def sg_invert_click():
+    SG["before"] = sg_verts()["mask"].copy()
+    sg_click(SG["empty"], ctrl=True)
+
+
+step(wait_until(lambda: abs(sg_verts()["mask"] - (1 - SG["before"])).max() < 1e-3, "Ctrl+click on empty space to invert"))
+
+
+@step
+def sg_invert_check():
+    v = sg_verts()
+    check(abs(v["mask"] - (1 - SG["before"])).max() < 1e-3, "Ctrl+click on empty space inverted the mask")
+    check(not tracebacks(), "Python error in the Ctrl+click gesture")
+    press_ok("paint.mask_flood_fill", mode='VALUE', value=0.0)
+
+
+# --- Ctrl+drag on empty space masks a rectangle; a tiny one clears the mask
+
+@step
+def sg_box_drag():
+    c, r = SG["c"], SG["r"]
+    SG["box"] = ((c[0] + 1.35 * r, c[1] + 1.35 * r), (c[0], c[1] - 1.35 * r))   # the right half of the sphere
+    sg_press(SG["box"][0], ctrl=True)
+    sg_move(*SG["box"], ctrl=True)
+
+
+@step
+def sg_box_release():
+    sg_release(SG["box"][1], ctrl=True)
+
+
+step(wait_until(lambda: sg_verts()["mask"].max() > 0, "Ctrl+drag on empty space to mask a rectangle"))
+
+
+@step
+def sg_box_check():
+    v = sg_verts()
+    cx = SG["c"][0]
+    inside = (v["px"][:, 0] > cx + 12) & (v["facing"] > 0.3)
+    outside = v["px"][:, 0] < cx - 12
+    back = (v["px"][:, 0] > cx + 12) & (v["facing"] < -0.3)
+    check(inside.any() and v["mask"][inside].min() > 0.99, "box mask covers the visible verts inside (min %.2f)" % v["mask"][inside].min())
+    check(v["mask"][outside].max() == 0, "box mask leaves the outside alone")
+    check(v["mask"][back].max() == 0, "box mask is for what you see (the back is not masked)")
+    check(not tracebacks(), "Python error in the box mask gesture")
+
+
+@step
+def sg_tiny_drag():
+    a = SG["empty"]
+    SG["tiny"] = (a, (a[0] + 7, a[1] + 5))
+    sg_press(a, ctrl=True)
+    sg_move(*SG["tiny"], steps=4, ctrl=True)
+
+
+@step
+def sg_tiny_release():
+    sg_release(SG["tiny"][1], ctrl=True)
+
+
+step(wait_until(lambda: sg_verts()["mask"].max() == 0, "a tiny Ctrl+drag on empty space to clear the mask"))
+
+
+# --- Ctrl+click on the mesh smooths the mask, Ctrl+Alt+click sharpens it
+
+@step
+def sg_smooth_setup():
+    sg_press(SG["box"][0], ctrl=True)
+    sg_move(*SG["box"], ctrl=True)
+
+
+@step
+def sg_smooth_setup2():
+    sg_release(SG["box"][1], ctrl=True)
+
+
+step(wait_until(lambda: sg_verts()["mask"].max() > 0, "the box mask for the smooth test"))
+
+
+@step
+def sg_smooth_click():
+    m = sg_verts()["mask"]
+    SG["hard"] = ((m > 0.02) & (m < 0.98)).sum()
+    SG["click"] = (int(SG["c"][0] + 0.1 * SG["r"]), int(SG["c"][1]))
+    sg_click(SG["click"], ctrl=True)
+
+
+step(wait_until(lambda: ((sg_verts()["mask"] > 0.02) & (sg_verts()["mask"] < 0.98)).sum() > SG["hard"],
+                "Ctrl+click on the mesh to smooth the mask"))
+
+
+@step
+def sg_sharpen_click():
+    SG["soft"] = sg_verts()["mask"].copy()
+    sg_click(SG["click"], ctrl=True, alt=True)
+
+
+step(wait_until(lambda: np.abs(sg_verts()["mask"] - SG["soft"]).max() > 1e-3, "Ctrl+Alt+click on the mesh to sharpen the mask"))
+
+
+@step
+def sg_filter_check():
+    check(not tracebacks(), "Python error in the Ctrl+click gestures on the mesh")
+    press_ok("paint.mask_flood_fill", mode='VALUE', value=0.0)
+
+
+# --- Ctrl+Shift: hide outside / inside a rectangle, show all, isolate a face set
+
+@step
+def sg_hide_drag():
+    sg_press(SG["box"][0], ctrl=True, shift=True)
+    sg_move(*SG["box"], ctrl=True, shift=True)
+
+
+@step
+def sg_hide_release():
+    sg_release(SG["box"][1], ctrl=True, shift=True)
+
+
+step(wait_until(lambda: sg_verts()["hidden"].any(), "Ctrl+Shift+drag to hide outside the rectangle"))
+
+
+@step
+def sg_hide_check():
+    v = sg_verts()
+    cx = SG["c"][0]
+    inside = v["px"][:, 0] > cx + 12
+    outside = v["px"][:, 0] < cx - 12
+    check(v["hidden"][outside].all(), "Ctrl+Shift+drag hides everything outside the rectangle")
+    check(not v["hidden"][inside].any(), "Ctrl+Shift+drag keeps the inside (%d hidden)" % v["hidden"][inside].sum())
+    check(not tracebacks(), "Python error in the Ctrl+Shift+drag gesture")
+
+
+@step
+def sg_show_click():
+    sg_click(SG["empty"], ctrl=True, shift=True)
+
+
+step(wait_until(lambda: not sg_verts()["hidden"].any(), "Ctrl+Shift+click on empty space to show all"))
+
+
+@step
+def sg_hide_inside_drag():
+    sg_press(SG["box"][0], ctrl=True, shift=True, alt=True)
+    sg_move(*SG["box"], ctrl=True, shift=True, alt=True)
+
+
+@step
+def sg_hide_inside_release():
+    sg_release(SG["box"][1], ctrl=True, shift=True, alt=True)
+
+
+step(wait_until(lambda: sg_verts()["hidden"].any(), "Ctrl+Shift+Alt+drag to hide inside the rectangle"))
+
+
+@step
+def sg_hide_inside_check():
+    v = sg_verts()
+    cx = SG["c"][0]
+    inside = v["px"][:, 0] > cx + 12
+    outside = v["px"][:, 0] < cx - 12
+    check(v["hidden"][inside].all() and not v["hidden"][outside].any(), "Ctrl+Shift+Alt+drag hides inside the rectangle only")
+    sg_click(SG["empty"], ctrl=True, shift=True)
+
+
+step(wait_until(lambda: not sg_verts()["hidden"].any(), "show all after the inside hide"))
+
+
+@step
+def sg_faceset_setup():
+    # Two face sets: the right half (masked by a box) and the rest.
+    sg_press(SG["box"][0], ctrl=True)
+    sg_move(*SG["box"], ctrl=True)
+
+
+@step
+def sg_faceset_setup2():
+    sg_release(SG["box"][1], ctrl=True)
+
+
+step(wait_until(lambda: sg_verts()["mask"].max() > 0, "the mask for the face sets"))
+
+
+@step
+def sg_faceset_make():
+    press_ok("sculpt.face_sets_create", mode='MASKED')
+    press_ok("paint.mask_flood_fill", mode='VALUE', value=0.0)
+    SG["click"] = (int(SG["c"][0] + 0.3 * SG["r"]), int(SG["c"][1]))
+
+
+@step
+def sg_isolate_click():
+    check(bpy.context.active_object.data.attributes.get(".sculpt_face_set") is not None, "face sets exist")
+    sg_click(SG["click"], ctrl=True, shift=True)
+
+
+step(wait_until(lambda: sg_verts()["hidden"].any(), "Ctrl+Shift+click on the mesh to isolate its face set"))
+
+
+@step
+def sg_isolate_check():
+    me = bpy.context.active_object.data
+    fs = np.zeros(len(me.polygons), np.int32)
+    me.attributes[".sculpt_face_set"].data.foreach_get("value", fs)
+    hide = np.zeros(len(me.polygons), bool)
+    attr = me.attributes.get(".hide_poly")
+    if attr is not None:
+        attr.data.foreach_get("value", hide)
+    visible = fs[~hide]
+    check(hide.any() and len(set(visible)) == 1, "Ctrl+Shift+click on the mesh shows only its face set (sets visible: %s)" % sorted(set(visible)))
+    check(not tracebacks(), "Python error isolating a face set")
+    sg_click(SG["empty"], ctrl=True, shift=True)
+
+
+step(wait_until(lambda: not sg_verts()["hidden"].any(), "show all after the isolate"))
+
+
+# --- A plain drag still sculpts, Shift+drag smooths, Alt+drag still orbits
+
+@step
+def sg_plain_drag():
+    SG["before"] = sg_verts()["co"].copy()
+    a, b = SG["path"]
+    sg_press(a)
+    sg_move(a, b)
+
+
+@step
+def sg_plain_release():
+    sg_release(SG["path"][1])
+
+
+step(wait_until(lambda: np.abs(sg_verts()["co"] - SG["before"]).max() > 1e-3, "a plain drag to sculpt"))
+
+
+@step
+def sg_plain_check():
+    v = sg_verts()
+    moved = np.linalg.norm(v["co"] - SG["before"], axis=1)
+    check(moved.max() > 0.01, "a plain drag sculpts (moved %.3f)" % moved.max())
+    check(np.linalg.norm(v["co"], axis=1).max() > np.linalg.norm(SG["before"], axis=1).max() + 0.005,
+          "Add moves the surface outward")
+    check(v["mask"].max() == 0, "a plain drag does not mask")
+    SG["bump"] = np.linalg.norm(v["co"], axis=1).max()
+    SG["smooth_from"] = v["co"].copy()
+
+
+@step
+def sg_shift_drag():
+    a, b = SG["path"]
+    sg_press(a, shift=True)
+    sg_move(a, b, shift=True)
+    sg_move(b, a, shift=True)
+    sg_move(a, b, shift=True)
+
+
+@step
+def sg_shift_release():
+    sg_release(SG["path"][1], shift=True)
+
+
+step(wait_until(lambda: np.linalg.norm(sg_verts()["co"], axis=1).max() < SG["bump"] - 1e-3, "Shift+drag to smooth the bump"))
+
+
+@step
+def sg_shift_check():
+    check(np.linalg.norm(sg_verts()["co"], axis=1).max() < SG["bump"], "Shift+drag smooths (the bump got lower)")
+    check(not tracebacks(), "Python error in the plain / Shift strokes")
+
+
+@step
+def sg_orbit():
+    rv3d, _region = sg_context()
+    SG["rot"] = rv3d.view_rotation.copy()
+    SG["before"] = sg_verts()["co"].copy()
+    a = SG["empty"]
+    b = (a[0] + 80, a[1] + 40)
+    SG["orbit"] = (a, b)
+    sg_press(a, alt=True)
+    sg_move(a, b, alt=True)
+
+
+@step
+def sg_orbit_release():
+    sg_release(SG["orbit"][1], alt=True)
+
+
+step(wait_until(lambda: sg_context()[0].view_rotation != SG["rot"], "Alt+drag to orbit (Maya navigation)"))
+
+
+@step
+def sg_orbit_check():
+    check(np.abs(sg_verts()["co"] - SG["before"]).max() < 1e-4, "Alt+drag orbits without sculpting")
+    rv3d, _region = sg_context()
+    rv3d.view_rotation = SG["rot"]
+    SG["before"] = sg_verts()["co"].copy()
+    SG["lowest"] = np.linalg.norm(SG["before"], axis=1)
+
+
+# --- N switches Add / Subtract; a Subtract stroke goes inward
+
+@step
+def sg_direction_key():
+    event('MOUSEMOVE', xy=SG["c"])
+    event('N', 'PRESS', SG["c"])
+    event('N', 'RELEASE', SG["c"])
+
+
+step(wait_until(lambda: bpy.context.tool_settings.sculpt.brush.direction == 'SUBTRACT', "N to switch the brush to Subtract"))
+
+
+@step
+def sg_subtract_drag():
+    a, b = SG["path"]
+    sg_press(a)
+    sg_move(a, b)
+
+
+@step
+def sg_subtract_release():
+    sg_release(SG["path"][1])
+
+
+step(wait_until(lambda: np.linalg.norm(sg_verts()["co"], axis=1).min() < SG["lowest"].min() - 1e-3, "a Subtract stroke to go inward"))
+
+
+@step
+def sg_subtract_check():
+    inward = np.linalg.norm(sg_verts()["co"], axis=1) - SG["lowest"]
+    check(inward.min() < -0.005, "Subtract moves the surface inward (%.3f)" % inward.min())
+    event('N', 'PRESS', SG["c"])
+    event('N', 'RELEASE', SG["c"])
+
+
+step(wait_until(lambda: bpy.context.tool_settings.sculpt.brush.direction == 'ADD', "N to switch the brush back to Add"))
+
+
+# --- Lazy Mouse (L toggles it), Status Line wiring, stroke and alpha tiles, matcap picks
+
+@step
+def sg_lazy():
+    brush = bpy.context.tool_settings.sculpt.brush
+    check(not brush.use_smooth_stroke, "Lazy Mouse starts off")
+    event('MOUSEMOVE', xy=SG["c"])
+    event('L', 'PRESS', SG["c"])
+    event('L', 'RELEASE', SG["c"])
+
+
+step(wait_until(lambda: bpy.context.tool_settings.sculpt.brush.use_smooth_stroke, "L to turn Lazy Mouse on"))
+
+
+@step
+def sg_lazy_stroke():
+    SG["before"] = sg_verts()["co"].copy()
+    bpy.context.tool_settings.sculpt.brush.smooth_stroke_radius = 40
+    a, b = SG["path"]
+    sg_press(a)
+    sg_move(a, b, steps=20)
+
+
+@step
+def sg_lazy_release():
+    sg_release(SG["path"][1])
+
+
+step(wait_until(lambda: np.abs(sg_verts()["co"] - SG["before"]).max() > 1e-3, "a Lazy Mouse stroke to sculpt"))
+
+
+@step
+def sg_lazy_check():
+    check(not tracebacks(), "Python error in a Lazy Mouse stroke")
+    bpy.context.tool_settings.sculpt.brush.use_smooth_stroke = False
+
+
+@step
+def sg_tiles():
+    brush = bpy.context.tool_settings.sculpt.brush
+    for kind, _label, _desc in m3d_sculpt.STROKES:
+        press_ok("m3d.stroke_pick", stroke=kind)
+        check(brush.stroke_method == kind, "stroke tile %s -> %s" % (kind, brush.stroke_method))
+    press_ok("m3d.stroke_pick", stroke='SPACE')
+    for name in m3d_sculpt.STARTER_ALPHAS:
+        press_ok("m3d.alpha_pick", name=name)
+        check(brush.texture is not None and brush.texture.name == name and brush.texture.library is not None
+              and brush.texture_slot.map_mode == 'AREA_PLANE', "alpha tile %s" % name)
+    press_ok("m3d.alpha_pick", name="Star")
+    SG["before"] = sg_verts()["co"].copy()
+    a, b = SG["path"]
+    sg_press(a)
+    sg_move(a, b)
+
+
+@step
+def sg_tiles_release():
+    sg_release(SG["path"][1])
+
+
+step(wait_until(lambda: np.abs(sg_verts()["co"] - SG["before"]).max() > 1e-3, "a stroke with an alpha to sculpt"))
+
+
+@step
+def sg_matcap():
+    check(not tracebacks(), "Python error in a stroke with an alpha")
+    press_ok("m3d.alpha_pick", name="")
+    check(bpy.context.tool_settings.sculpt.brush.texture is None, "None alpha tile")
+    shading = view3d()[1].spaces.active.shading
+    lights = m3d_sculpt.studio_lights(bpy.context, 'MATCAP')
+    check(len(lights) >= 10, "matcap list (%d)" % len(lights))
+    for sl in (lights[3], lights[0]):
+        press_ok("m3d.light_pick", name=sl.name, kind='MATCAP')
+        check(shading.light == 'MATCAP' and shading.studio_light == sl.name, "matcap tile %s -> %s" % (sl.name, shading.studio_light))
+    press_ok("m3d.light_pick", name=m3d_sculpt.studio_lights(bpy.context, 'STUDIO')[0].name, kind='STUDIO')
+    check(shading.light == 'STUDIO', "studio light tile")
+
+
+@step
+def sg_color_brush():
+    # A color brush shows its colors in the Status Line (the header has no brush tool).
+    press_ok("brush.asset_activate", **m3d_sculpt.brush_props("Paint Soft"))
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def sg_color_brush_check():
+    check(not tracebacks(), "Python error drawing the Status Line with a color brush")
+    check(bpy.context.tool_settings.sculpt.brush.sculpt_capabilities.has_color, "the color brush is active")
+    press_ok("brush.asset_activate", **m3d_sculpt.brush_props("Draw"))
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def sg_popovers():
+    # The new Status Line popovers draw with the sphere in Sculpt Mode.
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.wm.call_panel(name="M3D_PT_sculpt_brush")
+
+
+@step
+def sg_popover_remesh():
+    check(not tracebacks(), "Python error drawing the Brush popover")
+    event('ESC', 'PRESS', GIZMO["center"])
+    event('ESC', 'RELEASE', GIZMO["center"])
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.wm.call_panel(name="M3D_PT_sculpt_remesh")
+
+
+@step
+def sg_popover_matcap():
+    check(not tracebacks(), "Python error drawing the Remesh popover")
+    event('ESC', 'PRESS', GIZMO["center"])
+    event('ESC', 'RELEASE', GIZMO["center"])
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.wm.call_panel(name="M3D_PT_sculpt_shading")
+
+
+@step
+def sg_popover_done():
+    check(not tracebacks(), "Python error drawing the Matcap popover")
+    event('ESC', 'PRESS', GIZMO["center"])
+    event('ESC', 'RELEASE', GIZMO["center"])
+
+
+@step
+def sg_done():
+    import shutil
+    check(not tracebacks(), "Python error in the Sculpt gesture tests")
+    shutil.rmtree(SG["alphas"], ignore_errors=True)
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
+# ----------------------------------------------------------------------------------------------------
 # Phase 2: UV workspace with a real cube: layout, F3, every dock button, Status Line toggles, keys, every tab.
 
 import m3d_uv

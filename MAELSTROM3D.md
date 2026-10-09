@@ -128,16 +128,53 @@ Names are Blender's own.
 
 | Part | Contents |
 |---|---|
-| Brush tray (left) | Active brush and its picker, a grid of 15 small brush tiles showing each brush's thumbnail (the name is the tooltip, the active brush is highlighted: Draw, Clay Strips, Clay, Smooth, Grab, Elastic Grab, Snake Hook, Inflate/Deflate, Pinch/Magnify, Crease Sharp, Flatten/Contrast, Scrape/Fill, Layer, Mask, Face Set Paint), a closed Custom panel (the Custom shelf; arrows to move / remove buttons while editing the interface), Size, Strength, Add / Subtract, Mirror X/Y/Z. Closed panels: Brush Settings, Falloff, Stroke, Texture, Cursor, Advanced |
-| Status Line | Object / Sculpt Mode, face count, Multires level, Dyntopo, Mirror X/Y/Z, Auto-Masking, Mask and Face Set overlays, matcap picker |
+| Brush tray (left) | Open panels, essentials first: the active brush and its picker; a grid of 15 small brush tiles showing each brush's thumbnail (the name is the tooltip, the active brush is highlighted: Draw, Clay Strips, Clay, Smooth, Grab, Elastic Grab, Snake Hook, Inflate/Deflate, Pinch/Magnify, Crease Sharp, Flatten/Contrast, Scrape/Fill, Layer, Mask, Face Set Paint); **Size and Strength** (Size, Strength, Hardness, Add / Subtract, Mirror X/Y/Z); **Lazy Mouse** (toggle, Radius, Factor: Blender's Stabilize Stroke); **Stroke Type** (a tile with a little picture for each of Dots, Drag Dot, Space, Airbrush, Anchored, Line, Curve); **Alpha** (None, eight starter alphas, every alpha you loaded, and **Load Alpha...**). Closed panels: Alpha Settings (mapping, size, angle), Brush Settings, Falloff, Stroke Options, Cursor, Advanced, Custom (the Custom shelf; arrows to move / remove buttons while editing the interface) |
+| Status Line | Object / Sculpt Mode; the brush controls (see below); the **Remesh** popover; face count, Multires level with Lower / Higher arrows, Dyntopo, Mirror X/Y/Z, Auto-Masking, Mask and Face Set overlays, the **Matcap** popover |
 | Top bar | Only the menu bar and the Status Line: the shelf rows (Sculpt / Remesh / Mask / Custom tabs and the brush buttons) are off in this workspace because the tray and tabs have all of it, and the viewport gets the space. Turn **Show Shelf** on in Workspace Settings to bring them back |
 | Geometry tab | Multires (Subdivide, Simple, Linear, level sliders, Delete Higher, Unsubdivide, Apply Base), Voxel Remesh, QuadriFlow, Dyntopo. Options that cannot work together (Dyntopo and Multires) are greyed with the reason |
-| Mask tab | Fill, Clear, Invert, filters (Smooth, Sharpen, Grow, Shrink, Contrast), From Cavity / Boundary, Box / Lasso / Line / Polyline Mask, Mask by Color, Hide Masked / Show |
+| Mask tab | A big **Invert Mask** button, Clear, Fill, a line listing the Ctrl gestures, filters (Smooth, Sharpen, Grow, Shrink, Contrast), From Cavity / Boundary, Box / Lasso / Line / Polyline Mask, Mask by Color, Hide Masked / Show (with the Ctrl+Shift gestures listed) |
 | Face Sets tab | Initialize (Loose Parts, Materials, Normals, UV Seams, Creases, Sharp Edges, ...), Create from Mask / Visible / Selection, Grow, Shrink, Fair, Delete Geometry, Show All, Randomize Colors |
 | Deform tab | Mesh filters (Smooth, Inflate, Relax, Surface Smooth, Sharpen, Enhance Details, Sphere, Random, Scale), Symmetrize, Set Pivot, trim tools |
 | Paint tab | Color brushes, color picker, palette, Add Color Attribute, color filters |
-| Display tab | Matcap / studio light, color, cavity, Mask and Face Set overlay opacity, wireframe, low resolution and delayed updates |
+| Display tab | Matcap / studio light as a grid of thumbnails, color, cavity, Mask and Face Set overlay opacity, wireframe, low resolution and delayed updates |
 | Objects tab | The scene's meshes: show / hide, pick, solo, append a duplicate; add a sphere, cube or cylinder |
+
+**Status Line brush controls** (the top shelf of Sculpt): **Size**, **Strength** (the scene-wide sliders while Unified
+Size / Strength is on), **Hardness** (how far from the centre the brush stays at full strength; the Falloff curve shapes
+the rest), **Add / Subtract** (Brush.direction), **Lazy Mouse**
+(toggle and Radius), and for a color brush the two colors and swap. The **Brush** popover has all of them plus the
+Falloff curve and shape, Lazy Mouse Radius and Factor and the stroke type tiles. The **Remesh** popover has Voxel Remesh
+(size, eyedropper, options, button), QuadriFlow (target face count, ratio or edge length, symmetry, sharp edges,
+boundary, normals), Multires (Subdivide, Lower / Higher, the level sliders, Delete Higher, Unsubdivide, Apply Base) and
+Dyntopo (toggle, detail size and method). On a window wider than about 2200 px the Hardness slider, the Lazy Mouse
+toggle with its Radius, and the Voxel size with a **Remesh** button sit in the Status Line itself; on a narrower one
+(down to about 1500 px) only the sliders and the Add / Subtract buttons do and the popovers have the rest. The **Matcap**
+popover is the thumbnail grid of the matcaps (Studio and Flat are the other lights), plus color and cavity. There are no
+RGB / material-only toggles: in Blender a color brush paints color attributes and a normal brush deforms, so the color
+brushes' two colors are what the Status Line shows.
+
+**Ctrl is masking** (Maya's Alt+mouse navigation is untouched; Ctrl no longer inverts a stroke). The gesture is decided
+by what is under the cursor when you press and by whether you click or drag (more than the drag threshold):
+
+| Input | On the mesh | Off the mesh (empty space) |
+|---|---|---|
+| Ctrl+drag | Paint mask (the Mask brush for this stroke, at the brush's size; your active brush stays) | Mask a rectangle (what you see; a tiny rectangle clears the mask) |
+| Ctrl+Alt+drag | Erase mask | Unmask a rectangle |
+| Ctrl+click | Smooth (blur) the mask once | **Invert the mask** |
+| Ctrl+Alt+click | Sharpen the mask | Nothing |
+| Ctrl+Shift+drag | Hide everything outside a rectangle (show only inside) | Same |
+| Ctrl+Shift+Alt+drag | Hide everything inside a rectangle | Same |
+| Ctrl+Shift+click | Show only the face set under the cursor (hide the others) | Show all |
+| Shift+drag, plain drag | Smooth, the brush stroke (as before) | |
+
+To subtract, switch the brush to Subtract: the buttons in the tray and the Status Line, or **N** in the viewport (a
+sticky toggle). Esc or right-click cancels a gesture. The other Ctrl keys are as before: Ctrl+I invert mask, Ctrl+Shift+A
+fill mask, Ctrl+H hide masked, Ctrl+A mask pie, Ctrl+W face sets pie, Ctrl+0-5 subdivision level, Ctrl+D voxel remesh,
+Ctrl+RMB stencil; H / Shift+H / Alt+H hide the face set, isolate / show it, show all. Alphas: Blender's essentials
+brushes are linked asset data, which can only use linked textures, so every alpha lives in the **alpha library** (one
+.blend with its thumbnail per alpha, in the user data folder `datafiles/m3d_alphas`); the starter set is made the first
+time you pick one and Load Alpha... adds an image file (grey: white is full strength, mapped once onto the brush, clipped
+at its edge). Blender 5.2 ships no image alphas of its own.
 
 Tool buttons (mesh filters, trims, Grow / Shrink face set, color filters, Mask by Color) pick the tool: drag in the
 viewport afterwards. Shift+1 ... Shift+7 pick Draw, Clay Strips, Smooth, Grab, Inflate/Deflate, Pinch/Magnify, Crease
