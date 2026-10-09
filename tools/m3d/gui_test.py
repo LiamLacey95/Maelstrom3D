@@ -7,6 +7,7 @@ Interactive self-check for Maelstrom3D behaviour that needs a real window (gizmo
 Writes "FAILS: [...]" to <result-file> and quits.
 """
 
+import math
 import os
 import sys
 
@@ -316,6 +317,257 @@ def view_undone():
               {k: (len(v["stack"]), v["index"]) for k, v in m3d_marking._view_history.items()}))
     consoles = [a.spaces.active.language for a in workspace_screen('MODEL').areas if a.type == 'CONSOLE']
     check(consoles == ['mel'], "command line is not MEL: %r" % consoles)
+
+
+# ----------------------------------------------------------------------------------------------------
+# Alt+RMB zoom: drag right zooms in, left zooms out, in the 3D view and the 2D editors (factory preferences).
+
+ZOOM = {}
+ZOOM_EDITORS = ('IMAGE_EDITOR', 'FCURVES', 'ShaderNodeTree')   # The 2D ones take over the Outliner.
+
+
+def _zoom_area():
+    return ZOOM["area"]
+
+
+def _zoom_region():
+    return next(r for r in _zoom_area().regions if r.type == 'WINDOW')
+
+
+def _zoom_measure():
+    """Grows when the view zooms in."""
+    space = _zoom_area().spaces.active
+    if space.type == 'VIEW_3D':
+        return 1.0 / space.region_3d.view_distance
+    if space.type == 'IMAGE_EDITOR':
+        return space.zoom[0]
+    region = _zoom_region()
+    return 1.0 / (region.view2d.region_to_view(region.width, 0)[0] - region.view2d.region_to_view(0, 0)[0])
+
+
+def _zoom_drag(sign):
+    x, y = ZOOM["xy"]
+    event('LEFT_ALT', 'PRESS', ZOOM["xy"], alt=True)
+    event('RIGHTMOUSE', 'PRESS', ZOOM["xy"], alt=True)
+    for i in range(1, 11):
+        event('MOUSEMOVE', xy=(x + sign * ZOOM["dx"] * i // 10, y), alt=True)
+
+
+def _zoom_release(sign):
+    xy = (ZOOM["xy"][0] + sign * ZOOM["dx"], ZOOM["xy"][1])
+    event('RIGHTMOUSE', 'RELEASE', xy, alt=True)
+    event('LEFT_ALT', 'RELEASE', xy)
+
+
+def _zoom_steps():
+    for editor in ('VIEW_3D', *ZOOM_EDITORS):
+        def start(editor=editor):
+            ZOOM["editor"] = editor
+            if editor == 'VIEW_3D':
+                ZOOM["area"] = view3d()[1]
+            else:
+                if "outliner" not in ZOOM:
+                    ZOOM["outliner"] = max((a for a in window().screen.areas if a.type == 'OUTLINER'),
+                                           key=lambda a: a.width * a.height)
+                ZOOM["area"] = ZOOM["outliner"]
+                ZOOM["area"].ui_type = editor
+
+        def settle():
+            pass   # The 2D editor draws once before its view is sized.
+
+        def hover():
+            region = _zoom_region()
+            ZOOM["xy"] = (region.x + region.width // 2, region.y + region.height // 2)
+            ZOOM["dx"] = min(80, region.width // 4)
+            ZOOM["start"] = _zoom_measure()
+            event('MOUSEMOVE', xy=ZOOM["xy"])
+
+        def drag_right():
+            _zoom_drag(1)
+
+        def release_right():
+            _zoom_release(1)
+
+        def zoomed_in():
+            ZOOM["in"] = _zoom_measure()
+            check(ZOOM["in"] > ZOOM["start"], "Alt+RMB drag right did not zoom in (%s: %s -> %s)" % (
+                ZOOM["editor"], ZOOM["start"], ZOOM["in"]))
+
+        def drag_left():
+            _zoom_drag(-1)
+
+        def release_left():
+            _zoom_release(-1)
+
+        def zoomed_out():
+            check(_zoom_measure() < ZOOM["in"], "Alt+RMB drag left did not zoom out (%s: %s -> %s)" % (
+                ZOOM["editor"], ZOOM["in"], _zoom_measure()))
+
+        wait_right = wait_until(lambda: _zoom_measure() > ZOOM["start"], "Alt+RMB drag right to zoom")
+        wait_left = wait_until(lambda: _zoom_measure() < ZOOM["in"], "Alt+RMB drag left to zoom")
+        for fn in (start, settle, hover, drag_right, wait_right, release_right, zoomed_in, drag_left, wait_left, release_left,
+                   zoomed_out):
+            fn.__name__ = "zoom_%s_%s" % (editor.lower(), fn.__name__)
+            yield fn
+
+
+for _fn in _zoom_steps():
+    step(_fn)
+
+
+@step
+def zoom_done():
+    ZOOM["outliner"].ui_type = 'OUTLINER'
+    check(not tracebacks(), "Python error in the zoom tests")
+
+
+# ----------------------------------------------------------------------------------------------------
+# Shift+drag on the Scale manipulator: extrude (components) / duplicate (objects), then scale along the handle.
+
+SCALE = {}
+
+
+def _scale_extent():
+    """Bounding box size of the selected vertices (components) or of the active object's scale (objects)."""
+    ob = bpy.context.active_object
+    if ob.mode != 'EDIT':
+        return tuple(ob.scale)
+    verts = [v.co for v in bmesh.from_edit_mesh(ob.data).verts if v.select]
+    return tuple(max(v[i] for v in verts) - min(v[i] for v in verts) for i in range(3))
+
+
+def _aim_center():
+    """GIZMO start/end for the centre handle: out from the centre along the direction farthest from all three axes."""
+    _win, area, region = view3d()
+    rv3d = area.spaces.active.region_3d
+    ob = bpy.context.active_object
+    center = ob.matrix_world.translation
+    p0 = location_3d_to_region_2d(region, rv3d, center)
+    axes = [(location_3d_to_region_2d(region, rv3d, center + Vector(a)) - p0).normalized()
+            for a in ((1, 0, 0), (0, 1, 0), (0, 0, 1))]
+    best = max((Vector((math.cos(t * math.pi / 8), math.sin(t * math.pi / 8))) for t in range(16)),
+               key=lambda d: min(math.acos(max(-1.0, min(1.0, d.dot(a)))) for a in axes + [-a for a in axes]))
+    GIZMO["start"] = to_window(region, p0 + best * SCALE["center_radius"])
+    GIZMO["end"] = to_window(region, p0 + best * 110)
+
+
+def _aim_ring():
+    """GIZMO start/end on the Z rotation ring (a point 45 degrees round it in the XY plane), dragged round it."""
+    _win, area, region = view3d()
+    rv3d = area.spaces.active.region_3d
+    ob = bpy.context.active_object
+    center = ob.matrix_world.translation
+    p0 = location_3d_to_region_2d(region, rv3d, center)
+    right = rv3d.view_matrix.inverted().col[0].xyz
+    px_per_unit = (location_3d_to_region_2d(region, rv3d, center + right) - p0).length
+    radius = SCALE["ring_px"] / px_per_unit
+    on_ring = center + Vector((math.cos(math.pi / 4), math.sin(math.pi / 4), 0)) * radius
+    v = location_3d_to_region_2d(region, rv3d, on_ring) - p0
+    turned = Matrix.Rotation(math.radians(35), 2) @ v
+    GIZMO["start"] = to_window(region, p0 + v)
+    GIZMO["end"] = to_window(region, p0 + turned)
+
+
+def _scale_cases():
+    """(name, mode, handle, check): every case starts from a fresh selected cube."""
+    def x_grows(before, after, _op):
+        check(after[0] > before[0] * 1.5, "X handle did not scale along X (%s -> %s)" % (before, after))
+        check(abs(after[1] - before[1]) < 1e-3 and abs(after[2] - before[2]) < 1e-3,
+              "X handle changed Y or Z (%s -> %s)" % (before, after))
+
+    def all_grow(before, after, _op):
+        check(all(a > b * 1.3 for a, b in zip(after, before)), "centre handle did not scale uniformly (%s -> %s)" % (before, after))
+        check(abs(after[0] / before[0] - after[1] / before[1]) < 0.05 and abs(after[1] / before[1] - after[2] / before[2]) < 0.05,
+              "centre handle scale is not uniform (%s -> %s)" % (before, after))
+
+    def turned(before, after, _op):
+        ob = bpy.context.active_object
+        if ob.mode == 'EDIT':
+            verts = [v.co for v in bmesh.from_edit_mesh(ob.data).verts if v.select]
+            check(any(abs(abs(v.x) - abs(v.y)) > 0.02 for v in verts), "Z ring did not rotate the new faces")
+            check(all(abs(abs(v.z) - before[2] / 2) < 1e-3 for v in verts), "Z ring moved the new faces off the Z axis")
+        else:
+            rot = tuple(ob.rotation_euler)
+            check(abs(rot[2]) > 0.1 and abs(rot[0]) < 1e-3 and abs(rot[1]) < 1e-3, "Z ring did not rotate the copy (%s)" % (rot,))
+
+    return (("edit_x", 'EDIT', "x", x_grows), ("edit_center", 'EDIT', "center", all_grow),
+            ("object_x", 'OBJECT', "x", x_grows), ("edit_ring_z", 'EDIT', "ring_z", turned),
+            ("object_ring_z", 'OBJECT', "ring_z", turned))
+
+
+def _scale_steps():
+    for name, mode, handle, verify in _scale_cases():
+        def setup(mode=mode, handle=handle):
+            win, area, region = view3d()
+            with bpy.context.temp_override(window=win, area=area, region=region):
+                if bpy.context.mode != 'OBJECT':
+                    bpy.ops.object.mode_set(mode='OBJECT')
+                for ob in list(bpy.data.objects):
+                    bpy.data.objects.remove(ob)
+                bpy.ops.m3d.add_primitive(kind='CUBE')
+                if mode == 'EDIT':
+                    bpy.ops.object.mode_set_with_submode(mode='EDIT', mesh_select_mode={'FACE'})
+                    bpy.ops.mesh.select_all(action='SELECT')
+                bpy.ops.wm.tool_set_by_id(name="builtin.rotate" if handle.startswith("ring") else "builtin.scale")
+                bpy.ops.view3d.view_all(center=True)
+                bpy.ops.ed.undo_push(message="Scale test start")   # Python calls push no undo steps of their own.
+
+        def hover(handle=handle):
+            SCALE["center_radius"] = 8
+            SCALE["ring_px"] = 75
+            {"x": aim_x_arrow, "center": _aim_center, "ring_z": _aim_ring}[handle]()
+            ob = bpy.context.active_object
+            SCALE["faces"] = len(ob.data.polygons) if ob.mode == 'EDIT' else len(bpy.data.objects)
+            SCALE["before"] = _scale_extent()
+            event('MOUSEMOVE', xy=GIZMO["start"])
+
+        def hover_again():
+            x, y = GIZMO["start"]
+            event('MOUSEMOVE', xy=(x + 1, y))
+            event('MOUSEMOVE', xy=(x, y))
+
+        def drag_it():
+            drag(shift=True)
+
+        def drag_more():
+            shift_drag_more()   # The transform follows the moves that come after it started.
+
+        def release_it():
+            event('LEFTMOUSE', 'RELEASE', GIZMO["end"], shift=True)
+            event('LEFT_SHIFT', 'RELEASE', GIZMO["end"])
+
+        def checked(mode=mode, verify=verify, name=name):
+            ob = bpy.context.active_object
+            if ob.mode == 'EDIT':
+                ob.update_from_editmode()
+            count = len(ob.data.polygons) if mode == 'EDIT' else len(bpy.data.objects)
+            check(count > SCALE["faces"], "Scale %s: shift-drag did not %s (ops %s)" % (
+                name, "extrude" if mode == 'EDIT' else "duplicate",
+                [o.bl_idname for o in bpy.context.window_manager.operators][-3:]))
+            ops = [o.bl_idname for o in bpy.context.window_manager.operators]
+            wanted = "M3D_OT_%s_%s" % ("extrude" if mode == 'EDIT' else "duplicate", "rotate" if "ring" in name else "resize")
+            check(ops and ops[-1] == wanted, "Scale %s: last operator is %s, not %s" % (name, ops[-3:], wanted))
+            if ops and ops[-1] == wanted:
+                verify(SCALE["before"], _scale_extent(), bpy.context.window_manager.operators[-1])
+            if name == "edit_x":
+                bpy.ops.ed.undo()   # Extrude and scale are one undo step.
+                faces = len(bmesh.from_edit_mesh(bpy.context.edit_object.data).faces)
+                check(faces == SCALE["faces"], "extrude + scale took more than one undo (%d faces left)" % faces)
+
+        started = wait_until(lambda: any(o.bl_idname.startswith("M3D_OT_") for o in window().modal_operators),
+                             "Shift+drag to start the transform")
+        for fn in (setup, hover, hover_again, drag_it, started, drag_more, release_it, checked):
+            fn.__name__ = "scale_%s_%s" % (name, "started" if fn is started else fn.__name__)
+            yield fn
+
+
+for _fn in _scale_steps():
+    step(_fn)
+
+
+@step
+def scale_done():
+    bpy.ops.wm.tool_set_by_id(name="builtin.move")
 
 
 @step
@@ -3608,10 +3860,13 @@ def run_next():
     return 0.4 if steps else None
 
 
-# M3D_GUI_FROM=<step name> skips the steps before it (to iterate on one workspace; the full run is the one that counts).
-_from = os.environ.get("M3D_GUI_FROM")
-if _from:
+# M3D_GUI_FROM=<step name> skips the steps before it, M3D_GUI_TO=<step name> the steps after it (to iterate on one
+# workspace; the full run is the one that counts).
+_from, _to = os.environ.get("M3D_GUI_FROM"), os.environ.get("M3D_GUI_TO")
+if _from or _to:
     _names = [fn.__name__ for fn in steps]
-    steps[:] = steps[_names.index(_from):]
+    steps[:] = steps[_names.index(_from) if _from else 0:_names.index(_to) + 1 if _to else None]
+    if _to:
+        steps.append(finish)
 
 bpy.app.timers.register(run_next, first_interval=2.0)

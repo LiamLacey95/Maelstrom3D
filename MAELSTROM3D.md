@@ -35,14 +35,14 @@ named here only to describe compatibility.*
 
 | Key | Action |
 |---|---|
-| Alt+LMB / MMB / RMB | Tumble / Track / Dolly |
+| Alt+LMB / MMB / RMB | Tumble / Track / Dolly (RMB: drag right zooms in, left zooms out) |
 | F / A (Shift: all views) | Frame selected / Frame all |
 | Q W E R T | Select / Move / Rotate / Scale / Universal manipulator |
 | Click, Shift, Ctrl, Ctrl+Shift | Select, toggle, deselect, add (click and drag) |
 | RMB (hold) | Marking menu (see below) |
 | Shift+RMB | Object mode: create primitives. Component mode: polygon tools |
 | Ctrl+RMB | Convert selection (vertices, edges, faces, loop, ring, border, shell) |
-| Shift+drag manipulator | Components: extrude along that axis. Objects: duplicate |
+| Shift+drag manipulator | Components: extrude, then move / scale / rotate along the grabbed handle. Objects: duplicate, then the same |
 | Ctrl+Shift+drag manipulator | Slide components along their edges |
 | Q / W / E / R / A / H (hold) + left click | Select / Move / Rotate / Scale / History / Menu set marking menus |
 | Shift+S (hold) + left click | Keyframe marking menu |
@@ -366,7 +366,7 @@ Display layers = Collections (Layer Editor) · Blender is Z-up (Maya is Y-up); u
 
 - Dock tabs are icons with tooltips, not vertical text labels.
 - Target Weld merges at the last-selected vertex instead of dragging one vertex onto another.
-- Shift+drag on the manipulator extrudes along the grabbed arrow or plane; dragging the centre extrudes along normals.
+- Shift+drag on the Move manipulator extrudes along the grabbed arrow or plane (the centre extrudes along normals); on the Scale manipulator it extrudes and scales along the handle (the centre scales uniformly); on a Rotate ring it extrudes and rotates about that axis. The view ring and the trackball extrude along normals.
 - Blender's Item / Tool / View tabs still exist in the viewport sidebar (closed at startup; Ctrl+] or Display > UI Elements > Sidebar opens it).
 
 ## Command line (MEL and Python)

@@ -9,7 +9,7 @@ view undo ([ ]), nudge (Alt+arrows), pickwalk, last tool (Y), background cycle (
 """
 
 import bpy
-from bpy.types import Menu, Operator
+from bpy.types import Macro, Menu, Operator
 from mathutils import Vector
 
 
@@ -379,8 +379,83 @@ def _drag_constraint(gz):
     return None
 
 
+# The transform gizmo group (VIEW3D_GGT_xform_gizmo) creates its 19 gizmos in this order (gizmogroup_init in
+# transform_gizmo_3d.cc), and a gizmo carries no hint of its transform: the arrows of Move and Scale are both
+# arrow_3d (and the plane handles look alike), so the position in the group tells them apart.
+# Entries: (transform, axes), axes being the constraint axes in the gizmo's orientation (C: centre handle).
+_XFORM_GIZMOS = (
+    ('trackball', ""),
+    ('resize', "C"), ('resize', "X"), ('resize', "Y"), ('resize', "Z"),
+    ('resize', "XY"), ('resize', "YZ"), ('resize', "ZX"),
+    ('rotate', "X"), ('rotate', "Y"), ('rotate', "Z"), ('rotate', "C"),
+    ('translate', "C"), ('translate', "X"), ('translate', "Y"), ('translate', "Z"),
+    ('translate', "XY"), ('translate', "YZ"), ('translate', "ZX"),
+)
+
+
+def _gizmo_transform(context, gz):
+    """(transform, axes) of a transform gizmo handle: 'translate', 'rotate', 'resize' or 'trackball'; None when
+    `gz` is not one (another tool's gizmo, or the group changed)."""
+    group = getattr(context, "gizmo_group", None)
+    gizmos = list(group.gizmos) if group else []
+    if gz is None or len(gizmos) != len(_XFORM_GIZMOS) or not group.name.endswith("Transform Gizmo"):
+        return None
+    return _XFORM_GIZMOS[gizmos.index(gz)]
+
+
+def _gizmo_orientation(gz, axes):
+    """Operator properties that make a transform follow a handle: its axes in the gizmo's orientation (the
+    handle's matrix without the per-handle offset). The centre handle has no axis."""
+    if axes == "C":
+        return {}
+    return {
+        "orient_type": 'GLOBAL',
+        "orient_matrix": (gz.matrix_world.to_3x3() @ gz.matrix_offset.to_3x3().inverted()).normalized(),
+        "orient_matrix_type": 'GLOBAL',
+        "constraint_axis": tuple(a in axes for a in "XYZ"),
+    }
+
+
+class M3D_OT_extrude_resize(Macro):
+    """Extrude the selected components, then scale them"""
+    bl_idname = "m3d.extrude_resize"
+    bl_label = "Extrude and Scale"
+    bl_options = {'REGISTER', 'UNDO'}
+
+
+class M3D_OT_duplicate_resize(Macro):
+    """Duplicate the selected objects, then scale them"""
+    bl_idname = "m3d.duplicate_resize"
+    bl_label = "Duplicate and Scale"
+    bl_options = {'REGISTER', 'UNDO'}
+
+
+class M3D_OT_extrude_rotate(Macro):
+    """Extrude the selected components, then rotate them"""
+    bl_idname = "m3d.extrude_rotate"
+    bl_label = "Extrude and Rotate"
+    bl_options = {'REGISTER', 'UNDO'}
+
+
+class M3D_OT_duplicate_rotate(Macro):
+    """Duplicate the selected objects, then rotate them"""
+    bl_idname = "m3d.duplicate_rotate"
+    bl_label = "Duplicate and Rotate"
+    bl_options = {'REGISTER', 'UNDO'}
+
+
+# Macro -> its two steps; each macro is one undo step (Move has the stock extrude_context_move / duplicate_move).
+MACROS = (
+    (M3D_OT_extrude_resize, "MESH_OT_extrude_context", "TRANSFORM_OT_resize"),
+    (M3D_OT_duplicate_resize, "OBJECT_OT_duplicate", "TRANSFORM_OT_resize"),
+    (M3D_OT_extrude_rotate, "MESH_OT_extrude_context", "TRANSFORM_OT_rotate"),
+    (M3D_OT_duplicate_rotate, "OBJECT_OT_duplicate", "TRANSFORM_OT_rotate"),
+)
+
+
 class M3D_OT_gizmo_shift_drag(Operator):
-    """Shift+drag on the manipulator: extrude components, duplicate objects"""
+    """Shift+drag on the manipulator: extrude components, duplicate objects, then move / rotate / scale them
+    like the handle does"""
     bl_idname = "m3d.gizmo_shift_drag"
     bl_label = "Shift+Drag Manipulator"
     bl_options = {'INTERNAL'}
@@ -391,6 +466,12 @@ class M3D_OT_gizmo_shift_drag(Operator):
 
     def invoke(self, context, _event):
         gz = _highlighted_gizmo(context)
+        kind, axes = _gizmo_transform(context, gz) or (None, "")
+        # Scale (all handles) and the X / Y / Z rotation rings run the extrude / duplicate and then the same
+        # transform as the handle; the view ring and the trackball (and Move) keep the extrude and move below.
+        if kind == 'resize' or (kind == 'rotate' and axes != "C"):
+            macro = getattr(bpy.ops.m3d, ("duplicate_" if context.mode == 'OBJECT' else "extrude_") + kind)
+            return macro('INVOKE_DEFAULT', **{"TRANSFORM_OT_" + kind: _gizmo_orientation(gz, axes)})
         constraint = _drag_constraint(gz)
         translate = {} if constraint is None else {
             "orient_type": 'GLOBAL',
@@ -635,6 +716,10 @@ classes = (
     M3D_MT_shift_rmb,
     M3D_OT_assign_existing_material,
     M3D_MT_transform_mm,
+    M3D_OT_extrude_resize,
+    M3D_OT_duplicate_resize,
+    M3D_OT_extrude_rotate,
+    M3D_OT_duplicate_rotate,
     M3D_OT_gizmo_shift_drag,
     M3D_OT_gizmo_slide,
     M3D_OT_view_history,
@@ -654,6 +739,9 @@ classes = (
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    for macro, *steps in MACROS:
+        for step in steps:
+            macro.define(step)
     if not bpy.app.background:
         bpy.app.timers.register(_watch, first_interval=1.0, persistent=True)
 

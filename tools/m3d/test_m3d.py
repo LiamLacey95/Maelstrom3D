@@ -365,6 +365,68 @@ for text in ("{not json", "[]", '{"shelf": 5, "hidden_tabs": {"MODEL": 3}}', '{"
         ok = False
         print("damaged file:", text, repr(err))
     check(ok, "damaged m3d_user.json: " + text)
+
+# Maya dolly: Alt+RMB drag right zooms in (horizontal axis, not inverted). Fresh preferences get it from the factory
+# handler; saved ones from a one-time migration that is recorded in m3d_user.json.
+inputs_ = bpy.context.preferences.inputs
+def dolly_prefs():
+    return inputs_.view_zoom_method, inputs_.view_zoom_axis, inputs_.invert_mouse_zoom
+inputs_.view_zoom_axis, inputs_.invert_mouse_zoom = 'VERTICAL', True
+m3d_mode.m3d_preferences()
+check(dolly_prefs() == ('DOLLY', 'HORIZONTAL', False), "factory preferences: Maya dolly %s" % (dolly_prefs(),))
+inputs_.view_zoom_method, inputs_.view_zoom_axis, inputs_.invert_mouse_zoom = 'CONTINUE', 'VERTICAL', True
+m3d_user.reset_cache()
+check(m3d_user.data().get("prefs_version") is None, "no preferences version before the migration")
+m3d_mode.migrate_preferences()
+check(dolly_prefs() == ('DOLLY', 'HORIZONTAL', False), "migration: Maya dolly %s" % (dolly_prefs(),))
+m3d_user.reset_cache()
+check(m3d_user.data().get("prefs_version") == m3d_mode.PREFS_VERSION, "migration records the version in m3d_user.json")
+inputs_.view_zoom_axis, inputs_.invert_mouse_zoom = 'VERTICAL', True   # The user changes their mind...
+m3d_mode.migrate_preferences()
+check(dolly_prefs() == ('DOLLY', 'VERTICAL', True), "...and the migration does not run again (%s)" % (dolly_prefs(),))
+inputs_.view_zoom_axis, inputs_.invert_mouse_zoom = 'HORIZONTAL', False
+m3d_user.reset_cache()
+
+# Shift+drag on Scale / Rotate: the gizmo table matches the group's 19 gizmos, and the macros extrude / duplicate and
+# then scale / rotate as one operator (the drags themselves are in gui_test.py).
+kinds_ = [kind for kind, _axes in m3d_marking._XFORM_GIZMOS]
+check(len(kinds_) == 19 and kinds_.count('resize') == 7 and kinds_.count('translate') == 7 and kinds_.count('rotate') == 4
+      and kinds_.count('trackball') == 1, "transform gizmo table: %s" % (kinds_,))
+mesh_ = bpy.data.meshes.new("m3dMacro")
+bm_ = bmesh.new()
+bmesh.ops.create_cube(bm_, size=1.0)
+bm_.to_mesh(mesh_)
+bm_.free()
+ob_ = bpy.data.objects.new("m3dMacro", mesh_)
+bpy.context.scene.collection.objects.link(ob_)
+for other_ in bpy.context.view_layer.objects:
+    other_.select_set(False)
+bpy.context.view_layer.objects.active = ob_
+ob_.select_set(True)
+resize_ = {"value": (3, 1, 1), "constraint_axis": (True, False, False)}
+n_objects_ = len(bpy.data.objects)
+check(bpy.ops.m3d.duplicate_resize('EXEC_DEFAULT', TRANSFORM_OT_resize=resize_) == {'FINISHED'}
+      and len(bpy.data.objects) == n_objects_ + 1 and abs(bpy.context.active_object.scale.x - 3) < 1e-4
+      and bpy.context.active_object.scale.y == 1, "Duplicate and Scale duplicates and scales along X")
+bpy.context.active_object.rotation_euler = (0, 0, 0)
+check(bpy.ops.m3d.duplicate_rotate('EXEC_DEFAULT', TRANSFORM_OT_rotate={"value": 0.5, "orient_axis": 'Z'}) == {'FINISHED'}
+      and abs(bpy.context.active_object.rotation_euler.z - 0.5) < 1e-4, "Duplicate and Rotate duplicates and rotates")
+for dup_ in [o for o in bpy.data.objects if o != ob_ and o.name.startswith("m3dMacro")]:
+    bpy.data.objects.remove(dup_)
+bpy.context.view_layer.objects.active = ob_
+ob_.select_set(True)
+bpy.ops.object.mode_set(mode='EDIT')
+bpy.ops.mesh.select_all(action='SELECT')
+check(bpy.ops.m3d.extrude_resize('EXEC_DEFAULT', TRANSFORM_OT_resize=resize_) == {'FINISHED'}, "Extrude and Scale runs")
+bm_ = bmesh.from_edit_mesh(ob_.data)
+xs_ = [v.co.x for v in bm_.verts if v.select]
+check(len(bm_.faces) == 12 and abs(max(xs_) - min(xs_) - 3.0) < 1e-4, "Extrude and Scale: new faces %d, X extent %s" % (
+      len(bm_.faces), max(xs_) - min(xs_)))
+check(bpy.ops.m3d.extrude_rotate('EXEC_DEFAULT', TRANSFORM_OT_rotate={"value": 0.5, "orient_axis": 'Z'}) == {'FINISHED'}
+      and len(bmesh.from_edit_mesh(ob_.data).faces) == 18, "Extrude and Rotate runs")
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.data.objects.remove(ob_)
+bpy.data.meshes.remove(mesh_)
 m3d_user.reset_cache()
 shutil.rmtree(TEST_CONFIG, ignore_errors=True)
 

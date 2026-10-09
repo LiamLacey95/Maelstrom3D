@@ -996,12 +996,46 @@ def m3d_startup_scene(*_args):
             ob.hide_set(True)
 
 
+def _zoom_preferences(prefs):
+    """Maya dolly: Alt+RMB drag right zooms in, left zooms out (the zoom follows the horizontal drag only)."""
+    prefs.inputs.view_zoom_method = 'DOLLY'
+    prefs.inputs.view_zoom_axis = 'HORIZONTAL'
+    prefs.inputs.invert_mouse_zoom = False
+
+
+# Bump when a default that existing users should get changes, and add its step to migrate_preferences().
+PREFS_VERSION = 1
+
+
+def migrate_preferences():
+    """One-time preference updates for users who already have saved preferences (the factory handler below
+    only runs for fresh ones). The version lives in m3d_user.json; it is written only after the preferences are
+    saved, so a failed save retries next start, and a later choice by the user is never overridden."""
+    import m3d_user
+    if m3d_user.data().get("prefs_version", 0) >= PREFS_VERSION:
+        return
+    _zoom_preferences(bpy.context.preferences)
+    try:
+        bpy.ops.wm.save_userpref()
+    except RuntimeError:
+        return
+    m3d_user.data()["prefs_version"] = PREFS_VERSION
+    m3d_user.save()
+
+
+def _migrate_on_startup():
+    # A headless or --factory-startup session never saves the user's preferences: leave them to a normal start.
+    if not (bpy.app.background or bpy.app.factory_startup):
+        migrate_preferences()
+
+
 @bpy.app.handlers.persistent
 def m3d_preferences(*_args):
     """First run / factory preferences: classic UI defaults (solid tool and dock strips, no splash,
-    no Blender navigation buttons, Segoe UI like Maya on Windows)."""
+    no Blender navigation buttons, Segoe UI like Maya on Windows, Maya dolly direction)."""
     import os
     prefs = bpy.context.preferences
+    _zoom_preferences(prefs)
     prefs.system.use_region_overlap = False
     prefs.view.show_splash = False
     prefs.view.show_navigate_ui = False
@@ -1129,9 +1163,12 @@ def register():
     bpy.app.handlers.load_factory_startup_post.append(m3d_startup_layout)
     bpy.app.handlers.load_factory_startup_post.append(m3d_startup_scene)
     bpy.app.handlers.load_factory_preferences_post.append(m3d_preferences)
+    bpy.app.timers.register(_migrate_on_startup, first_interval=1.0, persistent=True)
 
 
 def unregister():
+    if bpy.app.timers.is_registered(_migrate_on_startup):
+        bpy.app.timers.unregister(_migrate_on_startup)
     bpy.app.handlers.load_factory_startup_post.remove(m3d_workspace_names)
     bpy.app.handlers.load_factory_startup_post.remove(m3d_startup_layout)
     bpy.app.handlers.load_factory_startup_post.remove(m3d_startup_scene)
