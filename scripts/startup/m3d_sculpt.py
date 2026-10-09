@@ -483,12 +483,10 @@ class PROPERTIES_PT_m3d_sc_custom(_PagePanel, Panel):
     bl_label = "Custom"
     bl_options = {'DEFAULT_CLOSED'}
 
-    def draw_header_preset(self, context):
-        self.layout.prop(context.window_manager, "m3d_shelf_edit", text="Edit", toggle=True)
-
     def draw(self, context):
+        import m3d_edit
         from m3d_user import draw_custom_shelf
-        draw_custom_shelf(self.layout, context, 'SCULPT', context.window_manager.m3d_shelf_edit)
+        draw_custom_shelf(self.layout, context, 'SCULPT', m3d_edit.editing(), tray=True)
 
 
 class PROPERTIES_PT_m3d_sc_tuning(_Page, Panel):

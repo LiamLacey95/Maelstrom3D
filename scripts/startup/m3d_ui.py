@@ -1145,23 +1145,42 @@ def restore_shelf(wm, prev_kind, kind):
 
 def draw_shelf(layout, context):
     """Shelf: the active shelf's buttons, large large (the tabs are the row above)."""
+    import m3d_edit
     from m3d_mode import _button
     wm, kind = context.window_manager, current_kind(context)
     key = shelf_key(wm, kind)
+    edit = m3d_edit.editing()
     if key == 'CUSTOM':
         from m3d_user import draw_custom_shelf
-        draw_custom_shelf(layout, context, kind, wm.m3d_shelf_edit)
+        draw_custom_shelf(layout, context, kind, edit)
         return
     row = layout.row(align=True)
-    row.scale_x = row.scale_y = 1.5
-    for item in SHELVES[key][1]:
+    if edit:
+        # Fixed-width cells, so the edit mode's drag can tell which button is where.
+        rec = m3d_edit.begin_shelf(context, key, kind)
+    else:
+        row.scale_x = row.scale_y = 1.5
+    for i, item in enumerate(SHELVES[key][1]):
         if item is None:
-            row.separator(factor=0.5)
+            if edit:
+                m3d_edit.add_gap(rec, row)
+            else:
+                row.separator(factor=0.5)
         elif callable(item):
-            item(row, context)
+            if edit:
+                cell = m3d_edit.add_cell(rec, row, m3d_edit.CALL_CELL)
+                cell.label(text="")   # An empty cell takes no room, and the widget may draw nothing.
+                item(cell, context)
+            else:
+                item(row, context)
         else:
             idname, icon, props, *text = item
-            _button(row, context, text[0] if text else "", idname, icon, props,
+            label = text[0] if text else ""
+            target = row
+            if edit:
+                width = m3d_edit.text_units(rec, label) if label and icon == 'NONE' else m3d_edit.ICON_CELL
+                target = m3d_edit.add_cell(rec, row, width, ("B", key, i), icon=width == m3d_edit.ICON_CELL)
+            _button(target, context, label, idname, icon, props,
                     depress=m3d_sculpt.is_active(context, idname, props))
 
 
@@ -1180,12 +1199,22 @@ class TOPBAR_HT_m3d_shelf_tabs(bpy.types.Header):
     bl_region_type = 'FOOTER'
 
     def draw(self, context):
+        import m3d_edit
         wm, kind = context.window_manager, current_kind(context)
         row = self.layout.row(align=True)
+        edit = m3d_edit.editing()
         for key in shelves_for(kind):
+            if edit and key == 'CUSTOM':
+                continue
             row.prop_enum(wm, "m3d_shelf", key)
-        if shelf_key(wm, kind) == 'CUSTOM':
-            self.layout.prop(wm, "m3d_shelf_edit", toggle=True)
+        if edit:
+            # The Custom tab is the drop target of a button dragged from another shelf: a cell at the right end.
+            m3d_edit.begin_tabs(context, kind)
+            self.layout.separator_spacer()
+            cell = self.layout.row(align=True)
+            cell.ui_units_x = m3d_edit.TABS_CUSTOM_CELL
+            cell.alert = m3d_edit._drag["target"] == "tab"
+            cell.prop_enum(wm, "m3d_shelf", 'CUSTOM', text="Custom (drop here)")
 
 
 class TOPBAR_HT_m3d_shelf(bpy.types.Header):

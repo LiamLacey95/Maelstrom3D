@@ -3970,7 +3970,11 @@ for kind_, (wname_, *_rest) in W.KINDS.items():
     log = []
     W.M3D_PT_workspace_settings.draw(type("Inst", (), {"layout": Rec(log)})(), WsCtx(ws_))
     props_ = {(r._args[0], r._args[1]) for r in log if r._kind == "prop"}
-    check((bpy.context.window_manager, "m3d_shelf_edit") in props_ and (ws_, "object_mode") in props_, "%s settings: Edit Shelf and entry mode" % kind_)
+    check((ws_, "object_mode") in props_, "%s settings: entry mode" % kind_)
+    edit_ = [o for o in ws_ops(log) if o[0] == "m3d.edit_mode"]
+    check(len(edit_) == 1 and edit_[0][2].get("text") == "Click to Edit" and not edit_[0][2].get("depress"),
+          "%s settings: Click to Edit toggle: %s" % (kind_, edit_))
+    check("m3d.dock_layout_reset" in [o[0] for o in ws_ops(log)], "%s settings: Reset Dock Layout" % kind_)
     check((ws_, "m3d_show_shelf") in props_, "%s settings: Show Shelf" % kind_)
     # Entry mode sticks.
     old_ = ws_.object_mode
@@ -4030,6 +4034,301 @@ with bpy.context.temp_override(workspace=model_ws_):
     bpy.ops.m3d.dock_tab_toggle(tab="tool")
 m3d_user.reset_cache()
 check(m3d_user.hidden_tabs('MODEL') == set(), "toggle from Workspace Settings shows the tab again")
+
+# --- Edit the interface (m3d_edit.py): shelf drag data, dock layout store, hotkeys.
+import m3d_edit as E
+with open(path, "w") as fh:
+    fh.write("{}")
+m3d_user.reset_cache()
+check(not E.editing(), "edit mode is off at start")
+bpy.ops.m3d.edit_mode()
+check(E.editing(), "Click to Edit turns it on")
+log = []
+W.M3D_PT_workspace_settings.draw(type("Inst", (), {"layout": Rec(log)})(), WsCtx(bpy.data.workspaces["Modeling"]))
+edit_ops_ = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.edit_mode"]
+check(edit_ops_ and edit_ops_[0]._kw.get("text") == "Editing" and edit_ops_[0]._kw.get("depress"), "the toggle reads Editing while on")
+bpy.ops.m3d.edit_mode()
+check(not E.editing(), "the toggle turns it off again")
+
+# Drop slots and hit tests on a recorded shelf row.
+rec_ = {"rect": (0, 100, 800, 40), "unit": 20, "ws": "Modeling", "kind": 'MODEL', "key": 'CUSTOM',
+        "cells": [(4, 40, ("C", 0)), (44, 40, ("C", 1)), (84, 40, ("C", 2)), (124, 4, None), (128, 40, ("C", 3))]}
+slots_ = [E.drop_slot(rec_, x, 4) for x in (5, 30, 70, 110, 160, 700)]
+check(slots_ == [0, 1, 2, 3, 4, 4], "drop slot from x: %s" % slots_)
+check(E.drop_slot(rec_, 300, 0) == 0, "drop slot of an empty shelf")
+check(E.shelf_hit(rec_, 50, 120) == ("C", 1) and E.shelf_hit(rec_, 126, 120) is None and E.shelf_hit(rec_, 150, 120) == ("C", 3)
+      and E.shelf_hit(rec_, 50, 300) is None and E.shelf_hit(rec_, 900, 120) is None, "shelf hit test")
+tabs_ = {"rect": (0, 140, 800, 26), "custom": (600, 800), "ws": "Modeling", "kind": 'MODEL', "width": 8}
+check(E.on_custom_tab(tabs_, 700, 150) and not E.on_custom_tab(tabs_, 500, 150) and not E.on_custom_tab(tabs_, 700, 100), "custom tab hit test")
+ctx_ = NS(workspace=NS(name="Modeling", m3d_show_shelf=True))
+E._geom.update(shelf=rec_, tabs=tabs_)
+m3d_user.shelf_items('MODEL').extend({"idname": "object.mode_set", "props": {"mode": 'OBJECT'}, "icon": "", "label": n} for n in "ABC")
+check(E.target_at(110, 120, ctx_, ("C", 0)) == ("slot", 3) and E.target_at(700, 150, ctx_, ("C", 0)) == "tab"
+      and E.target_at(300, 600, ctx_, ("C", 0)) == "out" and E.target_at(110, 120, ctx_, ("B", 'POLY', 0)) == "here",
+      "drag target under the mouse")
+ctx_.workspace.name = "Sculpt"
+check(E.target_at(110, 120, ctx_, ("C", 0)) == "out", "a record of another workspace's shelf is ignored")
+ctx_.workspace = NS(name="Modeling", m3d_show_shelf=False)
+check(E.target_at(110, 120, ctx_, ("C", 0)) == "out", "a hidden shelf takes no drops")
+E._geom.clear()
+
+# Reorder / remove / copy data paths, round trip through the file.
+def names_():
+    m3d_user.reset_cache()
+    return "".join(i["label"] for i in m3d_user.shelf_items('MODEL'))
+m3d_user.save()
+check(names_() == "ABC", "custom shelf saved before reordering: %s" % names_())
+check(E.reorder_custom('MODEL', 0, 3) and names_() == "BCA", "drag A to the end: %s" % names_())
+check(E.reorder_custom('MODEL', 2, 0) and names_() == "ABC", "drag A to the front")
+check(not E.reorder_custom('MODEL', 1, 1) and not E.reorder_custom('MODEL', 1, 2) and names_() == "ABC", "dropping in place changes nothing")
+check(E.reorder_custom('MODEL', 0, 2) and names_() == "BAC", "drag A between B and C")
+check(not E.reorder_custom('MODEL', 7, 0) and not E.reorder_custom('MODEL', 0, 9), "out of range moves are ignored")
+check(E.finish_drag('MODEL', ("C", 1), "out") == "remove" and names_() == "BC", "drag off the shelf removes")
+check(E.finish_drag('MODEL', ("C", 0), ("slot", 2)) == "reorder" and names_() == "CB", "finish_drag reorders")
+check(E.finish_drag('MODEL', ("C", 0), "tab") is None and names_() == "CB", "a Custom button on the Custom tab stays")
+item_ = E.builtin_item('POLY', 1)
+check(item_ and item_["idname"] == "m3d.add_primitive" and item_["props"] == {"kind": 'CUBE'} and item_["icon"] == "MESH_CUBE",
+      "built-in button as a Custom item: %r" % item_)
+check(E.builtin_item('POLY', 6) is None and E.builtin_item('SCULPT_REMESH', 1) is None and E.builtin_item('POLY', 99) is None
+      and E.builtin_item('NOPE', 0) is None, "gaps, widgets and bad indices are not copied")
+check(E.finish_drag('MODEL', ("B", 'POLY', 1), "tab") == "copy" and E.finish_drag('MODEL', ("B", 'POLY', 6), "tab") is None
+      and E.finish_drag('MODEL', ("B", 'POLY', 1), "out") is None, "drag a built-in button onto the Custom tab copies it")
+m3d_user.reset_cache()
+copied_ = m3d_user.shelf_items('MODEL')[-1]
+check(len(m3d_user.shelf_items('MODEL')) == 3 and copied_["idname"] == "m3d.add_primitive" and copied_["props"] == {"kind": 'CUBE'},
+      "the copy is in the file: %r" % copied_)
+check(m3d_user._item_ok(copied_), "the copied item draws")
+m3d_user.shelf_items('MODEL').clear()
+m3d_user.save()
+
+# The shelf in edit mode draws fixed-width cells and records them (a fake layout and region).
+real_ws_ = bpy.data.workspaces["Modeling"]
+class ShelfCtx:
+    workspace, region = real_ws_, NS(x=0, y=1251, width=2560, height=40, type='WINDOW')
+    area, window_manager = NS(type='TOPBAR'), bpy.context.window_manager
+    def __getattr__(self, name):
+        return getattr(bpy.context, name)
+E.set_editing(True)
+bpy.context.window_manager.m3d_shelf = 'POLY'
+log = []
+m3d_ui.draw_shelf(Rec(log), ShelfCtx())
+check_calls("edit-mode shelf", log)
+cells_ = E._geom["shelf"]["cells"]
+poly_ = m3d_ui.SHELVES['POLY'][1]
+check([c[2] for c in cells_ if c[2]] == [("B", 'POLY', i) for i, it in enumerate(poly_) if it is not None], "a cell per shelf button")
+check(all(w == 40 for _x, w, ref in cells_ if ref) and cells_[0][0] == E.SHELF_X0 * 20, "icon cells are two units wide: %s" % cells_[:2])
+check(len([r for r in log if r._kind == "operator"]) == len([it for it in poly_ if it]), "every button is still drawn")
+E.set_editing(False)
+log = []
+m3d_ui.draw_shelf(Rec(log), ShelfCtx())
+check_calls("normal shelf", log)
+check(not any(r._kind == "row" and "ui_units_x" in r.values() for r in log), "no edit cells outside edit mode")
+m3d_user.shelf_items('MODEL').append({"idname": "object.mode_set", "props": {"mode": 'OBJECT'}, "icon": "OBJECT_DATAMODE", "label": "Obj"})
+E.set_editing(True)
+bpy.context.window_manager.m3d_shelf = 'CUSTOM'
+log = []
+m3d_ui.draw_shelf(Rec(log), ShelfCtx())
+check_calls("edit-mode custom shelf", log)
+check([c[2] for c in E._geom["shelf"]["cells"] if c[2]] == [("C", 0)], "custom cells: %s" % E._geom["shelf"]["cells"])
+E._drag.update(src=("C", 0), target=("slot", 1))
+log = []
+m3d_ui.draw_shelf(Rec(log), ShelfCtx())
+check(any(r._kind == "row" and r.values().get("alert") for r in log) and any(r._kind == "row" and r.values().get("active") is False for r in log),
+      "the drop slot is marked and the dragged button greyed")
+E._drag.update(src=None, target=None)
+m3d_user.shelf_items('SCULPT').append({"idname": "object.mode_set", "props": {"mode": 'OBJECT'}, "icon": "OBJECT_DATAMODE", "label": "Obj"})
+log = []
+S.PROPERTIES_PT_m3d_sc_custom.draw(type("Inst", (), {"layout": Rec(log)})(), SCtx('LEFT'))
+check(any(r._kind == "operator" and r._args[0] == "m3d.shelf_edit" for r in log), "the Sculpt tray's Custom panel has arrows while editing")
+m3d_user.shelf_items('SCULPT').clear()
+E.set_editing(False)
+m3d_user.shelf_items('MODEL').clear()
+bpy.context.window_manager.m3d_shelf = 'POLY'
+
+# Dock layout store: user tabs, moved and hidden panels.
+check(m3d_user.user_tabs('MODEL') == [] and m3d_user.panel_page('MODEL', "X", "home") == "home" and not m3d_user.panel_hidden('MODEL', "X"),
+      "empty dock layout")
+tab1_ = m3d_user.add_user_tab('MODEL', 'RIGHT', " Mine ")
+tab2_ = m3d_user.add_user_tab('MODEL', 'RIGHT', "")
+check((tab1_, tab2_) == ("user_1", "user_2") and [t["label"] for t in m3d_user.user_tabs('MODEL')] == ["Mine", "New Tab"], "user tabs: ids and names")
+check([t.id for t in W.dock_tabs('MODEL', 'RIGHT')][-2:] == ["user_1", "user_2"], "user tabs are in the dock's tabs")
+lt_ = m3d_user.add_user_tab('SCULPT', 'LEFT', "Mine L")
+check(lt_ in [t.id for t in W.dock_tabs('SCULPT', 'LEFT')] and lt_ not in [t.id for t in W.dock_tabs('SCULPT', 'RIGHT')], "a user tab is on one side")
+check(m3d_user.rename_user_tab('MODEL', "user_1", " Renamed ") and not m3d_user.rename_user_tab('MODEL', "user_1", "  ")
+      and not m3d_user.rename_user_tab('MODEL', "nope", "x"), "rename a tab")
+m3d_user.reset_cache()
+check([t["label"] for t in m3d_user.user_tabs('MODEL')] == ["Renamed", "New Tab"], "user tabs round trip through the file")
+panel_ = "PROPERTIES_PT_m3d_mtk_mesh"
+check(m3d_user.move_panel('MODEL', panel_, "user_1", "modeling_toolkit") and m3d_user.panel_page('MODEL', panel_, "modeling_toolkit") == "user_1"
+      and m3d_user.panel_page('SCULPT', panel_, "modeling_toolkit") == "modeling_toolkit", "moves are per kind")
+m3d_user.reset_cache()
+check(m3d_user.panel_page('MODEL', panel_, "modeling_toolkit") == "user_1", "moves round trip")
+real_ws_.m3d_page_right = "modeling_toolkit"
+mctx_ = lambda: NS(workspace=real_ws_, area=NS(x=1500, width=500), window=NS(width=2000))
+check(not m3d_mode.PROPERTIES_PT_m3d_mtk_mesh.poll(mctx_()) and m3d_mode.PROPERTIES_PT_m3d_mtk_selection.poll(mctx_()),
+      "a moved panel leaves its page")
+real_ws_.m3d_page_right = "user_1"
+check(W.active_page(mctx_()) == "user_1" and m3d_mode.PROPERTIES_PT_m3d_mtk_mesh.poll(mctx_())
+      and not m3d_mode.PROPERTIES_PT_m3d_mtk_selection.poll(mctx_()), "...and shows on the user tab")
+m3d_user.toggle_panel_hidden('MODEL', panel_)
+check(m3d_user.panel_hidden('MODEL', panel_) and not m3d_mode.PROPERTIES_PT_m3d_mtk_mesh.poll(mctx_()), "a hidden panel is gone")
+E._state["on"] = True
+check(m3d_mode.PROPERTIES_PT_m3d_mtk_mesh.poll(mctx_()), "...but listed while editing, so it can be shown again")
+def mesh_header_(log):
+    """The Mesh panel's header drawing, on an instance of a class that looks like it."""
+    inst = type("PROPERTIES_PT_m3d_mtk_mesh", (W._PagePanel,), {"layout": Rec(log), "page": "modeling_toolkit"})()
+    inst.draw_header_preset(mctx_())
+log = []
+mesh_header_(log)
+hdr_ = [(r._kind, r._args[:2], r._kw.get("icon")) for r in log]
+check(("operator_menu_enum", ("m3d.panel_move", "tab"), 'ARROW_LEFTRIGHT') in hdr_ and ("operator", ("m3d.panel_hide",), 'HIDE_ON') in hdr_,
+      "panel header controls while editing: %s" % hdr_)
+E._state["on"] = False
+log = []
+mesh_header_(log)
+check(not log, "no panel header controls outside edit mode")
+m3d_user.toggle_panel_hidden('MODEL', panel_)
+check(not m3d_user.panel_hidden('MODEL', panel_) and m3d_mode.PROPERTIES_PT_m3d_mtk_mesh.poll(mctx_()), "shown again")
+# A sub-panel follows its parent.
+check(E.panel_root(S.PROPERTIES_PT_m3d_sc_stabilize) is S.PROPERTIES_PT_m3d_sc_stroke and E.panel_root(m3d_mode.PROPERTIES_PT_m3d_mtk_mesh)
+      is m3d_mode.PROPERTIES_PT_m3d_mtk_mesh, "panel_root")
+# Deleting a tab returns its panels; ids aren't reused.
+check(m3d_user.delete_user_tab('MODEL', "user_1") and m3d_user.panel_page('MODEL', panel_, "modeling_toolkit") == "modeling_toolkit"
+      and [t["id"] for t in m3d_user.user_tabs('MODEL')] == ["user_2"], "deleting a tab returns its panels")
+real_ws_.m3d_page_right = "user_1"
+check(W.active_page(mctx_()) == "modeling_toolkit" and m3d_mode.PROPERTIES_PT_m3d_mtk_mesh.poll(mctx_()), "the dock falls back when its tab is gone")
+check(m3d_user.add_user_tab('MODEL', 'RIGHT', "Again") == "user_3", "tab ids are never reused")
+# The operators (m3d.panel_move / panel_hide / user_tab_* / dock_layout_reset).
+with bpy.context.temp_override(workspace=real_ws_):
+    bpy.ops.m3d.user_tab_add('EXEC_DEFAULT', name="Ops")
+    check(m3d_user.user_tabs('MODEL')[-1]["label"] == "Ops" and real_ws_.m3d_page_right == "user_4", "user_tab_add makes a tab and shows it")
+    bpy.ops.m3d.panel_move(panel=panel_, tab="user_4")
+    check(m3d_user.panel_page('MODEL', panel_, "x") == "user_4", "panel_move")
+    bpy.ops.m3d.panel_move(panel=panel_, tab="modeling_toolkit")
+    check(m3d_user.panel_page('MODEL', panel_, "x") == "x" and panel_ not in m3d_user._dock('MODEL')["moves"],
+          "moving a panel home drops the entry")
+    bpy.ops.m3d.panel_hide(panel=panel_)
+    check(m3d_user.panel_hidden('MODEL', panel_), "panel_hide")
+    bpy.ops.m3d.user_tab_rename('EXEC_DEFAULT', tab="user_4", name="Renamed by op")
+    check(m3d_user.user_tabs('MODEL')[-1]["label"] == "Renamed by op", "user_tab_rename")
+    check(bpy.ops.m3d.panel_move(panel="NoSuchPanel", tab="modeling_toolkit") == {'CANCELLED'}, "unknown panel is ignored")
+    bpy.ops.m3d.user_tab_delete(tab="user_4")
+    check("user_4" not in [t["id"] for t in m3d_user.user_tabs('MODEL')], "user_tab_delete")
+    m3d_user.toggle_tab('MODEL', "tool")
+    bpy.ops.m3d.dock_layout_reset()
+check(m3d_user.user_tabs('MODEL') == [] and not m3d_user.panel_hidden('MODEL', panel_) and m3d_user.hidden_tabs('MODEL') == set()
+      and m3d_user.user_tabs('SCULPT') != [], "Reset Dock Layout clears this kind only")
+m3d_user.reset_dock('SCULPT')
+real_ws_.m3d_page_right = ""
+# Damaged dock data never raises.
+for text in ('{"dock": 5}', '{"dock": {"MODEL": 7}}',
+             '{"dock": {"MODEL": {"tabs": [1, {"id": 3}, {"id": "a", "label": "x", "side": "UP"}], "moves": [], "hidden": 4}}}'):
+    with open(path, "w") as fh:
+        fh.write(text)
+    m3d_user.reset_cache()
+    try:
+        W.dock_tabs('MODEL', 'RIGHT'); m3d_user.panel_page('MODEL', "x", "h"); m3d_user.panel_hidden('MODEL', "x")
+        m3d_mode.PROPERTIES_PT_m3d_mtk_mesh.poll(mctx_())
+        m3d_user.add_user_tab('MODEL', 'RIGHT', "t"); m3d_user.toggle_panel_hidden('MODEL', "x"); m3d_user.move_panel('MODEL', "x", "p", "h")
+        ok = True
+    except Exception as err:
+        ok = False
+        print("damaged dock data:", text, repr(err))
+    check(ok, "damaged dock data: " + text)
+with open(path, "w") as fh:
+    fh.write("{}")
+m3d_user.reset_cache()
+
+# Hotkeys: the command of a button, the keymap, conflicts, the capture flow.
+check(E.parse_command("bpy.ops.mesh.bevel(offset_type='PERCENT', segments=3)") == ("mesh.bevel", {"offset_type": 'PERCENT', "segments": 3})
+      and E.parse_command("bpy.ops.mesh.select_mode(type='VERT', use_extend={'A'})") == ("mesh.select_mode", {"type": 'VERT', "use_extend": {'A'}})
+      and E.parse_command("bpy.ops.wm.read_homefile(app_template=\"\")") == ("wm.read_homefile", {"app_template": ""})
+      and E.parse_command("bpy.ops.object.mode_set()") == ("object.mode_set", {}), "parse_command")
+check(all(E.parse_command(t) is None for t in ("", "os.system('x')", "bpy.ops.a.b(1)", "bpy.ops.a.b(x=__import__('os'))",
+                                               "bpy.data.x.y()", "bpy.ops.a(x=1)", "nonsense(")), "parse_command ignores anything else")
+cmd_ = "bpy.ops.m3d.call(idname='mesh.bevel', props=\"{'offset_type': 'PERCENT'}\", label='Bevel', editor='VIEW_3D')"
+it_ = E.item_from_command(cmd_, 'TOPBAR')
+check(E._op_label("m3d.add_primitive", {"kind": 'SPHERE'}) == "Polygon Primitive: Sphere" and E._op_label("m3d.call", {"idname": "mesh.bevel", "props": "{}", "label": ""}) == "Bevel",
+      "button names in the prompt")
+check(it_ and it_["idname"] == "m3d.call" and it_["props"]["idname"] == "mesh.bevel" and it_["label"] == "Bevel" and it_["keymap"] == "Window",
+      "top bar button: Window keymap: %r" % it_)
+check(E.item_from_command("bpy.ops.mesh.bevel()", 'VIEW_3D')["keymap"] == "3D View" and E.item_from_command("bpy.ops.mesh.nope()", 'VIEW_3D') is None
+      and E.item_from_command("bpy.ops.mesh.bevel()", 'PROPERTIES')["keymap"] == "Window"
+      and E.item_from_command("bpy.ops.mesh.bevel()", 'PROPERTIES')["label"] == "Bevel", "keymap by editor, unknown operators skipped")
+sc_ = bpy.context.scene.name
+it_ = E.item_from_path('bpy.data.scenes["%s"].tool_settings.use_snap' % sc_, 'TOPBAR')
+check(it_ == {"idname": "wm.context_toggle", "props": {"data_path": "tool_settings.use_snap"}, "label": "Snap", "keymap": "Window"},
+      "toggle button: %r" % it_)
+scr_ = next(s for s in bpy.data.screens if any(a.type == 'VIEW_3D' for a in s.areas))
+ai_ = next(i for i, a in enumerate(scr_.areas) if a.type == 'VIEW_3D')
+it_ = E.item_from_path('bpy.data.screens["%s"].areas[%d].spaces[0].overlay.show_floor' % (scr_.name, ai_), 'TOPBAR')
+check(it_ and it_["props"] == {"data_path": "space_data.overlay.show_floor"} and it_["keymap"] == "3D View", "space toggle: %r" % it_)
+check(E.item_from_path('bpy.data.scenes["%s"].frame_current' % sc_, 'TOPBAR') is None and E.item_from_path("os.path", 'X') is None
+      and E.item_from_path('bpy.data.scenes["%s"].no_such' % sc_, 'X') is None
+      and E.item_from_path('bpy.data.objects["Cube"].hide_viewport', 'X') is None, "only boolean properties of the scene, tool settings and editors")
+check(E.is_key('A') and E.is_key('F1') and E.is_key('RET') and E.is_key('NUMPAD_1') and E.is_key('ESC') and not E.is_key('LEFT_CTRL')
+      and not E.is_key('LEFTMOUSE') and not E.is_key('MOUSEMOVE') and not E.is_key('TIMER') and not E.is_key('WHEELUPMOUSE')
+      and not E.is_key('NDOF_BUTTON_1'), "which events are keys")
+check(E.key_label({"type": 'J', "ctrl": True, "alt": True, "shift": False, "oskey": False}) == "Ctrl+Alt+J", "key label")
+E._hover = {"item": {"label": "x"}, "pos": (100, 100)}
+check(E.hover_at(102, 99) and E.hover_at(100, 110) is None, "a stale probe is ignored")
+E._hover = None
+bpy.utils.keyconfig_set(bpy.utils.preset_find("Maelstrom3D", "keyconfig"))
+def user_items_(idname, km="Window"):
+    return [k for k in bpy.context.window_manager.keyconfigs.user.keymaps[km].keymap_items if k.idname == idname]
+sphere_ = {"idname": "m3d.add_primitive", "props": {"kind": 'SPHERE'}, "label": "Sphere", "keymap": "Window"}
+spec_j = {"type": 'J', "ctrl": True, "alt": True, "shift": True, "oskey": False}
+check(E.conflicts(sphere_, spec_j) == [], "a free key has no conflicts")
+kmi_ = E.assign_key(sphere_, spec_j)
+check(kmi_ and kmi_.idname == "m3d.add_primitive" and kmi_.properties.kind == 'SPHERE' and kmi_.type == 'J' and kmi_.value == 'PRESS'
+      and (kmi_.ctrl, kmi_.alt, kmi_.shift, kmi_.oskey) == (1, 1, 1, 0) and kmi_.is_user_defined, "assigned: %r" % kmi_)
+check(len([k for k in user_items_("m3d.add_primitive") if k.properties.kind == 'SPHERE' and k.type == 'J']) == 1, "the item is in the user keymap")
+check(E.conflicts(sphere_, spec_j) == [], "the button's own key is not a conflict")
+other_ = {**sphere_, "props": {"kind": 'CUBE'}}
+check(E.conflicts(other_, spec_j) == ["Polygon Primitive"], "another button on that key conflicts: %s" % E.conflicts(other_, spec_j))
+spec_k = {"type": 'K', "ctrl": True, "alt": False, "shift": False, "oskey": False}
+E.assign_key(sphere_, spec_k)
+sph_ = [k for k in user_items_("m3d.add_primitive") if k.properties.kind == 'SPHERE']
+check(len(sph_) == 1 and sph_[0].type == 'K' and (sph_[0].ctrl, sph_[0].alt, sph_[0].shift) == (1, 0, 0),
+      "assigning again changes the button's key: %s" % [(k.type, k.ctrl) for k in sph_])
+f1_ = {"type": 'F1', "ctrl": False, "alt": False, "shift": False, "oskey": False}
+check("Switch Workspace" in E.conflicts({"idname": "m3d.add_primitive", "props": {"kind": 'CUBE'}, "label": "Cube", "keymap": "Window"}, f1_),
+      "default keys conflict: F1 = workspace")
+check(E.conflicts({"idname": "m3d.add_primitive", "props": {"kind": 'CUBE'}, "label": "Cube", "keymap": "NoSuchKeymap"}, f1_) == []
+      and E.assign_key({"idname": "m3d.add_primitive", "props": {}, "label": "x", "keymap": "NoSuchKeymap"}, f1_) is None, "unknown keymap")
+toggle_ = {"idname": "wm.context_toggle", "props": {"data_path": "tool_settings.use_snap"}, "label": "Snap", "keymap": "Window"}
+tk_ = E.assign_key(toggle_, {"type": 'F9', "ctrl": True, "alt": False, "shift": False, "oskey": False})
+check(tk_ and tk_.idname == "wm.context_toggle" and tk_.properties.data_path == "tool_settings.use_snap", "a property toggle becomes wm.context_toggle")
+# The capture flow (Esc cancels, a free key assigns, a conflict asks first).
+def ev_(type, **mods):
+    return NS(type=type, value='PRESS', shift=mods.get("shift", False), ctrl=mods.get("ctrl", False), alt=mods.get("alt", False), oskey=False)
+cube_ = {"idname": "m3d.add_primitive", "props": {"kind": 'CUBE'}, "label": "Cube", "keymap": "Window"}
+cone_ = {**cube_, "props": {"kind": 'CONE'}, "label": "Cone"}
+E.begin_capture(bpy.context, cube_)
+check(E._capture and E._capture["state"] == 'KEY' and E._prompt["text"] == "Press a key for Cube... Esc cancels", "prompt: %r" % E._prompt["text"])
+check(E.capture_event(bpy.context, NS(type='MOUSEMOVE', value='NOTHING')) == {'PASS_THROUGH'} and E._capture, "the mouse moves while waiting")
+check(E.capture_event(bpy.context, NS(type='LEFT_CTRL', value='PRESS')) == {'PASS_THROUGH'} and E._capture, "modifier keys alone don't end it")
+E.capture_event(bpy.context, ev_('ESC'))
+check(E._capture is None and E._prompt["text"] == "" and not [k for k in user_items_("m3d.add_primitive") if k.properties.kind == 'CUBE'], "Esc cancels")
+E.begin_capture(bpy.context, cube_)
+E.capture_event(bpy.context, ev_('J', ctrl=True, shift=True))
+check(E._capture is None and [k for k in user_items_("m3d.add_primitive") if k.properties.kind == 'CUBE' and k.type == 'J' and k.ctrl and k.shift],
+      "a free key is assigned")
+E.begin_capture(bpy.context, cone_)
+E.capture_event(bpy.context, ev_('F1'))
+check(E._capture and E._capture["state"] == 'CONFIRM' and "Switch Workspace" in E._prompt["text"] and "F1" in E._prompt["text"]
+      and not [k for k in user_items_("m3d.add_primitive") if k.properties.kind == 'CONE'], "a conflict asks first: %r" % E._prompt["text"])
+E.capture_event(bpy.context, ev_('Q'))
+check(E._capture and E._capture["state"] == 'CONFIRM', "other keys are ignored while asking")
+E.capture_event(bpy.context, ev_('ESC'))
+check(E._capture is None and not [k for k in user_items_("m3d.add_primitive") if k.properties.kind == 'CONE'], "Esc at the conflict cancels")
+E.begin_capture(bpy.context, cone_)
+E.capture_event(bpy.context, ev_('F1'))
+E.capture_event(bpy.context, ev_('RET'))
+check(E._capture is None and [k for k in user_items_("m3d.add_primitive") if k.properties.kind == 'CONE' and k.type == 'F1'], "Enter assigns it anyway")
+check([k.idname for k in user_items_("m3d.workspace") if k.type == 'F1'], "...and the default F1 item is still there")
+E._load_post()
+check(not E.editing() and E._capture is None, "loading a file ends edit mode")
 
 # Save Layouts as Default writes the startup file (into the temp config folder here, never the real one).
 startup_ = os.path.join(TEST_CONFIG, "config", "startup.blend")

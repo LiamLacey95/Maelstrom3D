@@ -13,6 +13,8 @@ from collections import namedtuple
 import bpy
 from bpy.types import Menu, Operator, Panel
 
+import m3d_edit
+
 # kind -> (workspace name, key, object mode on entry, menu set)
 KINDS = {
     'MODEL': ("Modeling", 'F1', 'OBJECT', 'MODELING'),
@@ -227,8 +229,11 @@ def side_of(context):
 
 
 def dock_tabs(kind, side):
+    """The tabs of a dock: the kind's own, then the ones the user made (m3d_user.user_tabs)."""
+    from m3d_user import user_tabs
     tabs = DOCK_TABS.get(kind, DOCK_TABS['MODEL'])
-    return tabs[side] or tabs['RIGHT']
+    return (*(tabs[side] or tabs['RIGHT']),
+            *(Tab(t["id"], t["label"], 'MODELING_TOOLKIT', t["id"]) for t in user_tabs(kind, side)))
 
 
 def active_page(context):
@@ -249,7 +254,12 @@ class _PagePanel:
 
     @classmethod
     def poll(cls, context):
-        return active_page(context) == cls.page and cls.page_poll(context)
+        page, hidden = m3d_edit.panel_placement(context, cls)
+        return active_page(context) == page and (m3d_edit.editing() or not hidden) and cls.page_poll(context)
+
+    def draw_header_preset(self, context):
+        if m3d_edit.editing():
+            m3d_edit.draw_panel_controls(self.layout, context, type(self))
 
     @classmethod
     def page_poll(cls, _context):
@@ -264,6 +274,7 @@ def all_tab(kind):
 
 # Header pixels at UI scale 1: around a tab's label, the "more" button, the buttons beside the tabs (editor type, tab menu).
 TAB_PAD, MORE_WIDTH, HEADER_RESERVED = 30, 24, 76
+EDIT_RESERVED = 80   # the new / rename / delete tab buttons of the edit mode
 
 
 def text_width(text, scale):
@@ -304,7 +315,8 @@ def split_dock_tabs(context):
     active = next((t.id for t in tabs if space.context == t.context and t.page in {None, page}), None)
     scale = context.preferences.system.ui_scale
     header = next(r for r in context.area.regions if r.type == 'HEADER')
-    shown, more = fit_tabs(tabs, active, header.width - HEADER_RESERVED * scale,
+    reserved = HEADER_RESERVED + (EDIT_RESERVED if m3d_edit.editing() else 0)
+    shown, more = fit_tabs(tabs, active, header.width - reserved * scale,
                            lambda label: text_width(label, scale), MORE_WIDTH * scale)
     return shown, more, active
 
@@ -328,6 +340,9 @@ def draw_dock_tabs(layout, context):
     if more:
         row.menu("M3D_MT_dock_more", text="»")
     row.menu("M3D_MT_dock_tabs", text="", icon='DOWNARROW_HLT')
+    if m3d_edit.editing():
+        user = active.startswith("user_") if active else False
+        m3d_edit.draw_tab_controls(layout, context, active, user)
     return True
 
 
@@ -417,16 +432,20 @@ class M3D_PT_workspace_settings(Panel):
             layout.label(text="Dock tabs: this workspace has none")
         else:
             sides = DOCK_TABS[kind]
-            left = sides['LEFT']
+            right = dock_tabs(kind, 'RIGHT')
+            left = dock_tabs(kind, 'LEFT') if sides['LEFT'] else ()
             layout.label(text="Right dock tabs" if left else "Dock tabs")
-            draw_tab_toggles(layout, kind, sides['RIGHT'])
+            draw_tab_toggles(layout, kind, right)
             if left:
                 layout.label(text="Left tray tabs")
                 draw_tab_toggles(layout, kind, left)
+            layout.operator("m3d.dock_layout_reset", icon='LOOP_BACK')
         layout.separator()
         layout.prop(ws, "m3d_show_shelf")
-        layout.prop(wm, "m3d_shelf_edit", text="Edit Custom Shelf", toggle=True)
-        layout.label(text="Right-click any button > Add to Shelf")
+        editing = m3d_edit.editing()
+        layout.operator("m3d.edit_mode", text="Editing" if editing else "Click to Edit", icon='MODIFIER_ON', depress=editing)
+        layout.label(text="Drag shelf buttons, Ctrl+Alt+click a button for a key,")
+        layout.label(text="panel headers move panels. Right-click > Add to Shelf")
         layout.separator()
         row = layout.row()
         row.label(text="Entry mode")

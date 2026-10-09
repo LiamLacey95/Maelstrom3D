@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 """
-Personalization for Maelstrom3D: the Custom shelf ("Add to Shelf" in a button's right-click menu) and the
-dock tabs a user hides. Everything lives in `m3d_user.json` in the user config folder; a missing or damaged
+Personalization for Maelstrom3D: the Custom shelf ("Add to Shelf" in a button's right-click menu), the dock tabs
+a user hides, and the dock layout (user tabs, moved and hidden panels; edited by m3d_edit.py). Everything lives in `m3d_user.json` in the user config folder; a missing or damaged
 file never breaks the UI (it reads as empty).
 """
 
@@ -85,6 +85,96 @@ def toggle_tab(kind, tab):
         root["hidden_tabs"] = {}
     hidden = hidden_tabs(kind) ^ {tab}
     root["hidden_tabs"][kind] = sorted(hidden)
+    return save()
+
+
+# -----------------------------------------------------------------------------
+# Dock layout per workspace kind: user tabs, panels moved to another tab, hidden panels.
+# data()["dock"][kind] = {"tabs": [{"id", "label", "side"}], "moves": {panel: page}, "hidden": [panel]}
+
+def _dock(kind):
+    root = data()
+    if not isinstance(root.get("dock"), dict):
+        root["dock"] = {}
+    dock = root["dock"].get(kind)
+    if not isinstance(dock, dict):
+        dock = root["dock"][kind] = {}
+    if not isinstance(dock.get("tabs"), list):
+        dock["tabs"] = []
+    dock["tabs"][:] = [t for t in dock["tabs"] if isinstance(t, dict) and isinstance(t.get("id"), str)
+                       and isinstance(t.get("label"), str) and t.get("side") in {'LEFT', 'RIGHT'}]
+    if not isinstance(dock.get("moves"), dict):
+        dock["moves"] = {}
+    if not isinstance(dock.get("hidden"), list):
+        dock["hidden"] = []
+    return dock
+
+
+def user_tabs(kind, side=None):
+    """The tabs the user made for this kind: [{"id", "label", "side"}], all or one side's."""
+    return [t for t in _dock(kind)["tabs"] if side in {None, t["side"]}]
+
+
+def add_user_tab(kind, side, label):
+    """New dock tab (empty); returns its id. Ids are never reused, the page of a user tab is its id."""
+    dock = _dock(kind)
+    nums = [int(t["id"][5:]) for t in dock["tabs"] if t["id"][5:].isdigit()]
+    tab = {"id": "user_%d" % (max(nums, default=0) + 1), "label": label.strip() or "New Tab", "side": side}
+    dock["tabs"].append(tab)
+    save()
+    return tab["id"]
+
+
+def rename_user_tab(kind, tab_id, label):
+    for tab in _dock(kind)["tabs"]:
+        if tab["id"] == tab_id and label.strip():
+            tab["label"] = label.strip()
+            return save()
+    return False
+
+
+def delete_user_tab(kind, tab_id):
+    """Remove a user tab: the panels moved into it go back to their own tabs."""
+    dock = _dock(kind)
+    dock["tabs"][:] = [t for t in dock["tabs"] if t["id"] != tab_id]
+    dock["moves"] = {k: v for k, v in dock["moves"].items() if v != tab_id}
+    return save()
+
+
+def panel_page(kind, panel, home):
+    """The page a panel shows on: the one the user moved it to, else its own (`home`)."""
+    page = _dock(kind)["moves"].get(panel)
+    return page if isinstance(page, str) else home
+
+
+def move_panel(kind, panel, page, home):
+    moves = _dock(kind)["moves"]
+    if page == home:
+        moves.pop(panel, None)
+    else:
+        moves[panel] = page
+    return save()
+
+
+def panel_hidden(kind, panel):
+    return panel in _dock(kind)["hidden"]
+
+
+def toggle_panel_hidden(kind, panel):
+    hidden = _dock(kind)["hidden"]
+    if panel in hidden:
+        hidden.remove(panel)
+    else:
+        hidden.append(panel)
+    return save()
+
+
+def reset_dock(kind):
+    """Default dock for this kind: no user tabs, no moved or hidden panels, no hidden tabs."""
+    root = data()
+    for name in ("dock", "hidden_tabs"):
+        if isinstance(root.get(name), dict):
+            root[name].pop(kind, None)
     return save()
 
 
@@ -200,29 +290,49 @@ def _icon_ok(icon):
     return icon in _icons
 
 
-def draw_custom_shelf(layout, context, kind, edit):
-    """Custom shelf buttons; in edit mode each one gets move left / remove / move right."""
+def draw_custom_shelf(layout, context, kind, edit, tray=False):
+    """Custom shelf buttons. Editing in the top bar: fixed-width cells that the edit mode's drag picks up
+    (m3d_edit.py); editing in the Sculpt tray: each button gets move left / remove / move right."""
+    import m3d_edit
     from m3d_mode import _button
-    row = layout.row(align=True)
-    row.scale_x = row.scale_y = 1.5
     items = shelf_items(kind)
+    cells = edit and not tray
+    row = layout.row(align=True)
+    rec = None
+    if cells:
+        rec = m3d_edit.begin_shelf(context, 'CUSTOM', kind)
+    else:
+        row.scale_x = row.scale_y = 1.5
     if not items:
-        row.label(text="Right-click any button, Add to Shelf")
+        text = "Right-click any button, Add to Shelf" + (" (or drag one onto this tab)" if cells else "")
+        (m3d_edit.add_cell(rec, row, 12.0) if cells else row).label(text=text)
+    drag = m3d_edit._drag
     for i, item in enumerate(items):
         if not _item_ok(item):
             continue
         icon = item.get("icon") or 'NONE'
         if not _icon_ok(icon):
             icon = 'NONE'
-        _button(row, context, "" if icon != 'NONE' else item.get("label", ""), item["idname"], icon,
-                _py_props(item["idname"], item["props"]))
-        if edit:
+        text = "" if icon != 'NONE' else item.get("label", "")
+        target = row
+        if cells:
+            width = m3d_edit.ICON_CELL if icon != 'NONE' else m3d_edit.text_units(rec, text)
+            target = m3d_edit.add_cell(rec, row, width, ("C", i), icon=icon != 'NONE')
+            target.active = drag["src"] != ("C", i)
+            slot = drag["target"]
+            target.alert = isinstance(slot, tuple) and slot[1] == i and drag["src"] is not None
+        _button(target, context, text, item["idname"], icon, _py_props(item["idname"], item["props"]))
+        if edit and tray:
             sub = row.row(align=True)
             sub.scale_x = 0.4
-            for action, icon in (('LEFT', 'TRIA_LEFT'), ('REMOVE', 'X'), ('RIGHT', 'TRIA_RIGHT')):
-                o = sub.operator("m3d.shelf_edit", text="", icon=icon)
+            for action, arrow in (('LEFT', 'TRIA_LEFT'), ('REMOVE', 'X'), ('RIGHT', 'TRIA_RIGHT')):
+                o = sub.operator("m3d.shelf_edit", text="", icon=arrow)
                 o.action, o.index = action, i
             row.separator(factor=0.5)
+    if cells and items:   # Room at the end: drop here to move a button last.
+        end = m3d_edit.add_cell(rec, row, m3d_edit.ICON_CELL)
+        end.alert = drag["src"] is not None and drag["target"] == ("slot", len(items))
+        end.label(text="", icon='ADD')
 
 
 # -----------------------------------------------------------------------------
@@ -291,12 +401,9 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.UI_MT_button_context_menu.append(button_context_menu)
-    bpy.types.WindowManager.m3d_shelf_edit = bpy.props.BoolProperty(
-        name="Edit Shelf", description="Show move and remove buttons on the Custom shelf")
 
 
 def unregister():
-    del bpy.types.WindowManager.m3d_shelf_edit
     bpy.types.UI_MT_button_context_menu.remove(button_context_menu)
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

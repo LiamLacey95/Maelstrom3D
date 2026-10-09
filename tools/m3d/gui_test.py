@@ -16,6 +16,7 @@ import bpy
 from bpy_extras.view3d_utils import location_3d_to_region_2d
 from mathutils import Matrix, Vector
 
+import m3d_edit
 import m3d_mode
 import m3d_ui
 import m3d_user
@@ -1068,7 +1069,7 @@ def custom_shelf_add():
                                            "icon": "MESH_UVSPHERE", "label": "Sphere"}))
     bpy.ops.m3d.shelf_add(item=json.dumps({"idname": "mesh.bevel", "props": {"offset_type": 'PERCENT'},
                                            "icon": "", "label": "Bevel"}))
-    bpy.context.window_manager.m3d_shelf_edit = True
+    m3d_edit._state["on"] = True   # (the tray's Custom panel then draws its arrows)
     for area in window().screen.areas:
         area.tag_redraw()
 
@@ -1077,7 +1078,7 @@ def custom_shelf_add():
 def custom_shelf_check():
     check(len(m3d_user.shelf_items('SCULPT')) == 2, "custom shelf items")
     check(not tracebacks(), "Python error while drawing the Custom shelf")
-    bpy.context.window_manager.m3d_shelf_edit = False
+    m3d_edit._state["on"] = False
 
 
 @step
@@ -1106,8 +1107,8 @@ def add_to_shelf_check():
     check(seen and seen[-1]["idname"] == "wm.read_homefile", "Add to Shelf did not see the button's operator: %r" % (
         GIZMO["seen_item"],))
     bpy.types.UI_MT_button_context_menu.remove(GIZMO["recorder"])
-    event('ESC', 'PRESS', GIZMO["center"])
-    event('ESC', 'RELEASE', GIZMO["center"])
+    event('ESC', 'PRESS', GIZMO.get("center"))
+    event('ESC', 'RELEASE', GIZMO.get("center"))
 
 
 @step
@@ -1247,6 +1248,537 @@ def ws_reset_check():
     check(len(m3d_workspace.workspace_screens('SCULPT')) == 1, "Settings reset left screens: %s" % [s.name for s in bpy.data.screens])
     check(not tracebacks(), "Python error resetting from the Settings popover")
     bpy.ops.m3d.workspace(kind='MODEL')
+
+
+# ----------------------------------------------------------------------------------------------------
+# Edit the interface (m3d_edit.py): Click to Edit in the Settings popover, shelf drags, a shortcut from a Ctrl+Alt+click,
+# panels and user tabs in a dock, and everything back to normal when it is off.
+
+import m3d_edit
+
+WS_ROWS["edit"] = 274   # Modeling's Settings popover: Click to Edit
+
+
+def e_event(type, value='NOTHING', xy=None, **mods):
+    window().event_simulate(type=type, value=value, x=xy[0], y=xy[1], **mods)
+
+
+def e_shelf_xy(ref, dx=0):
+    rec = m3d_edit._geom["shelf"]
+    x0, w, _ref = next(c for c in rec["cells"] if c[2] == ref)
+    return int(rec["rect"][0] + x0 + w / 2 + dx), int(rec["rect"][1] + rec["rect"][3] / 2)
+
+
+def e_tab_xy():
+    rec = m3d_edit._geom["tabs"]
+    return int(rec["rect"][0] + sum(rec["custom"]) / 2), int(rec["rect"][1] + rec["rect"][3] / 2)
+
+
+def e_shelf_ready(key):
+    rec = m3d_edit._geom.get("shelf")
+    return rec is not None and rec["key"] == key and rec["ws"] == window().workspace.name and "tabs" in m3d_edit._geom
+
+
+def e_custom_labels():
+    m3d_user.reset_cache()
+    return "".join(i["label"] for i in m3d_user.shelf_items('MODEL'))
+
+
+def e_objects():
+    return len(bpy.data.objects)
+
+
+def e_screenshot(path):
+    for area in window().screen.areas:
+        area.tag_redraw()
+    bpy.ops.screen.screenshot(filepath=path)
+
+
+@step
+def edit_setup():
+    bpy.ops.m3d.workspace(kind='MODEL')
+    m3d_edit.set_editing(False)
+    m3d_user.shelf_items('MODEL').clear()
+    m3d_user.shelf_items('MODEL').extend(
+        {"idname": "m3d.add_primitive", "props": {"kind": kind}, "icon": icon, "label": label}
+        for label, kind, icon in (("A", 'SPHERE', 'MESH_UVSPHERE'), ("B", 'CUBE', 'MESH_CUBE'), ("C", 'CYLINDER', 'MESH_CYLINDER')))
+    m3d_user.save()
+    bpy.context.window_manager.m3d_shelf = 'POLY'
+    GIZMO["edit_objects"] = e_objects()
+    check(not m3d_edit.editing(), "edit mode starts off")
+
+
+@step
+def edit_open_popover():
+    ws_open()
+
+
+@step
+def edit_toggle_click():
+    ws_row("edit")
+
+
+step(wait_until(lambda: m3d_edit.editing() and m3d_edit._state["running"], "Click to Edit to turn edit mode on"))
+
+
+@step
+def edit_close_popover():
+    ws_event('ESC', 'PRESS')
+    bpy.context.window_manager.m3d_shelf = 'POLY'
+    m3d_edit.refresh_ui()
+
+
+step(wait_until(lambda: e_shelf_ready('POLY'), "the shelf cells in edit mode"))
+
+
+@step
+def edit_shelf_probe_check():
+    check(not tracebacks(), "Python error drawing the shelf in edit mode")
+    rec = m3d_edit._geom["shelf"]
+    check(len([c for c in rec["cells"] if c[2]]) == 22, "edit-mode shelf has a cell per button: %d" % len(rec["cells"]))
+
+
+# A click on a shelf button without a drag does nothing while editing (the press and release are taken).
+@step
+def edit_click_nothing():
+    xy = e_shelf_xy(("B", 'POLY', 0))
+    e_event('MOUSEMOVE', xy=xy)
+    e_event('LEFTMOUSE', 'PRESS', xy)
+    e_event('LEFTMOUSE', 'RELEASE', xy)
+
+
+@step
+def edit_click_nothing_check():
+    check(e_objects() == GIZMO["edit_objects"], "a click on a shelf button while editing ran it")
+    check(m3d_edit._drag["src"] is None, "a click left a drag behind")
+
+
+# Ctrl+Alt+click a built-in shelf button (Sphere), press Ctrl+Alt+Shift+J: that key adds a sphere.
+def _hover_steps(ref, name):
+    def hover():
+        xy = e_shelf_xy(ref)
+        GIZMO["hk_xy"] = xy
+        e_event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]))
+        e_event('MOUSEMOVE', xy=xy)
+        e_event('LEFT_CTRL', 'PRESS', xy, ctrl=True)
+        e_event('LEFT_ALT', 'PRESS', xy, ctrl=True, alt=True)
+        e_event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]), ctrl=True, alt=True)
+        e_event('MOUSEMOVE', xy=xy, ctrl=True, alt=True)
+
+    def click():
+        xy = GIZMO["hk_xy"]
+        e_event('LEFTMOUSE', 'PRESS', xy, ctrl=True, alt=True)
+        e_event('LEFTMOUSE', 'RELEASE', xy, ctrl=True, alt=True)
+        e_event('LEFT_ALT', 'RELEASE', xy, ctrl=True)
+        e_event('LEFT_CTRL', 'RELEASE', xy)
+    hover.__name__, click.__name__ = "edit_%s_hover" % name, "edit_%s_click" % name
+    return hover, click
+
+
+_hover, _click = _hover_steps(("B", 'POLY', 0), "sphere_key")
+step(_hover)
+step(wait_until(lambda: m3d_edit._hover is not None and m3d_edit._hover["item"]["idname"] == "m3d.add_primitive",
+                "the probe to find the button under the cursor"))
+step(_click)
+step(wait_until(lambda: m3d_edit._capture is not None, "Ctrl+Alt+click to wait for a key"))
+
+
+@step
+def edit_sphere_key_prompt():
+    check(e_objects() == GIZMO["edit_objects"], "the Ctrl+Alt+click also ran the button")
+    check(m3d_edit._capture["item"]["props"] == {"kind": 'SPHERE'} and m3d_edit._capture["item"]["keymap"] == "Window",
+          "capture target: %r" % (m3d_edit._capture["item"],))
+    check("Press a key for" in m3d_edit._prompt["text"] and "Esc cancels" in m3d_edit._prompt["text"], "prompt text %r" % m3d_edit._prompt["text"])
+    check(not tracebacks(), "Python error waiting for the shortcut key")
+
+
+@step
+def edit_sphere_key_shot():
+    e_screenshot("F:/AI/m3d_item3_key.png")
+
+
+@step
+def edit_sphere_key_press():
+    xy = GIZMO["hk_xy"]
+    e_event('LEFT_CTRL', 'PRESS', xy, ctrl=True)
+    e_event('LEFT_ALT', 'PRESS', xy, ctrl=True, alt=True)
+    e_event('LEFT_SHIFT', 'PRESS', xy, ctrl=True, alt=True, shift=True)
+    e_event('J', 'PRESS', xy, ctrl=True, alt=True, shift=True)
+    e_event('J', 'RELEASE', xy, ctrl=True, alt=True, shift=True)
+    e_event('LEFT_SHIFT', 'RELEASE', xy, ctrl=True, alt=True)
+    e_event('LEFT_ALT', 'RELEASE', xy, ctrl=True)
+    e_event('LEFT_CTRL', 'RELEASE', xy)
+
+
+step(wait_until(lambda: m3d_edit._capture is None, "the shortcut to be assigned"))
+
+
+@step
+def edit_sphere_key_check():
+    items = [k for k in bpy.context.window_manager.keyconfigs.user.keymaps["Window"].keymap_items
+             if k.idname == "m3d.add_primitive" and k.type == 'J']
+    check(len(items) == 1 and items[0].properties.kind == 'SPHERE' and (items[0].ctrl, items[0].alt, items[0].shift) == (1, 1, 1),
+          "the shortcut is in the user keymap: %s" % [(k.type, k.properties.kind) for k in items])
+    check(e_objects() == GIZMO["edit_objects"], "assigning the key ran the button")
+    check(not tracebacks(), "Python error assigning the shortcut")
+
+
+@step
+def edit_sphere_key_use():
+    _win, area, region = view3d()
+    xy = (region.x + region.width // 2, region.y + region.height // 2)
+    e_event('MOUSEMOVE', xy=xy)
+    e_event('J', 'PRESS', xy, ctrl=True, alt=True, shift=True)
+    e_event('J', 'RELEASE', xy, ctrl=True, alt=True, shift=True)
+
+
+step(wait_until(lambda: e_objects() == GIZMO["edit_objects"] + 1, "the new shortcut to add a sphere"))
+
+
+@step
+def edit_sphere_key_used():
+    GIZMO["edit_objects"] = e_objects()
+
+
+# A key that is taken asks first (Esc cancels, nothing is assigned).
+_hover, _click = _hover_steps(("B", 'POLY', 1), "cube_key")
+step(_hover)
+step(wait_until(lambda: m3d_edit._hover is not None and m3d_edit._hover["item"]["props"] == {"kind": 'CUBE'}, "the probe to find the Cube button"))
+step(_click)
+step(wait_until(lambda: m3d_edit._capture is not None, "Ctrl+Alt+click on Cube to wait for a key"))
+
+
+@step
+def edit_conflict_key():
+    xy = GIZMO["hk_xy"]
+    e_event('F1', 'PRESS', xy)
+    e_event('F1', 'RELEASE', xy)
+
+
+step(wait_until(lambda: m3d_edit._capture is not None and m3d_edit._capture["state"] == 'CONFIRM', "the conflict question"))
+
+
+@step
+def edit_conflict_check():
+    check("Switch Workspace" in m3d_edit._prompt["text"] and "F1" in m3d_edit._prompt["text"], "conflict prompt: %r" % m3d_edit._prompt["text"])
+    check(window().workspace.name == "Modeling", "F1 switched the workspace while the shortcut was being assigned")
+
+
+@step
+def edit_conflict_cancel():
+    xy = GIZMO["hk_xy"]
+    e_event('ESC', 'PRESS', xy)
+    e_event('ESC', 'RELEASE', xy)
+
+
+step(wait_until(lambda: m3d_edit._capture is None, "Esc to cancel the shortcut"))
+
+
+@step
+def edit_conflict_cancelled():
+    cube = [k for k in bpy.context.window_manager.keyconfigs.user.keymaps["Window"].keymap_items
+            if k.idname == "m3d.add_primitive" and k.properties.kind == 'CUBE' and k.type == 'F1']
+    check(not cube, "a cancelled shortcut was assigned")
+    km = bpy.context.window_manager.keyconfigs.user.keymaps["Window"]
+    for k in [k for k in km.keymap_items if k.idname == "m3d.add_primitive" and k.type == 'J']:
+        km.keymap_items.remove(k)   # (the user keymap is the real one: leave it as it was)
+    check(not tracebacks(), "Python error in the shortcut conflict")
+
+
+# Drag a built-in button (Cube) onto the Custom tab: it is copied to this workspace's Custom shelf.
+@step
+def edit_copy_press():
+    xy = e_shelf_xy(("B", 'POLY', 1))
+    e_event('MOUSEMOVE', xy=xy)
+    e_event('LEFTMOUSE', 'PRESS', xy)
+
+
+step(wait_until(lambda: m3d_edit._drag["src"] == ("B", 'POLY', 1), "the press on a shelf button to start a drag"))
+
+
+@step
+def edit_copy_move():
+    x, y = e_shelf_xy(("B", 'POLY', 1))
+    tx, ty = e_tab_xy()
+    for t in (0.25, 0.5, 0.75, 1.0):
+        e_event('MOUSEMOVE', xy=(int(x + (tx - x) * t), int(y + (ty - y) * t)))
+
+
+step(wait_until(lambda: m3d_edit._drag["target"] == "tab", "the drag to find the Custom tab"))
+
+
+@step
+def edit_copy_release():
+    e_event('LEFTMOUSE', 'RELEASE', e_tab_xy())
+
+
+step(wait_until(lambda: m3d_edit._drag["src"] is None, "the drop"))
+
+
+@step
+def edit_copy_check():
+    m3d_user.reset_cache()
+    items = m3d_user.shelf_items('MODEL')
+    check(len(items) == 4 and items[-1]["idname"] == "m3d.add_primitive" and items[-1]["props"] == {"kind": 'CUBE'},
+          "dragging a button onto the Custom tab did not copy it: %s" % [i["label"] for i in items])
+    check(e_objects() == GIZMO["edit_objects"], "the drag ran the button")
+    check(not tracebacks(), "Python error copying a shelf button")
+    bpy.context.window_manager.m3d_shelf = 'CUSTOM'
+    m3d_edit.refresh_ui()
+
+
+# Custom shelf: drag the first button (A) to the end, then drag one off the shelf.
+step(wait_until(lambda: e_shelf_ready('CUSTOM') and len([c for c in m3d_edit._geom["shelf"]["cells"] if c[2]]) == 4, "the Custom shelf cells"))
+
+
+@step
+def edit_reorder_press():
+    GIZMO["edit_labels"] = e_custom_labels()
+    xy = e_shelf_xy(("C", 0))
+    e_event('MOUSEMOVE', xy=xy)
+    e_event('LEFTMOUSE', 'PRESS', xy)
+
+
+step(wait_until(lambda: m3d_edit._drag["src"] == ("C", 0), "the press on a Custom button to start a drag"))
+
+
+@step
+def edit_reorder_move():
+    x, y = e_shelf_xy(("C", 0))
+    tx, ty = e_shelf_xy(("C", 3), dx=12)
+    for t in (0.25, 0.5, 0.75, 1.0):
+        e_event('MOUSEMOVE', xy=(int(x + (tx - x) * t), ty))
+
+
+step(wait_until(lambda: m3d_edit._drag["target"] == ("slot", 4), "the drag to find the end slot"))
+
+
+@step
+def edit_reorder_release():
+    e_event('LEFTMOUSE', 'RELEASE', e_shelf_xy(("C", 3), dx=12))
+
+
+step(wait_until(lambda: m3d_edit._drag["src"] is None, "the drop"))
+
+
+@step
+def edit_reorder_check():
+    want = GIZMO["edit_labels"][1:] + GIZMO["edit_labels"][0]
+    check(e_custom_labels() == want, "dragging the first Custom button to the end gave %s, not %s" % (e_custom_labels(), want))
+    check(e_objects() == GIZMO["edit_objects"] and not tracebacks(), "reorder ran a button or raised")
+
+
+@step
+def edit_remove_press():
+    GIZMO["edit_labels"] = e_custom_labels()
+    xy = e_shelf_xy(("C", 1))
+    e_event('MOUSEMOVE', xy=xy)
+    e_event('LEFTMOUSE', 'PRESS', xy)
+
+
+step(wait_until(lambda: m3d_edit._drag["src"] == ("C", 1), "the press on a Custom button to start a remove drag"))
+
+
+@step
+def edit_remove_move():
+    _win, _area, region = view3d()
+    x, y = e_shelf_xy(("C", 1))
+    tx, ty = region.x + region.width // 2, region.y + region.height // 2
+    for t in (0.3, 0.6, 1.0):
+        e_event('MOUSEMOVE', xy=(int(x + (tx - x) * t), int(y + (ty - y) * t)))
+
+
+step(wait_until(lambda: m3d_edit._drag["target"] == "out", "the drag to leave the shelf"))
+
+
+@step
+def edit_remove_release():
+    _win, _area, region = view3d()
+    e_event('LEFTMOUSE', 'RELEASE', (region.x + region.width // 2, region.y + region.height // 2))
+
+
+step(wait_until(lambda: m3d_edit._drag["src"] is None, "the drop off the shelf"))
+
+
+@step
+def edit_remove_check():
+    labels = GIZMO["edit_labels"]
+    check(e_custom_labels() == labels[0] + labels[2:], "dragging a Custom button off the shelf gave %s from %s" % (e_custom_labels(), labels))
+    check(e_objects() == GIZMO["edit_objects"] and not tracebacks(), "remove ran a button or raised")
+
+
+@step
+def edit_escape_press():
+    GIZMO["edit_labels"] = e_custom_labels()
+    xy = e_shelf_xy(("C", 0))
+    e_event('MOUSEMOVE', xy=xy)
+    e_event('LEFTMOUSE', 'PRESS', xy)
+
+
+step(wait_until(lambda: m3d_edit._drag["src"] == ("C", 0), "the press for the Esc drag"))
+
+
+@step
+def edit_escape_run():
+    _win, _area, region = view3d()
+    xy = (region.x + region.width // 2, region.y + region.height // 2)
+    e_event('MOUSEMOVE', xy=xy)
+    e_event('ESC', 'PRESS', xy)
+    e_event('LEFTMOUSE', 'RELEASE', xy)
+
+
+step(wait_until(lambda: m3d_edit._drag["src"] is None, "Esc to cancel the drag"))
+
+
+@step
+def edit_escape_check():
+    check(e_custom_labels() == GIZMO["edit_labels"], "Esc during a drag changed the shelf: %s" % e_custom_labels())
+    bpy.context.window_manager.m3d_shelf = 'POLY'
+
+
+# Panels: a user tab, a panel moved into it, another hidden; the dock shows them (and the controls while editing).
+def e_dock():
+    return next(a for a in window().screen.areas if a.type == 'PROPERTIES' and a.x > window().width // 2)
+
+
+def e_dock_override():
+    area = e_dock()
+    return dict(window=window(), area=area, region=next(r for r in area.regions if r.type == 'WINDOW'),
+                space_data=area.spaces.active, workspace=window().workspace)
+
+
+def e_poll(cls):
+    with bpy.context.temp_override(**e_dock_override()):
+        return cls.poll(bpy.context)
+
+
+@step
+def edit_panels_setup():
+    dock = e_dock()
+    dock.spaces.active.context = 'MODELING_TOOLKIT'
+    window().workspace.m3d_page_right = "modeling_toolkit"
+    GIZMO["edit_mesh_panel"] = m3d_mode.PROPERTIES_PT_m3d_mtk_mesh
+    check(e_poll(GIZMO["edit_mesh_panel"]), "the Mesh panel shows on the toolkit page")
+    with bpy.context.temp_override(**e_dock_override()):
+        bpy.ops.m3d.user_tab_add('EXEC_DEFAULT', name="Mine")
+    check([t["label"] for t in m3d_user.user_tabs('MODEL')] == ["Mine"], "user tab created")
+    check(window().workspace.m3d_page_right == "user_1", "the new tab is shown")
+
+
+@step
+def edit_panels_empty_hint():
+    check(e_poll(m3d_edit.PROPERTIES_PT_m3d_user_tab_hint), "an empty user tab shows its hint while editing")
+    check(not e_poll(GIZMO["edit_mesh_panel"]), "the Mesh panel is not on the new tab yet")
+    with bpy.context.temp_override(**e_dock_override()):
+        bpy.ops.m3d.panel_move(panel="PROPERTIES_PT_m3d_mtk_mesh", tab="user_1")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def edit_panels_moved():
+    check(e_poll(GIZMO["edit_mesh_panel"]), "the moved panel shows on the user tab")
+    check(not e_poll(m3d_edit.PROPERTIES_PT_m3d_user_tab_hint), "the hint is gone once the tab has a panel")
+    check(not e_poll(m3d_mode.PROPERTIES_PT_m3d_mtk_selection), "other panels stay on their page")
+    check(not tracebacks(), "Python error drawing a dock with a user tab")
+    e_dock().spaces.active.context = 'MODELING_TOOLKIT'
+    window().workspace.m3d_page_right = "modeling_toolkit"
+
+
+@step
+def edit_panels_home_page():
+    check(not e_poll(GIZMO["edit_mesh_panel"]) and e_poll(m3d_mode.PROPERTIES_PT_m3d_mtk_selection), "the toolkit page lost the panel")
+    with bpy.context.temp_override(**e_dock_override()):
+        bpy.ops.m3d.panel_hide(panel="PROPERTIES_PT_m3d_mtk_selection")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def edit_panels_hidden():
+    check(e_poll(m3d_mode.PROPERTIES_PT_m3d_mtk_selection), "a hidden panel is listed while editing")
+    window().workspace.m3d_page_right = "modeling_toolkit"
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def edit_shot():
+    e_screenshot("F:/AI/m3d_item3_edit.png")
+
+
+@step
+def edit_panels_check_draw():
+    check(not tracebacks(), "Python error drawing the dock panels and tabs while editing")
+
+
+# Edit mode off from the popover: panels, shelf and clicks behave as before.
+@step
+def edit_off_open():
+    ws_open()
+
+
+@step
+def edit_off_click():
+    WS_ROWS["edit"] += 25 * len(m3d_user.user_tabs('MODEL'))   # (a user tab is one more row in the popover)
+    ws_row("edit")
+    WS_ROWS["edit"] = 274
+
+
+step(wait_until(lambda: not m3d_edit.editing() and not m3d_edit._state["running"], "Editing to turn edit mode off"))
+
+
+@step
+def edit_off_close():
+    ws_event('ESC', 'PRESS')
+    bpy.context.window_manager.m3d_shelf = 'POLY'
+    window().workspace.m3d_page_right = "modeling_toolkit"
+    m3d_edit.refresh_ui()
+
+
+@step
+def edit_off_hidden():
+    check(not e_poll(m3d_mode.PROPERTIES_PT_m3d_mtk_selection), "a hidden panel stays hidden once edit mode is off")
+    check(not e_poll(m3d_edit.PROPERTIES_PT_m3d_user_tab_hint), "no hint outside edit mode")
+    check(not tracebacks(), "Python error leaving edit mode")
+    GIZMO["edit_objects"] = e_objects()
+    xy = e_shelf_xy(("B", 'POLY', 0))
+    GIZMO["hk_xy"] = xy
+    e_event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]))
+    e_event('MOUSEMOVE', xy=xy)
+
+
+@step
+def edit_off_click_button():
+    xy = GIZMO["hk_xy"]
+    e_event('LEFTMOUSE', 'PRESS', xy)
+    e_event('LEFTMOUSE', 'RELEASE', xy)
+
+
+step(wait_until(lambda: e_objects() == GIZMO["edit_objects"] + 1, "a shelf click to add a sphere again (edit mode is off)"))
+
+
+@step
+def edit_off_ctrl_alt():
+    xy = GIZMO["hk_xy"]
+    m3d_edit._hover = None
+    e_event('LEFT_CTRL', 'PRESS', xy, ctrl=True)
+    e_event('LEFT_ALT', 'PRESS', xy, ctrl=True, alt=True)
+    e_event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]), ctrl=True, alt=True)
+    e_event('LEFT_ALT', 'RELEASE', xy, ctrl=True)
+    e_event('LEFT_CTRL', 'RELEASE', xy)
+
+
+@step
+def edit_cleanup():
+    check(m3d_edit._hover is None and m3d_edit._capture is None, "Ctrl+Alt probes the button outside edit mode")
+    m3d_user.reset_dock('MODEL')
+    m3d_user.shelf_items('MODEL').clear()
+    m3d_user.save()
+    window().workspace.m3d_page_right = ""
+    bpy.ops.object.select_all(action='SELECT')
+    bpy.ops.object.delete()
+    check(not tracebacks(), "Python error in the edit mode tests")
 
 
 @step
