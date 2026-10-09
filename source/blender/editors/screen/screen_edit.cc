@@ -24,6 +24,7 @@
 #include "BKE_context.hh"
 #include "BKE_global.hh"
 #include "BKE_icons.hh"
+#include "BKE_idprop.hh"
 #include "BKE_image.hh"
 #include "BKE_layer.hh"
 #include "BKE_lib_id.hh"
@@ -765,6 +766,9 @@ static bool screen_regions_poll(bContext *C, wmWindow *win, const bScreen *scree
   return any_changed;
 }
 
+/* Maelstrom3D: defined with the top bar code below. */
+static bool screen_topbar_size_changed(const wmWindow *win);
+
 /**
  * Refreshes the active screen of \a win if #bScreen.do_refresh is set. Region polling is also done
  * here, which will trigger a refresh on changes.
@@ -787,6 +791,11 @@ static void screen_refresh_if_needed(bContext *C, wmWindowManager *wm, wmWindow 
 
     /* Returns true if a change was done that requires refreshing. */
     if (screen_regions_poll(C, win, screen)) {
+      screen->do_refresh = true;
+    }
+
+    /* Maelstrom3D: another workspace (or its Show Shelf setting) needs another top bar height. */
+    if (screen_topbar_size_changed(win)) {
       screen->do_refresh = true;
     }
 
@@ -1276,10 +1285,42 @@ static int screen_global_header_size()
 /**
  * Maelstrom3D: the top bar stacks Maya's rows: menu bar (header), Status Line (tool header),
  * shelf tabs (footer) and the shelf itself (main region, a little taller for bigger icons).
+ * A workspace can hide the last two with its `m3d_show_shelf` property (default on): the top bar
+ * then has two rows and the viewport gets the space.
  */
 static constexpr float MAYA_TOPBAR_ROWS = 4.5f;
+static constexpr float MAYA_TOPBAR_ROWS_NO_SHELF = 2.0f;
 
-static void screen_global_topbar_ensure_maya_rows(ScrArea *area)
+static bool screen_topbar_show_shelf(const wmWindow *win)
+{
+  const WorkSpace *workspace = BKE_workspace_active_get(win->workspace_hook);
+  /* `bpy.props` properties of an ID live in its system properties. */
+  const IDProperty *prop = (workspace && workspace->id.system_properties) ?
+                               IDP_GetPropertyFromGroup(workspace->id.system_properties,
+                                                        "m3d_show_shelf") :
+                               nullptr;
+  return prop == nullptr || !ELEM(prop->type, IDP_INT, IDP_BOOLEAN) ||
+         IDP_int_or_bool_get(prop) != 0;
+}
+
+static short screen_topbar_size(const wmWindow *win)
+{
+  return short(screen_global_header_size() *
+               (screen_topbar_show_shelf(win) ? MAYA_TOPBAR_ROWS : MAYA_TOPBAR_ROWS_NO_SHELF));
+}
+
+/** True when the active workspace wants a top bar of another height than the one it has. */
+static bool screen_topbar_size_changed(const wmWindow *win)
+{
+  for (const ScrArea &area : win->global_areas.areabase) {
+    if (area.spacetype == SPACE_TOPBAR && area.global) {
+      return area.global->cur_fixed_height != screen_topbar_size(win);
+    }
+  }
+  return false;
+}
+
+static void screen_global_topbar_ensure_maya_rows(ScrArea *area, const bool show_shelf)
 {
   ARegion *last_header = nullptr;
   bool has_tool_header = false, has_footer = false;
@@ -1290,7 +1331,7 @@ static void screen_global_topbar_ensure_maya_rows(ScrArea *area)
     has_tool_header |= region.regiontype == RGN_TYPE_TOOL_HEADER;
     has_footer |= region.regiontype == RGN_TYPE_FOOTER;
   }
-  if (last_header == nullptr || (has_tool_header && has_footer)) {
+  if (last_header == nullptr) {
     return;
   }
   ARegion *after = last_header;
@@ -1304,11 +1345,17 @@ static void screen_global_topbar_ensure_maya_rows(ScrArea *area)
     BLI_insertlinkafter(&area->regionbase, after, region);
     after = region;
   }
+  /* The shelf tabs and the shelf follow the workspace. */
+  for (ARegion &region : area->regionbase) {
+    if (ELEM(region.regiontype, RGN_TYPE_FOOTER, RGN_TYPE_WINDOW)) {
+      SET_FLAG_FROM_TEST(region.flag, !show_shelf, RGN_FLAG_HIDDEN);
+    }
+  }
 }
 
 static void screen_global_topbar_area_refresh(wmWindow *win, bScreen *screen)
 {
-  const short size = short(screen_global_header_size() * MAYA_TOPBAR_ROWS);
+  const short size = screen_topbar_size(win);
   rcti rect;
 
   /* Use content rect to account for CSD, converted to inclusive bounds for area geometry. */
@@ -1322,7 +1369,9 @@ static void screen_global_topbar_area_refresh(wmWindow *win, bScreen *screen)
 
   for (ScrArea &area : win->global_areas.areabase) {
     if (area.spacetype == SPACE_TOPBAR) {
-      screen_global_topbar_ensure_maya_rows(&area);
+      /* The size limits are only set when the area is created. */
+      area.global->size_min = area.global->size_max = size;
+      screen_global_topbar_ensure_maya_rows(&area, screen_topbar_show_shelf(win));
     }
   }
 }

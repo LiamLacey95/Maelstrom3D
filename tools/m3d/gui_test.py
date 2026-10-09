@@ -1214,6 +1214,24 @@ def active_tool_id():
     return tool.idname if tool else None
 
 
+def topbar_px():
+    """Pixels between the window's top and the editors under the top bar (the top bar is a global area, so it is
+    not in screen.areas)."""
+    return window().height - max(a.y + a.height for a in window().screen.areas)
+
+
+def viewport_px():
+    return max(a.height for a in window().screen.areas if a.type == 'VIEW_3D')
+
+
+@step
+def topbar_model_record():
+    # Modeling shows all four top bar rows (the reference for the Show Shelf checks).
+    check(window().workspace.name == "Modeling" and window().workspace.m3d_show_shelf, "Show Shelf test starts in Modeling")
+    GIZMO["topbar_model"], GIZMO["viewport_model"] = topbar_px(), viewport_px()
+    check(GIZMO["topbar_model"] > 0, "Modeling top bar height %s" % GIZMO["topbar_model"])
+
+
 @step
 def sculpt_setup():
     # A clean scene with one UV sphere, then F2.
@@ -1251,6 +1269,19 @@ def sculpt_f2_check():
         check(m3d_workspace.active_page(bpy.context) == "sculpt_geometry", "dock opens on Geometry")
     GIZMO["faces"] = len(bpy.context.active_object.data.polygons)
     check(not tracebacks(), "Python error drawing the Sculpt workspace")
+    # Sculpt has no shelf: the top bar is the menu bar and the Status Line, the viewport got the rest.
+    ratio = topbar_px() / GIZMO["topbar_model"]
+    check(not window().workspace.m3d_show_shelf and 0.38 < ratio < 0.52,
+          "Sculpt top bar is two rows: %s px of %s px in Modeling" % (topbar_px(), GIZMO["topbar_model"]))
+    print("M3D topbar px: Modeling %s, Sculpt %s; 3D view %s -> %s" % (
+        GIZMO["topbar_model"], topbar_px(), GIZMO["viewport_model"], viewport_px()))
+    check(viewport_px() > GIZMO["viewport_model"], "Sculpt viewport (%s) is taller than Modeling's (%s)" % (
+        viewport_px(), GIZMO["viewport_model"]))
+    # The brush tray: a thumbnail per brush (a real icon id in a window), the Custom panel, the Show Shelf toggle.
+    icons = m3d_sculpt.brush_icons(m3d_sculpt.BRUSH_ASSET, [n for _l, n in m3d_sculpt.BRUSHES])
+    check(len(icons) == len(m3d_sculpt.BRUSHES) and all(i > 0 for i in icons.values()), "brush tile icons %s" % icons)
+    with bpy.context.temp_override(window=window(), area=tray, region=next(r for r in tray.regions if r.type == 'WINDOW')):
+        check(m3d_sculpt.PROPERTIES_PT_m3d_sc_custom.poll(bpy.context), "Custom panel is in the Sculpt tray")
 
 
 @step
@@ -1474,6 +1505,62 @@ def sculpt_automask_close():
     event('ESC', 'PRESS', GIZMO["center"])
     event('ESC', 'RELEASE', GIZMO["center"])
     bpy.context.window_manager.m3d_shelf = 'SCULPT_BRUSHES'
+
+
+@step
+def sculpt_tile_click():
+    # A tile picks its brush (the tile is the operator's button; the click itself is in the screenshot check).
+    press_ok("m3d.brush_pick", identifier=m3d_sculpt.BRUSH_ASSET + "Snake Hook")
+    check(m3d_sculpt.active_brush_id(bpy.context) == m3d_sculpt.BRUSH_ASSET + "Snake Hook", "brush tile did not pick Snake Hook")
+    check(not tracebacks(), "Python error drawing the brush tiles")
+
+
+@step
+def shelf_f1():
+    # F1: back to Modeling, with its four rows.
+    event('MOUSEMOVE', xy=GIZMO["center"])
+    event('F1', 'PRESS', GIZMO["center"])
+    event('F1', 'RELEASE', GIZMO["center"])
+
+
+step(wait_until(lambda: window().workspace.name == "Modeling" and topbar_px() > 0.9 * GIZMO["topbar_model"],
+                "F1 to bring the four top bar rows back"))
+
+
+@step
+def shelf_f1_check():
+    check(abs(topbar_px() - GIZMO["topbar_model"]) <= 2, "F1: top bar is four rows again (%s, was %s)" % (
+        topbar_px(), GIZMO["topbar_model"]))
+    check(viewport_px() == GIZMO["viewport_model"], "F1: viewport back to %s (is %s)" % (GIZMO["viewport_model"], viewport_px()))
+    check(not tracebacks(), "Python error switching back to Modeling")
+    window().workspace.m3d_show_shelf = False   # What the Show Shelf checkbox in Workspace Settings sets.
+
+
+step(wait_until(lambda: topbar_px() < 0.6 * GIZMO["topbar_model"], "Show Shelf off to give the rows back"))
+
+
+@step
+def shelf_off_check():
+    ratio = topbar_px() / GIZMO["topbar_model"]
+    check(0.38 < ratio < 0.52, "Modeling with Show Shelf off has two rows (%s of %s)" % (topbar_px(), GIZMO["topbar_model"]))
+    check(viewport_px() > GIZMO["viewport_model"], "Modeling viewport grows with Show Shelf off")
+    check(not tracebacks(), "Python error with the shelf hidden")
+    window().workspace.m3d_show_shelf = True
+
+
+step(wait_until(lambda: topbar_px() > 0.9 * GIZMO["topbar_model"], "Show Shelf on to bring the rows back"))
+
+
+@step
+def shelf_on_check():
+    check(abs(topbar_px() - GIZMO["topbar_model"]) <= 2 and viewport_px() == GIZMO["viewport_model"],
+          "Show Shelf back on: top bar %s viewport %s" % (topbar_px(), viewport_px()))
+    check(not tracebacks(), "Python error showing the shelf again")
+    bpy.ops.m3d.workspace(kind='SCULPT')
+
+
+step(wait_until(lambda: window().workspace.name == "Sculpt" and topbar_px() < 0.6 * GIZMO["topbar_model"],
+                "Sculpt to come back for the cleanup"))
 
 
 @step

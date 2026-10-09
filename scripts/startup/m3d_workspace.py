@@ -135,6 +135,13 @@ def workspace_changed(wm, ws):
     restore_shelf(wm, prev, kind)
 
 
+def _shelf_visibility_changed(_self, context):
+    """Show Shelf was toggled: redraw so the top bar changes its height (screen_edit.cc reads the property)."""
+    for win in context.window_manager.windows:
+        for area in win.screen.areas:
+            area.tag_redraw()
+
+
 def _follow_workspace():
     wm = bpy.context.window_manager
     if wm.windows:
@@ -417,6 +424,7 @@ class M3D_PT_workspace_settings(Panel):
                 layout.label(text="Left tray tabs")
                 draw_tab_toggles(layout, kind, left)
         layout.separator()
+        layout.prop(ws, "m3d_show_shelf")
         layout.prop(wm, "m3d_shelf_edit", text="Edit Custom Shelf", toggle=True)
         layout.label(text="Right-click any button > Add to Shelf")
         layout.separator()
@@ -510,6 +518,10 @@ def register():
     ws.m3d_kind = bpy.props.StringProperty(name="Kind", description="Maelstrom3D workspace kind (MODEL, SCULPT, ...)")
     ws.m3d_page_right = bpy.props.StringProperty(description="Active page of the right-hand dock")
     ws.m3d_page_left = bpy.props.StringProperty(description="Active page of the left tray")
+    ws.m3d_show_shelf = bpy.props.BoolProperty(
+        name="Show Shelf", default=True, update=_shelf_visibility_changed,
+        description="Show the shelf tabs and the shelf under the Status Line (off: the viewport gets the space; "
+                    "the Custom shelf is then in the left tray in Sculpt). The C top bar reads this property")
     bpy.app.timers.register(_follow_workspace, first_interval=0.5, persistent=True)
 
 
@@ -517,6 +529,6 @@ def unregister():
     if bpy.app.timers.is_registered(_follow_workspace):
         bpy.app.timers.unregister(_follow_workspace)
     ws = bpy.types.WorkSpace
-    del ws.m3d_page_left, ws.m3d_page_right, ws.m3d_kind
+    del ws.m3d_show_shelf, ws.m3d_page_left, ws.m3d_page_right, ws.m3d_kind
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

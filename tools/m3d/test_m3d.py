@@ -476,7 +476,7 @@ class SCtx:
         self.area = NS(x=1500 if side == 'RIGHT' else 0, width=500, type='PROPERTIES')
         self.window = NS(width=2000)
         self.space_data = NS(type='PROPERTIES', context='MODELING_TOOLKIT')
-        self.region = NS(type='WINDOW')
+        self.region = NS(type='WINDOW', width=300)
 
     def __getattr__(self, name):
         return getattr(bpy.context, name)
@@ -494,7 +494,7 @@ def shown(page):
     side = 'LEFT' if page == "sculpt_brushes" else 'RIGHT'
     ctx = SCtx(side)
     setattr(sculpt_ws, "m3d_page_" + side.lower(), page)
-    return [c.__name__ for c in page_panels(page) if c.poll(ctx)]
+    return [c.__name__ for c in page_panels(page) if c.poll(ctx) and c is not S.PROPERTIES_PT_m3d_sc_custom]   # (Custom is always there.)
 
 
 for page in S.GATES:
@@ -594,6 +594,9 @@ for label, name in S.BRUSHES:
     check(S.active_brush_id(bpy.context) == S.BRUSH_ASSET + name, "brush %s active (is %r)" % (name, S.active_brush_id(bpy.context)))
     check(S.is_active(bpy.context, "brush.asset_activate", S.brush_props(name)), "is_active " + name)
 check(not S.is_active(bpy.context, "brush.asset_activate", S.brush_props("Draw")), "only the last brush is active")
+bpy.ops.m3d.brush_pick(identifier=S.BRUSH_ASSET + "Clay Strips")
+check(S.active_brush_id(bpy.context) == S.BRUSH_ASSET + "Clay Strips", "brush tile picks the brush")
+check(S.M3D_OT_brush_pick.description(None, NS(identifier=S.BRUSH_ASSET + "Clay Strips")) == "Clay Strips", "tile tooltip is the name")
 
 # Multires buttons: add, levels, delete higher; Dyntopo and Multires exclude each other.
 ob = bpy.context.active_object
@@ -3771,6 +3774,7 @@ for kind_, (wname_, *_rest) in W.KINDS.items():
     W.M3D_PT_workspace_settings.draw(type("Inst", (), {"layout": Rec(log)})(), WsCtx(ws_))
     props_ = {(r._args[0], r._args[1]) for r in log if r._kind == "prop"}
     check((bpy.context.window_manager, "m3d_shelf_edit") in props_ and (ws_, "object_mode") in props_, "%s settings: Edit Shelf and entry mode" % kind_)
+    check((ws_, "m3d_show_shelf") in props_, "%s settings: Show Shelf" % kind_)
     # Entry mode sticks.
     old_ = ws_.object_mode
     ws_.object_mode = 'EDIT' if old_ != 'EDIT' else 'OBJECT'
@@ -3780,6 +3784,42 @@ shading_ = bpy.data.workspaces.get("Shading")
 check(shading_ is not None and W.workspace_kind(shading_) is None, "Shading is an extra workspace")
 ops_ = ws_ops(ws_settings_log(shading_))
 check("m3d.workspace_reset" in [o[0] for o in ops_] and not any(o[0] == "m3d.dock_tab_toggle" for o in ops_), "extra workspace: reset, no dock tabs")
+
+# Show Shelf: on in every workspace of the factory startup but Sculpt (the top bar then has two rows).
+for ws_ in bpy.data.workspaces:
+    want_ = W.workspace_kind(ws_) != 'SCULPT'
+    check(ws_.m3d_show_shelf == want_, "%s: Show Shelf defaults to %s" % (ws_.name, want_))
+
+# Brush tiles: every brush of the tray grids has a thumbnail (icon ids are 0 without a GPU, so look at the previews
+# the lookup built), the library file gains no data, and the grid draws one tile per brush with the brush as tooltip.
+data_before_ = (len(bpy.data.brushes), len(bpy.data.libraries))
+for asset_, brushes_ in ((S.BRUSH_ASSET, S.BRUSHES), (T.BRUSH_ASSET, T.BRUSHES)):
+    icons_ = S.brush_icons(asset_, [n for _l, n in brushes_])
+    check(set(icons_) == {n for _l, n in brushes_}, "thumbnail for every brush of %s: %s" % (asset_, sorted(icons_)))
+    check(all(S._previews[asset_ + n].image_size[0] > 0 for _l, n in brushes_), "thumbnails of %s have pixels" % asset_)
+    log = []
+    S.brush_tiles(Rec(log), SCtx('LEFT'), asset_, brushes_)
+    check_calls("brush tiles", log)
+    tiles_ = [r for r in log if r._kind == "operator"]
+    check([t.identifier for t in tiles_] == [asset_ + n for _l, n in brushes_], "a tile per brush in order")
+    check(all(t._args[0] == "m3d.brush_pick" and "icon_value" in t._kw for t in tiles_), "tiles show the thumbnail")
+check(not S._missing and (len(bpy.data.brushes), len(bpy.data.libraries)) == data_before_, "thumbnail lookup leaves no data behind: %s" % S._missing)
+check(S.brush_icons(S.BRUSH_ASSET, ["No Such Brush"]) == {} and S.BRUSH_ASSET + "No Such Brush" in S._missing,
+      "a brush with no thumbnail is left out (its tile is a text button)")
+
+# The Custom panel of the Sculpt tray: the Custom shelf where the shelf is hidden.
+log = []
+S.PROPERTIES_PT_m3d_sc_custom.draw_header_preset(type("Inst", (), {"layout": Rec(log)})(), SCtx('LEFT'))
+S.PROPERTIES_PT_m3d_sc_custom.draw(type("Inst", (), {"layout": Rec(log)})(), SCtx('LEFT'))
+check(any(r._kind == "label" for r in log), "empty Custom panel says how to add buttons")
+m3d_user.shelf_items('SCULPT').append({"idname": "object.mode_set", "props": {"mode": 'OBJECT'}, "icon": "OBJECT_DATAMODE", "label": "Object Mode"})
+log = []
+S.PROPERTIES_PT_m3d_sc_custom.draw(type("Inst", (), {"layout": Rec(log)})(), SCtx('LEFT'))
+check_calls("sculpt custom panel", log)
+check(any(r._kind == "operator" and r._args[0] == "object.mode_set" for r in log), "Custom panel draws the Sculpt Custom shelf")
+m3d_user.shelf_items('SCULPT').clear()
+check(S.PROPERTIES_PT_m3d_sc_custom.page == "sculpt_brushes" and 'DEFAULT_CLOSED' in S.PROPERTIES_PT_m3d_sc_custom.bl_options,
+      "Custom panel is on the brush page, collapsed")
 
 # Hidden tabs round trip from the new place: the toggle shows in the next draw, and persists.
 model_ws_ = W.find_workspace('MODEL')

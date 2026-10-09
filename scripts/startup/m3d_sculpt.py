@@ -14,6 +14,7 @@ falloff, stroke, palette) are the stock panel classes, re-used on the dock pages
 from ast import literal_eval
 
 import bpy
+import bpy.utils.previews
 from bpy.types import Operator, Panel
 from bl_ui.properties_paint_common import (
     BrushSelectPanel, ColorPalettePanel, DisplayPanel, FalloffPanel, SmoothStrokePanel, StrokePanel,
@@ -67,6 +68,83 @@ def draw_brush_column(layout):
         o = layout.operator("brush.asset_activate", text=label)
         for key, value in brush_props(name).items():
             setattr(o, key, value)
+
+
+# -----------------------------------------------------------------------------
+# Brush tiles: small buttons showing the brush's preview thumbnail
+
+_previews = None   # preview collection: "<asset><name>" -> thumbnail copied from the essentials .blend
+_missing = set()   # brushes whose thumbnail can't be loaded (their tile is a text button)
+
+
+def brush_icons(asset, names):
+    """{name: icon id} of the thumbnails of the brushes `names` in the library file named by `asset`
+    (BRUSH_ASSET). A file is read once for the brushes not loaded yet: the thumbnails are copied into a
+    preview collection and the brushes unlinked again, so the .blend file gains no data. A brush without a
+    thumbnail is left out."""
+    global _previews
+    todo = [n for n in names if asset + n not in (_previews or ()) and asset + n not in _missing]
+    if todo:
+        import array
+        import os
+        if _previews is None:
+            _previews = bpy.utils.previews.new()
+        path = os.path.join(bpy.utils.system_resource('DATAFILES'), "assets", asset.partition(".blend/")[0] + ".blend")
+        data = bpy.data
+        had_brushes, had_libs = {b.as_pointer() for b in data.brushes}, {lib.as_pointer() for lib in data.libraries}
+        loaded = []
+        try:
+            with data.libraries.load(path, link=True, assets_only=True) as (src, dst):
+                dst.brushes = [n for n in todo if n in src.brushes]
+            loaded = list(dst.brushes)
+        except OSError:
+            pass
+        for brush in loaded:
+            w, h = brush.preview.image_size if brush.preview else (0, 0)
+            if w and h:
+                pixels = array.array('f', bytes(16 * w * h))
+                brush.preview.image_pixels_float.foreach_get(pixels)
+                thumb = _previews.new(asset + brush.name)
+                thumb.image_size = (w, h)
+                thumb.image_pixels_float.foreach_set(pixels)
+        data.batch_remove([b for b in loaded if b.as_pointer() not in had_brushes])
+        for lib in [lib for lib in data.libraries if lib.as_pointer() not in had_libs]:
+            data.libraries.remove(lib)
+        _missing.update(asset + n for n in todo if asset + n not in _previews)
+    return {n: _previews[asset + n].icon_id for n in names if _previews and asset + n in _previews}
+
+
+class M3D_OT_brush_pick(Operator):
+    """Pick a brush from a tile (the tooltip is the brush's name)"""
+    bl_idname = "m3d.brush_pick"
+    bl_label = "Pick Brush"
+    bl_options = {'INTERNAL'}
+
+    identifier: bpy.props.StringProperty()   # relative asset identifier, "brushes/<file>.blend/Brush/<name>"
+
+    @classmethod
+    def description(cls, _context, props):
+        return props.identifier.rpartition("/")[2]
+
+    def execute(self, _context):
+        return bpy.ops.brush.asset_activate(asset_library_type='ESSENTIALS', relative_asset_identifier=self.identifier)
+
+
+def brush_tiles(layout, context, asset, brushes):
+    """Grid of small brush tiles: each is the brush's thumbnail (icon-only buttons this tall draw it at the
+    button size), the name is the tooltip and the active brush is pressed. `brushes` are (label, name) pairs of
+    the library file `asset`. The columns and the tile height follow the width of the tray so the tiles stay square."""
+    icons = brush_icons(asset, [name for _label, name in brushes])
+    ui_scale = context.preferences.system.ui_scale or 1.0   # 0 without a window
+    avail = (context.region.width if context.region else 300) - 24 * ui_scale
+    columns = min(max(int(avail // (46 * ui_scale)), 3), 8)
+    flow = layout.grid_flow(row_major=True, columns=columns, even_columns=True, even_rows=True, align=True)
+    flow.scale_y = avail / columns / (20 * ui_scale)
+    active = active_brush_id(context)
+    for label, name in brushes:
+        icon = icons.get(name, 0)
+        o = flow.operator("m3d.brush_pick", text="" if icon else label, icon_value=icon, depress=asset + name == active)
+        o.identifier = asset + name
 
 
 # -----------------------------------------------------------------------------
@@ -396,9 +474,21 @@ class PROPERTIES_PT_m3d_sc_grid(_Page, Panel):
     bl_label = "Brushes"
 
     def draw(self, context):
-        grid(self.layout, context, [(label, "brush.asset_activate", 'NONE', brush_props(name))
-                                    for label, name in BRUSHES],
-             active=lambda idname, props: is_active(context, idname, props))
+        brush_tiles(self.layout, context, BRUSH_ASSET, BRUSHES)
+
+
+class PROPERTIES_PT_m3d_sc_custom(_PagePanel, Panel):
+    """The Custom shelf of this workspace: the top bar's shelf is hidden in Sculpt"""
+    page = "sculpt_brushes"
+    bl_label = "Custom"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw_header_preset(self, context):
+        self.layout.prop(context.window_manager, "m3d_shelf_edit", text="Edit", toggle=True)
+
+    def draw(self, context):
+        from m3d_user import draw_custom_shelf
+        draw_custom_shelf(self.layout, context, 'SCULPT', context.window_manager.m3d_shelf_edit)
 
 
 class PROPERTIES_PT_m3d_sc_tuning(_Page, Panel):
@@ -1099,9 +1189,11 @@ classes = (
     M3D_OT_multires_edit,
     M3D_OT_sculpt_object,
     M3D_OT_sculpt_add_mesh,
+    M3D_OT_brush_pick,
     *PAGE_GATES,
     PROPERTIES_PT_m3d_sc_brush,
     PROPERTIES_PT_m3d_sc_grid,
+    PROPERTIES_PT_m3d_sc_custom,
     PROPERTIES_PT_m3d_sc_tuning,
     PROPERTIES_PT_m3d_sc_more,
     PROPERTIES_PT_m3d_sc_falloff,
@@ -1144,5 +1236,9 @@ def register():
 
 
 def unregister():
+    global _previews
+    if _previews is not None:
+        bpy.utils.previews.remove(_previews)
+        _previews = None
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

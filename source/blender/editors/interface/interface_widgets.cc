@@ -29,6 +29,7 @@
 #include "BLI_utildefines.h"
 
 #include "BKE_context.hh"
+#include "BKE_icons.hh"
 
 #include "RNA_access.hh"
 
@@ -1338,7 +1339,15 @@ static int but_draw_menu_icon(const Button *but)
 static void widget_draw_icon(
     const Button *but, BIFIconID icon, float alpha, const rcti *rect, const uchar mono_color[4])
 {
-  if (but->flag & BUT_ICON_PREVIEW) {
+  /* Maelstrom3D: a text-less button much bigger than an icon, with a preview image (an add-on's
+   * preview collection), draws the preview at the button size: the brush tiles. Only real previews:
+   * the toolbar's tool icons (ICON_DATA_GEOM) are big text-less buttons too. */
+  const Icon *icon_data = icon >= BIFICONID_LAST_STATIC ? BKE_icon_get(icon) : nullptr;
+  const bool big_preview = icon_data && icon_data->obj_type == ICON_DATA_PREVIEW &&
+                           but->drawstr[0] == '\0' &&
+                           std::min(BLI_rcti_size_x(rect), BLI_rcti_size_y(rect)) > 1.5f * UI_UNIT_Y;
+
+  if (but->flag & BUT_ICON_PREVIEW || big_preview) {
     GPU_blend(GPU_BLEND_ALPHA);
     widget_draw_preview_icon(icon,
                              alpha,

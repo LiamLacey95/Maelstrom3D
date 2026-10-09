@@ -124,6 +124,7 @@ def phase1_sculpt():
     tray, dock = areas(screen, 'PROPERTIES')
     tray.spaces.active.context = dock.spaces.active.context = 'MODELING_TOOLKIT'
     ws.m3d_page_left, ws.m3d_page_right = "sculpt_brushes", "sculpt_geometry"
+    ws.m3d_show_shelf = False   # The brush tray and the dock pages replace the shelf rows.
 
 
 def phase2_uv():

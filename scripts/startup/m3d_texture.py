@@ -32,7 +32,7 @@ import m3d_uv
 from m3d_layers import (CHANNEL_BY_ID, CHANNEL_ITEMS, CHANNELS, active_layer, entry_of, pixels_of, principled_of,
                         set_channel_space)
 from m3d_mode import _button
-from m3d_sculpt import active_brush_id, grid, mesh_of, reason, split_props, viewport
+from m3d_sculpt import active_brush_id, brush_tiles, grid, mesh_of, reason, split_props, viewport
 from m3d_workspace import _PagePanel
 
 # -----------------------------------------------------------------------------
@@ -889,10 +889,7 @@ class PROPERTIES_PT_m3d_tx_grid(_Page, Panel):
     bl_label = "Brushes"
 
     def draw(self, context):
-        grid(self.layout, context, [(label, "brush.asset_activate", 'NONE', brush_props(name))
-                                    for label, name in BRUSHES],
-             active=lambda idname, props: idname == "brush.asset_activate" and
-             props["relative_asset_identifier"] == active_brush_id(context))
+        brush_tiles(self.layout, context, BRUSH_ASSET, BRUSHES)
 
 
 class PROPERTIES_PT_m3d_tx_tuning(_Page, Panel):
