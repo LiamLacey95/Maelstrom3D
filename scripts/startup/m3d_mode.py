@@ -456,8 +456,20 @@ class M3D_MT_marking_menu(Menu):
             pie.operator("object.select_all", text="Select All", icon='SELECT_EXTEND').action = 'SELECT'
 
 
+def set_dock_context(space, tab):
+    """Show `tab` in a Properties editor; a tab that isn't there (the Object tab with nothing active) falls back to
+    the Scene settings. Returns the tab shown."""
+    for value in (tab, 'SCENE'):
+        try:
+            space.context = value
+            return value
+        except TypeError:
+            continue
+    return space.context
+
+
 class M3D_OT_dock_tab(Operator):
-    """Show a tab of the right-hand dock (Channel Box, Attribute Editor, Modeling Toolkit)"""
+    """Show a tab of the dock (Channel Box, Attribute Editor, Modeling Toolkit)"""
     bl_idname = "m3d.dock_tab"
     bl_label = "Dock Tab"
 
@@ -465,15 +477,18 @@ class M3D_OT_dock_tab(Operator):
     toggle: bpy.props.BoolProperty(description="Ctrl+A: switch between Channel Box and Attribute Editor")
 
     def execute(self, context):
-        docks = [a for a in context.screen.areas if a.type == 'PROPERTIES']
-        if not docks:
-            bpy.ops.m3d.open_editor(ui_type='PROPERTIES')
-            return {'FINISHED'}
-        space = max(docks, key=lambda a: a.height).spaces.active
+        if context.space_data is not None and context.space_data.type == 'PROPERTIES':
+            space = context.space_data   # Clicked in a dock: that dock.
+        else:
+            docks = [a for a in context.screen.areas if a.type == 'PROPERTIES']
+            if not docks:
+                bpy.ops.m3d.open_editor(ui_type='PROPERTIES')
+                return {'FINISHED'}
+            space = max(docks, key=lambda a: a.height).spaces.active
         tab = self.tab
         if self.toggle:
             tab = 'OBJECT' if space.context == 'CHANNEL_BOX' else 'CHANNEL_BOX'
-        space.context = tab
+        set_dock_context(space, tab)
         return {'FINISHED'}
 
 

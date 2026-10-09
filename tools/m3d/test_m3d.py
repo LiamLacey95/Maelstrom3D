@@ -3685,6 +3685,30 @@ area_.spaces.active.image = None
 check(not RN.show_render_result(other_ws_) and area_.spaces.active.image is None, "...but only in the Rendering workspace")
 rn.engine = saved_engine
 
+# The Attribute Editor / All Settings tab with nothing active: the Object tab isn't there, the Scene settings show.
+import m3d_mode as _mm
+
+
+class _Space:
+    """A Properties editor stand-in whose Object tab is missing (no active object)."""
+    def __init__(self):
+        self._ctx = 'CHANNEL_BOX'
+
+    @property
+    def context(self):
+        return self._ctx
+
+    @context.setter
+    def context(self, value):
+        if value == 'OBJECT':
+            raise TypeError('enum "OBJECT" not found')
+        self._ctx = value
+
+
+_s = _Space()
+check(_mm.set_dock_context(_s, 'OBJECT') == 'SCENE' and _s.context == 'SCENE', "All Settings with nothing active")
+check(_mm.set_dock_context(_s, 'TOOL') == 'TOOL', "dock tab switch")
+
 print("FAILS:", fails or "none")
 sys.exit(1 if fails else 0)
 

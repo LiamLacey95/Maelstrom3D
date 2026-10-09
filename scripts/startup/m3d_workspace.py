@@ -264,8 +264,8 @@ def draw_dock_tabs(layout, context):
         if tab.id not in hidden:
             on = space.context == tab.context and tab.page in {None, page}
             row.operator("m3d.dock_page", text=tab.label, depress=on).tab = tab.id
-    o = row.operator("wm.context_set_enum", text=ALL_SETTINGS.get(kind, "All Settings"))
-    o.data_path, o.value = "space_data.context", 'OBJECT'
+    o = row.operator("m3d.dock_tab", text=ALL_SETTINGS.get(kind, "All Settings"))
+    o.tab = 'OBJECT'   # m3d.dock_tab: the Scene settings when nothing is active (no Object tab then)
     row.menu("M3D_MT_dock_tabs", text="", icon='DOWNARROW_HLT')
     return True
 
