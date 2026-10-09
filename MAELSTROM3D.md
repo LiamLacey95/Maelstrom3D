@@ -193,7 +193,7 @@ Add Material, Texture Paint Mode).
 | Brush tray (left) | Brush picker, a grid of 10 brushes (Paint Soft, Paint Hard, Airbrush, Blur, Smear, Clone, Fill, Erase Soft, Erase Hard, Mask), Size, Strength, color picker with the second color and swap, Blend Mode, Stencil and Projection (stencil image, Occlude, Backface Culling, Normal Falloff). Closed panels: Brush Settings, Advanced |
 | Status Line | Object / Texture Paint Mode, the paint channels (Base Color, Roughness, Metallic, Normal, Height, Emission), Mirror X/Y/Z, viewport display (Material Preview, Solid, Rendered) and Channel View, size of new slots, Save All |
 | Shelves | Paint (the brushes, swap colors), Channels (add or pick a channel, Auto Unwrap, Add Material), Bake / Export, Custom |
-| Layers tab | The layer stack of the active material: a list (top layer first: eye, name, blend mode, opacity, channel letters), buttons to add a Paint Layer or Fill Layer, move, duplicate, delete, **Merge Down** and **Flatten**; below it the active layer's settings (name, blend, opacity, channels, fill values), its **Mask** (the stack of mask effects, see below), and closed panels Channels (the paint slots by channel) and All Paint Slots |
+| Layers tab | The layer stack of the active material: a list (top layer first: eye, name, blend mode, opacity, channel letters; folders have a triangle and a snowflake), buttons to add a Paint Layer, Fill Layer or **New Folder**, move, duplicate, delete, **Merge Down** and **Flatten**, **Group** / **Move In** / **Move Out** for folders; below it the active layer's settings (name, blend, opacity, channels, fill values, or for a folder Freeze / Unfreeze and Merge Folder), its **Mask** (the stack of mask effects, see below), and closed panels Channels (the paint slots by channel) and All Paint Slots |
 | Brush tab | Stroke and Stabilize, Falloff, Texture, Texture Mask, Stencil, Clone, Options (seam bleed, dither, cavity mask), Cursor, Color Palette |
 | Shelf tab | All texture brushes (also the pressure and pixel art ones) and Blender's brush library popover (favorites live there); materials marked as assets, applied with a click, and a button to mark the active one |
 | Bake tab | High Poly picker (or Use Selected as High Poly), maps Normal, AO, Curvature, Position, Thickness, size, margin, ray settings, **Bake**, and the list of baked images |
@@ -283,6 +283,44 @@ you export is what the shader shows. Blur cannot be done per pixel in the shader
 copy of everything below it, kept as `<material>_<layer>_Blur`); it is made again when anything below the Blur changes,
 a moment after a brush stroke ends, and before Merge Down, Flatten and Export. Files from before mask stacks open with
 each mask as a Paint effect (and Invert Mask as an Invert effect), looking the same.
+
+**Folders.** A folder groups layers so a long stack stays manageable and cheap. The layers inside are combined with
+each other first, as if they were laid on an empty sheet, and the result is then blended onto the stack below with the
+folder's own blend mode, opacity, eye and mask, like one more layer. So a folder at 50% fades everything inside together
+(not layer by layer), and a mask on a folder hides or shows the group as a whole. **New Folder** (next to Paint Layer
+and Fill Layer) adds an empty folder above the active layer, **Group** puts the active layer (or folder) into a new
+one. The triangle in front of a folder's name closes or opens it in the list (closing a folder that holds the active
+layer selects the folder). The arrows move the active layer one place of the list at a time: past a neighbour, into an
+open folder next to it, and out of a folder when it is at its first or last place (a closed folder is passed as one
+block); **Move In** lists the folders and moves the layer to the top of the one you pick, **Move Out** puts it just
+above its folder. Folders can hold folders, to any depth. Duplicate copies a folder with all its layers and their
+images, Delete removes the folder, its layers and their images (images used elsewhere stay), **Merge Down** merges a
+layer or folder into the layer below it in the same folder (not into a folder: merge that first), and **Merge Folder**
+turns a folder into one Paint Layer holding what its layers made together, with the folder's name, blend mode, opacity,
+eye and mask (the look does not change). The folder's Mask panel is the layer Mask panel; a folder itself cannot be
+painted, pick a layer inside it.
+
+**Freezing.** A folder of many layers costs one Image Texture, Mix and several helper nodes per layer and channel while
+you work: in a material with two channels, a live folder of eight layers is about 100 shader nodes. **Freeze** (the
+snowflake on the folder's row, or in the Layer panel) bakes the folder into one image per channel it changes (the image's
+alpha is what the layers cover) at the size of the largest image inside, or the new slot size when no layer has an image;
+the folder then needs 3 nodes per channel (a 12-layer material of two channels went from 134 to 34 shader nodes with a
+folder of eight frozen). It uses the same pixel math as Merge Down and Export, not a render, and takes a few seconds at
+2048 px (about 5 s for eight layers in Base Color and Roughness). The layers stay in the folder, shown greyed in the list,
+but are not in the shader and cannot be edited, moved, masked or painted until you **Unfreeze**: strokes then go to the
+hidden scratch image, so no image changes. The folder's own blend mode, opacity, eye and mask stay live while it is
+frozen. Unfreeze deletes the frozen images and puts back exactly the nodes it had; to refresh after an edit, unfreeze,
+edit and freeze again. Frozen images are 8 bit like all layer images, so a frozen folder differs from the live one by
+that rounding (about 1% at most, usually far less). Merge Down, Flatten and Export use the frozen images, so they give
+what the shader shows. The frozen images are saved or packed with the file like the other layer images.
+
+In the shader a folder's layers are chained in the channel's frame like any layer, but over nothing instead of the
+channel's value: besides the color the chain carries the coverage (how much of the pixel the layers cover), so the
+layers on top of a half-covered pixel blend only where something is below them, which is what the numpy math of Merge
+Down and Export does too (the comparison with a Cycles bake of the chain agrees to float rounding for data channels and
+to about 1% for sRGB images with alpha, which Cycles keeps with the color multiplied by the alpha in 8 bits). A layer in
+a folder after the first needs about four more nodes than a layer on its own, which freezing takes away. Materials from
+before folders open unchanged.
 
 Painted images never get lost: before a file is saved, images with changes are written to their files, or packed into
 the .blend when they have none. Save All Images does the same on demand. Large images use a lot of memory: new slots

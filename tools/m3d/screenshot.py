@@ -8,7 +8,7 @@ Each name is a workspace name or kind (MODEL, SCULPT, ...); writes <prefix><name
 `KIND/page` also shows that dock page (e.g. SCULPT/sculpt_mask). Setup steps (no picture): `+sphere` / `+cube` add a
 mesh, `+unwrap` runs Auto Unwrap (Edit Mode, UV workspace), `+checker` toggles the checker map, `+distortion` shows
 the UV Editor's distortion, `+paint` (Texture workspace: a material, four painted channels), `+bake` (bakes Normal and
-AO at 128 px), `+layers` (like `+paint`, then a paint layer with a mask and a fill layer), `+fillsel` (select the fill layer), `+monkey` (a smooth Suzanne, unwrapped; use it before `+paint`), `+masks` (`+paint`, then a rust Fill layer
+AO at 128 px), `+layers` (like `+paint`, then a paint layer with a mask and a fill layer), `+fillsel` (select the fill layer), `+folders` (like `+paint`, then a folder of three layers, open, and a folder of two layers, frozen), `+monkey` (a smooth Suzanne, unwrapped; use it before `+paint`), `+masks` (`+paint`, then a rust Fill layer
 whose mask is Fill, Edges, Noise and Levels, with the maps baked at 128 px), `+maskshow` (Show Mask on), `+frame` (frame the object in the 3D view), `+rig` (Rigging workspace: a cylinder bound to a spine and two legs, control shapes on the
 legs, a Driven Key, a saved pose), `+rigedit` / `+rigpose` / `+rigweight` / `+rigobject` (the mode buttons), `+anim` (the rig keyed over 48 frames with a camera;
 then F6 shows it in Pose Mode), `+toolkit` / `+chanbox` (the Animation dock on its pages / the Channel Box), `+inputs` (a cube with its INPUTS in the Channel Box), `+graph` / `+dope` (the
@@ -72,6 +72,55 @@ def layers():
     tint.name, tint.blend, tint.opacity = "Tint", 'OVERLAY', 0.6
     tint.channels[0].color = (0.1, 0.45, 0.9, 1.0)
     mat.m3d_layer_index = 1
+
+
+def folders():
+    import numpy as np
+    import m3d_layers as L
+    paint()
+    mat = bpy.context.active_object.active_material
+
+    def named(name):
+        return next(l for l in mat.m3d_layers if l.name == name)
+
+    def new(kind, name, **props):
+        bpy.ops.m3d.layer_add(kind=kind)
+        layer = L.active_layer(mat)
+        layer.name = name
+        for key, value in props.items():
+            setattr(layer, key, value)
+        return layer
+
+    def pattern(name, rgb, period, share):
+        image = L.entry_of(named(name), 'BASE_COLOR').image
+        n = image.size[0]
+        ys, xs = np.mgrid[0:n, 0:n]
+        px = np.zeros((n, n, 4), np.float32)
+        px[..., :3] = rgb
+        px[..., 3] = (((xs + ys) // period) % 3 == 0) * share
+        L.write_pixels(image, px)
+
+    new('PAINT', "Scratches", blend='MULTIPLY', opacity=0.8)
+    pattern("Scratches", 0.2, 24, 1.0)
+    new('FILL', "Tint", blend='OVERLAY', opacity=0.6).channels[0].color = (0.1, 0.45, 0.9, 1.0)
+    new('PAINT', "Stains", opacity=0.7)
+    pattern("Stains", (0.35, 0.22, 0.1), 61, 0.8)
+    bpy.ops.m3d.layer_folder_add()
+    weathering = L.active_layer(mat)
+    weathering.name, weathering.opacity = "Weathering", 0.85
+    for name in ("Scratches", "Tint", "Stains"):
+        L.move_into(mat, named(name), named("Weathering"))
+    new('PAINT', "Stripes", opacity=0.9)
+    pattern("Stripes", (0.9, 0.85, 0.2), 40, 1.0)
+    new('PAINT', "Logo")
+    pattern("Logo", (0.95, 0.95, 0.95), 97, 1.0)
+    bpy.ops.m3d.layer_folder_add()
+    named("Folder").name = "Decals"
+    for name in ("Stripes", "Logo"):
+        L.move_into(mat, named(name), named("Decals"))
+    mat.m3d_layer_index = L.index_of(mat, named("Decals").uid)
+    bpy.ops.m3d.layer_freeze()
+    mat.m3d_layer_index = L.index_of(mat, named("Weathering").uid)
 
 
 def fillsel():
@@ -347,6 +396,7 @@ SETUP = {
     "+paint": paint,
     "+bake": bake,
     "+layers": layers,
+    "+folders": folders,
     "+fillsel": fillsel,
     "+monkey": monkey,
     "+masks": masks,

@@ -14,6 +14,13 @@ one more chain, in a frame of its own per layer, whose result multiplies the fac
 The same blend math in numpy flattens a stack (Merge Down, Flatten, Export). Painting needs no special support: the
 active layer's image for the active channel (or its mask's Paint effect) is made the material's active paint slot.
 
+Folders: a layer of kind FOLDER holds the layers whose `parent` is its uid (folders nest). The stack stays one list,
+bottom to top, with each folder right after the layers inside it, so the list read backwards is what the UI shows. A
+folder's layers are composited together over transparent first (color and coverage, `over` in numpy; in the nodes a
+sub-chain that carries a coverage socket next to the color), then the result is blended onto the stack below with the
+folder's blend, opacity and mask like a layer's own image. Freezing bakes that result into one image per channel (the
+alpha is the coverage), after which the folder is a leaf of the chains: one Image Texture and one Mix per channel.
+
 The Layers page (panels) is in m3d_texture.py.
 """
 
@@ -169,13 +176,31 @@ class M3D_LayerChannel(PropertyGroup):
     value: FloatProperty(name="Value", min=0.0, max=1.0, default=0.5, update=_changed)
 
 
+def _expanded_changed(self, context):
+    """Closing a folder that holds the active layer makes the folder active (the list would show nothing selected)."""
+    mat = self.id_data
+    if self.expanded or MK._muted[0] or not isinstance(mat, bpy.types.Material):
+        return
+    active = active_layer(mat)
+    if active is not None and any(a.uid == self.uid for a in ancestors(active)):
+        with muted():
+            mat.m3d_layer_index = index_of(mat, self.uid)
+        refresh(context, mat)
+
+
 class M3D_Layer(PropertyGroup):
-    """One layer of a material's stack."""
+    """One layer of a material's stack (or a folder of layers)."""
     name: StringProperty(name="Name", default="Layer", update=_changed)
     uid: StringProperty(description="Names the layer's nodes")
     kind: EnumProperty(name="Type", default='PAINT', items=(
         ('PAINT', "Paint Layer", "Pixels you paint, one image per channel"),
-        ('FILL', "Fill Layer", "A value or color over the whole mesh (use a mask to limit it)")))
+        ('FILL', "Fill Layer", "A value or color over the whole mesh (use a mask to limit it)"),
+        ('FOLDER', "Folder", "Layers that are combined with each other first, then blended onto the stack below")))
+    parent: StringProperty(description="uid of the folder the layer is in (empty: it is not in a folder)")
+    expanded: BoolProperty(name="Expanded", default=True, update=_expanded_changed,
+                           description="Show the layers inside the folder in the list")
+    frozen: BoolProperty(name="Frozen", default=False, description="The folder is baked into one image per channel: its "
+                         "layers are kept, but cannot be edited until the folder is unfrozen")
     visible: BoolProperty(name="Visible", default=True, update=_changed)
     use_alpha: BoolProperty(name="Image Alpha", default=True, update=_changed,
                             description="The image's transparency shows the layers below (off for the Base layer made from "
@@ -213,14 +238,95 @@ def paint_effect(layer):
     return e if e is not None and e.kind == 'PAINT' else next((e for e in list(layer.mask_stack)[::-1] if e.kind == 'PAINT'), None)
 
 
+# Folders: the layers of a folder are the ones whose `parent` is its uid; a folder is listed after them (see the top).
+
+def layer_by_uid(mat, uid):
+    return next((l for l in mat.m3d_layers if l.uid == uid), None)
+
+
+def index_of(mat, uid):
+    return next((i for i, l in enumerate(mat.m3d_layers) if l.uid == uid), -1)
+
+
+def kids_of(mat, uid=""):
+    """The layers directly inside a folder (empty uid: at the top level), bottom to top."""
+    return [l for l in mat.m3d_layers if l.parent == uid]
+
+
+def children(layer):
+    return kids_of(layer.id_data, layer.uid) if layer.kind == 'FOLDER' else []
+
+
+def descendants(layer):
+    """Everything inside a folder, in stack order (a nested folder after its own layers)."""
+    out = []
+    for kid in children(layer):
+        out += descendants(kid) + [kid]
+    return out
+
+
+def ancestors(layer):
+    """The folders a layer is in, innermost first."""
+    found, parent = [], layer.parent
+    while parent and len(found) < 64:   # (a damaged file with a loop ends here)
+        folder = layer_by_uid(layer.id_data, parent)
+        if folder is None:
+            break
+        found.append(folder)
+        parent = folder.parent
+    return found
+
+
+def depth_of(layer):
+    return len(ancestors(layer))
+
+
+def in_frozen(layer):
+    """Is the layer inside a frozen folder (so it is kept in the data but not in the node chains, and not editable)?"""
+    return any(a.frozen for a in ancestors(layer))
+
+
+def frozen_root(layer):
+    """The outermost frozen folder the layer is in, or is itself (None: it is live)."""
+    found = [a for a in ancestors(layer) if a.frozen]
+    return found[-1] if found else layer if layer.kind == 'FOLDER' and layer.frozen else None
+
+
+def live_layers(mat):
+    """The layers the node chains are made of: all but the ones inside a frozen folder."""
+    layers = list(mat.m3d_layers)
+    frozen = {l.uid for l in layers if l.frozen}
+    if not frozen:
+        return layers
+    parents = {l.uid: l.parent for l in layers}
+
+    def dead(layer):
+        parent, hops = layer.parent, 0
+        while parent and hops < 64:
+            if parent in frozen:
+                return True
+            parent, hops = parents.get(parent), hops + 1
+        return False
+    return [l for l in layers if not dead(l)]
+
+
+def uses_image(layer):
+    """Does the layer read an image per channel: a paint layer's, or a frozen folder's."""
+    return layer.kind == 'PAINT' or (layer.kind == 'FOLDER' and layer.frozen)
+
+
 def has_content(layer, ch_id):
-    """Does the layer change this channel: a fill value, or a painted image."""
+    """Does the layer change this channel: a fill value, a painted (or frozen) image, or (a folder that is not frozen)
+    anything inside it."""
+    if layer.kind == 'FOLDER' and not layer.frozen:
+        return any(has_content(kid, ch_id) for kid in children(layer))
     e = entry_of(layer, ch_id)
     return e.use and (layer.kind == 'FILL' or e.image is not None)
 
 
 def content_channels(mat):
-    return [ch.id for ch in CHANNELS if any(has_content(l, ch.id) for l in mat.m3d_layers)]
+    top = kids_of(mat)
+    return [ch.id for ch in CHANNELS if any(has_content(l, ch.id) for l in top)]
 
 
 def fill_rgba(layer, ch_id):
@@ -314,29 +420,43 @@ def part(ch_id, uid, key):
     return "%s.%s.%s.%s" % (TAG, ch_id, uid, key)
 
 
-def signature(layers, ch_id):
+def chain_tree(layers, ch_id):
+    """[(layer, inside)] of the layers (one level, bottom to top) that change channel `ch_id`: `inside` is the same for
+    the layers of a folder that is not frozen (a frozen folder is one image, like a paint layer)."""
+    return [(l, chain_tree(children(l), ch_id) if l.kind == 'FOLDER' and not l.frozen else [])
+            for l in layers if has_content(l, ch_id)]
+
+
+def walk(tree):
+    """Every layer of a chain_tree, a folder's layers before the folder."""
+    for layer, inside in tree:
+        yield from walk(inside)
+        yield layer
+
+
+def signature(tree, ch_id):
     """What decides the chain's nodes and links; anything else (opacity, blend, fill, names) is only a value."""
-    return repr([(l.uid, l.kind, entry_of(l, ch_id).image.name if l.kind == 'PAINT' else "", bool(l.mask_stack),
-                  l.use_alpha) for l in layers])
+    return repr([(l.uid, l.kind, entry_of(l, ch_id).image.name if uses_image(l) else "", bool(l.mask_stack), l.use_alpha,
+                  *((signature(inside, ch_id),) if inside else ())) for l, inside in tree])
 
 
 def set_values(nt, layer, ch_id):
     """Opacity, visibility, blend mode, fill value and names of a layer's nodes (no node or link changes)."""
     opv = nt.nodes.get(part(ch_id, layer.uid, "opv"))
-    mix = nt.nodes.get(part(ch_id, layer.uid, "mix"))
-    if opv is None or mix is None:
+    if opv is None:
         return
+    mix, fill = nt.nodes.get(part(ch_id, layer.uid, "mix")), nt.nodes.get(part(ch_id, layer.uid, "fill"))
     want = layer.opacity if layer.visible else 0.0
     if abs(opv.inputs[1].default_value - want) > 1e-6:
         opv.inputs[1].default_value = want
     blend = 'MIX' if ch_id == 'NORMAL' else layer.blend
-    if mix.blend_type != blend:
+    if mix is not None and mix.blend_type != blend:
         mix.blend_type = blend
-    if layer.kind == 'FILL':
-        color = fill_rgba(layer, ch_id)
-        if any(abs(a - b) > 1e-6 for a, b in zip(mix.inputs[7].default_value, color)):
-            mix.inputs[7].default_value = color
-    for key in ("mix", "tex"):
+    if layer.kind == 'FILL':   # (inside a folder a fill is a color node: both its Mix nodes read it)
+        target = fill.outputs[0] if fill is not None else mix.inputs[7] if mix is not None else None
+        if target is not None:
+            _set(target, fill_rgba(layer, ch_id))
+    for key in ("mix", "tex", "fill"):
         node = nt.nodes.get(part(ch_id, layer.uid, key))
         if node is not None and node.label != layer.name:
             node.label = layer.name
@@ -458,7 +578,8 @@ def rebuild_masks(mat):
     nt, bsdf = mat.node_tree, principled_of(mat)
     if nt is None or bsdf is None:
         return False
-    wanted = {l.uid: (i, l) for i, l in enumerate(mat.m3d_layers) if l.mask_stack}
+    live = {l.uid for l in live_layers(mat)}   # (the layers of a frozen folder have no nodes)
+    wanted = {l.uid: (i, l) for i, l in enumerate(mat.m3d_layers) if l.mask_stack and l.uid in live}
     changed = False
     for uid in {n["m3d_mask"] for n in nt.nodes if n.get(TAG) == "MASK"}:
         frame = nt.nodes.get("%s.MASK.%s" % (TAG, uid))
@@ -487,8 +608,11 @@ def link_masks(mat):
                 nt.links.new(top, mul.inputs[1])
 
 
-def build_channel(mat, ch, layers, sig):
-    """The frame with one chain for `ch`: Image Texture (or fill) -> Mix per layer, bottom to top, into the shader."""
+def build_channel(mat, ch, tree, sig):
+    """The frame with one chain for `ch`: Image Texture (or fill) -> Mix per layer, bottom to top, into the shader. The
+    layers of a folder are chained the same way first, but over nothing instead of the channel's value: that chain
+    carries the color and the coverage (how much of the pixel the layers cover), and the folder is one more layer of
+    the chain below it, its image being that color and its alpha that coverage."""
     nt, bsdf = mat.node_tree, principled_of(mat)
     nodes, links = nt.nodes, nt.links
     y = bsdf.location.y - 700 - CHANNEL_INDEX[ch.id] * 900
@@ -496,6 +620,7 @@ def build_channel(mat, ch, layers, sig):
     frame = nodes.new("NodeFrame")
     frame.name, frame.label = "%s.%s" % (TAG, ch.id), ch.label + " Layers"
     frame[TAG], frame["m3d_sig"] = ch.id, sig
+    columns, placed = len(list(walk(tree))), [0]
 
     def new(idname, name, x, y_):
         node = nodes.new(idname)
@@ -506,29 +631,83 @@ def build_channel(mat, ch, layers, sig):
         restore_settings(node)
         return node
 
-    below = None
-    for i, layer in enumerate(layers):
-        x, uid = x_top - (len(layers) - 1 - i) * 1000, layer.uid
-        opv = new("ShaderNodeMath", part(ch.id, uid, "opv"), x + 300, y - 80)   # image alpha x opacity (0 when hidden)
+    def mix_node(layer, key, x, y_, data_type='RGBA', clamp=False):
+        node = new("ShaderNodeMix", part(ch.id, layer.uid, key), x, y_)
+        node.data_type, node.clamp_result = data_type, clamp
+        return node
+
+    def source(layer, inside, depth):
+        """The nodes every layer has: color and factor (coverage x opacity x mask). -> (x, y, color socket (None: a
+        fill, which the caller makes), factor socket)"""
+        color = cover = None
+        if inside:
+            color, cover = stacked(inside, depth + 1)
+        x, uid, y_ = x_top - (columns - 1 - placed[0]) * 1000, layer.uid, y - depth * 450
+        placed[0] += 1
+        opv = new("ShaderNodeMath", part(ch.id, uid, "opv"), x + 300, y_ - 80)   # coverage x opacity (0 when hidden)
         opv.operation = 'MULTIPLY'
-        mix = new("ShaderNodeMix", part(ch.id, uid, "mix"), x + 750, y)
-        mix.data_type, mix.clamp_result = 'RGBA', True
-        if layer.kind == 'PAINT':
-            tex = new("ShaderNodeTexImage", part(ch.id, uid, "tex"), x, y)
+        if inside:
+            links.new(cover, opv.inputs[0])
+        elif uses_image(layer):
+            tex = new("ShaderNodeTexImage", part(ch.id, uid, "tex"), x, y_)
             tex.image = entry_of(layer, ch.id).image
+            color = tex.outputs["Color"]
             if layer.use_alpha:
                 links.new(tex.outputs["Alpha"], opv.inputs[0])
             else:
                 opv.inputs[0].default_value = 1.0
-            links.new(tex.outputs["Color"], mix.inputs[7])
         else:
             opv.inputs[0].default_value = 1.0
         factor = opv.outputs[0]
         if layer.mask_stack:
-            mul = new("ShaderNodeMath", part(ch.id, uid, "maskmul"), x + 500, y - 200)   # x the layer's mask
+            mul = new("ShaderNodeMath", part(ch.id, uid, "maskmul"), x + 500, y_ - 200)   # x the layer's mask
             mul.operation = 'MULTIPLY'
             links.new(factor, mul.inputs[0])
             factor = mul.outputs[0]
+        return x, y_, color, factor
+
+    def stacked(items, depth):
+        """A folder's layers over nothing: -> (color, coverage) sockets of the result. A layer (color k, factor f) over
+        a result (c, a): its color is blended only where there is something below, s = mix(k, blend(c, k), a); the
+        new color is c moved toward s by f / a', the new coverage is a' = a + f (1 - a): what `over` does."""
+        color = cover = None
+        for layer, inside in items:
+            x, y_, src, factor = source(layer, inside, depth)
+            if src is None:
+                src = new("ShaderNodeRGB", part(ch.id, layer.uid, "fill"), x, y_).outputs[0]
+            if color is None:
+                color, cover = src, factor
+            else:
+                blended = mix_node(layer, "mix", x + 750, y_)
+                blended.inputs[0].default_value = 1.0
+                links.new(color, blended.inputs[6])
+                links.new(src, blended.inputs[7])
+                shown = mix_node(layer, "shown", x + 750, y_ - 250)
+                links.new(cover, shown.inputs[0])
+                links.new(src, shown.inputs[6])
+                links.new(blended.outputs[2], shown.inputs[7])
+                total = mix_node(layer, "total", x + 500, y_ - 400, 'FLOAT')
+                links.new(factor, total.inputs[0])
+                links.new(cover, total.inputs[2])
+                total.inputs[3].default_value = 1.0
+                share = new("ShaderNodeMath", part(ch.id, layer.uid, "share"), x + 750, y_ - 450)
+                share.operation = 'DIVIDE'
+                links.new(factor, share.inputs[0])
+                links.new(total.outputs[0], share.inputs[1])
+                out = mix_node(layer, "out", x + 900, y_ - 150, clamp=True)
+                links.new(share.outputs[0], out.inputs[0])
+                links.new(color, out.inputs[6])
+                links.new(shown.outputs[2], out.inputs[7])
+                color, cover = out.outputs[2], total.outputs[0]
+            set_values(nt, layer, ch.id)
+        return color, cover
+
+    below = None
+    for layer, inside in tree:
+        x, y_, src, factor = source(layer, inside, 0)
+        mix = mix_node(layer, "mix", x + 750, y_, clamp=True)
+        if src is not None:
+            links.new(src, mix.inputs[7])
         links.new(factor, mix.inputs[0])
         if below is None:
             mix.inputs[6].default_value = (*default_linear(ch), 1.0)
@@ -609,11 +788,11 @@ def rebuild(mat, ch_id):
     nt, bsdf = mat.node_tree, principled_of(mat)
     if nt is None or bsdf is None:
         return False
-    layers = [l for l in mat.m3d_layers if has_content(l, ch_id)]
-    sig = signature(layers, ch_id)
+    tree = chain_tree(kids_of(mat), ch_id)
+    sig = signature(tree, ch_id)
     frame = nt.nodes.get("%s.%s" % (TAG, ch_id))
-    if frame is not None and layers and frame.get("m3d_sig") == sig:
-        for layer in layers:
+    if frame is not None and tree and frame.get("m3d_sig") == sig:
+        for layer in walk(tree):
             set_values(nt, layer, ch_id)
         return False
     ours = [n for n in nt.nodes if n.get(TAG) == ch_id]
@@ -621,16 +800,17 @@ def rebuild(mat, ch_id):
         if node.type in _PROPS:
             _carry[node.name] = settings_of(node)
         nt.nodes.remove(node)
-    if layers:
-        build_channel(mat, CHANNEL_BY_ID[ch_id], layers, sig)
+    if tree:
+        build_channel(mat, CHANNEL_BY_ID[ch_id], tree, sig)
     if ch_id in {'NORMAL', 'HEIGHT'}:
         link_normal(mat)
-    return bool(ours or layers)
+    return bool(ours or tree)
 
 
 def rebuild_all(mat):
     upgrade(mat)
-    for layer in mat.m3d_layers:
+    live = live_layers(mat)
+    for layer in live:
         MK.ensure_caches(layer)
     changed = [rebuild_masks(mat)] + [rebuild(mat, ch.id) for ch in CHANNELS]
     _carry.clear()
@@ -640,7 +820,7 @@ def rebuild_all(mat):
         refresh_slots(mat)
     if mat.node_tree is not None:
         link_masks(mat)
-        for layer in mat.m3d_layers:
+        for layer in live:
             set_mask_values(mat.node_tree, layer)
             MK.refresh_blurs(layer)
         sync_maskview(mat)
@@ -827,15 +1007,15 @@ def new_size(context):
 
 
 def target_image(context, mat, create):
-    """The image strokes should go to: the active layer's Paint effect when Paint Mask is on (always for a fill layer),
-    else its image for the active channel (made here when `create`). None for a fill layer without a Paint effect, or
-    a channel the layer does not have."""
+    """The image strokes should go to: the active layer's Paint effect when Paint Mask is on (always for a fill layer or
+    a folder), else its image for the active channel (made here when `create`). None for a fill layer or a folder
+    without a Paint effect, a layer in a frozen folder, or a channel the layer does not have."""
     index = mat.m3d_layer_index
     layer = active_layer(mat)
-    if layer is None:
+    if layer is None or in_frozen(layer):   # (a frozen folder's layers are no paint slots: nothing can be painted)
         return None
     effect = paint_effect(layer)
-    if effect is not None and (layer.paint_mask or layer.kind == 'FILL'):
+    if effect is not None and (layer.paint_mask or layer.kind != 'PAINT'):
         return effect.image
     ch = CHANNEL_BY_ID[mat.m3d_channel]
     e = entry_of(layer, ch.id)
@@ -877,6 +1057,10 @@ def paint_channel(context, ob, ch):
         return None
     with muted():
         mat.m3d_channel = ch.id
+        if in_frozen(layer):
+            raise RuntimeError("The folder is frozen: unfreeze it to paint its layers")
+        if layer.kind == 'FOLDER' and paint_effect(layer) is None:
+            raise RuntimeError("A folder cannot be painted: pick a layer inside it")
         if layer.kind == 'FILL' and paint_effect(layer) is None:
             raise RuntimeError("A Fill Layer cannot be painted: use Convert to Paint Layer")
         if layer.kind == 'PAINT':
@@ -907,9 +1091,12 @@ def stack_slots(mat):
 # Compositing (numpy): what the node chain computes, for Merge Down, Flatten and Export
 
 def layer_planes(layer, ch, size):
-    """(linear rgb, coverage) of a layer's channel: the image alpha x opacity x mask (0 when hidden) is the coverage."""
+    """(linear rgb, coverage) of a layer's channel: the image alpha x opacity x mask (0 when hidden) is the coverage. A
+    folder is what its layers make together over nothing (or its frozen image: the same, within what the image stores)."""
     e = entry_of(layer, ch.id)
-    if layer.kind == 'FILL':
+    if layer.kind == 'FOLDER' and not layer.frozen:
+        rgb, alpha = stack_planes(children(layer), ch, size)
+    elif layer.kind == 'FILL':
         rgb = np.broadcast_to(np.array(fill_rgba(layer, ch.id)[:3], np.float32), (size, size, 3))
         alpha = np.ones((size, size), np.float32)
     else:
@@ -923,16 +1110,22 @@ def layer_planes(layer, ch, size):
     return rgb, alpha
 
 
+def stack_planes(layers, ch, size, rgb=None, alpha=None):
+    """`layers` (bottom to top) composited over (rgb, alpha), over nothing when those are not given: (rgb, alpha)."""
+    if rgb is None:
+        rgb, alpha = np.zeros((size, size, 3), np.float32), np.zeros((size, size), np.float32)
+    for layer in layers:
+        if has_content(layer, ch.id):
+            lrgb, la = layer_planes(layer, ch, size)
+            rgb, alpha = over(rgb, alpha, lrgb, la, 'MIX' if ch.id == 'NORMAL' else layer.blend)
+    return rgb, alpha
+
+
 def composite(mat, ch_id, size):
     """The channel's visible stack over the channel's starting value, in linear light: (size, size, 3)."""
     ch = CHANNEL_BY_ID[ch_id]
     rgb = np.broadcast_to(default_linear(ch), (size, size, 3)).astype(np.float32)
-    alpha = np.ones((size, size), np.float32)
-    for layer in mat.m3d_layers:
-        if has_content(layer, ch_id):
-            lrgb, la = layer_planes(layer, ch, size)
-            rgb, alpha = over(rgb, alpha, lrgb, la, 'MIX' if ch_id == 'NORMAL' else layer.blend)
-    return rgb
+    return stack_planes(kids_of(mat), ch, size, rgb, np.ones((size, size), np.float32))[0]
 
 
 def encode(ch, rgb, alpha=None):
@@ -1009,23 +1202,144 @@ def add_layer(mat, kind, name=None):
     layer = mat.m3d_layers.add()
     with muted():
         layer.uid = uuid.uuid4().hex[:6]
-        layer.name = name or unique_name(mat, "Paint Layer" if kind == 'PAINT' else "Fill Layer")
+        layer.name = name or unique_name(mat, {'PAINT': "Paint Layer", 'FILL': "Fill Layer", 'FOLDER': "Folder"}[kind])
         layer.kind = kind
         for ch in CHANNELS:
             e = layer.channels.add()
             e.channel = ch.id
-            e.use = kind == 'PAINT' or ch.id == 'BASE_COLOR'
+            e.use = kind == 'PAINT' or (kind == 'FILL' and ch.id == 'BASE_COLOR')
             e.color = (*default_linear(ch), 1.0)
             e.value = ch.color[0]
     return layer
 
 
-def insert_above(mat, layer_count_before):
-    """Move the layer just added to the end up to sit above the active layer; returns its index."""
+def read_tree(mat):
+    """{folder uid (empty: the top level): [uid of each layer directly inside, bottom to top]}; every folder is a key."""
+    tree = {"": []}
+    for layer in mat.m3d_layers:
+        tree.setdefault(layer.parent, []).append(layer.uid)
+        if layer.kind == 'FOLDER':
+            tree.setdefault(layer.uid, [])
+    return tree
+
+
+def write_tree(mat, tree):
+    """Make the stack follow `tree` (see read_tree): parents are set and the layers put in order, each folder right
+    after the layers inside it. A tree that does not hold every layer once is ignored."""
+    order, parents = [], {}
+
+    def flatten(uid):
+        for kid in tree.get(uid, ()):
+            parents[kid] = uid
+            flatten(kid)
+            order.append(kid)
+    flatten("")
     layers = mat.m3d_layers
-    target = min(mat.m3d_layer_index + 1, layer_count_before) if layer_count_before else 0
-    layers.move(len(layers) - 1, target)
-    return target
+    if sorted(order) != sorted(l.uid for l in layers):
+        return
+    with muted():
+        for layer in layers:
+            if layer.parent != parents[layer.uid]:
+                layer.parent = parents[layer.uid]
+        for i, uid in enumerate(order):
+            j = next(k for k in range(i, len(layers)) if layers[k].uid == uid)
+            if j != i:
+                layers.move(j, i)
+
+
+def activate(mat, uid):
+    with muted():
+        mat.m3d_layer_index = max(index_of(mat, uid), 0)
+
+
+def anchor_of(mat):
+    """uid of the layer a new layer goes above: the active one (the frozen folder it is in, when it is in one). Empty:
+    there is none."""
+    layer = active_layer(mat)
+    if layer is None:
+        return ""
+    return (frozen_root(layer) if in_frozen(layer) else layer).uid
+
+
+def place_above(mat, uid, anchor_uid):
+    """Put the layer `uid` (and what is inside it) directly above the layer `anchor_uid`, in the folder that one is in.
+    Without an anchor it goes on top of the stack."""
+    tree = read_tree(mat)
+    for kids in tree.values():
+        if uid in kids:
+            kids.remove(uid)
+    kids = next((k for k in tree.values() if anchor_uid and anchor_uid in k), tree[""])
+    kids.insert(kids.index(anchor_uid) + 1 if anchor_uid in kids else len(kids), uid)
+    write_tree(mat, tree)
+
+
+def add_folder(mat, anchor_uid, group=False):
+    """A new empty folder above the layer `anchor_uid` (the top of the stack without one); `group`: that layer is
+    moved into the folder, which takes its place. Returns the folder's uid."""
+    uid = add_layer(mat, 'FOLDER').uid
+    tree = read_tree(mat)
+    tree[""].remove(uid)
+    tree[uid] = []
+    kids = next((k for k in tree.values() if anchor_uid and anchor_uid in k), tree[""])
+    if anchor_uid in kids and group:
+        kids[kids.index(anchor_uid)] = uid
+        tree[uid].append(anchor_uid)
+    else:
+        kids.insert(kids.index(anchor_uid) + 1 if anchor_uid in kids else len(kids), uid)
+    write_tree(mat, tree)
+    return uid
+
+
+def step_layer(mat, layer, delta):
+    """Move a layer (with what is inside it) one place up (delta > 0) or down in the list the way it is shown: past a
+    neighbour, into an open folder next to it, or out of the folder it is at the end of. False at the ends."""
+    tree, up = read_tree(mat), delta > 0
+    uid, parent = layer.uid, layer.parent
+    kids = tree[parent]
+    k = kids.index(uid)
+    j = k + (1 if up else -1)
+    if 0 <= j < len(kids):
+        other = layer_by_uid(mat, kids[j])
+        if other.kind == 'FOLDER' and other.expanded and not other.frozen:
+            kids.remove(uid)
+            tree[other.uid].insert(0 if up else len(tree[other.uid]), uid)
+        else:
+            kids[k], kids[j] = kids[j], kids[k]
+    elif parent:
+        kids.remove(uid)
+        outer = tree[layer_by_uid(mat, parent).parent]
+        outer.insert(outer.index(parent) + (1 if up else 0), uid)
+    else:
+        return False
+    write_tree(mat, tree)
+    return True
+
+
+def move_into(mat, layer, folder):
+    """The layer (with what is inside it) goes to the top of `folder`, which is opened. False when that cannot be: a
+    folder cannot go into itself, into a folder inside it, or into a frozen folder."""
+    if folder.frozen or in_frozen(folder) or folder.uid == layer.uid or any(a.uid == layer.uid for a in ancestors(folder)):
+        return False
+    tree, uid = read_tree(mat), folder.uid
+    tree[layer.parent].remove(layer.uid)
+    tree[uid].append(layer.uid)
+    write_tree(mat, tree)
+    with muted():
+        layer_by_uid(mat, uid).expanded = True   # (the layers moved in memory: look the folder up again)
+    return True
+
+
+def move_out(mat, layer):
+    """The layer (with what is inside it) goes above the folder it is in. False when it is not in one."""
+    parent = layer_by_uid(mat, layer.parent)
+    if parent is None:
+        return False
+    tree = read_tree(mat)
+    tree[parent.uid].remove(layer.uid)
+    outer = tree[parent.parent]
+    outer.insert(outer.index(parent.uid) + 1, layer.uid)
+    write_tree(mat, tree)
+    return True
 
 
 def migrate(mat):
@@ -1068,25 +1382,40 @@ def migrate(mat):
     return True
 
 
-def delete_layer(mat, index):
-    """Remove a layer and its nodes; its images go too unless something else uses them."""
-    images = layer_images(mat.m3d_layers[index])
+def subtree(layer):
+    """A layer and everything inside it (a folder is last)."""
+    return descendants(layer) + [layer]
+
+
+def remove_layers(mat, uids):
+    layers = mat.m3d_layers
     with muted():
-        mat.m3d_layers.remove(index)
-        mat.m3d_layer_index = max(0, min(mat.m3d_layer_index, len(mat.m3d_layers) - 1))
+        for i in reversed(range(len(layers))):
+            if layers[i].uid in uids:
+                layers.remove(i)
+
+
+def delete_layer(mat, index):
+    """Remove a layer (a folder: with everything inside it) and its nodes; its images go too unless something else uses
+    them."""
+    group = subtree(mat.m3d_layers[index])
+    images = [img for l in group for img in layer_images(l)]
+    remove_layers(mat, {l.uid for l in group})
+    with muted():
+        mat.m3d_layer_index = max(0, min(index - len(group) + 1, len(mat.m3d_layers) - 1))
     rebuild_all(mat)
     release(images)
 
 
-def duplicate_layer(mat, index):
-    """Copy a layer (with copies of its images) just above it. Returns the new index."""
-    count = len(mat.m3d_layers)
-    new = add_layer(mat, mat.m3d_layers[index].kind)   # Adding can move the collection: look the source up again.
-    src = mat.m3d_layers[index]
+def copy_layer(mat, uid):
+    """A copy of one layer, with copies of its images, at the end of the stack (the caller places it)."""
+    src = layer_by_uid(mat, uid)
+    new = add_layer(mat, src.kind)   # Adding can move the collection: look the source up again.
+    src = layer_by_uid(mat, uid)
     with muted():
         new.name = unique_name(mat, src.name + " Copy")
         new.visible, new.opacity, new.blend, new.use_alpha = src.visible, src.opacity, src.blend, src.use_alpha
-        new.paint_mask = src.paint_mask
+        new.paint_mask, new.expanded, new.frozen = src.paint_mask, src.expanded, src.frozen
         for ch in CHANNELS:
             a, b = entry_of(src, ch.id), entry_of(new, ch.id)
             b.use, b.color, b.value = a.use, a.color, a.value
@@ -1102,19 +1431,48 @@ def duplicate_layer(mat, index):
             elif e.kind != 'BLUR':
                 copy.image = e.image
         new.mask_index = src.mask_index
-    mat.m3d_layers.move(count, index + 1)
-    return index + 1
+    return new
+
+
+def duplicate_layer(mat, index):
+    """Copy a layer, or a folder with everything inside it, just above it (images are copied). Returns the index of the
+    copy (a folder's copy is listed after its layers)."""
+    top = mat.m3d_layers[index]
+    group = subtree(top)
+    uids, parents, top_uid, top_parent = [l.uid for l in group], {l.uid: l.parent for l in group}, top.uid, top.parent
+    copies = {uid: copy_layer(mat, uid).uid for uid in uids}
+    tree = read_tree(mat)
+    for uid in copies.values():
+        tree[""].remove(uid)
+    for uid in uids[:-1]:
+        tree[copies[parents[uid]]].append(copies[uid])
+    kids = tree[top_parent]
+    kids.insert(kids.index(top_uid) + 1, copies[top_uid])
+    write_tree(mat, tree)
+    return index_of(mat, copies[top_uid])
+
+
+def below_sibling(layer):
+    """The layer directly under this one in the same folder (None: it is the lowest there)."""
+    kids = kids_of(layer.id_data, layer.parent)
+    k = next(i for i, l in enumerate(kids) if l.uid == layer.uid)
+    return kids[k - 1] if k else None
 
 
 def merge_down(mat, index, default_size):
-    """Flatten layer `index` into the one below it. Per channel the two are composited (the upper layer's blend mode
-    over the lower layer) into the lower layer's image; its opacity and mask are baked into the pixels. Exact when the
-    lower layer is opaque or the upper one uses Mix; the merged layer keeps the lower layer's blend mode."""
-    layers = mat.m3d_layers
-    top, low = layers[index], layers[index - 1]
+    """Flatten layer `index` (a folder with its layers is one layer too) into the one below it in the same folder. Per
+    channel the two are composited (the upper layer's blend mode over the lower layer) into the lower layer's image; its
+    opacity and mask are baked into the pixels. Exact when the lower layer is opaque or the upper one uses Mix; the
+    merged layer keeps the lower layer's blend mode."""
+    top = mat.m3d_layers[index]
+    low = below_sibling(top)
+    group = subtree(top)
+    low_uid, group_uids = low.uid, {l.uid for l in group}
+    images = [img for l in group for img in layer_images(l)]
+    old_masks = []
     if top.visible:
         chans = [ch for ch in CHANNELS if has_content(top, ch.id) or has_content(low, ch.id)]
-        sizes = [max(image_size(e.image)) for l in (top, low) for e in l.channels if e.image]
+        sizes = [max(image_size(e.image)) for l in (*group, low) for e in l.channels if e.image]
         size = max(sizes, default=default_size)
         with muted():
             for ch in chans:
@@ -1133,12 +1491,81 @@ def merge_down(mat, index, default_size):
             old_masks = MK.owned_images(low)
             low.mask_stack.clear()
             low.mask_index, low.paint_mask = 0, False
-    else:
-        old_masks = []
-    images = layer_images(top) + old_masks
+    remove_layers(mat, group_uids)
+    activate(mat, low_uid)
+    rebuild_all(mat)
+    release(images + old_masks)
+
+
+# Folders: freezing and merging
+
+def folder_size(folder, default_size):
+    """Size of the images a folder is baked into: the largest image of the layers inside it (the default without any)."""
+    return max((max(image_size(e.image)) for l in descendants(folder) for e in l.channels if e.image),
+               default=default_size)
+
+
+def bake_folder(mat, folder, default_size):
+    """What the folder's layers make together over nothing, as one image per channel they change (the alpha is what
+    they cover), stored the way a paint layer's images are. -> {channel id: image}"""
+    size, kids, images = folder_size(folder, default_size), children(folder), {}
+    for ch in CHANNELS:
+        if any(has_content(kid, ch.id) for kid in kids):
+            rgb, alpha = stack_planes(kids, ch, size)
+            images[ch.id] = make_channel_image(mat, folder, ch, size, opaque=False)
+            write_pixels(images[ch.id], encode(ch, rgb, alpha))
+    return images
+
+
+def set_folder_images(mat, folder, images, label=""):
+    """The folder's own image per channel (the frozen ones, or the paint layer a merged folder becomes)."""
     with muted():
-        layers.remove(index)
-        mat.m3d_layer_index = index - 1
+        for ch in CHANNELS:
+            e = entry_of(folder, ch.id)
+            e.use, e.image = ch.id in images, images.get(ch.id)
+            if e.image is not None:
+                e.image.name = image_name(mat, folder, ch.label + label)
+
+
+def freeze_folder(mat, index, default_size):
+    """Bake the folder into one image per channel it changes: it costs one texture read per channel from then on. Its
+    layers stay in the data (not in the node chains, not editable) until the folder is unfrozen."""
+    folder = mat.m3d_layers[index]
+    uid, active = folder.uid, active_layer(mat)
+    set_folder_images(mat, folder, bake_folder(mat, folder, default_size), " Frozen")
+    with muted():
+        folder.use_alpha, folder.frozen = True, True
+        if active is not None and any(a.uid == uid for a in ancestors(active)):
+            mat.m3d_layer_index = index_of(mat, uid)
+    rebuild_all(mat)
+
+
+def unfreeze_folder(mat, index):
+    folder = mat.m3d_layers[index]
+    images = [e.image for e in folder.channels if e.image]
+    with muted():
+        folder.frozen = False
+    set_folder_images(mat, folder, {})
+    rebuild_all(mat)
+    release(images)
+
+
+def merge_folder(mat, index, default_size):
+    """Turn a folder into one paint layer holding what its layers make together (or its frozen images): the layers inside
+    are deleted, the paint layer keeps the folder's name, blend mode, opacity, visibility and mask. Nothing changes in
+    the look."""
+    folder = mat.m3d_layers[index]
+    uid = folder.uid
+    inside = descendants(folder)
+    images = [img for l in inside for img in layer_images(l)]
+    made = ({e.channel: e.image for e in folder.channels if e.image} if folder.frozen
+            else bake_folder(mat, folder, default_size))
+    remove_layers(mat, {l.uid for l in inside})
+    folder = layer_by_uid(mat, uid)   # (the layers moved in memory)
+    set_folder_images(mat, folder, made)
+    with muted():
+        folder.kind, folder.frozen, folder.use_alpha = 'PAINT', False, True
+    activate(mat, uid)
     rebuild_all(mat)
     release(images)
 
@@ -1194,9 +1621,13 @@ class _LayerOp:
 
 
 class _ActiveLayerOp(_LayerOp):
+    """Needs an active layer that can be edited (not one inside a frozen folder)."""
     @classmethod
     def poll(cls, context):
-        return super().poll(context) and active_layer(mesh_of(context).active_material) is not None
+        if not super().poll(context):
+            return False
+        layer = active_layer(mesh_of(context).active_material)
+        return layer is not None and not in_frozen(layer)
 
 
 def _done(context, mat):
@@ -1220,15 +1651,36 @@ class M3D_OT_layer_add(_LayerOp, Operator):
     def execute(self, context):
         mat = self.material(context)
         migrate(mat)
-        before = len(mat.m3d_layers)
-        add_layer(mat, self.kind)
-        with muted():
-            mat.m3d_layer_index = insert_above(mat, before)
+        anchor, uid = anchor_of(mat), add_layer(mat, self.kind).uid
+        place_above(mat, uid, anchor)
+        activate(mat, uid)
+        return _done(context, mat)
+
+
+class M3D_OT_layer_folder_add(_LayerOp, Operator):
+    """Add a folder above the active layer: its layers are combined with each other first, then the result is blended
+    onto the stack below with the folder's blend mode, opacity and mask"""
+    bl_idname = "m3d.layer_folder_add"
+    bl_label = "New Folder"
+
+    group: BoolProperty(name="Group Active", default=False,
+                        description="Put the active layer into the new folder instead of leaving it empty")
+
+    @classmethod
+    def description(cls, _context, props):
+        if props.group:
+            return "Put the active layer into a new folder (a folder blends, fades and masks its layers together)"
+        return "Add an empty folder above the active layer (move layers into it with Move Into Folder or the arrows)"
+
+    def execute(self, context):
+        mat = self.material(context)
+        migrate(mat)
+        activate(mat, add_folder(mat, anchor_of(mat), self.group))
         return _done(context, mat)
 
 
 class M3D_OT_layer_duplicate(_ActiveLayerOp, Operator):
-    """Duplicate the active layer (its images are copied)"""
+    """Duplicate the active layer, or the active folder with its layers (images are copied)"""
     bl_idname = "m3d.layer_duplicate"
     bl_label = "Duplicate Layer"
 
@@ -1241,7 +1693,7 @@ class M3D_OT_layer_duplicate(_ActiveLayerOp, Operator):
 
 
 class M3D_OT_layer_remove(_ActiveLayerOp, Operator):
-    """Delete the active layer and its images (images used elsewhere stay)"""
+    """Delete the active layer, or the active folder with its layers, and their images (images used elsewhere stay)"""
     bl_idname = "m3d.layer_remove"
     bl_label = "Delete Layer"
 
@@ -1252,7 +1704,8 @@ class M3D_OT_layer_remove(_ActiveLayerOp, Operator):
 
 
 class M3D_OT_layer_move(_ActiveLayerOp, Operator):
-    """Move the active layer up (above its neighbour) or down in the stack"""
+    """Move the active layer up (above its neighbour) or down in the stack, one place of the list at a time: it enters
+    an open folder next to it and leaves a folder at its first or last place"""
     bl_idname = "m3d.layer_move"
     bl_label = "Move Layer"
 
@@ -1260,16 +1713,152 @@ class M3D_OT_layer_move(_ActiveLayerOp, Operator):
 
     @classmethod
     def description(cls, _context, props):
-        return "Move the active layer %s" % ("up" if props.delta > 0 else "down")
+        return "Move the active layer %s (into and out of open folders)" % ("up" if props.delta > 0 else "down")
 
     def execute(self, context):
         mat = self.material(context)
-        i, j = mat.m3d_layer_index, mat.m3d_layer_index + self.delta
-        if not 0 <= j < len(mat.m3d_layers):
+        uid = active_layer(mat).uid
+        if not step_layer(mat, active_layer(mat), self.delta):
             return {'CANCELLED'}
-        mat.m3d_layers.move(i, j)
-        with muted():
-            mat.m3d_layer_index = j
+        activate(mat, uid)
+        return _done(context, mat)
+
+
+def target_folders(mat, layer):
+    """The folders the layer could be moved into: not itself or one of its own, not frozen or inside a frozen one."""
+    inside = {l.uid for l in subtree(layer)}
+    return [f for f in mat.m3d_layers if f.kind == 'FOLDER' and f.uid not in inside and not f.frozen
+            and not in_frozen(f) and f.uid != layer.parent]
+
+
+_folder_items = []   # (Python must keep the strings of a dynamic enum alive)
+
+
+def folder_items(_self, context):
+    ob = mesh_of(context)
+    mat = ob.active_material if ob is not None else None
+    layer = active_layer(mat) if mat is not None else None
+    _folder_items[:] = [(f.uid, f.name, "Move the layer to the top of this folder")
+                        for f in (target_folders(mat, layer) if layer is not None else [])]
+    return _folder_items or [("", "No folder", "")]
+
+
+class M3D_OT_layer_move_into(_ActiveLayerOp, Operator):
+    """Move the active layer (a folder: with its layers) to the top of a folder"""
+    bl_idname = "m3d.layer_move_into"
+    bl_label = "Move Into Folder"
+    bl_property = "folder"   # (the search list of invoke)
+
+    folder: EnumProperty(name="Folder", items=folder_items)
+
+    @classmethod
+    def poll(cls, context):
+        if not super().poll(context):
+            return False
+        mat = mesh_of(context).active_material
+        return bool(target_folders(mat, active_layer(mat)))
+
+    def invoke(self, context, event):
+        context.window_manager.invoke_search_popup(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        mat = self.material(context)
+        layer, folder = active_layer(mat), layer_by_uid(mat, self.folder)
+        uid = layer.uid
+        if folder is None or folder.uid not in {f.uid for f in target_folders(mat, layer)}                 or not move_into(mat, layer, folder):
+            self.report({'WARNING'}, "Pick a folder that is not frozen")
+            return {'CANCELLED'}
+        activate(mat, uid)
+        return _done(context, mat)
+
+
+class M3D_OT_layer_move_out(_ActiveLayerOp, Operator):
+    """Move the active layer out of its folder, to the place above the folder"""
+    bl_idname = "m3d.layer_move_out"
+    bl_label = "Move Out of Folder"
+
+    @classmethod
+    def poll(cls, context):
+        return super().poll(context) and bool(active_layer(mesh_of(context).active_material).parent)
+
+    def execute(self, context):
+        mat = self.material(context)
+        uid = active_layer(mat).uid
+        if not move_out(mat, active_layer(mat)):
+            return {'CANCELLED'}
+        activate(mat, uid)
+        return _done(context, mat)
+
+
+def folder_index(mat, index, freeze):
+    """Index of the folder an operator is for. `index` is a layer of the list (negative: the active layer). Freezing:
+    that folder, or the one the layer is in; unfreezing: the outermost frozen folder it is in. -1: there is none."""
+    i = mat.m3d_layer_index if index < 0 else index
+    layer = mat.m3d_layers[i] if 0 <= i < len(mat.m3d_layers) else None
+    if layer is None:
+        return -1
+    if freeze:
+        folder = layer if layer.kind == 'FOLDER' else layer_by_uid(mat, layer.parent)
+        return index_of(mat, folder.uid) if folder is not None and not folder.frozen and not in_frozen(folder) else -1
+    folder = frozen_root(layer)
+    return index_of(mat, folder.uid) if folder is not None else -1
+
+
+class M3D_OT_layer_freeze(_LayerOp, Operator):
+    """Freeze the folder: its layers are baked into one image per channel, so it costs about one texture read per
+    channel while you work on the rest. The layers stay in the folder but cannot be edited until it is unfrozen"""
+    bl_idname = "m3d.layer_freeze"
+    bl_label = "Freeze Folder"
+
+    index: IntProperty(default=-1, options={'SKIP_SAVE', 'HIDDEN'}, description="Layer of the list (-1: the active one)")
+
+    def execute(self, context):
+        mat = self.material(context)
+        i = folder_index(mat, self.index, True)
+        if i < 0:
+            self.report({'WARNING'}, "Select a folder (or a layer in one) that is not frozen")
+            return {'CANCELLED'}
+        prepare(context, mat)
+        freeze_folder(mat, i, new_size(context))
+        folder = mat.m3d_layers[i]
+        images = [e.image for e in folder.channels if e.image]
+        self.report({'INFO'}, "Froze %s: %d images of %d px" % (folder.name, len(images),
+                                                               max(image_size(images[0])) if images else 0))
+        return _done(context, mat)
+
+
+class M3D_OT_layer_unfreeze(_LayerOp, Operator):
+    """Unfreeze the folder: its layers are live again (the frozen images are deleted) and can be edited"""
+    bl_idname = "m3d.layer_unfreeze"
+    bl_label = "Unfreeze Folder"
+
+    index: IntProperty(default=-1, options={'SKIP_SAVE', 'HIDDEN'}, description="Layer of the list (-1: the active one)")
+
+    def execute(self, context):
+        mat = self.material(context)
+        i = folder_index(mat, self.index, False)
+        if i < 0:
+            self.report({'WARNING'}, "Select a frozen folder (or a layer in one)")
+            return {'CANCELLED'}
+        unfreeze_folder(mat, i)
+        return _done(context, mat)
+
+
+class M3D_OT_layer_merge_folder(_ActiveLayerOp, Operator):
+    """Merge the active folder into one paint layer: the layers inside are combined into its images and deleted; the
+    new layer keeps the folder's blend mode, opacity and mask. The look does not change"""
+    bl_idname = "m3d.layer_merge_folder"
+    bl_label = "Merge Folder"
+
+    @classmethod
+    def poll(cls, context):
+        return super().poll(context) and active_layer(mesh_of(context).active_material).kind == 'FOLDER'
+
+    def execute(self, context):
+        mat = self.material(context)
+        prepare(context, mat)
+        merge_folder(mat, mat.m3d_layer_index, new_size(context))
         return _done(context, mat)
 
 
@@ -1522,14 +2111,17 @@ class M3D_OT_mask_rebake(_ActiveLayerOp, Operator):
 
 
 class M3D_OT_layer_merge_down(_ActiveLayerOp, Operator):
-    """Merge the active layer into the one below it (the pixels are combined with the layer's blend mode, opacity and
-    mask; the result keeps the lower layer's blend mode)"""
+    """Merge the active layer (or folder) into the layer below it in the same folder (the pixels are combined with the
+    layer's blend mode, opacity and mask; the result keeps the lower layer's blend mode)"""
     bl_idname = "m3d.layer_merge_down"
     bl_label = "Merge Down"
 
     @classmethod
     def poll(cls, context):
-        return super().poll(context) and mesh_of(context).active_material.m3d_layer_index > 0
+        if not super().poll(context):
+            return False
+        low = below_sibling(active_layer(mesh_of(context).active_material))
+        return low is not None and low.kind != 'FOLDER'
 
     def execute(self, context):
         mat = self.material(context)
@@ -1572,11 +2164,36 @@ class M3D_OT_layer_convert(_ActiveLayerOp, Operator):
 # -----------------------------------------------------------------------------
 # UI list of the stack (top layer first)
 
+KIND_ICONS = {'PAINT': 'IMAGE_DATA', 'FILL': 'COLOR', 'FOLDER': 'FILE_FOLDER'}
+
+
 class M3D_UL_layers(UIList):
-    def draw_item(self, _context, layout, _data, item, _icon, _active_data, _active_propname, _index):
+    def filter_items(self, _context, data, propname):
+        """Hide what is inside a folder that is closed."""
+        layers = list(getattr(data, propname))
+        closed = {l.uid for l in layers if l.kind == 'FOLDER' and not l.expanded}
+        parents = {l.uid: l.parent for l in layers}
+
+        def hidden(layer):
+            parent, hops = layer.parent, 0
+            while parent and hops < 64:
+                if parent in closed:
+                    return True
+                parent, hops = parents.get(parent), hops + 1
+            return False
+        return [0 if hidden(l) else self.bitflag_filter_item for l in layers], []
+
+    def draw_item(self, _context, layout, _data, item, _icon, _active_data, _active_propname, index):
         row = layout.row(align=True)
+        row.enabled = not in_frozen(item)   # (a frozen folder's layers are kept, not editable)
+        depth = depth_of(item)
+        if depth:
+            row.separator(factor=2.0 * depth)
+        folder = item.kind == 'FOLDER'
+        if folder:
+            row.prop(item, "expanded", text="", icon='TRIA_DOWN' if item.expanded else 'TRIA_RIGHT', emboss=False)
         row.prop(item, "visible", text="", icon='HIDE_OFF' if item.visible else 'HIDE_ON', emboss=False)
-        row.label(text="", icon='IMAGE_DATA' if item.kind == 'PAINT' else 'COLOR')
+        row.label(text="", icon=KIND_ICONS[item.kind])
         row.prop(item, "name", text="", emboss=False)
         if item.mask_stack:
             row.label(text="", icon='MOD_MASK')
@@ -1584,7 +2201,12 @@ class M3D_UL_layers(UIList):
         sub.scale_x = 0.9
         sub.prop(item, "blend", text="")
         row.prop(item, "opacity", text="", slider=True)
-        row.label(text="".join(ch.label[0] for ch in CHANNELS if has_content(item, ch.id)))
+        if folder:
+            op = row.operator("m3d.layer_unfreeze" if item.frozen else "m3d.layer_freeze", text="", icon='FREEZE',
+                              depress=item.frozen)
+            op.index = index
+        else:
+            row.label(text="".join(ch.label[0] for ch in CHANNELS if has_content(item, ch.id)))
 
 
 class M3D_UL_mask_effects(UIList):
@@ -1605,9 +2227,15 @@ classes = (
     MK.M3D_MaskEffect,
     M3D_Layer,
     M3D_OT_layer_add,
+    M3D_OT_layer_folder_add,
     M3D_OT_layer_duplicate,
     M3D_OT_layer_remove,
     M3D_OT_layer_move,
+    M3D_OT_layer_move_into,
+    M3D_OT_layer_move_out,
+    M3D_OT_layer_freeze,
+    M3D_OT_layer_unfreeze,
+    M3D_OT_layer_merge_folder,
     M3D_OT_layer_visible,
     M3D_OT_layer_mask_add,
     M3D_OT_layer_mask_remove,
@@ -1642,7 +2270,7 @@ def _follow_strokes():
     _pending[0] = False
     for mat in bpy.data.materials:
         if mat.node_tree is not None and any(e.kind == 'BLUR' for l in mat.m3d_layers for e in l.mask_stack):
-            for layer in mat.m3d_layers:
+            for layer in live_layers(mat):
                 MK.refresh_blurs(layer)
 
 

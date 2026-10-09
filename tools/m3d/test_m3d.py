@@ -2988,6 +2988,641 @@ check(LY.mask_top(om.node_tree, ol) is not None, "...and the nodes are built")
 N = N_saved
 
 # ----------------------------------------------------------------------------------------------------
+# Phase 7b: layer folders and freezing (data, operators, node chains, numpy == nodes, freeze / unfreeze, merge,
+# export, saving, the Layers tab).
+import time
+
+check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in (
+    LY.M3D_OT_layer_folder_add, LY.M3D_OT_layer_move_into, LY.M3D_OT_layer_move_out, LY.M3D_OT_layer_freeze,
+    LY.M3D_OT_layer_unfreeze, LY.M3D_OT_layer_merge_folder)), "folder operators registered")
+check({i.identifier for i in LY.M3D_Layer.bl_rna.properties["kind"].enum_items} == {'PAINT', 'FILL', 'FOLDER'}
+      and {"parent", "expanded", "frozen"} <= set(LY.M3D_Layer.bl_rna.properties.keys()), "folder properties")
+check({"m3d.layer_folder_add", "m3d.layer_move_into", "m3d.layer_move_out", "m3d.layer_freeze", "m3d.layer_unfreeze",
+       "m3d.layer_merge_folder"} <= {e.get("idname") for e in m3d_ui.MENUS["M3D_MT_layers"][1]}, "the Layers menu has the folder operators")
+check({"FREEZE", "FILE_FOLDER", "TRIA_RIGHT", "TRIA_DOWN"} <= icons, "folder icons exist")
+N = 8
+
+
+def shape(mat, parent=""):
+    """The stack as text, bottom to top, a folder with its layers in brackets: "A Folder[B C] D"."""
+    return " ".join(l.name + ("[%s]" % shape(mat, l.uid) if l.kind == 'FOLDER' else "") for l in LY.kids_of(mat, parent))
+
+
+def well_formed(mat):
+    """Every folder is listed right after the layers inside it, every parent exists, uids are unique."""
+    uids = [l.uid for l in mat.m3d_layers]
+    for f in (l for l in mat.m3d_layers if l.kind == 'FOLDER'):
+        inside, i = [l.uid for l in LY.descendants(f)], uids.index(f.uid)
+        if inside != uids[i - len(inside):i]:
+            return False
+    return all(not l.parent or l.parent in uids for l in mat.m3d_layers) and len(set(uids)) == len(uids)
+
+
+def select(mat, name):
+    mat.m3d_layer_index = next(i for i, l in enumerate(mat.m3d_layers) if l.name == name)
+    return mat.m3d_layers[mat.m3d_layer_index]
+
+
+def named(mat, name):
+    return next(l for l in mat.m3d_layers if l.name == name)
+
+
+def chain_names(mat, ch_id):
+    """Names of the nodes of a channel's chain (the frame and the Normal Map / Bump nodes left out)."""
+    return {n.name for n in mat.node_tree.nodes if n.get(LY.TAG) == ch_id and n.type not in {'FRAME', 'NORMAL_MAP', 'BUMP'}}
+
+
+def expected_nodes(layers, ch_id, root=True):
+    """The nodes a chain must have, worked out from the rules: every layer an opacity node (a mask multiply with a mask),
+    an image node (a color node for a fill inside a folder); at the top level a Mix per layer; inside a folder the layers
+    after the first have the blend, shown, total, share and out nodes."""
+    out = set()
+    for i, l in enumerate(l for l in layers if LY.has_content(l, ch_id)):
+        part = lambda key: LY.part(ch_id, l.uid, key)
+        out.add(part("opv"))
+        if l.kind == 'FOLDER' and not l.frozen:
+            out |= expected_nodes(LY.children(l), ch_id, False)
+        elif LY.uses_image(l):
+            out.add(part("tex"))
+        elif not root:
+            out.add(part("fill"))
+        if l.mask_stack:
+            out.add(part("maskmul"))
+        if root:
+            out.add(part("mix"))
+        elif i:
+            out |= {part(k) for k in ("mix", "shown", "total", "share", "out")}
+    return out
+
+
+def rand_image(image, opaque=False):
+    w, h = image.size
+    px = fold_rng.random((h, w, 4)).astype(np.float32)
+    if opaque:
+        px[..., 3] = 1.0
+    LY.write_pixels(image, px)
+
+
+fold_rng = np.random.default_rng(31)
+
+# --- Data and operators on a cube: New Folder, Move Into Folder, the arrows, Move Out, collapse, opacity
+fo_ob, fo_mat = fresh_cube("Fold", '64')
+for name in ("A", "B", "C"):
+    bpy.ops.m3d.layer_add(kind='PAINT')
+    LY.active_layer(fo_mat).name = name
+    for ch_id in ('ROUGHNESS', 'BASE_COLOR') if name != "B" else ('BASE_COLOR',):
+        bpy.ops.m3d.tex_channel(channel=ch_id)
+        rand_image(LY.entry_of(LY.active_layer(fo_mat), ch_id).image, opaque=name == "A")
+check(shape(fo_mat) == "A B C" and all(not l.parent and l.expanded and not l.frozen for l in fo_mat.m3d_layers),
+      "old-style layers have no folder: %s" % shape(fo_mat))
+flat_sig = repr([(l.uid, l.kind, LY.entry_of(l, 'BASE_COLOR').image.name, False, True) for l in fo_mat.m3d_layers])
+check(LY.signature(LY.chain_tree(LY.kids_of(fo_mat), 'BASE_COLOR'), 'BASE_COLOR') == flat_sig,
+      "a stack without folders has the chain signature it had before (nothing is made again when a file opens)")
+check(chain_names(fo_mat, 'BASE_COLOR') == expected_nodes(fo_mat.m3d_layers, 'BASE_COLOR')
+      and chain_names(fo_mat, 'BASE_COLOR') == {LY.part('BASE_COLOR', l.uid, k) for l in fo_mat.m3d_layers for k in ("opv", "mix", "tex")},
+      "a stack without folders has the nodes it always had: an opacity node, an image node and a Mix per layer")
+
+check(bpy.ops.m3d.layer_folder_add() == {'FINISHED'}, "New Folder")
+fold = LY.active_layer(fo_mat)
+check(fold.kind == 'FOLDER' and fold.name == "Folder" and shape(fo_mat) == "A B C Folder[]" and fo_mat.m3d_layer_index == 3
+      and well_formed(fo_mat), "New Folder: an empty folder above the active layer (%s)" % shape(fo_mat))
+check(not any(LY.has_content(fold, c.id) for c in LY.CHANNELS) and not [n for n in fo_mat.node_tree.nodes if fold.uid in n.name],
+      "an empty folder changes nothing and has no nodes")
+check(bpy.ops.m3d.layer_move_into.poll() is False, "Move Into Folder: the active folder cannot go into itself")
+select(fo_mat, "B")
+check(bpy.ops.m3d.layer_move_into.poll() and bpy.ops.m3d.layer_move_into(folder=named(fo_mat, "Folder").uid) == {'FINISHED'}
+      and shape(fo_mat) == "A C Folder[B]" and LY.active_layer(fo_mat).name == "B" and well_formed(fo_mat),
+      "Move Into Folder: %s" % shape(fo_mat))
+select(fo_mat, "C")
+check(bpy.ops.m3d.layer_move_into(folder=named(fo_mat, "Folder").uid) == {'FINISHED'} and shape(fo_mat) == "A Folder[B C]"
+      and [l.name for l in fo_mat.m3d_layers] == ["A", "B", "C", "Folder"] and well_formed(fo_mat), "...to the top of the folder: %s" % shape(fo_mat))
+check(not bpy.ops.m3d.layer_move_into.poll(), "...and a layer cannot be moved into the folder it is in")
+fold = named(fo_mat, "Folder")
+check([LY.depth_of(l) for l in fo_mat.m3d_layers] == [0, 1, 1, 0] and [l.name for l in LY.descendants(fold)] == ["B", "C"]
+      and [a.name for a in LY.ancestors(named(fo_mat, "C"))] == ["Folder"], "depth, descendants and ancestors")
+
+# Node chains: the folder is one more layer of the chain below it, its layers are chained inside it over nothing.
+for ch_id in ('BASE_COLOR', 'ROUGHNESS'):
+    check(chain_names(fo_mat, ch_id) == expected_nodes(LY.kids_of(fo_mat), ch_id), "%s chain nodes with a folder" % ch_id)
+check([n.name for n in level(fo_mat, 'BASE_COLOR')] == [LY.part('BASE_COLOR', named(fo_mat, "A").uid, "mix"), LY.part('BASE_COLOR', fold.uid, "mix")],
+      "the folder has a Mix of its own in the chain, over layer A")
+nt = fo_mat.node_tree
+nd = lambda ch_id, layer, key: nt.nodes[LY.part(ch_id, layer.uid, key)]
+b_layer, c_layer = named(fo_mat, "B"), named(fo_mat, "C")
+fm = nd('BASE_COLOR', fold, "mix")
+check(fm.inputs[7].links[0].from_node == nd('BASE_COLOR', c_layer, "out") and nd('BASE_COLOR', fold, "opv").inputs[0].links[0].from_node == nd('BASE_COLOR', c_layer, "total")
+      and fm.blend_type == 'MIX' and fm.clamp_result,
+      "the folder's Mix takes the color and the coverage of its top layer")
+check(nd('BASE_COLOR', c_layer, "out").inputs[6].links[0].from_node == nd('BASE_COLOR', b_layer, "tex")
+      and nd('BASE_COLOR', c_layer, "mix").inputs[6].links[0].from_node == nd('BASE_COLOR', b_layer, "tex")
+      and nd('BASE_COLOR', c_layer, "total").inputs[2].links[0].from_node == nd('BASE_COLOR', b_layer, "opv")
+      and nd('BASE_COLOR', c_layer, "out").inputs[0].links[0].from_node == nd('BASE_COLOR', c_layer, "share"),
+      "inside the folder the second layer is chained over the first (no start value)")
+check(not nd('BASE_COLOR', c_layer, "mix").clamp_result and nd('BASE_COLOR', c_layer, "out").clamp_result
+      and nd('BASE_COLOR', c_layer, "total").data_type == 'FLOAT' and nd('BASE_COLOR', c_layer, "share").operation == 'DIVIDE',
+      "...with the blend and shown Mix unclamped, the result clamped")
+check({n.parent.name for n in nt.nodes if n.get(LY.TAG) == 'BASE_COLOR' and n.type != 'FRAME'} == {"%s.BASE_COLOR" % LY.TAG}, "all of it in the channel's frame")
+check(not LY.has_content(fold, 'METALLIC') and LY.has_content(fold, 'ROUGHNESS')
+      and chain_names(fo_mat, 'ROUGHNESS') == {LY.part('ROUGHNESS', l.uid, k) for l, k in (
+          (named(fo_mat, "A"), "opv"), (named(fo_mat, "A"), "mix"), (named(fo_mat, "A"), "tex"), (fold, "opv"), (fold, "mix"),
+          (c_layer, "opv"), (c_layer, "tex"))}, "a channel only some layers have: the folder holds just those (a single layer needs no blending nodes)")
+
+# Values only set node values.
+nodes_ptr = {n.name: n.as_pointer() for n in nt.nodes}
+fold.opacity, fold.blend = 0.5, 'MULTIPLY'
+c_layer.opacity, c_layer.blend, c_layer.visible = 0.4, 'OVERLAY', False
+check({n.name: n.as_pointer() for n in nt.nodes} == nodes_ptr, "folder and layer values only change node values")
+check(abs(nd('BASE_COLOR', fold, "opv").inputs[1].default_value - 0.5) < 1e-6 and fm.blend_type == 'MULTIPLY'
+      and nd('BASE_COLOR', c_layer, "opv").inputs[1].default_value == 0.0 and nd('BASE_COLOR', c_layer, "mix").blend_type == 'OVERLAY',
+      "...opacity, blend mode and visibility of the folder and of a layer inside it")
+fold.opacity, fold.blend, c_layer.opacity, c_layer.blend, c_layer.visible = 1.0, 'MIX', 1.0, 'MIX', True
+
+# The arrows step through the list, in and out of open folders.
+select(fo_mat, "C")
+steps_expected = [(1, "A Folder[B] C"), (-1, "A Folder[B C]"), (-1, "A Folder[C B]"), (-1, "A C Folder[B]"), (-1, "C A Folder[B]"),
+                  (-1, None), (1, "A C Folder[B]"), (1, "A Folder[C B]"), (1, "A Folder[B C]")]
+for delta, want in steps_expected:
+    res = bpy.ops.m3d.layer_move(delta=delta)
+    check((res == {'CANCELLED'}) if want is None else (res == {'FINISHED'} and shape(fo_mat) == want and well_formed(fo_mat)
+                                                         and LY.active_layer(fo_mat).name == "C"),
+          "Move %s: %s (want %s)" % ("Up" if delta > 0 else "Down", shape(fo_mat), want))
+for ch_id in ('BASE_COLOR', 'ROUGHNESS'):
+    check(chain_names(fo_mat, ch_id) == expected_nodes(LY.kids_of(fo_mat), ch_id), "%s chain follows the moves" % ch_id)
+check(slot_image(fo_mat) == LY.entry_of(named(fo_mat, "C"), 'BASE_COLOR').image, "the paint target follows a layer into and out of a folder")
+check(bpy.ops.m3d.layer_move_out.poll() and bpy.ops.m3d.layer_move_out() == {'FINISHED'} and shape(fo_mat) == "A Folder[B] C"
+      and not LY.active_layer(fo_mat).parent and not bpy.ops.m3d.layer_move_out.poll(), "Move Out of Folder: above the folder")
+check(bpy.ops.m3d.layer_move_into(folder=named(fo_mat, "Folder").uid) == {'FINISHED'} and shape(fo_mat) == "A Folder[B C]", "...and Move Into again")
+
+# Collapse: the list hides the layers inside; the active layer inside moves to the folder.
+fold = named(fo_mat, "Folder")
+select(fo_mat, "C")
+flags = LY.M3D_UL_layers.filter_items(NS(bitflag_filter_item=1 << 30), None, fo_mat, "m3d_layers")[0]
+check(flags == [1 << 30] * 4, "an open folder hides nothing in the list")
+fold.expanded = False
+check(LY.active_layer(fo_mat).name == "Folder", "closing a folder that holds the active layer selects the folder")
+flags = LY.M3D_UL_layers.filter_items(NS(bitflag_filter_item=1 << 30), None, fo_mat, "m3d_layers")[0]
+check(flags == [1 << 30, 0, 0, 1 << 30], "a closed folder hides the layers inside it: %s" % flags)
+select(fo_mat, "A")
+check(bpy.ops.m3d.layer_move(delta=1) == {'FINISHED'} and shape(fo_mat) == "Folder[B C] A", "a closed folder is passed as a block: %s" % shape(fo_mat))
+check(bpy.ops.m3d.layer_move(delta=-1) == {'FINISHED'} and shape(fo_mat) == "A Folder[B C]", "...also downwards")
+fold.expanded = True
+check(chain_names(fo_mat, 'BASE_COLOR') == expected_nodes(LY.kids_of(fo_mat), 'BASE_COLOR'), "opening and closing a folder does not touch the nodes")
+
+# Group Active, Duplicate Folder, Delete Folder (images), Show / Hide
+select(fo_mat, "A")
+check(bpy.ops.m3d.layer_folder_add(group=True) == {'FINISHED'} and shape(fo_mat) == "Folder 2[A] Folder[B C]"
+      and LY.active_layer(fo_mat).name == "Folder 2" and well_formed(fo_mat), "Group Active: %s" % shape(fo_mat))
+select(fo_mat, "Folder")
+images_before = {i.name for i in bpy.data.images}
+check(bpy.ops.m3d.layer_duplicate() == {'FINISHED'} and shape(fo_mat) == "Folder 2[A] Folder[B C] Folder Copy[B Copy C Copy]"
+      and LY.active_layer(fo_mat).name == "Folder Copy" and well_formed(fo_mat), "Duplicate Folder: %s" % shape(fo_mat))
+copy_f = named(fo_mat, "Folder Copy")
+new_images = {i.name for i in bpy.data.images} - images_before
+check(len(new_images) == 3 and all(np.array_equal(read(LY.entry_of(named(fo_mat, n + " Copy"), c).image), read(LY.entry_of(named(fo_mat, n), c).image))
+                                   for n, c in (("B", 'BASE_COLOR'), ("C", 'BASE_COLOR'), ("C", 'ROUGHNESS')))
+      and len({l.uid for l in fo_mat.m3d_layers}) == 8, "...its layers' images are copied (%d new images)" % len(new_images))
+for ch_id in ('BASE_COLOR', 'ROUGHNESS'):
+    check(chain_names(fo_mat, ch_id) == expected_nodes(LY.kids_of(fo_mat), ch_id), "%s chain with the copy" % ch_id)
+shared = bpy.data.images.new("m3dFoldShared", 8, 8)
+LY.entry_of(named(fo_mat, "C Copy"), 'METALLIC').image = shared
+LY.entry_of(named(fo_mat, "A"), 'METALLIC').image = shared
+check(bpy.ops.m3d.layer_remove() == {'FINISHED'} and shape(fo_mat) == "Folder 2[A] Folder[B C]" and well_formed(fo_mat)
+      and {i.name for i in bpy.data.images} == images_before | {"m3dFoldShared"},
+      "Delete Folder removes its layers and their images, but not an image used elsewhere: %s" % shape(fo_mat))
+LY.entry_of(named(fo_mat, "A"), 'METALLIC').image = None
+bpy.data.images.remove(shared)
+check(LY.active_layer(fo_mat).name == "Folder", "...and the layer after it is selected (%s)" % LY.active_layer(fo_mat).name)
+fold2 = named(fo_mat, "Folder 2")
+fold2.visible = False
+check(nd('ROUGHNESS', fold2, "opv").inputs[1].default_value == 0.0, "a hidden folder has factor 0 in the chains")
+fold2.visible = True
+
+# Merge Down: a layer onto a leaf below it in the same folder; the layer at the bottom of a folder has none.
+select(fo_mat, "B")
+check(not bpy.ops.m3d.layer_merge_down.poll(), "Merge Down: the lowest layer of a folder has none below it in the folder")
+select(fo_mat, "C")
+check(bpy.ops.m3d.layer_merge_down.poll(), "...the one above it can merge down")
+select(fo_mat, "Folder")
+check(bpy.ops.m3d.layer_merge_down.poll() is False, "...a folder cannot merge down onto a folder (Merge Folder first)")
+
+# --- Nested folders: a folder moved into a folder, copied, deleted, moved out
+select(fo_mat, "Folder 2")
+check(bpy.ops.m3d.layer_move_into(folder=named(fo_mat, "Folder").uid) == {'FINISHED'} and shape(fo_mat) == "Folder[B C Folder 2[A]]"
+      and well_formed(fo_mat) and [LY.depth_of(named(fo_mat, n)) for n in ("Folder", "B", "Folder 2", "A")] == [0, 1, 1, 2],
+      "a folder moved into a folder: %s" % shape(fo_mat))
+for ch_id in ('BASE_COLOR', 'ROUGHNESS'):
+    check(chain_names(fo_mat, ch_id) == expected_nodes(LY.kids_of(fo_mat), ch_id), "%s chain with nested folders" % ch_id)
+select(fo_mat, "Folder")
+check(not bpy.ops.m3d.layer_move_into.poll(), "a folder cannot be moved into a folder inside it")
+check(bpy.ops.m3d.layer_duplicate() == {'FINISHED'}
+      and shape(fo_mat) == "Folder[B C Folder 2[A]] Folder Copy[B Copy C Copy Folder 2 Copy[A Copy]]" and well_formed(fo_mat),
+      "Duplicate copies nested folders: %s" % shape(fo_mat))
+check(bpy.ops.m3d.layer_remove() == {'FINISHED'} and shape(fo_mat) == "Folder[B C Folder 2[A]]" and well_formed(fo_mat)
+      and {i.name for i in bpy.data.images} == images_before, "...and Delete removes them with their images")
+select(fo_mat, "Folder 2")
+check(bpy.ops.m3d.layer_move_out() == {'FINISHED'} and shape(fo_mat) == "Folder[B C] Folder 2[A]" and well_formed(fo_mat),
+      "Move Out of Folder: %s" % shape(fo_mat))
+
+# --- Merge Folder: the folder becomes one paint layer holding what its layers made together
+select(fo_mat, "Folder")
+fold = LY.active_layer(fo_mat)
+fold.blend, fold.opacity = 'MULTIPLY', 0.6
+bpy.ops.m3d.layer_mask_add(fill='WHITE')
+LY.write_pixels(LY.paint_effect(fold).image, np.concatenate([fold_rng.random((64 * 64, 3)), np.ones((64 * 64, 1))], axis=-1).astype(np.float32))
+before = {c: LY.composite(fo_mat, c, 64) for c in ('BASE_COLOR', 'ROUGHNESS')}
+mask_name, kids_images = LY.paint_effect(fold).image.name, [e.image.name for l in LY.descendants(fold) for e in l.channels if e.image]
+check(bpy.ops.m3d.layer_merge_folder() == {'FINISHED'} and shape(fo_mat) == "Folder Folder 2[A]" and well_formed(fo_mat), "Merge Folder: %s" % shape(fo_mat))
+merged = named(fo_mat, "Folder")
+check(merged.kind == 'PAINT' and merged.blend == 'MULTIPLY' and abs(merged.opacity - 0.6) < 1e-6 and merged.visible and merged.use_alpha
+      and LY.paint_effect(merged) is not None and LY.paint_effect(merged).image.name == mask_name and not merged.frozen,
+      "...it keeps the folder's name, blend mode, opacity and mask")
+check(not [n for n in kids_images if n in bpy.data.images] and len(LY.kids_of(fo_mat)) == 2 and not LY.children(merged), "...the layers inside and their images are gone")
+check(LY.has_content(merged, 'BASE_COLOR') and LY.has_content(merged, 'ROUGHNESS') and not LY.has_content(merged, 'METALLIC')
+      and LY.entry_of(merged, 'BASE_COLOR').image.colorspace_settings.name == 'sRGB'
+      and LY.entry_of(merged, 'ROUGHNESS').image.colorspace_settings.name == 'Non-Color', "...with an image for the channels the layers had")
+for ch_id, tol in (('BASE_COLOR', 0.012), ('ROUGHNESS', 0.006)):
+    after = LY.composite(fo_mat, ch_id, 64)
+    check(np.abs(after - before[ch_id]).max() < tol, "the merged folder looks the same: %s (largest difference %.5f)" % (ch_id, np.abs(after - before[ch_id]).max()))
+    check(chain_names(fo_mat, ch_id) == expected_nodes(LY.kids_of(fo_mat), ch_id), "%s chain after Merge Folder" % ch_id)
+
+# --- The Layers tab with folders (data stubs)
+tex_ws = bpy.data.workspaces["Texture"]
+fo_ctx = TCtx()
+select(fo_mat, "Folder 2")
+for what, name in (("folder", "Folder 2"), ("layer in a folder", "A")):
+    select(fo_mat, name)
+    for cls in (T.PROPERTIES_PT_m3d_tx_stack, T.PROPERTIES_PT_m3d_tx_layer, T.PROPERTIES_PT_m3d_tx_mask):
+        log = draw_stub(cls, fo_ctx)
+        check_calls("%s with the active %s" % (cls.__name__, what), log)
+        if cls is T.PROPERTIES_PT_m3d_tx_stack:
+            ops = {r._args[0] for r in log if r._kind in {"operator", "operator_menu_enum"}}
+            check({"m3d.layer_add", "m3d.layer_folder_add", "m3d.layer_move_into", "m3d.layer_move_out"} <= ops,
+                  "the Layers panel has New Folder, Group, Move In and Move Out: %s" % sorted(ops))
+            check(sum(1 for r in log if r._kind == "operator" and r._args[0] == "m3d.layer_folder_add") == 2, "...New Folder next to Paint Layer and Fill Layer, and Group")
+        if cls is T.PROPERTIES_PT_m3d_tx_layer and what == "folder":
+            ops = {r._args[0] for r in log if r._kind == "operator"}
+            check({"m3d.layer_freeze", "m3d.layer_merge_folder"} <= ops
+                  and {r._args[1] for r in log if r._kind == "prop"} >= {"name", "blend", "opacity", "visible"}, "the Layer panel of a folder: properties, Freeze, Merge Folder")
+rows = []
+for layer in fo_mat.m3d_layers:
+    log = []
+    LY.M3D_UL_layers.draw_item(None, fo_ctx, Rec(log), None, layer, 0, None, "", LY.index_of(fo_mat, layer.uid))
+    check_calls("layer list row of " + layer.name, log)
+    props = {r._args[1] for r in log if r._kind == "prop"}
+    check(props >= {"visible", "name", "blend", "opacity"} and ("expanded" in props) == (layer.kind == 'FOLDER'), "list row of %s: %s" % (layer.name, sorted(props)))
+    check(any(r._kind == "separator" for r in log) == bool(layer.parent), "...children are indented")
+    check(any(r._kind == "operator" and r._args[0] == "m3d.layer_freeze" for r in log) == (layer.kind == 'FOLDER'), "...a folder row has the freeze toggle")
+check(bpy.ops.m3d.layer_folder_add.poll(), "New Folder works in Texture Paint Mode")
+
+# --- numpy == nodes with folders (a Cycles emission bake of the chain's top, against LY.composite)
+clean_scene()
+bpy.ops.mesh.primitive_plane_add()
+fplane = bpy.context.active_object
+fplane.name = "FolderCheck"
+bpy.ops.m3d.tex_add_material()
+fpm = fplane.active_material
+
+CH = {'BASE_COLOR': True, 'ROUGHNESS': False}   # channel -> sRGB image
+
+
+def build_stack(mat, spec, chans=('ROUGHNESS',)):
+    """The layers [(name, kind, parent name, settings)] from the bottom, a folder after its layers. Settings are layer
+    properties, plus img ('opaque' / 'alpha': noise images for every channel in `chans`), value / color (fills) and mask."""
+    with LY.muted():
+        mat.m3d_layers.clear()
+        for image in [i for i in bpy.data.images if i.name.startswith("fx")]:   # (the images of the stack before)
+            bpy.data.images.remove(image)
+        for name, kind, _parent, _props in spec:
+            LY.add_layer(mat, kind, name)
+        by = {l.name: l for l in mat.m3d_layers}
+        for name, kind, parent, props in spec:
+            l, props = by[name], dict(props)
+            l.parent = by[parent].uid if parent else ""
+            img, mask = props.pop("img", None), props.pop("mask", False)
+            value, color = props.pop("value", 0.3), props.pop("color", (0.7, 0.2, 0.4, 1.0))
+            for ch in LY.CHANNELS:
+                LY.entry_of(l, ch.id).use = False
+            for ch_id in chans:
+                e = LY.entry_of(l, ch_id)
+                e.use = kind != 'FOLDER'
+                e.value, e.color = value, color
+                if img:
+                    e.image = noise_image("fx_%s_%s_%s" % (name, ch_id, fold_rng.integers(10 ** 6)), CH[ch_id], opaque=img == 'opaque')
+            for key, value_ in props.items():
+                setattr(l, key, value_)
+            if mask:
+                set_mask(l, noise_image("fxm_%s_%s" % (name, fold_rng.integers(10 ** 6)), False, alpha=False))
+        mat.m3d_layer_index = 0
+    LY.rebuild_all(mat)
+    return {l.name: l for l in mat.m3d_layers}
+
+
+def spec_folder(mode, opacity, **over_):
+    """Base, a folder (blend mode and opacity as given) of two noise layers and a fill, a layer on top."""
+    mode2 = 'OVERLAY' if mode != 'OVERLAY' else 'DARKEN'
+    spec = [("Base", 'PAINT', "", dict(img='opaque')),
+            ("C1", 'PAINT', "F", dict(img='alpha', opacity=0.8)),
+            ("C2", 'PAINT', "F", dict(img='alpha', blend=mode, opacity=0.65)),
+            ("C3", 'FILL', "F", dict(blend=mode2, opacity=0.5)),
+            ("F", 'FOLDER', "", dict(blend=mode, opacity=opacity)),
+            ("Top", 'PAINT', "", dict(img='alpha', blend='MULTIPLY', opacity=0.9))]
+    for i, (name, kind, parent, props) in enumerate(spec):
+        spec[i] = (name, kind, parent, {**props, **over_.get(name, {})})
+    return spec
+
+
+def bake_error(label, mat, ch_id, tol, store):
+    got = bake_chain(fplane, mat, ch_id)
+    mine = LY.composite(mat, ch_id, N)
+    err = float(np.abs(got - mine).max())
+    store.setdefault(ch_id, []).append(err)
+    check(err < tol, "numpy matches the node chain with folders: %s (%s, error %.5f)" % (label, ch_id, err))
+    return err
+
+
+fold_worst, fold_srgb_opaque = {}, {}
+# Data channels are exact (float rounding). sRGB images with alpha are not: Cycles keeps them with the colour multiplied by
+# the alpha in 8 bits, which costs about 1% (a flat stack without folders has the same error, see the layer blend test).
+DATA_TOL, SRGB_TOL, SRGB_OPAQUE_TOL = 2e-4, 0.012, 2e-4
+for mode, _label in LY.BLENDS:
+    for opacity in (1.0, 0.5):
+        L_ = build_stack(fpm, spec_folder(mode, opacity))
+        check(chain_names(fpm, 'ROUGHNESS') == expected_nodes(LY.kids_of(fpm), 'ROUGHNESS') and well_formed(fpm), "nodes of the folder test stack")
+        bake_error("%s at %.1f" % (mode, opacity), fpm, 'ROUGHNESS', DATA_TOL, fold_worst)
+for mode in ('MIX', 'MULTIPLY', 'SOFT_LIGHT', 'COLOR'):
+    build_stack(fpm, spec_folder(mode, 0.7), chans=('BASE_COLOR',))
+    bake_error("%s base color" % mode, fpm, 'BASE_COLOR', SRGB_TOL, fold_worst)
+    build_stack(fpm, [(n, k, p_, {**pr, "img": "opaque"} if pr.get("img") else pr) for n, k, p_, pr in spec_folder(mode, 0.7)], chans=('BASE_COLOR',))
+    bake_error("%s base color (opaque images)" % mode, fpm, 'BASE_COLOR', SRGB_OPAQUE_TOL, fold_srgb_opaque)
+# masks on the folder and on one of its layers, hidden folder / layer / first layer / all layers, a folder over nothing but fills
+scenarios = (
+    ("folder mask", spec_folder('SCREEN', 0.8, F=dict(mask=True))),
+    ("layer mask", spec_folder('ADD', 1.0, C2=dict(mask=True), C1=dict(mask=True))),
+    ("both masks", spec_folder('SUBTRACT', 0.6, F=dict(mask=True), C2=dict(mask=True))),
+    ("hidden folder", spec_folder('MULTIPLY', 1.0, F=dict(visible=False))),
+    ("hidden layer", spec_folder('DIFFERENCE', 1.0, C2=dict(visible=False))),
+    ("hidden first layer", spec_folder('LIGHTEN', 0.9, C1=dict(visible=False))),
+    ("hidden layers", spec_folder('SOFT_LIGHT', 0.9, C1=dict(visible=False), C2=dict(visible=False), C3=dict(visible=False))),
+    ("folder opacity 0", spec_folder('MIX', 0.0)),
+)
+for label, spec in scenarios:
+    for ch_id in ('ROUGHNESS', 'BASE_COLOR'):
+        build_stack(fpm, spec, chans=(ch_id,))
+        bake_error("%s %s" % (label, ch_id), fpm, ch_id, DATA_TOL if ch_id == 'ROUGHNESS' else SRGB_TOL, fold_worst)
+# a folder in a folder, and a folder first in the stack (over the channel's value)
+nested = [("Base", 'PAINT', "", dict(img='opaque')),
+          ("C1", 'PAINT', "F", dict(img='alpha', opacity=0.8)),
+          ("G1", 'PAINT', "G", dict(img='alpha', blend='MULTIPLY', opacity=0.7)),
+          ("G2", 'PAINT', "G", dict(img='alpha', blend='SOFT_LIGHT')),
+          ("G", 'FOLDER', "F", dict(blend='OVERLAY', opacity=0.75)),
+          ("C3", 'FILL', "F", dict(blend='ADD', opacity=0.5)),
+          ("F", 'FOLDER', "", dict(blend='COLOR', opacity=0.9)),
+          ("Top", 'PAINT', "", dict(img='alpha', opacity=0.9))]
+for ch_id in ('ROUGHNESS', 'BASE_COLOR'):
+    build_stack(fpm, nested, chans=(ch_id,))
+    check(shape(fpm) == "Base F[C1 G[G1 G2] C3] Top" and well_formed(fpm) and chain_names(fpm, ch_id) == expected_nodes(LY.kids_of(fpm), ch_id),
+          "a folder in a folder: %s" % shape(fpm))
+    bake_error("nested folders", fpm, ch_id, DATA_TOL if ch_id == 'ROUGHNESS' else SRGB_TOL, fold_worst)
+    first = [("C1", 'PAINT', "F", dict(img='alpha', opacity=0.8)), ("C2", 'PAINT', "F", dict(img='alpha', blend='MULTIPLY')),
+             ("F", 'FOLDER', "", dict(blend='OVERLAY', opacity=0.8)), ("Top", 'PAINT', "", dict(img='alpha', opacity=0.9))]
+    build_stack(fpm, first, chans=(ch_id,))
+    bake_error("a folder at the bottom", fpm, ch_id, DATA_TOL if ch_id == 'ROUGHNESS' else SRGB_TOL, fold_worst)
+print("folders vs Cycles bake: worst linear error %.6f (data channel), %.6f (sRGB, opaque images), %.5f (sRGB with alpha), %d bakes" % (
+    max(fold_worst['ROUGHNESS']), max(fold_srgb_opaque['BASE_COLOR']), max(fold_worst['BASE_COLOR']),
+    sum(map(len, fold_worst.values())) + sum(map(len, fold_srgb_opaque.values()))))
+
+# --- Freeze: one image per channel, the chain loses the layers' nodes, the look stays, Unfreeze restores everything
+CHANS2 = ('BASE_COLOR', 'ROUGHNESS')
+fz_spec = spec_folder('OVERLAY', 0.8, F=dict(mask=True), C2=dict(mask=True))
+build_stack(fpm, fz_spec, chans=CHANS2)
+fold = named(fpm, "F")
+live = {c: LY.composite(fpm, c, N) for c in CHANS2}
+state_live = material_state(fpm)
+count_live, tagged_live = len(fpm.node_tree.nodes), len([n for n in fpm.node_tree.nodes if LY.TAG in n.keys()])
+images_live = {i.name for i in bpy.data.images}
+kids_before = [(l.name, l.uid, l.opacity, l.visible) for l in LY.descendants(fold)]
+t0 = time.perf_counter()
+LY.freeze_folder(fpm, LY.index_of(fpm, fold.uid), 16)
+freeze_time = time.perf_counter() - t0
+fold = named(fpm, "F")
+frozen_images = {e.channel: e.image for e in fold.channels if e.image}
+check(fold.frozen and set(frozen_images) == set(CHANS2) and all(e.use == (e.channel in CHANS2) for e in fold.channels),
+      "Freeze: one image per channel the layers change (%s)" % sorted(frozen_images))
+check(all(tuple(img.size) == (8, 8) for img in frozen_images.values()), "...at the largest size of the layers' images (not the default 16)")
+check(frozen_images['BASE_COLOR'].colorspace_settings.name == 'sRGB' and frozen_images['ROUGHNESS'].colorspace_settings.name == 'Non-Color'
+      and all(img["m3d_channel"] == c for c, img in frozen_images.items()) and all(img.depth == 32 for img in frozen_images.values()),
+      "...sRGB for color, Non-Color for data, with alpha, tagged with their channel")
+check(all("Frozen" in img.name for img in frozen_images.values()) and fold.use_alpha, "...named after the folder")
+check(shape(fpm) == "Base F[C1 C2 C3] Top" and [(l.name, l.uid, l.opacity, l.visible) for l in LY.descendants(fold)] == kids_before
+      and all(e.image is not None for l in LY.descendants(fold) for e in l.channels if e.use and l.kind == 'PAINT'),
+      "the layers are kept in the data, untouched")
+for ch_id in CHANS2:
+    check(chain_names(fpm, ch_id) == expected_nodes(LY.kids_of(fpm), ch_id)
+          and chain_names(fpm, ch_id) == {LY.part(ch_id, l.uid, k) for l, ks in ((named(fpm, "Base"), ("opv", "mix", "tex")), (fold, ("opv", "mix", "tex", "maskmul")),
+                                                                              (named(fpm, "Top"), ("opv", "mix", "tex"))) for k in ks},
+          "%s chain after Freeze: the folder is an image node, an opacity node, a mask multiply and a Mix" % ch_id)
+check(not [n for n in fpm.node_tree.nodes if any(l.uid in n.name for l in LY.descendants(fold))], "...no node of a frozen layer is left (masks included)")
+count_frozen = len(fpm.node_tree.nodes)
+check(count_frozen < count_live, "Freeze drops the node count (%d -> %d)" % (count_live, count_frozen))
+print("freeze node counts of a small stack (2 channels, 3 layers in the folder, masks): %d -> %d" % (count_live, count_frozen))
+check(LY.frozen_root(named(fpm, "C1")) is not None and LY.in_frozen(named(fpm, "C1")) and not LY.in_frozen(fold) and LY.frozen_root(fold).uid == fold.uid, "frozen_root / in_frozen")
+frozen_diff = {}
+FREEZE_TOL = 0.012   # 8 bit images: what is stored in the frozen images is rounded to 1/255, in colour and in coverage
+for ch_id in CHANS2:
+    err = float(np.abs(LY.composite(fpm, ch_id, N) - live[ch_id]).max())
+    check(err < FREEZE_TOL, "frozen == live in numpy: %s (largest difference %.5f)" % (ch_id, err))
+    frozen_diff.setdefault("numpy", []).append(err)
+for ch_id, tol in (('ROUGHNESS', DATA_TOL), ('BASE_COLOR', SRGB_TOL)):
+    bake_error("frozen", fpm, ch_id, tol, fold_worst)
+    err = float(np.abs(bake_chain(fplane, fpm, ch_id) - live[ch_id]).max())
+    check(err < FREEZE_TOL, "frozen nodes == live numpy: %s (largest difference %.5f)" % (ch_id, err))
+    frozen_diff.setdefault("nodes", []).append(err)
+print("frozen vs live: worst linear difference %.5f in numpy, %.5f in node bakes; Freeze of this small folder took %.3f s" % (
+    max(frozen_diff["numpy"]), max(frozen_diff["nodes"]), freeze_time))
+check(bpy.ops.m3d.layer_freeze.poll(), "Freeze Folder is available")
+LY.unfreeze_folder(fpm, LY.index_of(fpm, fold.uid))
+fold = named(fpm, "F")
+check(not fold.frozen and all(not e.use and e.image is None for e in fold.channels) and {i.name for i in bpy.data.images} == images_live,
+      "Unfreeze deletes the frozen images")
+check(material_state(fpm) == state_live and len(fpm.node_tree.nodes) == count_live, "Unfreeze restores the live chains: the same nodes and links")
+for ch_id in CHANS2:
+    check(np.abs(LY.composite(fpm, ch_id, N) - live[ch_id]).max() < 1e-6, "...and the same look: %s" % ch_id)
+# Refreshed after an edit: unfreeze, change a layer, freeze again.
+rand_image(LY.entry_of(named(fpm, "C1"), 'ROUGHNESS').image)
+named(fpm, "C2").opacity = 0.2
+live2 = LY.composite(fpm, 'ROUGHNESS', N)
+LY.freeze_folder(fpm, LY.index_of(fpm, named(fpm, "F").uid), 16)
+check(np.abs(LY.composite(fpm, 'ROUGHNESS', N) - live2).max() < FREEZE_TOL and len(bpy.data.images) == len(images_live) + 2,
+      "Freeze again after an edit shows the edit (and makes the same number of images)")
+LY.unfreeze_folder(fpm, LY.index_of(fpm, named(fpm, "F").uid))
+
+# Default size when no layer has an image
+fills = [("C1", 'FILL', "F", dict(blend='MULTIPLY')), ("C2", 'FILL', "F", dict(value=0.9)), ("F", 'FOLDER', "", dict(opacity=0.5))]
+build_stack(fpm, [("Base", 'PAINT', "", dict(img='opaque'))] + fills, chans=('ROUGHNESS',))
+LY.freeze_folder(fpm, LY.index_of(fpm, named(fpm, "F").uid), 16)
+fimg = LY.entry_of(named(fpm, "F"), 'ROUGHNESS').image
+check(tuple(fimg.size) == (16, 16) and LY.has_content(named(fpm, "F"), 'ROUGHNESS') and not LY.has_content(named(fpm, "F"), 'BASE_COLOR'),
+      "a folder of fills freezes at the default size: %s" % (tuple(fimg.size),))
+check(np.abs(read(fimg).reshape(16, 16, 4)[..., 3] - 1.0).max() < 1e-6, "...fully covered")
+LY.unfreeze_folder(fpm, LY.index_of(fpm, named(fpm, "F").uid))
+
+# --- A frozen folder in Merge Down, Merge Folder, Flatten and Export gives what the live folder gives
+mode_spec = spec_folder('MULTIPLY', 0.7, F=dict(mask=True), C2=dict(mask=True))
+build_stack(fpm, mode_spec, chans=CHANS2)
+live_comp = {c: LY.composite(fpm, c, N) for c in CHANS2}
+live_flat = {c: LY.flatten_channel(fpm, c, N) for c in CHANS2}
+exp_tx = bpy.context.scene.m3d_tex
+exp_tx.export_folder, exp_tx.export_size, exp_tx.export_preset = tempfile.mkdtemp(prefix="m3d_fold_live_"), 'SAME', 'UNREAL'
+bpy.context.view_layer.objects.active = fplane
+exp_live = T.export_textures(bpy.context, fplane)
+live_bc, _i1 = load_png(exp_tx.export_folder, "T_FolderCheck_BC.png")
+LY.freeze_folder(fpm, LY.index_of(fpm, named(fpm, "F").uid), 16)
+for ch_id in CHANS2:
+    err = float(np.abs(LY.flatten_channel(fpm, ch_id, N) - live_flat[ch_id]).max())
+    check(err < FREEZE_TOL + (0.012 if ch_id == 'BASE_COLOR' else 0), "Flatten of a frozen folder == live: %s (largest difference %.5f)" % (ch_id, err))
+exp_tx.export_folder = tempfile.mkdtemp(prefix="m3d_fold_frozen_")
+exp_frozen = T.export_textures(bpy.context, fplane)
+frozen_bc, _i2 = load_png(exp_tx.export_folder, "T_FolderCheck_BC.png")
+live_orm, _i3 = load_png(os.path.dirname(exp_live[0]), "T_FolderCheck_ORM.png")
+frozen_orm, _i4 = load_png(exp_tx.export_folder, "T_FolderCheck_ORM.png")
+check([os.path.basename(p) for p in exp_live] == [os.path.basename(p) for p in exp_frozen] and len(exp_frozen) == 2
+      and np.abs(frozen_bc - live_bc).max() < 5 / 255 and np.abs(frozen_orm - live_orm).max() < 3 / 255,
+      "Export of a frozen folder == live (base color %.4f, ORM %.4f)" % (np.abs(frozen_bc - live_bc).max(), np.abs(frozen_orm - live_orm).max()))
+want_bc = LY.to_srgb(live_comp['BASE_COLOR']).reshape(-1, 3)
+check(np.abs(live_bc[:, :3] - want_bc).max() < 3 / 255, "...and the exported base color is the folder's composite (%.4f)" % np.abs(live_bc[:, :3] - want_bc).max())
+for img in (_i1, _i2, _i3, _i4):
+    bpy.data.images.remove(img)
+# Merge Down of the frozen folder onto the layer below, and Merge Folder of a frozen one (its images are the layer's)
+frozen_images = {e.channel: e.image.name for e in named(fpm, "F").channels if e.image}
+LY.merge_folder(fpm, LY.index_of(fpm, named(fpm, "F").uid), 16)
+check(shape(fpm) == "Base F Top" and named(fpm, "F").kind == 'PAINT' and not named(fpm, "F").frozen
+      and {e.channel: e.image.name for e in named(fpm, "F").channels if e.image} == {c: n.replace(" Frozen", "").replace("Frozen", "") for c, n in frozen_images.items()}
+      and not any("Frozen" in i.name for i in bpy.data.images) and not [i for i in bpy.data.images if i.name.startswith("fx_C")],
+      "Merge Folder of a frozen folder: its images become the paint layer's, the layers inside go (%s)" % shape(fpm))
+for ch_id in CHANS2:
+    err = float(np.abs(LY.composite(fpm, ch_id, N) - live_comp[ch_id]).max())
+    check(err < FREEZE_TOL, "...the same look (%s, %.5f)" % (ch_id, err))
+build_stack(fpm, mode_spec, chans=CHANS2)
+live_comp = {c: LY.composite(fpm, c, N) for c in CHANS2}
+LY.freeze_folder(fpm, LY.index_of(fpm, named(fpm, "F").uid), 16)
+# the frozen folder merges down onto the layer below it (Base)
+fpm.m3d_layer_index = LY.index_of(fpm, named(fpm, "F").uid)
+LY.merge_down(fpm, fpm.m3d_layer_index, 16)
+check(shape(fpm) == "Base Top" and not any("Frozen" in i.name for i in bpy.data.images) and not [i for i in bpy.data.images if i.name.startswith("fx_C")],
+      "Merge Down of a frozen folder: %s, its images and its layers' images are gone" % shape(fpm))
+for ch_id in CHANS2:
+    err = float(np.abs(LY.composite(fpm, ch_id, N) - live_comp[ch_id]).max())
+    check(err < FREEZE_TOL + 0.01, "...the same look as the live folder (%s, %.5f)" % (ch_id, err))
+# Merge Down of a live folder, and of a layer onto a layer below it inside a folder
+build_stack(fpm, mode_spec, chans=CHANS2)
+live_comp = {c: LY.composite(fpm, c, N) for c in CHANS2}
+LY.merge_down(fpm, LY.index_of(fpm, named(fpm, "F").uid), 16)
+check(shape(fpm) == "Base Top", "Merge Down of a live folder: %s" % shape(fpm))
+for ch_id in CHANS2:
+    err = float(np.abs(LY.composite(fpm, ch_id, N) - live_comp[ch_id]).max())
+    check(err < 2.5 / 255 + 0.004, "...the same look (%s, %.5f)" % (ch_id, err))
+build_stack(fpm, spec_folder('MIX', 0.7, F=dict(mask=True), C2=dict(mask=True, blend='MIX')), chans=CHANS2)
+live_comp = {c: LY.composite(fpm, c, N) for c in CHANS2}
+LY.merge_down(fpm, LY.index_of(fpm, named(fpm, "C2").uid), 16)   # (C2 has a mask and mixes: C1 and C2 become one layer)
+check(shape(fpm) == "Base F[C1 C3] Top" and LY.below_sibling(named(fpm, "C3")).name == "C1", "Merge Down inside a folder: %s" % shape(fpm))
+for ch_id in CHANS2:
+    err = float(np.abs(LY.composite(fpm, ch_id, N) - live_comp[ch_id]).max())
+    check(err < 0.02, "...the look stays (%s, %.5f)" % (ch_id, err))
+check(chain_names(fpm, 'ROUGHNESS') == expected_nodes(LY.kids_of(fpm), 'ROUGHNESS'), "chains after Merge Down inside a folder")
+# Flatten with a folder
+LY.flatten_all(fpm, 16)
+check(shape(fpm) == "Base" and not [l for l in fpm.m3d_layers if l.kind == 'FOLDER'], "Flatten with a folder: %s" % shape(fpm))
+
+# --- Frozen layers cannot be edited; strokes go to the scratch image; operators are off (cube, in Texture Paint Mode)
+fz_ob, fz_mat = fresh_cube("Frozen", '64')
+for name in ("A", "B", "C"):
+    bpy.ops.m3d.layer_add(kind='PAINT')
+    LY.active_layer(fz_mat).name = name
+    rand_image(LY.entry_of(LY.active_layer(fz_mat), 'BASE_COLOR').image, opaque=name == "A")
+check(bpy.ops.m3d.layer_folder_add() == {'FINISHED'}, "a folder for the freeze test")
+for name in ("B", "C"):
+    select(fz_mat, name)
+    check(bpy.ops.m3d.layer_move_into(folder=named(fz_mat, "Folder").uid) == {'FINISHED'}, "move %s in" % name)
+check(shape(fz_mat) == "A Folder[B C]", "the freeze test stack: %s" % shape(fz_mat))
+live_fz = LY.composite(fz_mat, 'BASE_COLOR', 64)
+pixels_fz = {i.name: read(i).copy() for i in LY.stack_images(fz_mat)}
+count_fz = len(fz_mat.node_tree.nodes)
+select(fz_mat, "Folder")
+check(bpy.ops.m3d.layer_freeze.poll() and bpy.ops.m3d.layer_freeze() == {'FINISHED'} and named(fz_mat, "Folder").frozen, "Freeze Folder operator")
+fz_folder = named(fz_mat, "Folder")
+check(np.abs(LY.composite(fz_mat, 'BASE_COLOR', 64) - live_fz).max() < FREEZE_TOL and len(fz_mat.node_tree.nodes) < count_fz,
+      "the look is the same and the nodes are fewer (%d -> %d)" % (count_fz, len(fz_mat.node_tree.nodes)))
+check(all(np.array_equal(read(bpy.data.images[n]), px_) for n, px_ in pixels_fz.items()), "freezing changed no layer image")
+check(bpy.ops.m3d.layer_unfreeze.poll() and not named(fz_mat, "B").frozen and LY.in_frozen(named(fz_mat, "B")), "B is in a frozen folder")
+select(fz_mat, "B")
+for idname in ("layer_remove", "layer_duplicate", "layer_move", "layer_visible", "layer_mask_add", "layer_merge_down", "layer_move_out",
+               "layer_paint_mask", "layer_flatten", "mask_effect_add"):
+    check(not getattr(bpy.ops.m3d, idname).poll(), "%s is off for a layer in a frozen folder" % idname)
+check(bpy.ops.m3d.tex_channel(channel='BASE_COLOR') == {'CANCELLED'}, "choosing a channel to paint on a frozen layer is refused")
+target = fz_mat.texture_paint_images[fz_mat.paint_active_slot]
+check(target.name == LY.SCRATCH and target not in LY.stack_images(fz_mat), "the brush is aimed at the scratch image, not at a frozen layer (%s)" % target.name)
+check(LY.target_image(bpy.context, fz_mat, True) is None, "a frozen layer has no paint target")
+fz_folder.visible = False
+check(fz_mat.node_tree.nodes[LY.part('BASE_COLOR', fz_folder.uid, "opv")].inputs[1].default_value == 0.0, "a frozen folder can still be hidden")
+fz_folder.visible = True
+fz_folder.opacity, fz_folder.blend = 0.4, 'MULTIPLY'
+check(fz_mat.node_tree.nodes[LY.part('BASE_COLOR', fz_folder.uid, "mix")].blend_type == 'MULTIPLY'
+      and abs(fz_mat.node_tree.nodes[LY.part('BASE_COLOR', fz_folder.uid, "opv")].inputs[1].default_value - 0.4) < 1e-6,
+      "...and have its own blend mode and opacity")
+select(fz_mat, "Folder")
+check(not bpy.ops.m3d.layer_freeze.poll() or bpy.ops.m3d.layer_freeze() == {'CANCELLED'}, "a frozen folder cannot be frozen again")
+check(bpy.ops.m3d.layer_remove.poll() and bpy.ops.m3d.layer_mask_add.poll() and bpy.ops.m3d.layer_duplicate.poll(), "...but the folder itself can be edited, masked and copied")
+# a frozen layer is also found when something in the list is active: the list row and the panel
+ctx_fz = TCtx()
+select(fz_mat, "C")
+for cls in (T.PROPERTIES_PT_m3d_tx_stack, T.PROPERTIES_PT_m3d_tx_layer):
+    log = draw_stub(cls, ctx_fz)
+    check_calls("%s with a layer in a frozen folder" % cls.__name__, log)
+    if cls is T.PROPERTIES_PT_m3d_tx_layer:
+        check(any(r._kind == "operator" and r._args[0] == "m3d.layer_unfreeze" for r in log), "the Layer panel of a frozen layer offers Unfreeze")
+log = []
+LY.M3D_UL_layers.draw_item(None, ctx_fz, Rec(log), None, named(fz_mat, "C"), 0, None, "", 2)
+check_calls("list row of a layer in a frozen folder", log)
+check([r for r in log if r._kind == "row"][0].values().get("enabled") is False, "the list row of a frozen layer is off")
+select(fz_mat, "Folder")
+check(bpy.ops.m3d.layer_unfreeze() == {'FINISHED'} and not named(fz_mat, "Folder").frozen and not LY.in_frozen(named(fz_mat, "B")), "Unfreeze Folder operator")
+select(fz_mat, "B")
+check(bpy.ops.m3d.layer_remove.poll() and slot_image(fz_mat) == LY.entry_of(named(fz_mat, "B"), 'BASE_COLOR').image, "after Unfreeze a layer is editable and paintable again")
+# Freeze from a layer inside, and Unfreeze from a layer inside
+check(bpy.ops.m3d.layer_freeze() == {'FINISHED'} and named(fz_mat, "Folder").frozen and LY.active_layer(fz_mat).name == "Folder",
+      "Freeze with a layer of the folder active freezes its folder and selects it")
+select(fz_mat, "B")
+check(bpy.ops.m3d.layer_unfreeze() == {'FINISHED'} and not named(fz_mat, "Folder").frozen, "Unfreeze with a frozen layer active unfreezes its folder")
+
+# --- Saving: a frozen folder, its images (packed by the save handler) and the nodes come back as they were
+named(fo_mat, "Folder 2").expanded = False
+shape_fo, state_fo = shape(fo_mat), material_state(fo_mat)
+expected_fo = [(l.name, l.expanded) for l in fo_mat.m3d_layers if l.kind == 'FOLDER']
+bpy.ops.m3d.layer_freeze(index=LY.index_of(fz_mat, named(fz_mat, "Folder").uid))
+frozen_names = [e.image.name for e in named(fz_mat, "Folder").channels if e.image]
+frozen_px = {n: read(bpy.data.images[n]).copy() for n in frozen_names}
+check(len(frozen_names) == 1 and all(bpy.data.images[n] in T.modified_images() for n in frozen_names), "frozen images count as modified")
+state_fz = material_state(fz_mat)
+fz_path = os.path.join(tempfile.mkdtemp(prefix="m3d_fold_save_"), "fold.blend")
+bpy.ops.wm.save_as_mainfile(filepath=fz_path)
+check(all(bpy.data.images[n].packed_file is not None for n in frozen_names), "saving packed the frozen images")
+bpy.ops.wm.open_mainfile(filepath=fz_path)
+tex_ws = bpy.data.workspaces["Texture"]
+rz = bpy.data.materials["Frozen_Material"]
+check(shape(rz) == "A Folder[B C]" and named(rz, "Folder").frozen and well_formed(rz) and [l.name for l in rz.m3d_layers] == ["A", "B", "C", "Folder"],
+      "the folders and the frozen state come back from the file: %s" % shape(rz))
+check(all(np.abs(read(bpy.data.images[n]) - frozen_px[n]).max() < 1e-6 for n in frozen_names), "...with the frozen pixels")
+check(bpy.data.images[frozen_names[0]].colorspace_settings.name == 'sRGB' and material_state(rz) == state_fz, "...and the same nodes and links")
+check(LY.rebuild_all(rz) is False, "a rebuild after loading changes nothing")
+rf = bpy.data.materials["Fold_Material"]
+check(shape(rf) == shape_fo and well_formed(rf) and material_state(rf) == state_fo and LY.rebuild_all(rf) is False
+      and [(l.name, l.expanded) for l in rf.m3d_layers if l.kind == 'FOLDER'] == expected_fo,
+      "a live folder, and whether it is open, come back from the file too: %s" % shape(rf))
+check(chain_names(rz, 'BASE_COLOR') == expected_nodes(LY.kids_of(rz), 'BASE_COLOR'), "the chain after loading is the expected one")
+LY.unfreeze_folder(rz, LY.index_of(rz, named(rz, "Folder").uid))
+check(not [i for i in bpy.data.images if i.name.endswith("Frozen")] and not named(rz, "Folder").frozen, "...and Unfreeze after loading removes the frozen images")
+
+# ----------------------------------------------------------------------------------------------------
 # Phase 4: Rigging workspace (tabs, pages, gates, modes, Joint tool, Orient Joint, controls, IK, skin, Driven Key, names).
 import m3d_rig as R
 import math

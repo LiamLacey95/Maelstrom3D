@@ -4140,6 +4140,249 @@ def mk_blur_check():
     check(not tracebacks(), "Python error while the Blur cache followed a stroke")
 
 
+# ----------------------------------------------------------------------------------------------------
+# Phase 7b: layer folders in the Texture workspace: three layers, New Folder, two layers moved in with the dock's operators,
+# the folder closed and opened, its opacity, Freeze (fewer nodes, the same look), a real stroke with a frozen layer active (it
+# goes to the scratch image), Unfreeze, a stroke on a layer in the folder, Move Out, Move Into Folder from its list, Delete Folder.
+
+from types import SimpleNamespace
+
+
+def fo_shape(parent=""):
+    return " ".join(l.name + ("[%s]" % fo_shape(l.uid) if l.kind == 'FOLDER' else "") for l in LY.kids_of(lay_mat(), parent))
+
+
+def fo_layer(name):
+    return next(l for l in lay_mat().m3d_layers if l.name == name)
+
+
+def fo_select(name):
+    m = lay_mat()
+    m.m3d_layer_index = next(i for i, l in enumerate(m.m3d_layers) if l.name == name)
+
+
+def fo_fill(image, rgba):
+    w, h = image.size
+    LY.write_pixels(image, np.tile(np.array(rgba, np.float32), (w * h, 1)))
+
+
+def fo_look():
+    return LY.composite(lay_mat(), 'BASE_COLOR', 128)
+
+
+def fo_images():
+    return {i.name: px(i).copy() for i in LY.stack_images(lay_mat())}
+
+
+@step
+def fo_setup():
+    lay_show_tab()
+    m = lay_mat()
+    with LY.muted():
+        m.m3d_layers.clear()
+        m.m3d_layer_index = 0
+        m.m3d_channel = 'BASE_COLOR'
+        m.m3d_show_mask = False
+    LY.rebuild_all(m)
+    ups = bpy.context.tool_settings.image_paint.unified_paint_settings
+    ups.color = (1.0, 0.0, 0.0)   # (the earlier tests left the brush on black)
+    press_ok("brush.asset_activate", _area=tex_areas()[0], **m3d_texture.brush_props("Paint Soft"))
+    for _i in range(3):
+        press_ok("m3d.layer_add", _area=tex_areas()[1], kind='PAINT')
+
+
+@step
+def fo_new_folder():
+    m = lay_mat()
+    check(len(m.m3d_layers) == 3 and all(l.kind == 'PAINT' for l in m.m3d_layers), "three paint layers: %s" % lay_names())
+
+    for layer, name, rgba in zip(m.m3d_layers, "ABC", ((0.8, 0.2, 0.15, 1.0), (0.2, 0.7, 0.3, 0.6), (0.2, 0.3, 0.9, 0.5))):
+        layer.name = name
+        fo_fill(LY.entry_of(layer, 'BASE_COLOR').image, rgba)
+    GIZMO["fo_flat"] = fo_look()
+    press_ok("m3d.layer_folder_add", _area=tex_areas()[1])
+
+
+@step
+def fo_move_in():
+    m = lay_mat()
+    folder = fo_layer("Folder")
+    check(fo_shape() == "A B C Folder[]" and folder.kind == 'FOLDER' and LY.active_layer(m).name == "Folder", "New Folder: %s" % fo_shape())
+    check(np.abs(fo_look() - GIZMO["fo_flat"]).max() < 1e-6, "an empty folder changes nothing")
+    GIZMO["fo_uid"] = folder.uid
+    for name in ("B", "C"):
+        fo_select(name)
+        press_ok("m3d.layer_move_into", _run='EXEC_DEFAULT', _area=tex_areas()[1], folder=GIZMO["fo_uid"])
+
+
+@step
+def fo_moved_check():
+    m = lay_mat()
+    check(fo_shape() == "A Folder[B C]" and [l.name for l in m.m3d_layers] == ["A", "B", "C", "Folder"], "Move Into Folder twice: %s" % fo_shape())
+    check(np.abs(fo_look() - GIZMO["fo_flat"]).max() < 1e-5, "a folder of normal layers looks like the layers on their own")
+    check(not tracebacks(), "Python error drawing the Layers tab with a folder")
+    GIZMO["fo_live_look"], GIZMO["fo_live_nodes"] = fo_look(), len(m.node_tree.nodes)
+    fo_select("C")
+    fo_layer("Folder").expanded = False
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def fo_collapsed():
+    m = lay_mat()
+    flags = LY.M3D_UL_layers.filter_items(SimpleNamespace(bitflag_filter_item=1 << 30), None, m, "m3d_layers")[0]
+    check(LY.active_layer(m).name == "Folder" and flags == [1 << 30, 0, 0, 1 << 30], "closing the folder hides its layers in the list and selects it (%s)" % flags)
+    check(not tracebacks(), "Python error drawing the Layers tab with a closed folder")
+    fo_layer("Folder").expanded = True
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def fo_opacity():
+    m = lay_mat()
+    check(fo_layer("Folder").expanded and not tracebacks(), "opening the folder again")
+    fo_layer("Folder").opacity = 0.5
+    opv = m.node_tree.nodes[LY.part('BASE_COLOR', fo_layer("Folder").uid, "opv")]
+    check(abs(opv.inputs[1].default_value - 0.5) < 1e-6, "the folder's opacity is on its node")
+    a = LY.composite(m, 'BASE_COLOR', 128)
+    check(np.abs(a - GIZMO["fo_live_look"]).max() > 0.01, "the folder's opacity changes the look")
+    GIZMO["fo_look"], GIZMO["fo_nodes"] = a, len(m.node_tree.nodes)
+    fo_select("Folder")
+    press_ok("m3d.layer_freeze", _area=tex_areas()[1])
+
+
+@step
+def fo_frozen():
+    m = lay_mat()
+    folder = fo_layer("Folder")
+    check(folder.frozen and LY.entry_of(folder, 'BASE_COLOR').image is not None and LY.active_layer(m).name == "Folder", "Freeze Folder from the dock")
+    check(len(m.node_tree.nodes) < GIZMO["fo_nodes"], "the node count dropped (%d -> %d)" % (GIZMO["fo_nodes"], len(m.node_tree.nodes)))
+    check(np.abs(fo_look() - GIZMO["fo_look"]).max() < 0.012, "the look is the same (largest difference %.5f)" % np.abs(fo_look() - GIZMO["fo_look"]).max())
+    check(not LY.has_content(fo_layer("B"), 'ROUGHNESS') and all(not n.name.startswith("m3d_layer.BASE_COLOR.%s" % fo_layer("B").uid) for n in m.node_tree.nodes),
+          "the frozen layers have no nodes")
+    check(not tracebacks(), "Python error drawing a frozen folder")
+    fo_select("B")
+
+
+@step
+def fo_frozen_aim():
+    m = lay_mat()
+    now = m.texture_paint_images[m.paint_active_slot]
+    check(LY.active_layer(m).name == "B" and LY.in_frozen(LY.active_layer(m)), "a layer in the frozen folder is active")
+    check(now.name == LY.SCRATCH and now not in LY.stack_images(m), "the brush is aimed at the scratch image, not at a frozen layer (%s)" % now.name)
+    GIZMO["fo_pixels"], GIZMO["fo_scratch"] = fo_images(), px(now).copy()
+    event('MOUSEMOVE', xy=GIZMO["stroke"][0])
+
+
+@step
+def fo_frozen_press():
+    event('LEFTMOUSE', 'PRESS', GIZMO["stroke"][0])
+    for xy in GIZMO["stroke"][1:]:
+        event('MOUSEMOVE', xy=xy)
+
+
+@step
+def fo_frozen_release():
+    event('LEFTMOUSE', 'RELEASE', GIZMO["stroke"][-1])
+
+
+@step
+def fo_frozen_stroke_check():
+    m = lay_mat()
+    images = fo_images()
+    check(set(images) == set(GIZMO["fo_pixels"]) and all(np.array_equal(images[n], GIZMO["fo_pixels"][n]) for n in images),
+          "a stroke with a frozen layer active changed no layer image (children and frozen images included)")
+    scratch = bpy.data.images.get(LY.SCRATCH)
+    check(scratch is not None and np.abs(px(scratch) - GIZMO["fo_scratch"]).max() > 0.1, "...the stroke did happen: it went to the scratch image")
+    check(np.abs(fo_look() - GIZMO["fo_look"]).max() < 0.012, "...and the look did not change")
+    check(not tracebacks(), "Python error during the stroke on a frozen layer")
+    press_ok("m3d.layer_unfreeze", _area=tex_areas()[1])
+
+
+@step
+def fo_unfrozen():
+    m = lay_mat()
+    check(not fo_layer("Folder").frozen and not LY.in_frozen(fo_layer("B")) and len(m.node_tree.nodes) == GIZMO["fo_nodes"],
+          "Unfreeze (with a frozen layer active): the folder is live again, the nodes are back (%d)" % len(m.node_tree.nodes))
+    check(np.abs(fo_look() - GIZMO["fo_look"]).max() < 1e-6, "...the same look")
+    check(not [i for i in bpy.data.images if i.name.endswith("Frozen")], "...the frozen images are gone")
+    check(m.texture_paint_images[m.paint_active_slot] == lay_image_of("B"), "the brush is on layer B again")
+    GIZMO["fo_pixels"] = fo_images()
+    event('MOUSEMOVE', xy=GIZMO["stroke"][0])
+
+
+def lay_image_of(name):
+    return LY.entry_of(fo_layer(name), 'BASE_COLOR').image
+
+
+@step
+def fo_press():
+    event('LEFTMOUSE', 'PRESS', GIZMO["stroke"][0])
+    for xy in GIZMO["stroke"][1:]:
+        event('MOUSEMOVE', xy=xy)
+
+
+@step
+def fo_release():
+    event('LEFTMOUSE', 'RELEASE', GIZMO["stroke"][-1])
+
+
+@step
+def fo_stroke_check():
+    images = fo_images()
+    b = lay_image_of("B")
+    check(np.abs(images[b.name] - GIZMO["fo_pixels"][b.name]).max() > 0.1, "the stroke painted layer B inside the folder")
+    check(all(np.array_equal(images[n], GIZMO["fo_pixels"][n]) for n in images if n != b.name), "...and no other image")
+    check(np.abs(fo_look() - GIZMO["fo_look"]).max() > 0.01, "...and the look follows it")
+    check(not tracebacks(), "Python error during the stroke on a layer in a folder")
+    press_ok("m3d.layer_move_out", _area=tex_areas()[1])
+
+
+@step
+def fo_out_check():
+    check(fo_shape() == "A Folder[C] B", "Move Out of Folder: %s" % fo_shape())
+    dock = tex_areas()[1]   # Move Into Folder from the Layers menu is a search list of the folders: typing a name and Enter picks it.
+    region = next(r for r in dock.regions if r.type == 'WINDOW')
+    event('MOUSEMOVE', xy=GIZMO["mk_xy"])
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=dock, region=region, space_data=dock.spaces.active):
+        res = bpy.ops.m3d.layer_move_into('INVOKE_DEFAULT')
+    check(res <= {'FINISHED', 'RUNNING_MODAL'}, "Move Into Folder opens its search list (%s)" % res)
+
+
+@step
+def fo_menu_type():
+    for key in "FOLD":
+        event(key, 'PRESS', GIZMO["mk_xy"], unicode=key.lower())
+        event(key, 'RELEASE', GIZMO["mk_xy"])
+
+
+@step
+def fo_menu_key():
+    event('RET', 'PRESS', GIZMO["mk_xy"])
+    event('RET', 'RELEASE', GIZMO["mk_xy"])
+
+
+@step
+def fo_menu_check():
+    if fo_shape() != "A Folder[C B]":   # (the list is still open)
+        event('ESC', 'PRESS', GIZMO["mk_xy"])
+        event('ESC', 'RELEASE', GIZMO["mk_xy"])
+    check(fo_shape() == "A Folder[C B]", "the folder list moved the layer to the top of the folder: %s" % fo_shape())
+    check(not tracebacks(), "Python error in the folder list")
+    GIZMO["fo_doomed"] = [lay_image_of("B").name, lay_image_of("C").name]
+    fo_select("Folder")
+    press_ok("m3d.layer_remove", _area=tex_areas()[1])
+
+
+@step
+def fo_delete_check():
+    check(fo_shape() == "A", "Delete Folder removed the folder and its layers: %s" % fo_shape())
+    check(not [n for n in GIZMO["fo_doomed"] if n in bpy.data.images], "...and their images")
+    check(not tracebacks(), "Python error while the folders were edited in the Texture workspace")
+
+
 @step
 def tex_done():
     ws = window().workspace

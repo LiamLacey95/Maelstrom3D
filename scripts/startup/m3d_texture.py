@@ -1022,6 +1022,7 @@ class PROPERTIES_PT_m3d_tx_stack(_Page, Panel):
         row = layout.row(align=True)
         row.operator("m3d.layer_add", text="Paint Layer", icon='ADD').kind = 'PAINT'
         row.operator("m3d.layer_add", text="Fill Layer", icon='COLOR').kind = 'FILL'
+        row.operator("m3d.layer_folder_add", text="New Folder", icon='FILE_FOLDER')
         if layer is None:
             n = len(paint_slots(mat))
             reason(layout, "The %d paint slots become the Base layer" % n if n else "Add a layer to start painting")
@@ -1032,7 +1033,7 @@ class PROPERTIES_PT_m3d_tx_stack(_Page, Panel):
             row.label(text="Fill layer: paint its Mask, or", icon='INFO')
             row.operator("m3d.layer_convert", text="Convert to Paint", icon='IMAGE_DATA')
         row = layout.row()
-        row.template_list("M3D_UL_layers", "", mat, "m3d_layers", mat, "m3d_layer_index", rows=5,
+        row.template_list("M3D_UL_layers", "", mat, "m3d_layers", mat, "m3d_layer_index", rows=8,
                           sort_reverse=True, sort_lock=True)
         col = row.column(align=True)
         col.operator("m3d.layer_move", text="", icon='TRIA_UP').delta = 1
@@ -1043,16 +1044,60 @@ class PROPERTIES_PT_m3d_tx_stack(_Page, Panel):
         row = layout.row(align=True)
         row.operator("m3d.layer_merge_down", icon='TRIA_DOWN_BAR')
         row.operator("m3d.layer_flatten", icon='IMAGE_DATA')
+        row = layout.row(align=True)
+        row.operator("m3d.layer_folder_add", text="Group", icon='FILE_FOLDER').group = True
+        row.operator_menu_enum("m3d.layer_move_into", "folder", text="Move In", icon='TRIA_RIGHT')
+        row.operator("m3d.layer_move_out", text="Move Out", icon='TRIA_LEFT')
         effect = L.paint_effect(layer)
-        target = layer.name + (" mask" if effect is not None and (layer.paint_mask or layer.kind == 'FILL')
-                               else ": " + CHANNEL_BY_ID[mat.m3d_channel].label)
-        reason(layout, "Painting " + target)
+        if L.in_frozen(layer):
+            reason(layout, "Frozen with its folder: nothing to paint")
+        elif layer.kind == 'FOLDER' and effect is None:
+            reason(layout, "A folder holds layers: pick one to paint")
+        else:
+            target = layer.name + (" mask" if effect is not None and (layer.paint_mask or layer.kind != 'PAINT')
+                                   else ": " + CHANNEL_BY_ID[mat.m3d_channel].label)
+            reason(layout, "Painting " + target)
         equivalent = L.memory_equivalent(mat)
         row = layout.row()
         row.alert = equivalent > L.MEMORY_WARN
         row.label(text="Layer images use %d MB" % (L.memory_bytes(mat) >> 20), icon='ERROR' if row.alert else 'INFO')
         if row.alert:
             reason(layout, "That is %d images of 4K: use smaller sizes or merge layers" % equivalent)
+
+
+def frozen_banner(layout, mat, layer):
+    """For a layer inside a frozen folder: what it is, an Unfreeze button, and the layout to draw its (off) properties in."""
+    if not L.in_frozen(layer):
+        return layout
+    frozen = L.frozen_root(layer)
+    row = layout.row(align=True)
+    row.label(text="Frozen with " + frozen.name, icon='FREEZE')
+    row.operator("m3d.layer_unfreeze", text="Unfreeze").index = L.index_of(mat, frozen.uid)
+    layout = layout.column()
+    layout.enabled = False
+    return layout
+
+
+def draw_folder(layout, layer):
+    """The Layer panel of a folder: name, blend, opacity, visibility, Freeze / Unfreeze, Merge Folder."""
+    layout.prop(layer, "name")
+    layout.prop(layer, "blend")
+    layout.prop(layer, "opacity", slider=True)
+    layout.prop(layer, "visible")
+    layout.label(text="%d layers inside" % len([l for l in L.descendants(layer) if l.kind != 'FOLDER']), icon='FILE_FOLDER')
+    row = layout.row(align=True)
+    if layer.frozen:
+        row.operator("m3d.layer_unfreeze", icon='FREEZE', depress=True)
+        for ch in CHANNELS:
+            image = entry_of(layer, ch.id).image
+            if image is not None:
+                w, h = L.image_size(image)
+                layout.label(text="%s: %d x %d" % (ch.label, w, h), icon='IMAGE_DATA')
+        reason(layout, "Frozen: the layers inside are kept and cannot be edited")
+    else:
+        row.operator("m3d.layer_freeze", icon='FREEZE')
+        reason(layout, "Freeze bakes the folder into one image per channel")
+    row.operator("m3d.layer_merge_folder", icon='TRIA_DOWN_BAR')
 
 
 class PROPERTIES_PT_m3d_tx_layer(_Page, Panel):
@@ -1066,7 +1111,12 @@ class PROPERTIES_PT_m3d_tx_layer(_Page, Panel):
     def draw(self, context):
         layout = self.layout
         split_props(layout)
-        layer = active_layer(mesh_of(context).active_material)
+        mat = mesh_of(context).active_material
+        layer = active_layer(mat)
+        layout = frozen_banner(layout, mat, layer)
+        if layer.kind == 'FOLDER':
+            draw_folder(layout, layer)
+            return
         layout.prop(layer, "name")
         layout.prop(layer, "blend")
         layout.prop(layer, "opacity", slider=True)
@@ -1137,6 +1187,7 @@ class PROPERTIES_PT_m3d_tx_mask(_Page, Panel):
         layout = self.layout
         mat = mesh_of(context).active_material
         layer = active_layer(mat)
+        layout = frozen_banner(layout, mat, layer)
         first, _dot, second = MASK_HELP.partition(". ")   # (two lines: the dock can be narrow)
         reason(layout, first + ".")
         layout.label(text=second)
