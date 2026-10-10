@@ -2524,7 +2524,7 @@ check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in (
     LY.M3D_OT_mask_effect_move, LY.M3D_OT_mask_effect_duplicate, LY.M3D_OT_mask_rebake))
       and "mask_stack" in LY.M3D_Layer.bl_rna.properties and MK.M3D_MaskEffect.bl_rna.properties["kind"].type == 'ENUM', "mask classes registered")
 check([k.id for k in MK.KINDS] == ['PAINT', 'FILL', 'EDGES', 'CAVITY', 'TOPDOWN', 'THICKNESS', 'NOISE', 'LEVELS', 'BLUR', 'INVERT',
-                                   'SHARPEN'], "mask effect types")
+                                   'SHARPEN', 'COLORID'], "mask effect types")
 check(all(k.icon in icons for k in MK.KINDS), "mask effect icons exist")
 check(all(k.maps == () or all(m in MK.MAP_LABELS for m in k.maps) for k in MK.KINDS), "baked maps of the generators are known")
 check([b for b, _l in MK.BLENDS] == ['MIX', 'MULTIPLY', 'ADD', 'SUBTRACT', 'LIGHTEN', 'DARKEN']
@@ -2720,6 +2720,8 @@ for label, spec, tol in (
         ("Cavity (inverted)", [('CAVITY', dict(amount=0.3, contrast=0.2, invert=True))], 1e-4),
         ("Thickness", [('THICKNESS', dict(amount=0.5, contrast=0.9))], 1e-4),
         ("Top-down", [('TOPDOWN', {})], 1e-4),
+        ("Color ID", [('COLORID', dict(color=(0.4, 0.5, 0.6), tolerance=0.7))], 1e-4),
+        ("Color ID (tight)", [('PAINT', {}), ('COLORID', dict(color=(0.9, 0.2, 0.3), tolerance=0.2))], 1e-4),
         ("Top-down (tilted)", [('TOPDOWN', dict(direction=(1, 0.5, 0.7), offset=0.3, softness=0.4, height_falloff=0.8))], 1e-4),
         ("Noise (UV)", [('NOISE', dict(scale=5.0, detail=3.0, noise_contrast=3.0, seed=2))], 2e-3),
         ("Noise (UV, fractional detail)", [('NOISE', dict(scale=3.0, detail=2.5, noise_contrast=1.0))], 2e-3),
@@ -2798,13 +2800,13 @@ check(not any(s0.values()), "no baked maps before the first generator")
 mats_before = sorted(m.name for m in bpy.data.materials)
 slot_before = [s.material for s in mplane.material_slots]
 nodes_before = sorted(n.name for n in mnodes)
-for kind in ('EDGES', 'CAVITY', 'TOPDOWN', 'THICKNESS'):
+for kind in ('EDGES', 'CAVITY', 'TOPDOWN', 'THICKNESS', 'COLORID'):
     check(bpy.ops.m3d.mask_effect_add(kind=kind) == {'FINISHED'}, "add mask effect " + kind + " (bakes its maps)")
 maps = {k: bpy.data.images.get("MaskPlane_" + label) for k, label in MK.MAP_LABELS.items()}
 check(all(maps.values()) and all(tuple(i.size) == (64, 64) for i in maps.values()), "the maps are baked at the Bake tab's resolution: %s" % {k: v and tuple(v.size) for k, v in maps.items()})
 st = mtop.mask_stack
 check(st[0].image == maps['CURVATURE'] and st[1].image == maps['AO'] and st[2].image == maps['WORLDNORMAL'] and st[2].image2 == maps['POSITION']
-      and st[3].image == maps['THICKNESS'] and all(i.use_fake_user for i in maps.values()), "effects point at the baked maps (kept in the file)")
+      and st[3].image == maps['THICKNESS'] and st[4].image == maps['ID'] and all(i.use_fake_user for i in maps.values()), "effects point at the baked maps (kept in the file)")
 check(sorted(m.name for m in bpy.data.materials) == mats_before and [s.material for s in mplane.material_slots] == slot_before
       and set(nodes_before) <= {n.name for n in mnodes}, "baking left the materials alone")
 check(maps['POSITION'].is_float and maps['WORLDNORMAL'].is_float and np.asarray(maps['POSITION'].get("m3d_bounds")).shape == (6,)
@@ -8115,6 +8117,685 @@ bpy.ops.wm.open_mainfile(filepath=rt_path)
 sc = bpy.context.scene
 check(sc.m3d_live_surface is None and sc.m3d_live_saved == "" and rt_ts() == RT_USER_SAVED and not any(rt_views()),
       "a file that is live without its surface gets the old settings back when it opens: %s" % rt_ts())
+
+# ----------------------------------------------------------------------------------------------------
+# Extras of the high poly / low poly workflow: Explode / Collapse, the cage preview (m3d_bakegroups.py), Bake from Multires, Bake meshes
+# in the Export tab, the ID map (m3d_texture.py) and the Color ID mask (m3d_masks.py, m3d_layers.py).
+import shutil
+
+for idname in ("m3d.bg_explode", "m3d.bg_cage_preview", "m3d.tex_bake_multires", "m3d.mask_id_pick"):
+    check(hasattr(bpy.ops.m3d, idname.split(".")[1]), "%s is registered" % idname)
+check('UNDO' in BG.M3D_OT_bg_explode.bl_options and 'UNDO' in BG.M3D_OT_bg_cage_preview.bl_options and 'UNDO' in T.M3D_OT_tex_bake_multires.bl_options,
+      "Explode, the cage preview and the Multires bake are undoable")
+ex_texts = " ".join([BG.M3D_OT_bg_explode.__doc__, BG.M3D_OT_bg_cage_preview.__doc__, T.M3D_OT_tex_bake_multires.__doc__, T.M3D_OT_tex_export.__doc__,
+                     LY.M3D_OT_mask_id_pick.__doc__, bpy.types.Scene.bl_rna.properties["m3d_explode_axis"].description,
+                     bpy.types.Scene.bl_rna.properties["m3d_explode_gap"].description,
+                     *(p.description for p in T.M3D_BakeSettings.bl_rna.properties if p.identifier in {"use_id", "multires_level", "use_multires_normal", "use_multires_displacement"}),
+                     T.M3D_TexSettings.bl_rna.properties["export_bake_meshes"].description,
+                     *(p.description for p in MK.M3D_MaskEffect.bl_rna.properties if p.identifier in {"color", "tolerance"}), MK.KIND_BY_ID['COLORID'].text])
+check(not re.search(r"maya|zbrush|substance|marmoset|xnormal", ex_texts, re.I), "no product names in the texts of the extras")
+
+
+def ex_scene():
+    """Axe (x -1..1) and Bow (0..2) overlap along X, Cup (8..10) has room: a low poly and a high poly each."""
+    clean_scene()
+    for entry in list(bpy.context.scene.m3d_bake_groups):
+        bpy.context.scene.m3d_bake_groups.remove(0)
+    bpy.context.scene.m3d_explode_axis, bpy.context.scene.m3d_explode_gap = 'X', 0.25
+    objs = {}
+    for name, x in (("Axe", 0.0), ("Bow", 1.0), ("Cup", 9.0)):
+        objs[name + "_low"] = bg_plate(name + "_low", x=x, role='LOW', group=name)
+        objs[name + "_high"] = bg_plate(name + "_high", x=x, res=4, bump=0.1, role='HIGH', group=name)
+        bg_small(objs[name + "_low"])
+        objs[name + "_low"].m3d_bake.use_ao = False
+    bpy.context.view_layer.objects.active = objs["Axe_low"]
+    objs["Axe_low"].select_set(True)
+    bpy.context.view_layer.update()
+    return objs
+
+
+def ex_locations():
+    return {o.name: tuple(o.location) for o in bpy.data.objects}
+
+
+def ex_bounds(*obs):
+    lo, hi = T.world_bounds(list(obs))
+    return float(lo[0]), float(hi[0])
+
+
+# --- Explode: the groups that overlap along the axis are moved apart, a group that has room stays; Collapse puts everything back exactly
+ex = ex_scene()
+ex_home = ex_locations()
+check(bpy.ops.m3d.bg_explode.poll(), "Explode is available when there are groups")
+check(bpy.ops.m3d.bg_bake_all() == {'FINISHED'} and bg_state("Bow") == 'BAKED', "(all groups baked before they are moved)")
+ex_normal_before = read_image(bpy.data.images["Bow_low_Normal"]).copy()
+check(bpy.ops.m3d.bg_explode() == {'FINISHED'}, "Explode runs")
+ex_now = ex_locations()
+check(ex_now["Axe_low"] == ex_home["Axe_low"] and ex_now["Axe_high"] == ex_home["Axe_high"] and ex_now["Cup_low"] == ex_home["Cup_low"]
+      and ex_now["Cup_high"] == ex_home["Cup_high"], "the first group and the one that has room stay where they are")
+check(abs(ex_now["Bow_low"][0] - 2.5) < 1e-6 and ex_now["Bow_low"][1:] == ex_home["Bow_low"][1:] and ex_now["Bow_high"] == ex_now["Bow_low"],
+      "Bow moves along X by what it needs, with its high poly: %s" % (ex_now["Bow_low"],))
+axe_b, bow_b, cup_b = ex_bounds(ex["Axe_low"], ex["Axe_high"]), ex_bounds(ex["Bow_low"], ex["Bow_high"]), ex_bounds(ex["Cup_low"], ex["Cup_high"])
+check(bow_b[0] - axe_b[1] >= 0.5 - 1e-6 and cup_b[0] - bow_b[1] >= 0.5 - 1e-6, "no two groups overlap along X, with the gap between them: %s %s %s" % (axe_b, bow_b, cup_b))
+check(sorted(o.name for o in BG.moved(bpy.context)) == ["Bow_high", "Bow_low"] and tuple(ex["Bow_low"].m3d_pair.explode_from) == ex_home["Bow_low"]
+      and abs(ex["Bow_low"].m3d_pair.explode_offset[0] - 1.5) < 1e-6, "the objects keep where they were and what was added: %s" % [o.name for o in BG.moved(bpy.context)])
+check(bg_state("Bow") == 'BAKED' and bg_state("Axe") == 'BAKED', "moving the groups does not make them stale")
+check(bpy.ops.m3d.bg_explode() == {'FINISHED'}, "Explode again collapses")
+check(ex_locations() == ex_home and not BG.moved(bpy.context) and not any(ex["Bow_low"].m3d_pair.explode_offset) and not any(ex["Bow_low"].m3d_pair.explode_from),
+      "...every mesh is exactly where it was (the same floats), nothing is kept on the objects")
+check(bg_state("Bow") == 'BAKED' and bg_state("Axe") == 'BAKED', "...and nothing is stale")
+
+# A bake while exploded gives the same maps (each group moved as a whole)
+bpy.ops.m3d.bg_explode()
+check(bpy.ops.m3d.bg_bake_all() == {'FINISHED'}, "Bake All while the groups are exploded")
+ex_normal_after = read_image(bpy.data.images["Bow_low_Normal"])
+check(np.abs(ex_normal_after - ex_normal_before).max() < 1e-4, "...the normal map is the same as before (%.6f)" % np.abs(ex_normal_after - ex_normal_before).max())
+check(ex_locations()["Bow_low"][0] == ex_now["Bow_low"][0] and bg_state("Bow") == 'BAKED', "...the groups stay where they are")
+
+# Axis and gap: while exploded they line the groups up again, from the places the meshes had
+bpy.context.scene.m3d_explode_axis = 'Y'
+ex_y = ex_locations()
+check(all(ex_y[n][0] == ex_home[n][0] for n in ex_home) and ex_y["Bow_low"][1] > 2.0 and ex_y["Cup_low"][1] > ex_y["Bow_low"][1]
+      and ex_y["Axe_low"] == ex_home["Axe_low"], "the axis changed while exploded: they are lined up along Y (from the old places): %s" % {n: v[1] for n, v in ex_y.items() if n.endswith("_low")})
+bpy.context.scene.m3d_explode_axis = 'X'
+bpy.context.scene.m3d_explode_gap = 1.0
+check(abs(ex_locations()["Bow_low"][0] - 4.0) < 1e-6, "...the gap too: %s" % (ex_locations()["Bow_low"],))
+bpy.context.scene.m3d_explode_gap = 0.25
+check(bpy.ops.m3d.bg_explode(mode='COLLAPSE') == {'FINISHED'} and ex_locations() == ex_home, "Collapse puts them back")
+check(bpy.ops.m3d.bg_explode(mode='COLLAPSE') == {'FINISHED'} and ex_locations() == ex_home, "...also when nothing is apart")
+bpy.context.scene.m3d_explode_gap = 0.0
+check(bpy.ops.m3d.bg_explode() == {'FINISHED'} and abs(ex_locations()["Bow_low"][0] - 2.0) < 1e-6, "a gap of 0: the groups touch")
+bpy.ops.m3d.bg_explode()
+bpy.context.scene.m3d_explode_gap = 0.25
+
+# A mesh that is moved while exploded is moved back by what was added
+bpy.ops.m3d.bg_explode()
+ex["Bow_low"].location.z += 0.5
+bpy.ops.m3d.bg_explode()
+check(ex["Bow_low"].location.z == 0.5 and abs(ex["Bow_low"].location.x - 1.0) < 1e-6 and ex["Bow_high"].location.z == 0.0, "a mesh that was moved since goes back by what Explode added: %s" % (tuple(ex["Bow_low"].location),))
+ex["Bow_low"].location.z = 0.0
+
+# A group added while exploded: Collapse leaves it, Explode again includes it; a copy of a moved mesh goes back with it
+bpy.ops.m3d.bg_explode()
+ex_dog_low, ex_dog_high = bg_plate("Dog_low", x=0.5, role='LOW', group="Dog"), bg_plate("Dog_high", x=0.5, res=4, role='HIGH', group="Dog")
+ex_dog_home = tuple(ex_dog_low.location)
+bpy.context.view_layer.update()
+bpy.ops.m3d.bg_explode(mode='COLLAPSE')
+check(tuple(ex_dog_low.location) == ex_dog_home and all(ex_locations()[n] == ex_home[n] for n in ex_home), "a group added while exploded is left where it is by Collapse, the others go back")
+bpy.ops.m3d.bg_explode(mode='EXPLODE')
+ex_boxes = sorted(
+    [ex_bounds(ex[n + "_low"], ex[n + "_high"]) for n in ("Axe", "Bow", "Cup")] + [ex_bounds(ex_dog_low, ex_dog_high)])
+check(any(ex_dog_low.m3d_pair.explode_offset) and all(a[1] <= b[0] + 1e-6 for a, b in zip(ex_boxes, ex_boxes[1:])),
+      "Explode again lines up the new group with the others: %s" % ex_boxes)
+bpy.ops.m3d.bg_explode(mode='COLLAPSE')
+check(tuple(ex_dog_low.location) == ex_dog_home and tuple(ex_dog_high.location) == ex_dog_home and ex_locations()["Bow_low"] == ex_home["Bow_low"], "...and Collapse puts it back too")
+ex_elk = bg_plate("Elk_low", x=0.2, role='LOW', group="Elk")
+ex_elk_home = tuple(ex_elk.location)
+bpy.context.view_layer.update()
+bpy.ops.m3d.bg_explode()
+ex_elk_where = tuple(ex_elk.location)
+check(any(ex_elk.m3d_pair.explode_offset), "(Elk is moved)")
+for o in bpy.context.selected_objects:
+    o.select_set(False)
+ex_elk.select_set(True)
+bpy.context.view_layer.objects.active = ex_elk
+check(bpy.ops.m3d.hp_create() == {'FINISHED'} and bpy.data.objects["Elk_high"] is not None and tuple(bpy.data.objects["Elk_high"].location) == ex_elk_where,
+      "Create High Poly on a moved mesh: the copy is made where it is")
+bpy.ops.m3d.bg_explode(mode='COLLAPSE')
+check(tuple(ex_elk.location) == ex_elk_home and tuple(bpy.data.objects["Elk_high"].location) == ex_elk_home, "...and goes back with it: %s" % (tuple(bpy.data.objects["Elk_high"].location),))
+src_low = bg_plate("Imp_low", x=3.0, role='HIGH', group="Imp")
+dst_low = bg_plate("Imp_new", x=3.0, role='LOW', group="Imp")
+src_low.m3d_pair.explode_from, src_low.m3d_pair.explode_offset = (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)
+PR.inherit_explode(dst_low, src_low)
+check(tuple(dst_low.m3d_pair.explode_from) == (1.0, 0.0, 0.0) and tuple(dst_low.m3d_pair.explode_offset) == (2.0, 0.0, 0.0), "a new mesh made at the place of a moved one inherits where it was (New Low Poly)")
+bpy.data.objects.remove(src_low)
+bpy.data.objects.remove(dst_low)
+for n in ("Dog_low", "Dog_high", "Elk_low", "Elk_high"):
+    bpy.data.objects.remove(bpy.data.objects[n])
+
+# A high poly under its low poly moves with it, once; a custom cage moves with its group
+ex = ex_scene()
+ex["Bow_high"].parent = ex["Bow_low"]
+ex["Bow_high"].location = (0.0, 0.0, 0.0)
+ex_cage = bg_plate("Bow_cage", x=1.0)
+BG.settings_of(bpy.context, "Bow").cage = ex_cage
+bpy.context.view_layer.update()
+ex_home = ex_locations()
+bpy.ops.m3d.bg_explode()
+bpy.context.view_layer.update()
+check(not any(ex["Bow_high"].m3d_pair.explode_offset) and tuple(ex["Bow_high"].location) == (0.0, 0.0, 0.0)
+      and abs(ex["Bow_high"].matrix_world.translation.x - 2.5) < 1e-5 and abs(ex["Bow_low"].location.x - 2.5) < 1e-5, "a high poly parented to its low poly follows it, it is not moved twice")
+check(abs(ex_cage.location.x - 2.5) < 1e-6, "the custom cage of the group moves with it")
+bpy.ops.m3d.bg_explode()
+check(ex_locations() == ex_home, "...and everything is back, exactly")
+ex["Bow_high"].parent = None
+ex["Bow_high"].location = (1.0, 0.0, 0.0)
+BG.settings_of(bpy.context, "Bow").cage = None
+bpy.data.objects.remove(ex_cage)
+
+# Undo and Redo
+ex = ex_scene()
+ex_home = ex_locations()
+bpy.ops.ed.undo_push(message="Before Explode")
+check(bpy.ops.m3d.bg_explode('EXEC_DEFAULT', True) == {'FINISHED'} and ex_locations() != ex_home, "(exploded with an undo step)")
+bpy.ops.ed.undo()
+check(ex_locations() == ex_home and not BG.moved(bpy.context), "Undo of Explode puts the groups back (the offsets with them)")
+bpy.ops.ed.redo()
+check(abs(bpy.data.objects["Bow_low"].location.x - 2.5) < 1e-6 and sorted(o.name for o in BG.moved(bpy.context)) == ["Bow_high", "Bow_low"], "...and Redo explodes again")
+bpy.ops.m3d.bg_explode()
+
+# Panels: the toggle shows its state, the axis and the gap are there
+bpy.context.view_layer.objects.active = bpy.data.objects["Axe_low"]
+log = bg_draw(BG.PROPERTIES_PT_m3d_tx_bake_groups)
+ex_ops = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.bg_explode"]
+ex_props = [r._args[1] for r in log if r._kind == "prop"]
+check(len(ex_ops) == 1 and ex_ops[0]._kw["text"] == "Explode" and not ex_ops[0]._kw["depress"] and "m3d_explode_axis" in ex_props and "m3d_explode_gap" in ex_props,
+      "Bake Groups: the Explode toggle with the axis and the gap: %s" % [(r._kw.get("text"), r._kw.get("depress")) for r in ex_ops])
+bpy.ops.m3d.bg_explode()
+log = bg_draw(BG.PROPERTIES_PT_m3d_tx_bake_groups)
+ex_ops = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.bg_explode"]
+check(len(ex_ops) == 2 and ex_ops[0]._kw["text"] == "Collapse" and ex_ops[0]._kw["depress"] and ex_ops[1].mode == 'EXPLODE', "...pressed, as Collapse, with a button to line them up again")
+bpy.ops.m3d.bg_explode()
+
+# Saved and reopened while exploded
+ex = ex_scene()
+ex_home = ex_locations()
+bpy.ops.m3d.bg_explode()
+bpy.context.scene.m3d_explode_gap = 0.4
+ex_apart = ex_locations()
+ex_dir = tempfile.mkdtemp(prefix="m3d_explode_")
+ex_path = os.path.join(ex_dir, "apart.blend")
+bpy.ops.wm.save_as_mainfile(filepath=ex_path, copy=True)
+bpy.ops.wm.open_mainfile(filepath=ex_path)
+check(ex_locations() == ex_apart and sorted(o.name for o in BG.moved(bpy.context)) == ["Bow_high", "Bow_low"]
+      and tuple(bpy.data.objects["Bow_low"].m3d_pair.explode_from) == ex_home["Bow_low"] and bpy.context.scene.m3d_explode_gap == np.float32(0.4),
+      "a file saved while exploded opens exploded, with where the meshes were")
+bpy.context.view_layer.objects.active = bpy.data.objects["Axe_low"]
+log = bg_draw(BG.PROPERTIES_PT_m3d_tx_bake_groups)
+check([r._kw["text"] for r in log if r._kind == "operator" and r._args[0] == "m3d.bg_explode"][0] == "Collapse", "...and says Collapse")
+check(bpy.ops.m3d.bg_explode() == {'FINISHED'} and ex_locations() == ex_home, "...Collapse puts every mesh back where it was before the file was saved")
+bpy.context.scene.m3d_explode_gap = 0.25
+shutil.rmtree(ex_dir, ignore_errors=True)
+
+# --- Cage preview: the low poly pushed out by the Extrusion, only drawn
+ex = ex_scene()
+cg_low = ex["Axe_low"]
+cg_users = cg_low.data.users
+cg_objects = len(bpy.data.objects)
+check(bpy.ops.m3d.bg_cage_preview.poll() and not BG.cage_objects(), "the cage preview is off to begin with")
+check(bpy.ops.m3d.bg_cage_preview() == {'FINISHED'}, "Show Cage runs")
+cg = BG.cage_objects()
+check(len(cg) == 1 and cg[0].name == "m3dCage" and cg[0].parent == cg_low and cg[0].data == cg_low.data and cg[0].display_type == 'WIRE'
+      and cg[0].hide_render and cg[0].hide_select and len(cg[0].modifiers) == 1 and cg[0].modifiers[0].type == 'DISPLACE' and cg[0].modifiers[0].direction == 'NORMAL'
+      and abs(cg[0].modifiers[0].strength - 0.4) < 1e-6 and len(bpy.data.objects) == cg_objects + 1,
+      "a temporary wire object shares the mesh of the low poly, is parented to it and displaces it along the normals by the Extrusion")
+
+
+def cg_z():
+    """Heights of the points of the preview as the viewport evaluates them (in the world)."""
+    dg = bpy.context.evaluated_depsgraph_get()
+    ev = BG.cage_objects()[0].evaluated_get(dg)
+    mesh = ev.to_mesh()
+    try:
+        return np.array([(ev.matrix_world @ v.co).z for v in mesh.vertices])
+    finally:
+        ev.to_mesh_clear()
+
+
+bpy.context.view_layer.update()
+check(np.allclose(cg_z(), 0.4, atol=1e-5), "...so it is the low poly 0.4 up: %s" % cg_z()[:3])
+check(not cg[0].select_get() and cg[0] not in bpy.context.selected_objects, "...and it is not selected")
+BG.settings_of(bpy.context, "Axe").extrusion = 0.1
+bpy.context.view_layer.update()
+check(abs(BG.cage_objects()[0].modifiers[0].strength - 0.1) < 1e-6 and np.allclose(cg_z(), 0.1, atol=1e-5), "the preview follows the Extrusion of the group")
+cg_low.scale = (2.0, 2.0, 2.0)
+bpy.context.view_layer.update()
+BG.cage_hide()
+BG.cage_show(bpy.context, "Axe")
+bpy.context.view_layer.update()
+check(np.allclose(cg_z(), 0.1, atol=1e-5), "...in the world, whatever the scale of the low poly (%s)" % cg_z()[:2])
+cg_low.scale = (1.0, 1.0, 1.0)
+check(bpy.ops.m3d.bg_cage_preview() == {'FINISHED'} and not BG.cage_objects() and len(bpy.data.objects) == cg_objects and cg_low.data.users == cg_users,
+      "Show Cage again: gone, the mesh has its users again")
+cg_cage = bg_plate("Axe_cage", res=2, z=0.3)
+BG.settings_of(bpy.context, "Axe").cage = cg_cage
+bpy.ops.m3d.bg_cage_preview()
+cg = BG.cage_objects()
+check(len(cg) == 1 and cg[0].parent == cg_cage and cg[0].data == cg_cage.data and not cg[0].modifiers, "a custom cage is shown instead, as it is")
+BG.settings_of(bpy.context, "Axe").cage = None
+cg = BG.cage_objects()
+check(len(cg) == 1 and cg[0].parent == cg_low and cg[0].modifiers, "...clearing it shows the extruded low poly again")
+BG.settings_of(bpy.context, "Axe").cage = cg_cage
+check(BG.cage_objects()[0].parent == cg_cage, "...picking it again shows it")
+BG.settings_of(bpy.context, "Axe").cage = None
+BG.cage_hide()
+bpy.data.objects.remove(cg_cage)
+
+# Several low polys: each is shown
+ex_second = bg_plate("Axe_low_2", x=-3.0, role='LOW', group="Axe")
+bpy.ops.m3d.bg_cage_preview()
+check(sorted(o.parent.name for o in BG.cage_objects()) == ["Axe_low", "Axe_low_2"] and all(o.modifiers for o in BG.cage_objects()), "a group with two low polys shows both")
+BG.cage_hide()
+bpy.data.objects.remove(ex_second)
+
+# Undo and Redo of the toggle
+bpy.ops.ed.undo_push(message="Before the preview")
+bpy.ops.m3d.bg_cage_preview('EXEC_DEFAULT', True)
+check(len(BG.cage_objects()) == 1, "(the preview is on)")
+bpy.ops.ed.undo()
+check(not BG.cage_objects(), "Undo of Show Cage takes the preview away")
+bpy.ops.ed.redo()
+check(len(BG.cage_objects()) == 1 and BG.cage_objects()[0].modifiers, "...and Redo shows it again")
+ex = {o.name: o for o in bpy.data.objects}   # (Undo made the objects again)
+cg_low = ex["Axe_low"]
+bpy.context.view_layer.objects.active = cg_low
+
+# The panel: a toggle that shows its state
+log = bg_draw(BG.PROPERTIES_PT_m3d_tx_bake_group)
+cg_ops = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.bg_cage_preview"]
+check(len(cg_ops) == 1 and cg_ops[0]._kw["depress"] and any("not baked" in t for t in bg_text(log)), "Group Settings: Show Cage, pressed while the preview is on, and a note that it is not saved or baked")
+BG.cage_hide()
+check(not [r for r in bg_draw(BG.PROPERTIES_PT_m3d_tx_bake_group) if r._kind == "operator" and r._args[0] == "m3d.bg_cage_preview"][0]._kw["depress"], "...not pressed while it is off")
+
+# It goes away when another group is picked (the handler asks a timer; the timer does it), not while the same group stays active
+BG.cage_show(bpy.context, "Axe")
+if bpy.app.timers.is_registered(BG._cage_drop):
+    bpy.app.timers.unregister(BG._cage_drop)
+BG._depsgraph_update(bpy.context.scene, bpy.context.evaluated_depsgraph_get())
+check(not bpy.app.timers.is_registered(BG._cage_drop) and BG.cage_objects(), "while a mesh of the group is active the preview stays")
+bpy.context.view_layer.objects.active = ex["Axe_high"]
+BG._depsgraph_update(bpy.context.scene, bpy.context.evaluated_depsgraph_get())
+check(not bpy.app.timers.is_registered(BG._cage_drop) and BG.cage_objects(), "...also with its high poly active")
+bpy.context.view_layer.objects.active = ex["Bow_low"]
+BG._depsgraph_update(bpy.context.scene, bpy.context.evaluated_depsgraph_get())
+check(bpy.app.timers.is_registered(BG._cage_drop), "a mesh of another group becomes active: the preview is taken away by a timer")
+BG._cage_drop()
+bpy.app.timers.unregister(BG._cage_drop)
+check(not BG.cage_objects(), "...and the timer takes it away")
+BG.cage_show(bpy.context, "Axe")
+bpy.context.view_layer.objects.active = bg_plate("Plain_for_cage")
+BG._depsgraph_update(bpy.context.scene, bpy.context.evaluated_depsgraph_get())
+check(bpy.app.timers.is_registered(BG._cage_drop), "a mesh without a group does too")
+bpy.app.timers.unregister(BG._cage_drop)
+BG.cage_hide()
+bpy.data.objects.remove(bpy.data.objects["Plain_for_cage"])
+bpy.context.view_layer.objects.active = ex["Axe_low"]
+
+# A bake takes it away, and it never enters the render (it could shadow the ambient occlusion)
+ex["Axe_low"].m3d_bake.use_ao = True
+BG.cage_show(bpy.context, "Axe")
+check(all(o.hide_render for o in BG.cage_objects()), "(the preview objects are not rendered)")
+cg_flags = bg_flags()
+check(bpy.ops.m3d.bg_bake(group="Axe") == {'FINISHED'} and not BG.cage_objects(), "a bake takes the preview away")
+check(bg_flags()[1:] == cg_flags[1:] and {k: v for k, v in cg_flags[0].items() if not k.startswith("m3dCage")} == bg_flags()[0], "...and puts everything back")
+
+# Never saved: a save takes it away, a file that holds it (an autosave) loses it when it is opened
+BG.cage_show(bpy.context, "Axe")
+cg_dir = tempfile.mkdtemp(prefix="m3d_cage_")
+cg_path = os.path.join(cg_dir, "cage.blend")
+bpy.ops.wm.save_as_mainfile(filepath=cg_path, copy=True)
+check(not BG.cage_objects(), "saving takes the preview away")
+with bpy.data.libraries.load(cg_path) as (src, _dst):
+    saved_names = list(src.objects)
+check(not any(n.startswith("m3dCage") for n in saved_names) and "Axe_low" in saved_names, "...and the file does not have it: %s" % saved_names)
+BG.cage_show(bpy.context, "Axe")
+bpy.app.handlers.save_pre.remove(BG._save_pre)   # (what an autosave does: no handler)
+try:
+    bpy.ops.wm.save_as_mainfile(filepath=cg_path, copy=True)
+finally:
+    bpy.app.handlers.save_pre.append(BG._save_pre)
+with bpy.data.libraries.load(cg_path) as (src, _dst):
+    saved_names = list(src.objects)
+check("m3dCage" in saved_names, "(a file written without the handler holds the preview: the check can see)")
+bpy.ops.wm.open_mainfile(filepath=cg_path)
+check(not BG.cage_objects() and not any(o.name.startswith("m3dCage") for o in bpy.data.objects), "opening a file that holds it takes it away")
+shutil.rmtree(cg_dir, ignore_errors=True)
+
+# --- Bake from Multires
+def mr_cube(name, levels=3, size=2.0):
+    bpy.ops.mesh.primitive_cube_add(size=size)
+    ob = bpy.context.active_object
+    ob.name = name
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='SELECT')
+    bpy.ops.uv.smart_project()
+    bpy.ops.object.mode_set(mode='OBJECT')
+    mod = ob.modifiers.new("Multires", 'MULTIRES')
+    for _ in range(levels):
+        bpy.ops.object.multires_subdivide(modifier=mod.name, mode='CATMULL_CLARK')
+    ob.m3d_bake.resolution, ob.m3d_bake.margin = '64', 4
+    return ob
+
+
+def mr_snapshot(ob):
+    rb = bpy.context.scene.render.bake
+    return ({n: getattr(rb, n) for n in ("use_multires", "type", "margin", "use_clear", "use_lores_mesh", "use_selected_to_active", "displacement_space")},
+            bpy.context.scene.render.engine, ob.modifiers[0].levels, ob.modifiers[0].sculpt_levels, ob.modifiers[0].render_levels, bg_flags())
+
+
+clean_scene()
+for entry in list(bpy.context.scene.m3d_bake_groups):
+    bpy.context.scene.m3d_bake_groups.remove(0)
+mr = mr_cube("Mr")
+mr.m3d_bake.use_multires_displacement = True
+check(T.multires_ready(mr) and T.PROPERTIES_PT_m3d_tx_bake_multires.page_poll(bpy.context), "a mesh with Multires levels and no high poly is offered the Multires bake")
+mr_before = mr_snapshot(mr)
+check(bpy.ops.m3d.tex_bake_multires.poll() and bpy.ops.m3d.tex_bake_multires() == {'FINISHED'}, "Bake Multires runs")
+mr_n, mr_d = bpy.data.images.get("Mr_Normal"), bpy.data.images.get("Mr_Displacement")
+check(mr_n is not None and mr_d is not None and T.map_image(mr, "Normal") == mr_n and T.map_image(mr, "Displacement") == mr_d,
+      "the images are named like the other maps (<mesh>_Normal, <mesh>_Displacement) and map_image finds them")
+mr_px = read_image(mr_n)
+mr_off = np.abs(mr_px[..., :3] - np.array([0.5, 0.5, 1.0], np.float32)).max(axis=-1)
+check(mr_n.colorspace_settings.name == 'Non-Color' and tuple(mr_n.size) == (64, 64) and int((mr_off > 0.05).sum()) > 400,
+      "the normal map is not flat where the Multires detail is (%d of 4096 pixels differ from flat)" % int((mr_off > 0.05).sum()))
+mr_dp = read_image(mr_d)[..., 0]
+check(mr_d.is_float and mr_d.colorspace_settings.name == 'Non-Color' and mr_dp.min() >= 0.0 and mr_dp.max() <= 1.0 and mr_dp.std() > 0.01,
+      "the displacement map is a float map with a spread of values (std %.3f)" % mr_dp.std())
+check(mr_n.get("m3d_map") == 64 and mr_n.get("m3d_parts") == "Mr" and mr.m3d_bake.baked == "Mr_Normal|Mr_Displacement", "...recorded like the others: %s" % mr.m3d_bake.baked)
+check(mr_snapshot(mr) == mr_before, "the render settings of the scene, the levels of the modifier, the engine, selection and flags are all put back")
+
+# The detail only: a plane that Multires only subdivides has none
+bpy.ops.mesh.primitive_plane_add()
+mr_plane = bpy.context.active_object
+mr_plane.name = "MrFlat"
+bpy.ops.object.mode_set(mode='EDIT')
+bpy.ops.uv.smart_project()
+bpy.ops.object.mode_set(mode='OBJECT')
+mr_mod = mr_plane.modifiers.new("Multires", 'MULTIRES')
+for _ in range(2):
+    bpy.ops.object.multires_subdivide(modifier=mr_mod.name, mode='CATMULL_CLARK')
+mr_plane.m3d_bake.resolution, mr_plane.m3d_bake.margin = '64', 4
+bpy.context.view_layer.objects.active = mr_plane
+check(bpy.ops.m3d.tex_bake_multires() == {'FINISHED'}, "(Bake Multires on a plane)")
+mr_flat = np.abs(read_image(bpy.data.images["MrFlat_Normal"])[..., :3] - np.array([0.5, 0.5, 1.0], np.float32)).max()
+check(mr_flat < 0.02, "...a plane without any detail gives a flat normal map (%.4f)" % mr_flat)
+
+# The low level: the higher it is, the less is left to bake (from level 2 of 3 only the last step)
+def mr_detail():
+    return float(np.abs(read_image(bpy.data.images["Mr_Normal"])[..., :3] - np.array([0.5, 0.5, 1.0], np.float32)).sum())
+
+
+bpy.context.view_layer.objects.active = mr
+mr_d0 = mr_detail()
+mr.m3d_bake.multires_level = 1
+bpy.ops.m3d.tex_bake_multires()
+mr_d1 = mr_detail()
+mr.m3d_bake.multires_level = 5
+bpy.ops.m3d.tex_bake_multires()
+mr_d2 = mr_detail()
+check(mr_d0 > mr_d1 > mr_d2 > 0, "Low Level 0, 1 and the top: less detail each time (%.0f, %.0f, %.0f); more than the top is the top" % (mr_d0, mr_d1, mr_d2))
+check(mr.modifiers[0].levels == 3, "(the viewport level of the modifier is back)")
+mr.m3d_bake.multires_level = 0
+bpy.ops.m3d.tex_bake_multires()
+
+# Errors put everything back: another modifier after Multires is not allowed by the baker
+mr.modifiers.new("Subsurf", 'SUBSURF')
+mr_before = mr_snapshot(mr)
+mr_res = bg_try(bpy.ops.m3d.tex_bake_multires)
+check(isinstance(mr_res, RuntimeError) or mr_res == {'CANCELLED'}, "a Multires that is not the last modifier is refused: %s" % (mr_res,))
+check(isinstance(mr_res, RuntimeError) and "multi-resolution" in str(mr_res), "...with the message of Blender: %s" % str(mr_res).strip()[:90])
+check(mr_snapshot(mr) == mr_before and not [m for m in bpy.data.materials if m.name.startswith("m3dBake")], "...and nothing is left changed, no temporary material either")
+mr.modifiers.remove(mr.modifiers["Subsurf"])
+mr.m3d_bake.use_multires_normal = mr.m3d_bake.use_multires_displacement = False
+check(bpy.ops.m3d.tex_bake_multires() == {'CANCELLED'}, "nothing ticked: cancelled")
+mr.m3d_bake.use_multires_normal = True
+
+# Who is offered it
+mr_hp = bg_plate("Mr_hp_x")
+mr.m3d_bake.high = mr_hp
+check(not T.multires_ready(mr) and not T.PROPERTIES_PT_m3d_tx_bake_multires.page_poll(bpy.context), "not with a high poly picked")
+mr.m3d_bake.high = None
+mr.m3d_pair.role, mr.m3d_pair.group = 'HIGH', "Mr"
+check(not T.multires_ready(mr), "...nor on a high poly")
+mr.m3d_pair.role = 'LOW'
+check(T.multires_ready(mr), "a low poly of a group without a high poly is")
+mr_hp.m3d_pair.role, mr_hp.m3d_pair.group = 'HIGH', "Mr"
+check(not T.multires_ready(mr), "...not once its group has one")
+mr_hp.m3d_pair.role, mr_hp.m3d_pair.group = 'NONE', ""
+bpy.data.objects.remove(mr_hp)
+check(not T.multires_ready(bg_plate("PlainNoMr")), "a mesh without a Multires modifier is not")
+bpy.data.objects.remove(bpy.data.objects["PlainNoMr"])
+log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_multires)
+mr_props = [r._args[1] for r in log if r._kind == "prop"]
+check(mr_props == ["use_multires_normal", "use_multires_displacement", "multires_level"] and any(r._kind == "operator" and r._args[0] == "m3d.tex_bake_multires" for r in log),
+      "the Multires panel: Normal, Displacement, Low Level and the button: %s" % mr_props)
+
+# A low poly of a bake group in a texture set: the images are named after the material, and the state is baked
+mr_mat = bpy.data.materials.new("SetMat")
+mr.data.materials.append(mr_mat)
+mr.m3d_pair.group = "Mr"
+mr_other = bg_plate("Pl_low", x=6.0, role='LOW', group="Pl")
+mr_other.data.materials.append(mr_mat)
+bpy.context.view_layer.objects.active = mr
+mr.select_set(True)
+check(T.texture_set(mr)[0] == "SetMat", "(Mr is in the texture set SetMat)")
+check(bpy.ops.m3d.tex_bake_multires() == {'FINISHED'} and bpy.data.images.get("SetMat_Normal") is not None and T.map_image(mr, "Normal") == bpy.data.images["SetMat_Normal"],
+      "in a texture set the images are named after the material (SetMat_Normal)")
+check(bg_state("Mr") == 'BAKED' and bpy.data.images["SetMat_Normal"].get("m3d_parts") == "Mr", "...and the group is baked")
+
+# --- Export with suffixes: Bake meshes
+check(T.M3D_TexSettings.bl_rna.properties["export_bake_meshes"].default is False, "Bake meshes is off by default")
+clean_scene()
+for entry in list(bpy.context.scene.m3d_bake_groups):
+    bpy.context.scene.m3d_bake_groups.remove(0)
+for name in ("Mr", "SetMat"):
+    for coll in (bpy.data.materials, bpy.data.images):
+        if name in coll:
+            coll.remove(coll[name])
+xp = {}
+xp["Blade_lp"] = bg_plate("Blade_lp")
+xp["Blade_hp"] = bg_plate("Blade_hp", res=4, bump=0.1)
+xp["Blade_hp_bolts"] = bg_plate("Blade_hp_bolts", z=0.2, size=0.4)
+xp["Guard_lo"] = bg_plate("Guard_lo", x=4.0)
+xp["Guard_hi"] = bg_plate("Guard_hi", x=4.0, res=2, bump=0.1)
+xp["Solo_low"] = bg_plate("Solo_low", x=8.0)
+xp["Solo_high"] = bg_plate("Solo_high", x=8.0, res=3)
+xp["Other"] = bg_plate("Other", x=12.0)
+bpy.ops.m3d.hp_auto_pair()
+xp_mat = bpy.data.materials.new("SwordMat")
+xp_mat.use_nodes = True
+for n in ("Blade_lp", "Guard_lo"):
+    xp[n].data.materials.append(xp_mat)
+solo_mat = bpy.data.materials.new("SoloMat")
+solo_mat.use_nodes = True
+xp["Solo_low"].data.materials.append(solo_mat)
+PR.park_all(bpy.context)
+check(all(xp[n].hide_get() and xp[n].m3d_pair.parked for n in ("Blade_hp", "Blade_hp_bolts", "Guard_hi", "Solo_high")), "(the high polys are parked)")
+bpy.context.view_layer.objects.active = xp["Blade_lp"]
+xp["Blade_lp"].select_set(True)
+xp_dir = tempfile.mkdtemp(prefix="m3d_bakemesh_")
+xp_s = bpy.context.scene.m3d_tex
+xp_s.export_folder = xp_dir
+xp_s.export_preset = 'UNREAL'
+check(bpy.ops.m3d.tex_export() == {'FINISHED'} and not [f for f in os.listdir(xp_dir) if f.endswith(".fbx")], "Export without Bake meshes writes no meshes")
+xp_s.export_bake_meshes = True
+xp_flags = bg_flags()
+xp_names = sorted(o.name for o in bpy.data.objects)
+xp_data = sorted(m.name for m in bpy.data.meshes)
+check(bpy.ops.m3d.tex_export() == {'FINISHED'}, "Export with Bake meshes runs")
+check(sorted(f for f in os.listdir(xp_dir) if f.endswith(".fbx")) == ["SwordMat_high.fbx", "SwordMat_low.fbx"],
+      "a texture set with two low polys: two files named after the material: %s" % sorted(os.listdir(xp_dir)))
+check(any(p.endswith("SwordMat_low.fbx") for p in xp_s.export_files.split("|")) and any(p.endswith(".png") for p in xp_s.export_files.split("|")), "...listed with the textures")
+check(bg_flags() == xp_flags and sorted(o.name for o in bpy.data.objects) == xp_names and sorted(m.name for m in bpy.data.meshes) == xp_data,
+      "the names, the parked high polys, the selection and every flag are back after the export")
+check(all(xp[n].hide_get() and xp[n].m3d_pair.parked for n in ("Blade_hp", "Blade_hp_bolts", "Guard_hi", "Solo_high")), "...the high polys are hidden again")
+
+
+def xp_import(name):
+    """The objects (name, mesh name, vertex count) an FBX file makes (Blender adds .001 to a name that exists: left out)."""
+    before = set(bpy.data.objects)
+    bpy.ops.import_scene.fbx(filepath=os.path.join(xp_dir, name))
+    new = [o for o in bpy.data.objects if o not in before]
+    out = sorted((re.sub(r"\.\d+$", "", o.name), re.sub(r"\.\d+$", "", o.data.name), len(o.data.vertices)) for o in new if o.type == 'MESH')
+    for o in new:
+        bpy.data.objects.remove(o)
+    return out
+
+
+xp_n = {k: len(v.data.vertices) for k, v in xp.items()}
+check(xp_import("SwordMat_low.fbx") == [("Blade_low", "Blade_low", xp_n["Blade_lp"]), ("Guard_low", "Guard_low", xp_n["Guard_lo"])],
+      "SwordMat_low.fbx: the low polys of both groups, named in the _low style (not _lp / _lo)")
+check(xp_import("SwordMat_high.fbx") == [("Blade_high", "Blade_high", xp_n["Blade_hp"]), ("Blade_high_bolts", "Blade_high_bolts", xp_n["Blade_hp_bolts"]),
+                                         ("Guard_high", "Guard_high", xp_n["Guard_hi"])],
+      "SwordMat_high.fbx: the high polys and the floater, named in the _high style: %s" % xp_import("SwordMat_high.fbx"))
+# One group in its own texture set: named after the group
+for f in os.listdir(xp_dir):
+    os.remove(os.path.join(xp_dir, f))
+bpy.context.view_layer.objects.active = xp["Solo_low"]
+xp["Solo_low"].select_set(True)
+check(bpy.ops.m3d.tex_export() == {'FINISHED'} and sorted(f for f in os.listdir(xp_dir) if f.endswith(".fbx")) == ["Solo_high.fbx", "Solo_low.fbx"],
+      "a group alone: Solo_low.fbx and Solo_high.fbx")
+check(xp_import("Solo_low.fbx") == [("Solo_low", "Solo_low", xp_n["Solo_low"])] and xp_import("Solo_high.fbx") == [("Solo_high", "Solo_high", xp_n["Solo_high"])],
+      "...with the meshes of that group only")
+# The active mesh may be the high poly; a group without a high poly writes only the low file
+for f in os.listdir(xp_dir):
+    os.remove(os.path.join(xp_dir, f))
+PR.restore(xp["Solo_high"])
+bpy.data.objects.remove(xp["Solo_high"])
+check(bpy.ops.m3d.tex_export() == {'FINISHED'} and sorted(f for f in os.listdir(xp_dir) if f.endswith(".fbx")) == ["Solo_low.fbx"], "a group without a high poly: only the low file")
+# A mesh without a group
+bpy.context.view_layer.objects.active = xp["Other"]
+xp["Other"].data.materials.append(solo_mat)
+xp_files = sorted(os.listdir(xp_dir))
+xp_res = bg_try(bpy.ops.m3d.tex_export)
+check((isinstance(xp_res, RuntimeError) or xp_res == {'CANCELLED'}) and sorted(os.listdir(xp_dir)) == xp_files, "Bake meshes on a mesh without a bake group: refused, nothing written (%s)" % (xp_res,))
+check(isinstance(xp_res, RuntimeError) and "bake group" in str(xp_res), "...and it says why")
+xp_s.export_bake_meshes = False
+shutil.rmtree(xp_dir, ignore_errors=True)
+log = bg_draw(T.PROPERTIES_PT_m3d_tx_export_preset)
+check("export_bake_meshes" in [r._args[1] for r in log if r._kind == "prop"], "the Export tab has the option")
+
+# --- ID map: a flat colour for each material of the high poly, for each mesh when they have one material
+check(any(m[0] == 'ID' for m in T.BAKE_MAPS) and 'ID' in MK.MAP_LABELS and T.BAKE_TYPES['ID'] == 'EMIT', "ID is a map of the Bake tab and a baked map of the mask effects")
+check("use_id" in [r._args[1] for r in bg_draw(T.PROPERTIES_PT_m3d_tx_bake_maps) if r._kind == "prop"], "the Maps panel has the ID toggle")
+check(not T.M3D_BakeSettings.bl_rna.properties["use_id"].default, "...off to begin with")
+ids = [np.array(T.id_color(i)) for i in range(16)]
+check(min(np.linalg.norm(a - b) for i, a in enumerate(ids) for b in ids[i + 1:]) > 0.12, "the first 16 ID colours are far apart")
+
+
+def idm_scene(uv=(0.0, 0.0, 1.0, 1.0), margin=4, two_objects=False):
+    clean_scene()
+    for m in [m for m in bpy.data.materials if m.name.split(".")[0] in {"MatA", "MatB"}]:
+        bpy.data.materials.remove(m)
+    for entry in list(bpy.context.scene.m3d_bake_groups):
+        bpy.context.scene.m3d_bake_groups.remove(0)
+    low = bg_plate("Id_low", uv=uv, role='LOW', group="Id")
+    mats = [bpy.data.materials.new("MatA"), bpy.data.materials.new("MatB")]
+    if two_objects:   # (one material: a colour for each mesh)
+        left = bg_plate("Id_high", x=-0.5, size=1.0, res=3, role='HIGH', group="Id")
+        right = bg_plate("Id_high_b", x=0.5, size=1.0, res=3, role='HIGH', group="Id")
+        highs = [left, right]
+        for h in highs:
+            h.data.materials.append(mats[0])
+    else:   # (two materials on one mesh: left half and right half)
+        high = bg_plate("Id_high", res=8, bump=0.1, role='HIGH', group="Id")
+        high.data.materials.append(mats[0])
+        high.data.materials.append(mats[1])
+        for poly in high.data.polygons:
+            poly.material_index = 0 if sum(high.data.vertices[i].co.x for i in poly.vertices) < 0 else 1
+        highs = [high]
+    s = low.m3d_bake
+    s.resolution, s.margin, s.samples, s.extrusion = '64', margin, 8, 0.5
+    s.use_normal = s.use_ao = False
+    s.use_id = True
+    PR.park_all(bpy.context)
+    bpy.context.view_layer.objects.active = low
+    low.select_set(True)
+    return low, highs, mats
+
+
+idm_low, idm_highs, idm_mats = idm_scene()
+idm_flags = bg_flags()
+check(bpy.ops.m3d.bg_bake() == {'FINISHED'}, "Bake Group with only the ID map ticked")
+check(bg_flags() == idm_flags, "(everything is put back, the temporary materials are gone, the materials of the high poly are back)")
+check([s.material.name for s in idm_highs[0].material_slots] == ["MatA", "MatB"], "the high poly has its own materials again")
+idm_img = bpy.data.images["Id_low_ID"]
+idm_px = read_image(idm_img)
+idm_a, idm_b = np.array(T.id_color(0), np.float32), np.array(T.id_color(1), np.float32)
+check(idm_img.colorspace_settings.name == 'Non-Color' and T.map_image(idm_low, "ID") == idm_img, "the ID map is a data image named like the others, found by map_image")
+check(np.abs(idm_px[:, :32, :3] - idm_a).max() < 0.005 and np.abs(idm_px[:, 32:, :3] - idm_b).max() < 0.005,
+      "the left half of the low poly has the colour of MatA, the right half the one of MatB (%.4f)" % max(np.abs(idm_px[:, :32, :3] - idm_a).max(), np.abs(idm_px[:, 32:, :3] - idm_b).max()))
+check(len(np.unique(np.round(idm_px[..., :3], 3).reshape(-1, 3), axis=0)) == 2, "...and nothing else: no colour in between, also along the edge between them")
+check({k: tuple(round(x, 4) for x in v) for k, v in MK.id_colors(idm_img).items()} == {"Id: MatA": tuple(round(float(x), 4) for x in idm_a), "Id: MatB": tuple(round(float(x), 4) for x in idm_b)}
+      and [m.name for m in idm_mats] == ["MatA", "MatB"],
+      "the image says which colour is which: %s" % MK.id_colors(idm_img))
+bpy.ops.m3d.bg_bake()
+check(np.array_equal(read_image(idm_img), idm_px), "a new bake gives the same colours")
+# The materials are named after, not ordered by, the slots: swap the slots
+idm_highs[0].data.materials[0], idm_highs[0].data.materials[1] = idm_mats[1], idm_mats[0]
+for poly in idm_highs[0].data.polygons:
+    poly.material_index = 1 - poly.material_index
+bpy.ops.m3d.bg_bake()
+check(np.array_equal(read_image(idm_img), idm_px), "...also with the slots in another order (the colour is the material's)")
+
+# A mesh with one material or none: a colour for each mesh
+idm_low, idm_highs, idm_mats = idm_scene(two_objects=True)
+check(bpy.ops.m3d.bg_bake() == {'FINISHED'}, "Bake Group: two high polys with one material")
+idm_px = read_image(bpy.data.images["Id_low_ID"])
+check(np.abs(idm_px[20:44, :30, :3] - idm_a).max() < 0.005 and np.abs(idm_px[20:44, 34:, :3] - idm_b).max() < 0.005 and idm_px[:8, :, :3].max() == 0.0,
+      "each mesh has a colour, in the order of their names: Id_high, Id_high_b (and black where no mesh is)")
+for h in idm_highs:
+    h.data.materials.clear()
+bpy.ops.m3d.bg_bake()
+check(np.abs(read_image(bpy.data.images["Id_low_ID"])[20:44, :, :3] - idm_px[20:44, :, :3]).max() < 0.005, "...also without any material")
+
+# The margin extends the colours, it does not blend them
+idm_low, idm_highs, idm_mats = idm_scene(uv=(0.0, 0.0, 0.5, 1.0), margin=8)
+bpy.ops.m3d.bg_bake()
+idm_px = read_image(bpy.data.images["Id_low_ID"])[..., :3]
+idm_near = np.minimum(np.abs(idm_px - idm_a).max(axis=-1), np.abs(idm_px - idm_b).max(axis=-1))
+idm_black = idm_px.max(axis=-1) < 0.001
+idm_other = ~idm_black & (idm_near >= 0.005)
+check(idm_black.sum() > 500 and not idm_other[:, :34].any() and idm_other.sum() <= 64,
+      "the margin extends the colours, it does not blend them: every pixel is black or exactly a colour of the model, but the last pixel of the margin (%d black, %d blended)" % (idm_black.sum(), idm_other.sum()))
+check(not idm_black[:, :32].any() and idm_black[:, 41:].all(), "...and past the margin it is black")
+
+# The Color ID mask picks one of them
+idm_low, idm_highs, idm_mats = idm_scene()
+bpy.context.scene.m3d_tex.resolution = '64'
+bpy.ops.m3d.tex_add_material()
+idm_mat = idm_low.active_material
+with LY.muted():
+    LY.add_layer(idm_mat, 'PAINT', "Base")
+    LY.add_layer(idm_mat, 'FILL', "Top")
+    idm_mat.m3d_layer_index = 1
+LY.rebuild_all(idm_mat)
+idm_top = idm_mat.m3d_layers[1]
+if "Id_low_ID" in bpy.data.images:   # (the maps of the tests above are not this scene's)
+    bpy.data.images.remove(bpy.data.images["Id_low_ID"])
+idm_menu = []
+T.M3D_MT_mask_add.draw(type("Inst", (), {"layout": Rec(idm_menu)})(), bpy.context)
+check("COLORID" in [r.kind for r in idm_menu if r._kind == "operator"], "Add Mask Effect lists Color ID with the generators")
+check(bpy.ops.m3d.mask_effect_add(kind='COLORID') == {'FINISHED'}, "add a Color ID effect (it bakes the ID map)")
+idm_e = idm_top.mask_stack[0]
+idm_img = bpy.data.images.get("Id_low_ID")
+check(idm_e.kind == 'COLORID' and idm_e.image == idm_img and not MK.missing_maps(idm_top), "it reads the ID map of the low poly's group: %s" % idm_e.image)
+check(tuple(round(x, 4) for x in idm_e.color) == tuple(round(float(x), 4) for x in idm_a), "...and starts with the first colour")
+idm_mask = MK.stack_value(idm_top, 64)
+check(idm_mask[:, :32].min() > 0.99 and idm_mask[:, 32:].max() < 0.01, "the mask is white on the region of MatA and black elsewhere")
+check(bpy.ops.m3d.mask_id_pick(name="Id: MatB") == {'FINISHED'} and tuple(round(x, 4) for x in idm_e.color) == tuple(round(float(x), 4) for x in idm_b), "Pick ID Colour sets the colour of a material")
+idm_mask = MK.stack_value(idm_top, 64)
+check(idm_mask[:, 32:].min() > 0.99 and idm_mask[:, :32].max() < 0.01, "...and the mask is the other region")
+check(bpy.ops.m3d.mask_id_pick(name="Nothing") == {'CANCELLED'}, "an unknown name is refused")
+idm_e.color = (0.5, 0.5, 0.5)
+check(MK.stack_value(idm_top, 64).max() < 0.01, "a colour that is not in the map selects nothing")
+idm_e.color = (0.6, 0.3, 0.6)   # (a colour between the two, about 0.57 from each)
+idm_e.tolerance = 0.3
+check(MK.stack_value(idm_top, 64).max() < 0.01, "a colour that is further from the colours of the map than the tolerance selects nothing")
+idm_e.tolerance = 1.0
+idm_soft = MK.stack_value(idm_top, 64)
+check(idm_soft.min() > 0.7 and idm_soft.max() < 1.0, "...a wide tolerance lets both in, a little less than fully (%.2f)" % idm_soft.mean())
+idm_e.color = tuple(idm_a)
+idm_e.tolerance = 0.1
+node = LY.mask_node(idm_mat.node_tree, idm_top, "tex", idm_e)
+check(node is not None and node.interpolation == 'Closest' and node.image == idm_img, "the ID map is read without blending the texels")
+grp = LY.mask_node(idm_mat.node_tree, idm_top, "grp", idm_e)
+check(grp is not None and grp.node_tree.name == "m3d_mask.colorid" and tuple(round(x, 4) for x in grp.inputs["Color"].default_value) == tuple(round(float(x), 4) for x in idm_a)
+      and abs(grp.inputs["Tolerance"].default_value - 0.1) < 1e-6, "the node group has the colour and the tolerance")
+log = bg_draw(T.PROPERTIES_PT_m3d_tx_mask)
+idm_pick = [r._kw["text"] for r in log if r._kind == "operator" and r._args[0] == "m3d.mask_id_pick"]
+check(idm_pick == ["Id: MatA", "Id: MatB"], "the Mask panel lists the colours of the ID map to pick: %s" % idm_pick)
+check(["color", "tolerance"] == [r._args[1] for r in log if r._kind == "prop" and r._args[1] in {"color", "tolerance"}], "...with the colour and the tolerance")
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

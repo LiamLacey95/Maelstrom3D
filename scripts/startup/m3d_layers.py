@@ -509,6 +509,8 @@ def build_mask(mat, layer, index, sig):
         def image_socket(key, image, y_):
             tex = new("ShaderNodeTexImage", key, e, x, y_)
             tex.image = image
+            if kind == 'COLORID':   # (colours of an ID map are not blended with their neighbours)
+                tex.interpolation = 'Closest'
             return tex.outputs["Color"]
 
         if kind in {'PAINT', 'BLUR'}:
@@ -2002,6 +2004,8 @@ class M3D_OT_mask_effect_add(_ActiveLayerOp, Operator):
                 layer.paint_mask = True
             for key, image in images.items():
                 assign_map(e, key, image)
+            if self.kind == 'COLORID':   # (the first colour of the ID map to start with)
+                e.color = next(iter(MK.id_colors(e.image).values()), tuple(e.color))
             place_effect(layer)
         return _done(context, mat)
 
@@ -2083,6 +2087,30 @@ class M3D_OT_mask_effect_duplicate(_ActiveLayerOp, Operator):
                 e.image = src.image
             layer.mask_stack.move(len(layer.mask_stack) - 1, i + 1)
             layer.mask_index = i + 1
+        return _done(context, mat)
+
+
+class M3D_OT_mask_id_pick(_ActiveLayerOp, Operator):
+    """Use this colour of the ID map for the selected Color ID effect"""
+    bl_idname = "m3d.mask_id_pick"
+    bl_label = "Pick ID Colour"
+
+    name: StringProperty(name="Name", description="The material or mesh of the ID map")
+
+    @classmethod
+    def poll(cls, context):
+        if not super().poll(context):
+            return False
+        e = active_effect(active_layer(mesh_of(context).active_material))
+        return e is not None and e.kind == 'COLORID'
+
+    def execute(self, context):
+        mat = self.material(context)
+        e = active_effect(active_layer(mat))
+        color = MK.id_colors(e.image).get(self.name)
+        if color is None:
+            return {'CANCELLED'}
+        e.color = color
         return _done(context, mat)
 
 
@@ -2246,6 +2274,7 @@ classes = (
     M3D_OT_mask_effect_remove,
     M3D_OT_mask_effect_move,
     M3D_OT_mask_effect_duplicate,
+    M3D_OT_mask_id_pick,
     M3D_OT_mask_rebake,
     M3D_OT_layer_merge_down,
     M3D_OT_layer_flatten,

@@ -8,7 +8,7 @@ side is made of, and the numpy math that flattens a mask exactly like those node
 
 A layer's mask is a stack of effects combined from the bottom up, starting from white (so an empty stack hides
 nothing). Sources are Paint (an image you paint), Fill (a flat value) and the generators (Edges, Cavity, Top-down,
-Thickness, Noise: they read maps baked from the mesh, or noise); filters (Levels, Blur, Invert, Sharpen) change
+Thickness, Color ID, Noise: they read maps baked from the mesh, or noise); filters (Levels, Blur, Invert, Sharpen) change
 everything below them. Every effect has a visible toggle, an opacity and (sources) a blend mode: the result below
 and the effect's value go through one Mix node (factor = opacity), so with opacity 0 an effect does nothing.
 
@@ -89,10 +89,11 @@ KINDS = (
     Kind('BLUR', "Blur", 'MOD_SMOOTH', "Filter: soften everything below", ()),
     Kind('INVERT', "Invert", 'ARROW_LEFTRIGHT', "Filter: swap black and white of everything below", ()),
     Kind('SHARPEN', "Sharpen", 'IMAGE_ZDEPTH', "Filter: make the steps between black and white of everything below steeper", ()),
-)
+    Kind('COLORID', "Color ID", 'COLOR', "White where the baked ID map has the picked colour: one material, or one mesh, of the high poly", ('ID',)),
+)   # (a new kind goes last: the saved value of an enum is its place in the list)
 KIND_BY_ID = {k.id: k for k in KINDS}
 FILTERS = {'LEVELS', 'BLUR', 'INVERT', 'SHARPEN'}
-GROUPED = {'EDGES', 'CAVITY', 'TOPDOWN', 'THICKNESS', 'NOISE', 'LEVELS', 'INVERT', 'SHARPEN'}   # Kinds with a node group.
+GROUPED = {'EDGES', 'CAVITY', 'TOPDOWN', 'THICKNESS', 'NOISE', 'LEVELS', 'INVERT', 'SHARPEN', 'COLORID'}   # Kinds with a node group.
 OWNED = {'PAINT', 'BLUR'}   # The effect's image is its own (paint pixels, the blur cache); the others read baked maps.
 
 BLENDS = (('MIX', "Normal"), ('MULTIPLY', "Multiply"), ('ADD', "Add"), ('SUBTRACT', "Subtract"), ('LIGHTEN', "Max"),
@@ -113,6 +114,7 @@ PARAM_UI = {
     'TOPDOWN': (("direction", "Direction"), ("offset", "Offset"), ("softness", "Softness"),
                 ("height_falloff", "Height Falloff")),
     'THICKNESS': (("amount", "Amount"), ("contrast", "Contrast"), ("invert", "Invert")),
+    'COLORID': (("color", "Color"), ("tolerance", "Tolerance")),
     'NOISE': (("space", "Space"), ("scale", "Scale"), ("detail", "Detail"), ("noise_contrast", "Contrast"),
               ("seed", "Seed")),
     'LEVELS': (("black_in", "Black In"), ("white_in", "White In"), ("gamma", "Gamma"), ("black_out", "Black Out"),
@@ -123,7 +125,7 @@ PARAM_UI = {
 OVERRIDES = {'TOPDOWN': {"softness": 0.5}, 'BLUR': {"amount": 0.25}}   # Starting values that differ from the property defaults.
 
 MAP_LABELS = {'CURVATURE': "Curvature", 'AO': "AO", 'POSITION': "Position", 'THICKNESS': "Thickness",
-              'WORLDNORMAL': "WorldNormal"}   # Baked maps: the image of mesh `Cube` is named Cube_<label>.
+              'WORLDNORMAL': "WorldNormal", 'ID': "ID"}   # Baked maps: the image of mesh `Cube` is named Cube_<label>.
 
 _hook = [None]   # Set by m3d_layers: the property update (rebuild the nodes, aim the brush).
 
@@ -155,6 +157,11 @@ class M3D_MaskEffect(PropertyGroup):
     contrast: FloatProperty(name="Contrast", min=0.0, max=1.0, default=0.5, subtype='FACTOR', update=_changed,
                             description="How sharp the step between black and white is")
     invert: BoolProperty(name="Invert", default=False, update=_changed, description="Swap black and white")
+    color: FloatVectorProperty(name="Color", size=3, subtype='COLOR', min=0.0, max=1.0, default=(1.0, 0.0, 0.0), update=_changed,
+                               description="The colour of the ID map that shows the layer")
+    tolerance: FloatProperty(name="Tolerance", min=0.0, max=1.0, default=0.1, subtype='FACTOR', update=_changed,
+                             description="How far from the colour a colour of the ID map may be and still count: it shows fully up to half of "
+                             "this, and not at all beyond it")
     direction: FloatVectorProperty(name="Direction", size=3, subtype='DIRECTION', default=(0.0, 0.0, 1.0), update=_changed,
                                    description="Surfaces facing this world direction are white (default: up)")
     offset: FloatProperty(name="Offset", min=-1.0, max=1.0, default=0.0, update=_changed,
@@ -185,7 +192,8 @@ class M3D_MaskEffect(PropertyGroup):
 
 
 PARAM_PROPS = ("value", "amount", "softness", "contrast", "invert", "direction", "offset", "height_falloff", "scale",
-               "detail", "noise_contrast", "seed", "space", "black_in", "white_in", "gamma", "black_out", "white_out")
+               "detail", "noise_contrast", "seed", "space", "black_in", "white_in", "gamma", "black_out", "white_out", "color",
+               "tolerance")
 
 
 def needed_maps(e):
@@ -202,6 +210,12 @@ def map_images(e):
 def missing_maps(layer):
     """[(effect, map key)] the stack needs and does not have."""
     return [(e, key) for e in layer.mask_stack for key, image in map_images(e).items() if image is None]
+
+
+def id_colors(image):
+    """{label: colour} of an ID map (the bake keeps them with the image), in the order they were baked."""
+    ids = image.get("m3d_ids") if image is not None else None
+    return {name: tuple(color) for name, color in ids.to_dict().items()} if ids else {}
 
 
 def owned_images(layer):
@@ -234,6 +248,8 @@ def params(e):
                 "Black Out": e.black_out, "White Out": e.white_out}
     if k == 'SHARPEN':
         return {"Amount": e.amount}
+    if k == 'COLORID':
+        return {"Color": tuple(float(x) for x in e.color), "Tolerance": max(e.tolerance, 0.001)}
     return {}
 
 
@@ -281,11 +297,11 @@ class _Group:
         return node.outputs[0]
 
     def vec(self, op, *args):
-        """Vector Math: a vector result, or the value of a dot product."""
+        """Vector Math: a vector result, or the value of a dot product or a distance."""
         node = self.node('ShaderNodeVectorMath', operation=op)
         for socket, value in zip(node.inputs, args):
             self.feed(socket, value)
-        return node.outputs["Value" if op == 'DOT_PRODUCT' else "Vector"]
+        return node.outputs["Value" if op in {'DOT_PRODUCT', 'DISTANCE'} else "Vector"]
 
     def finish(self, value):
         out = self.node('NodeGroupOutput')
@@ -361,9 +377,16 @@ def _sharpen():
     return g.finish(g.math('MULTIPLY_ADD', g.math('SUBTRACT', g["Value"], 0.5), gain, 0.5, clamp=True))
 
 
+def _colorid():
+    # (Tolerance - distance to the picked colour) / (Tolerance / 2): white at the colour, black from Tolerance away from it.
+    g = _Group("m3d_mask.colorid", (("Map", 'VECTOR'), ("Color", 'VECTOR'), ("Tolerance", 'FLOAT')))
+    distance = g.vec('DISTANCE', g["Map"], g["Color"])
+    return g.finish(g.math('DIVIDE', g.math('SUBTRACT', g["Tolerance"], distance), g.math('MULTIPLY', g["Tolerance"], 0.5), clamp=True))
+
+
 GROUPS = {'EDGES': _edges, 'CAVITY': lambda: _dark_to_white("m3d_mask.cavity"),
           'THICKNESS': lambda: _dark_to_white("m3d_mask.thickness"), 'TOPDOWN': _topdown, 'NOISE': _noise,
-          'LEVELS': _levels, 'INVERT': _invert, 'SHARPEN': _sharpen}
+          'LEVELS': _levels, 'INVERT': _invert, 'SHARPEN': _sharpen, 'COLORID': _colorid}
 
 
 def group_of(kind):
@@ -530,6 +553,10 @@ def generator_value(e, size):
         height = _clamp(q[..., 0] * d[0] + q[..., 1] * d[1] + q[..., 2] * d[2] + _f(0.5))
         score = (height - _f(1)) * _f(p["Height Falloff"]) + facing + _f(p["Offset"])
         return _clamp(score / _f(p["Softness"]))
+    if k == 'COLORID':
+        distance = np.sqrt(((sample(e.image, size, rgb=True) - np.array(p["Color"], np.float32)) ** 2).sum(axis=-1))
+        tolerance = _f(p["Tolerance"])
+        return _clamp((tolerance - distance) / (tolerance * _f(0.5)))
     if k == 'NOISE':
         return noise_value(e, size)
     raise KeyError(k)

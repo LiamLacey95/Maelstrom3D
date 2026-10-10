@@ -23,7 +23,8 @@ import time
 from contextlib import contextmanager
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, PointerProperty, StringProperty
+from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty, PointerProperty,
+                       StringProperty)
 from bpy.types import Menu, Operator, PropertyGroup
 
 import m3d_inputs
@@ -80,6 +81,8 @@ class M3D_Pair(PropertyGroup):
     group: StringProperty(name="Group", description="Meshes with the same group belong together (one bake group)")
     parked: BoolProperty(options={'HIDDEN'}, description="Hidden by Maelstrom3D, to be shown again by it")
     ghost: StringProperty(options={'HIDDEN'}, description="Display type before Show Low Poly drew this mesh as a wire")
+    explode_from: FloatVectorProperty(size=3, options={'HIDDEN'}, description="Location of the mesh before Explode moved it")
+    explode_offset: FloatVectorProperty(size=3, options={'HIDDEN'}, description="What Explode added to the world position of the mesh (zero: not moved)")
 
 
 def is_mesh(ob):
@@ -123,6 +126,11 @@ def all_groups(context):
         for obs in lows_highs:
             obs.sort(key=lambda o: o.name)
     return dict(sorted(found.items(), key=lambda item: item[0].lower()))
+
+
+def inherit_explode(ob, src):
+    """A new mesh made at the place of `src` while the groups are exploded (m3d_bakegroups.py) goes back with it."""
+    ob.m3d_pair.explode_from, ob.m3d_pair.explode_offset = src.m3d_pair.explode_from, src.m3d_pair.explode_offset
 
 
 def set_role(ob, role, group=None):

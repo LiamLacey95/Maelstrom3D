@@ -15,6 +15,7 @@ a material without layers works on its paint slots directly, and gets its slots 
 operation. The Library tab (materials, mask presets, brushes, alphas, your own items) is m3d_library.py.
 """
 
+import colorsys
 import os
 from contextlib import ExitStack, contextmanager, nullcontext
 
@@ -34,7 +35,7 @@ import m3d_uv
 from m3d_layers import (CHANNEL_BY_ID, CHANNEL_ITEMS, CHANNELS, active_layer, entry_of, pixels_of, principled_of,
                         set_channel_space)
 from m3d_mode import _button
-from m3d_sculpt import brush_tiles, mesh_of, reason, split_props, viewport
+from m3d_sculpt import brush_tiles, mesh_of, multires_of, reason, split_props, viewport
 from m3d_workspace import _PagePanel
 
 # -----------------------------------------------------------------------------
@@ -233,6 +234,10 @@ class M3D_TexSettings(PropertyGroup):
     export_size: EnumProperty(name="Size", default='SAME', items=(
         ('SAME', "Same as Paint", "Keep the size of each paint image"), *SIZES),
         description="Size of the exported images")
+    export_bake_meshes: BoolProperty(
+        name="Bake meshes", default=False,
+        description="Also write the low polys and the high polys of the groups of this texture set as two FBX files "
+                    "(<name>_low.fbx, <name>_high.fbx) with the meshes named Part_low and Part_high, for tools that match by name")
     export_files: StringProperty(description="Files of the last export, separated by |")
 
 
@@ -248,6 +253,9 @@ class M3D_BakeSettings(PropertyGroup):
     use_position: BoolProperty(name="Position", default=False, description="Position within the mesh's bounds")
     use_thickness: BoolProperty(name="Thickness", default=False,
                                 description="How thick the mesh is (closed meshes only)")
+    use_id: BoolProperty(name="ID", default=False,
+                         description="One flat colour for each material of the high poly (for each mesh when they have one material): "
+                                     "pick a part of the model by its colour in a mask")
     resolution: EnumProperty(name="Resolution", default='1024', items=SIZES)
     margin: IntProperty(name="Margin", default=16, min=0, max=64, subtype='PIXEL',
                         description="Pixels the baked detail is extended past the UV shells")
@@ -260,6 +268,12 @@ class M3D_BakeSettings(PropertyGroup):
     thickness_distance: FloatProperty(name="Thickness Distance", default=0.25, min=0.001, soft_max=10.0, unit='LENGTH',
                                       description="Where the mesh is thicker than this the map is white, where it is thinner "
                                       "it gets darker")
+    multires_level: IntProperty(name="Low Level", default=0, min=0, soft_max=6,
+                                description="Multires level the detail is baked onto (0: the base mesh). The levels above it "
+                                            "are the detail")
+    use_multires_normal: BoolProperty(name="Normal", default=True, description="Tangent space normal map of the Multires detail")
+    use_multires_displacement: BoolProperty(
+        name="Displacement", default=False, description="How far the Multires detail is from the low level (grey is no distance)")
     baked: StringProperty(description="Maps of the last bake, separated by |")
 
 
@@ -485,15 +499,16 @@ class M3D_OT_tex_apply_material(Operator):
 
 BAKE_MAPS = (   # (id, label, flag in M3D_BakeSettings)
     ('NORMAL', "Normal", "use_normal"), ('AO', "AO", "use_ao"), ('CURVATURE', "Curvature", "use_curvature"),
-    ('POSITION', "Position", "use_position"), ('THICKNESS', "Thickness", "use_thickness"),
+    ('POSITION', "Position", "use_position"), ('THICKNESS', "Thickness", "use_thickness"), ('ID', "ID", "use_id"),
 )
-BAKE_TYPES = {'NORMAL': 'NORMAL', 'AO': 'AO', 'CURVATURE': 'EMIT', 'POSITION': 'POSITION', 'THICKNESS': 'EMIT',
+BAKE_TYPES = {'NORMAL': 'NORMAL', 'AO': 'AO', 'CURVATURE': 'EMIT', 'POSITION': 'POSITION', 'THICKNESS': 'EMIT', 'ID': 'EMIT',
               'WORLDNORMAL': 'EMIT'}   # The last is only for mask effects (Top-down): the world space normal, n * 0.5 + 0.5.
 
 
-def bake_material(image=None, emission=None, distance=1.0):
+def bake_material(image=None, emission=None, distance=1.0, color=(0.0, 0.0, 0.0)):
     """Temporary material for a bake: an Image Texture node holding `image` (the bake target, active), and for
-    Curvature / Thickness an emission shader showing the map (Pointiness, or ambient occlusion from inside)."""
+    Curvature / Thickness an emission shader showing the map (Pointiness, or ambient occlusion from inside), for ID one
+    flat `color`."""
     mat = bpy.data.materials.new("m3dBake")
     mat.use_nodes = True
     nodes, links = mat.node_tree.nodes, mat.node_tree.links
@@ -501,7 +516,9 @@ def bake_material(image=None, emission=None, distance=1.0):
         nodes.clear()
         out, emit = nodes.new("ShaderNodeOutputMaterial"), nodes.new("ShaderNodeEmission")
         links.new(emit.outputs["Emission"], out.inputs["Surface"])
-        if emission == 'CURVATURE':   # Pointiness is 0.5 on flat areas: widen 0.45-0.55 to the whole range.
+        if emission == 'ID':
+            emit.inputs["Color"].default_value = (*color, 1.0)
+        elif emission == 'CURVATURE':   # Pointiness is 0.5 on flat areas: widen 0.45-0.55 to the whole range.
             geo, rng = nodes.new("ShaderNodeNewGeometry"), nodes.new("ShaderNodeMapRange")
             rng.inputs["From Min"].default_value, rng.inputs["From Max"].default_value = 0.45, 0.55
             links.new(geo.outputs["Pointiness"], rng.inputs["Value"])
@@ -526,13 +543,15 @@ def bake_material(image=None, emission=None, distance=1.0):
 
 @contextmanager
 def materials_swapped(ob, mat):
-    """`mat` on every material slot of `ob` (a slot is added when it has none); the old materials come back after."""
+    """`mat` on every material slot of `ob` (a slot is added when it has none), or a list of materials, one for each slot;
+    the old materials come back after, and the temporary ones are removed."""
     saved = [slot.material for slot in ob.material_slots]
+    new = list(mat) if isinstance(mat, (list, tuple)) else [mat] * max(len(saved), 1)
     if saved:
-        for slot in ob.material_slots:
-            slot.material = mat
+        for slot, m in zip(ob.material_slots, new):
+            slot.material = m
     else:
-        ob.data.materials.append(mat)
+        ob.data.materials.append(new[0])
     try:
         yield
     finally:
@@ -541,7 +560,14 @@ def materials_swapped(ob, mat):
                 slot.material = old
         else:
             ob.data.materials.clear()
-        bpy.data.materials.remove(mat)
+        for m in set(new):
+            bpy.data.materials.remove(m)
+
+
+def id_materials(colors, image=None):
+    """Emission materials in flat colours, one for each of `colors` (for `materials_swapped`); with `image`, each also holds
+    the bake target."""
+    return [bake_material(image, 'ID', color=color) for color in colors]
 
 
 def meshes_of(obs):
@@ -584,7 +610,7 @@ def rename_maps(ob, old, new):
     if old == new:
         return
     images = bpy.data.images
-    for label in dict.fromkeys([*(label for _key, label, _flag in BAKE_MAPS), *MK.MAP_LABELS.values()]):
+    for label in dict.fromkeys([*(label for _key, label, _flag in BAKE_MAPS), *MK.MAP_LABELS.values(), *(m[1] for m in MULTIRES_MAPS)]):
         image = images.get("%s_%s" % (old, label))
         if image is not None and images.get("%s_%s" % (new, label)) is None:
             image.name = "%s_%s" % (new, label)
@@ -647,10 +673,11 @@ RENDERED = {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT', 'CURVES', 'POINTCLOUD', 
 
 
 @contextmanager
-def bake_scene(context, ob, highs=None, hide=()):
-    """Cycles on (the bake needs it), the low-poly mesh active and the high-poly meshes `highs` (one, a list or None)
-    selected with it, Object Mode; `hide`: meshes that are not rendered meanwhile (Cycles bakes ambient occlusion against
-    everything it renders, except the low poly itself). Everything is put back afterwards, also after an error."""
+def bake_scene(context, ob, highs=None, hide=(), cycles=True):
+    """Cycles on (the bake needs it; `cycles` False: the engine stays), the low-poly mesh active and the high-poly meshes
+    `highs` (one, a list or None) selected with it, Object Mode; `hide`: meshes that are not rendered meanwhile (Cycles
+    bakes ambient occlusion against everything it renders, except the low poly itself). Everything is put back afterwards,
+    also after an error. A mesh that is hidden is shown inside: the redraw does not happen before it is hidden again."""
     scene, layer = context.scene, context.view_layer
     highs = meshes_of(highs)
     objs = [ob, *highs]
@@ -674,7 +701,8 @@ def bake_scene(context, ob, highs=None, hide=()):
         for o in objs:
             o.select_set(True)
         layer.objects.active = ob
-        scene.render.engine = 'CYCLES'
+        if cycles:
+            scene.render.engine = 'CYCLES'
         yield
     finally:
         scene.render.engine, scene.cycles.samples = state["engine"], state["samples"]
@@ -695,6 +723,26 @@ def bake_scene(context, ob, highs=None, hide=()):
                 pass   # (the mode can't be entered any more: this must not hide the error that got us here)
 
 
+def id_color(i):
+    """The i-th ID colour: hues a golden ratio apart, so that any run of them is far apart; the ninth to sixteenth are darker."""
+    return colorsys.hsv_to_rgb((i * 0.61803398875) % 1.0, 0.8, 1.0 - 0.4 * ((i // 8) % 2))
+
+
+def id_plan(obs):
+    """({name: colour}, {mesh name: [colour of each material slot]}) for the ID map of the meshes `obs`: a colour for each
+    material when they have more than one between them, else a colour for each mesh. The colours follow the names in order, so
+    a new bake gives the same ones; a slot without a material is black (the colour of the background)."""
+    mats = sorted({slot.material.name for o in obs for slot in o.material_slots if slot.material})
+    colors = {name: id_color(i) for i, name in enumerate(mats if len(mats) > 1 else sorted(o.name for o in obs))}
+
+    def slots(o):
+        if len(mats) > 1:
+            return [colors[slot.material.name] if slot.material else (0.0, 0.0, 0.0) for slot in o.material_slots] or [(0.0, 0.0, 0.0)]
+        return [colors[o.name]] * max(len(o.material_slots), 1)
+
+    return colors, {o.name: slots(o) for o in obs}
+
+
 def bake_maps(context, ob, high, s, maps, name=None, extrusion=None, ray_distance=None, cage=None, others=(), normalise=True):
     """Bake the ticked maps of `ob` (from `high`, a mesh or a list, when set) into images named `name`_<Map> (default: the
     name of `ob`). `extrusion`, `ray_distance` and `cage` (a mesh with the faces of `ob`) are the group's, `s` has the
@@ -703,18 +751,24 @@ def bake_maps(context, ob, high, s, maps, name=None, extrusion=None, ray_distanc
     size, images, highs = int(s.resolution), [], meshes_of(high)
     name = name or ob.name
     for key, label, _flag in maps:
-        # The Position pass adds up its samples instead of averaging them: one sample, and it is exact anyway.
-        context.scene.cycles.samples = 1 if key == 'POSITION' else s.samples
+        # The Position pass adds up its samples instead of averaging them: one sample, and it is exact anyway. The ID colours
+        # are flat: one sample keeps the edges between them hard (the margin only extends them).
+        context.scene.cycles.samples = 1 if key in {'POSITION', 'ID'} else s.samples
         image = bake_image(name, label, size, key in {'POSITION', 'WORLDNORMAL'})
         held = set(filter(None, str(image.get("m3d_parts", "")).split("|"))) & (set(others) - {ob.name})
         emission = key if BAKE_TYPES[key] == 'EMIT' else None
+        ids = id_plan(highs or [ob]) if key == 'ID' else None   # (colours of the high polys, or of the mesh itself)
         # Without a high-poly mesh the low-poly one carries both the emission and the bake target.
-        target = bake_material(image, None if highs else emission, s.thickness_distance)
+        if ids is not None:
+            target = bake_material(image) if highs else id_materials(ids[1][ob.name], image)
+        else:
+            target = bake_material(image, None if highs else emission, s.thickness_distance)
         with ExitStack() as stack:
             stack.enter_context(materials_swapped(ob, target))
             if highs and emission:
                 for h in highs:
-                    stack.enter_context(materials_swapped(h, bake_material(emission=emission, distance=s.thickness_distance)))
+                    stack.enter_context(materials_swapped(h, id_materials(ids[1][h.name]) if ids is not None else
+                                                          bake_material(emission=emission, distance=s.thickness_distance)))
             bpy.ops.object.bake(
                 type=BAKE_TYPES[key], margin=s.margin, use_selected_to_active=bool(highs),
                 cage_extrusion=s.extrusion if extrusion is None else extrusion,
@@ -722,6 +776,10 @@ def bake_maps(context, ob, high, s, maps, name=None, extrusion=None, ray_distanc
                 use_cage=cage is not None, cage_object=cage.name if cage is not None else "",
                 use_clear=not held, target='IMAGE_TEXTURES', save_mode='INTERNAL')
         image["m3d_parts"] = "|".join(sorted({*held, ob.name}))
+        if ids is not None:   # (which colour is which, for the Color ID mask)
+            prefix = ob.m3d_pair.group + ": " if m3d_pair.grouped(ob) else ""
+            image["m3d_ids"] = {**(image["m3d_ids"].to_dict() if held and "m3d_ids" in image else {}),
+                                **{prefix + n: list(c) for n, c in ids[0].items()}}
         if key == 'POSITION' and normalise:
             normalise_position(image, highs or ob, ob)
         image["m3d_map"] = size   # Baked at this size: mask effects reuse it until the resolution changes.
@@ -757,6 +815,101 @@ def ensure_maps(context, ob, keys, force=False):
         name = texture_set(ob)[0]
         s.baked = "|".join(dict.fromkeys([*filter(None, s.baked.split("|")), *("%s_%s" % (name, label) for _k, label, _f in todo)]))
     return {key: map_image(ob, MK.MAP_LABELS[key]) for key in keys}
+
+
+def multires_ready(ob):
+    """A low poly, or a mesh without a role, that has Multires levels and no high poly: the Bake tab offers to bake from them."""
+    mod = multires_of(ob) if m3d_pair.is_mesh(ob) else None
+    if mod is None or mod.total_levels < 1 or ob.m3d_pair.role == 'HIGH':
+        return False
+    if m3d_pair.grouped(ob):
+        return not m3d_pair.group_of(bpy.context, ob.m3d_pair.group)[1]
+    return ob.m3d_bake.high is None
+
+
+MULTIRES_MAPS = (   # (id, label, type of Blender's multires baker, flag in M3D_BakeSettings)
+    ('NORMAL', "Normal", 'NORMALS', "use_multires_normal"),
+    ('DISPLACEMENT', "Displacement", 'DISPLACEMENT', "use_multires_displacement"),
+)
+
+
+@contextmanager
+def multires_settings(bake, **values):
+    """The multires settings of the scene (`scene.render.bake`: use_multires, type, margin, use_clear ...) are `values`
+    inside; everything that is named here is put back after, also after an error."""
+    saved = {name: getattr(bake, name) for name in values}
+    try:
+        for name, value in values.items():
+            setattr(bake, name, value)
+        yield bake
+    finally:
+        for name, value in saved.items():
+            setattr(bake, name, value)
+
+
+def bake_multires(context, ob, s, kinds, name, others=()):
+    """Bake the maps `kinds` (entries of MULTIRES_MAPS) of `ob` from its Multires levels with Blender's own baker: what the
+    levels above the Low Level (`ob.m3d_bake`) add to it. The images are named `name`_<Map> like the other maps; `s` has
+    the size and the margin, `others` is as in `bake_maps`. The render settings and the level of the modifier are put back,
+    also after an error. Returns the images."""
+    mod, size, images = multires_of(ob), int(s.resolution), []
+    level = mod.levels
+    try:
+        with bake_scene(context, ob, cycles=False), multires_settings(
+                context.scene.render.bake, use_multires=True, type='NORMALS', margin=s.margin, use_clear=True,
+                use_lores_mesh=False) as bake:
+            mod.levels = min(ob.m3d_bake.multires_level, mod.total_levels - 1)
+            for key, label, bake_type, _flag in kinds:
+                image = bake_image(name, label, size, key == 'DISPLACEMENT')
+                held = set(filter(None, str(image.get("m3d_parts", "")).split("|"))) & (set(others) - {ob.name})
+                bake.type, bake.use_clear = bake_type, not held
+                with materials_swapped(ob, bake_material(image)):
+                    bpy.ops.object.bake_image()
+                image["m3d_parts"] = "|".join(sorted({*held, ob.name}))
+                image["m3d_map"] = size
+                image["m3d_stamp"] = MK.new_uid()
+                images.append(image)
+    finally:
+        mod.levels = level
+    return images
+
+
+class M3D_OT_tex_bake_multires(Operator):
+    """Bake the detail of the Multires levels of the active mesh above its Low Level into a normal map and / or a displacement
+    map, with Blender's own Multires baker (no high poly needed). The mesh needs UVs, and the Multires modifier has to be the
+    last modifier"""
+    bl_idname = "m3d.tex_bake_multires"
+    bl_label = "Bake Multires"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return multires_ready(mesh_of(context))
+
+    def execute(self, context):
+        ob = mesh_of(context)
+        kinds = [m for m in MULTIRES_MAPS if getattr(ob.m3d_bake, m[3])]
+        if not kinds:
+            self.report({'WARNING'}, "Tick Normal or Displacement")
+            return {'CANCELLED'}
+        name, every = texture_set(ob)
+        owner = bake_owner(ob).m3d_bake
+        wm = context.window_manager
+        wm.progress_begin(0, 1)
+        try:
+            with m3d_pair.quiet(context):
+                images = bake_multires(context, ob, owner, kinds, name, [o.name for o in every])
+        except RuntimeError as err:
+            self.report({'ERROR'}, str(err).strip())
+            return {'CANCELLED'}
+        finally:
+            wm.progress_end()
+        owner.baked = "|".join(dict.fromkeys([*filter(None, owner.baked.split("|")), *(image.name for image in images)]))
+        if m3d_pair.grouped(ob):
+            import m3d_bakegroups
+            m3d_bakegroups.bake_groups_done(context, m3d_pair.all_groups(context), [ob.m3d_pair.group])
+        self.report({'INFO'}, "Baked %s from Multires at %s px" % (", ".join(m[1] for m in kinds), owner.resolution))
+        return {'FINISHED'}
 
 
 class M3D_OT_tex_bake_pick(Operator):
@@ -855,14 +1008,21 @@ def write_png(path, array, srgb, alpha=False):
         bpy.data.images.remove(image)
 
 
-def export_textures(context, ob):
-    """Write the active mesh's channels in the format of the Export preset. Returns the files written. With layers,
-    each channel is the flattened visible stack (the layers are not touched)."""
+def export_folder(context):
+    """The folder of the Export tab, made when it is not there (it may start with // once the file is saved)."""
     s = context.scene.m3d_tex
     if s.export_folder.startswith("//") and not bpy.data.filepath:
         raise RuntimeError("Save the file first, or pick a folder that does not start with //")
     folder = bpy.path.abspath(s.export_folder)
     os.makedirs(folder, exist_ok=True)
+    return folder
+
+
+def export_textures(context, ob):
+    """Write the active mesh's channels in the format of the Export preset. Returns the files written. With layers,
+    each channel is the flattened visible stack (the layers are not touched)."""
+    s = context.scene.m3d_tex
+    folder = export_folder(context)
     name = bpy.path.clean_name(ob.name)
     mat = ob.active_material
     stacked = bool(mat.m3d_layers)
@@ -943,8 +1103,56 @@ def export_gltf(context, ob, path, size):
     return path
 
 
+def bake_mesh_set(context, ob):
+    """(name, low polys, high polys) that the Bake meshes option writes for the bake group of `ob`: the low polys of its texture
+    set with the high polys of their groups, named after the material when the set has several low polys, else after the group.
+    None when `ob` has no group with a low poly."""
+    lows = m3d_pair.pair_of(context, ob)[0]
+    if not lows:
+        return None
+    name, every = texture_set(lows[0])
+    highs = [h for group in dict.fromkeys(o.m3d_pair.group for o in every) for h in m3d_pair.group_of(context, group)[1]]
+    return (name if len(every) > 1 else lows[0].m3d_pair.group), every, highs
+
+
+@contextmanager
+def named_for_export(context, obs):
+    """The meshes `obs` have the names of the _low / _high style inside (the object and its mesh: Sword_low, Sword_high,
+    Sword_high_bolts), so that a tool that matches by name finds the pairs. Their own names come back after."""
+    todo = [(ob, new) for ob, new in m3d_pair.renamed(context, 'LOW_HIGH') if ob in obs and ob.library is None]
+    old = [(ob, ob.name, ob.data, ob.data.name) for ob, _new in todo]
+    with m3d_pair.quiet(context):
+        try:
+            for ob, new in todo:
+                ob.name = new
+                if ob.data.users == 1:
+                    ob.data.name = new
+            yield
+        finally:
+            for ob, name, data, data_name in reversed(old):
+                ob.name, data.name = name, data_name
+
+
+def export_bake_meshes(context, ob):
+    """Write the low polys and the high polys of `bake_mesh_set` as `name`_low.fbx and `name`_high.fbx in the Export folder.
+    A high poly that is parked is shown for the export only (never drawn). Returns the files written."""
+    if not hasattr(bpy.ops.export_scene, "fbx"):
+        raise RuntimeError("The FBX exporter is not enabled")
+    name, lows, highs = bake_mesh_set(context, ob)
+    folder, paths = export_folder(context), []
+    with m3d_pair.quiet(context), named_for_export(context, [*lows, *highs]):
+        for suffix, obs in (("low", lows), ("high", highs)):
+            if obs:
+                path = os.path.join(folder, "%s_%s.fbx" % (bpy.path.clean_name(name), suffix))
+                with bake_scene(context, obs[0], obs[1:], cycles=False):
+                    bpy.ops.export_scene.fbx(filepath=path, use_selection=True, object_types={'MESH'}, bake_anim=False)
+                paths.append(path)
+    return paths
+
+
 class M3D_OT_tex_export(Operator):
-    """Write the channels of the active mesh as texture files for the chosen engine (Export tab)"""
+    """Write the channels of the active mesh as texture files for the chosen engine (Export tab), and with Bake meshes the
+    low polys and high polys of its bake groups as FBX files"""
     bl_idname = "m3d.tex_export"
     bl_label = "Export"
 
@@ -955,8 +1163,13 @@ class M3D_OT_tex_export(Operator):
 
     def execute(self, context):
         ob = mesh_of(context)
+        if context.scene.m3d_tex.export_bake_meshes and bake_mesh_set(context, ob) is None:
+            self.report({'ERROR'}, "Bake meshes needs a mesh of a bake group that has a low poly")
+            return {'CANCELLED'}
         try:
             paths = export_textures(context, ob)
+            if context.scene.m3d_tex.export_bake_meshes:
+                paths += export_bake_meshes(context, ob)
         except (RuntimeError, OSError) as err:
             self.report({'ERROR'}, str(err).strip())
             return {'CANCELLED'}
@@ -1265,7 +1478,7 @@ class M3D_MT_mask_add(Menu):
         add('FILL')
         layout.separator()
         layout.label(text="Generators (from the mesh)")
-        for kind in ('EDGES', 'CAVITY', 'TOPDOWN', 'THICKNESS', 'NOISE'):
+        for kind in ('EDGES', 'CAVITY', 'TOPDOWN', 'THICKNESS', 'COLORID', 'NOISE'):
             add(kind)
         layout.separator()
         layout.label(text="Filters (change everything below)")
@@ -1329,13 +1542,18 @@ class PROPERTIES_PT_m3d_tx_mask(_Page, Panel):
             w, h = L.image_size(effect.image)
             col.label(text="%s  %d x %d" % (effect.image.name, w, h), icon='IMAGE_DATA')
         for prop, label in MK.PARAM_UI.get(effect.kind, ()):
-            col.prop(effect, prop, text=label, slider=prop not in {"direction", "space", "invert", "seed"})
+            col.prop(effect, prop, text=label, slider=prop not in {"direction", "space", "invert", "seed", "color"})
         if effect.kind == 'PAINT':
             reason(col, "Turn on Paint Mask to paint it")
         elif effect.kind == 'BLUR':
             reason(col, "Blurs the stack below; it follows brush strokes after a moment")
         elif effect.kind == 'INVERT':
             reason(col, "Opacity sets how much is swapped")
+        elif effect.kind == 'COLORID':
+            ids = MK.id_colors(effect.image)
+            for name in list(ids)[:12]:
+                col.operator("m3d.mask_id_pick", text=name, icon='COLOR').name = name
+            reason(col, "Pick a colour, or the one of the ID map in the picker" if ids else "Bake the ID map first (Rebake Maps)")
 
 
 class PROPERTIES_PT_m3d_tx_channels(_Page, Panel):
@@ -1520,6 +1738,29 @@ class PROPERTIES_PT_m3d_tx_bake_maps(_Bake, Panel):
             reason(layout, "Thickness is for closed meshes")
 
 
+class PROPERTIES_PT_m3d_tx_bake_multires(_Bake, Panel):
+    bl_label = "Multires"
+
+    @classmethod
+    def page_poll(cls, context):
+        return ready(context, cls.need) and multires_ready(mesh_of(context))
+
+    def draw(self, context):
+        layout = self.layout
+        ob = mesh_of(context)
+        s = ob.m3d_bake
+        flow = layout.grid_flow(row_major=True, columns=2, even_columns=True, align=True)
+        for _key, _label, _type, flag in MULTIRES_MAPS:
+            flow.prop(s, flag, toggle=True)
+        split_props(layout)
+        layout.prop(s, "multires_level")
+        layout.operator("m3d.tex_bake_multires", icon='MOD_MULTIRES')
+        total = multires_of(ob).total_levels
+        low = min(s.multires_level, total - 1)
+        reason(layout, "The detail of levels %d to %d is baked onto level %d" % (low + 1, total, low))
+        reason(layout, "No high poly needed; the maps are named like the others")
+
+
 class PROPERTIES_PT_m3d_tx_bake_settings(_Bake, Panel):
     bl_label = "Settings"
     bl_options = {'DEFAULT_CLOSED'}
@@ -1589,6 +1830,9 @@ class PROPERTIES_PT_m3d_tx_export_preset(_Export, Panel):
         layout.prop(s, "export_folder")
         if s.export_preset != 'GLTF':
             layout.prop(s, "export_size")
+        layout.prop(s, "export_bake_meshes")
+        if s.export_bake_meshes:
+            reason(layout, "<name>_low.fbx and <name>_high.fbx, meshes named Part_low, Part_high")
 
 
 class PROPERTIES_PT_m3d_tx_export_run(_Export, Panel):
@@ -1748,6 +1992,7 @@ classes = (
     M3D_OT_tex_save_all,
     M3D_OT_tex_channel_view,
     M3D_OT_tex_apply_material,
+    M3D_OT_tex_bake_multires,
     M3D_OT_tex_bake_pick,
     M3D_OT_tex_bake,
     M3D_OT_tex_show_image,
@@ -1778,6 +2023,7 @@ classes = (
     PROPERTIES_PT_m3d_tx_palette,
     PROPERTIES_PT_m3d_tx_bake_high,
     PROPERTIES_PT_m3d_tx_bake_maps,
+    PROPERTIES_PT_m3d_tx_bake_multires,
     PROPERTIES_PT_m3d_tx_bake_settings,
     PROPERTIES_PT_m3d_tx_bake_run,
     PROPERTIES_PT_m3d_tx_export_preset,

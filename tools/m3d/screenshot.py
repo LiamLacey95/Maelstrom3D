@@ -20,7 +20,8 @@ low poly drawn over part of its face in Edit Mode: use it before `+angle`, `+fra
 next to the high poly, drawn with its edges), `+angle` (a three-quarter view), `+bakegroups` (three bake groups: a
 sword with two floaters that is not baked, a shield that is baked and a pommel that is stale; use it before `TEXTURE/tex_bake`,
 `+frame` and `TEXTURE/tex_bake` again), `+bakeresult` (like `+bakegroups`, then Bake All, a normal-mapped material on each low poly and
-the sword's normal map in the paint view).
+the sword's normal map in the paint view), `+bakeextras` (two groups that overlap, lined up by Explode, baked with the ID map, and the cage
+preview of one of them; use it before `+angle`, `+frame` and `TEXTURE/tex_bake`).
 """
 
 import sys
@@ -582,6 +583,81 @@ def bake_result():
     bpy.app.timers.register(show, first_interval=2.0)
 
 
+def bake_extras():
+    """Two groups that overlap, lined up by Explode: Orb (a low poly sphere, a smooth high poly with three materials) and Box (a low poly
+    cube with its high poly); baked with the ID map, which colours the low polys and is shown in the paint view; the cage preview of the
+    Orb (a wire around its low poly). The Orb's low poly is active."""
+    import math
+    import numpy as np
+    import m3d_pair
+    for ob in list(bpy.data.objects):
+        bpy.data.objects.remove(ob)
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=12, ring_count=8, radius=1.0)
+    bpy.context.active_object.name = "Orb_low"
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=64, ring_count=32, radius=0.95)
+    high = bpy.context.active_object
+    high.name = "Orb_high"
+    co = np.empty(len(high.data.vertices) * 3, np.float32)
+    high.data.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3)
+    co *= (1.0 + 0.04 * np.sin(11 * co[:, 0]) * np.sin(11 * co[:, 2]))[:, None]   # (bumps)
+    high.data.vertices.foreach_set("co", co.ravel())
+    for name, color in (("Orb_Body", (0.15, 0.35, 0.8, 1.0)), ("Orb_Band", (0.9, 0.45, 0.1, 1.0)), ("Orb_Cap", (0.2, 0.7, 0.3, 1.0))):
+        mat = bpy.data.materials.new(name)
+        mat.diffuse_color = color
+        high.data.materials.append(mat)
+    for poly in high.data.polygons:
+        z = sum(high.data.vertices[i].co.z for i in poly.vertices) / len(poly.vertices)
+        poly.material_index = 1 if abs(z) < 0.25 else 2 if z > 0.6 else 0
+    bpy.ops.object.shade_smooth()
+    bpy.ops.mesh.primitive_cube_add(size=1.3, location=(1.4, 0, 0))
+    bpy.context.active_object.name = "Box_low"
+    bpy.ops.mesh.primitive_cube_add(size=1.3, location=(1.4, 0, 0))
+    box = bpy.context.active_object
+    box.name = "Box_high"
+    mod = box.modifiers.new("s", 'SUBSURF')
+    mod.levels = 3
+    bpy.ops.object.modifier_apply(modifier="s")
+    bpy.ops.object.shade_smooth()
+    box.data.materials.append(bpy.data.materials.new("Box_Material"))
+    bpy.ops.m3d.hp_auto_pair()
+    for name in ("Orb", "Box"):
+        s = bpy.data.objects[name + "_low"].m3d_bake
+        s.resolution, s.margin, s.samples, s.extrusion = '256', 8, 8, 0.18 if name == "Orb" else 0.25
+        s.use_normal, s.use_ao, s.use_id = True, False, True
+    m3d_pair.park_all(bpy.context)
+    bpy.ops.m3d.bg_bake_all()
+    for name in ("Orb", "Box"):   # (the ID map is the colour of the low poly)
+        low = bpy.data.objects[name + "_low"]
+        mat = bpy.data.materials.new(name + "_IDMaterial")
+        mat.use_nodes = True
+        tex = mat.node_tree.nodes.new("ShaderNodeTexImage")
+        tex.image = bpy.data.images[name + "_low_ID"]
+        mat.node_tree.links.new(tex.outputs["Color"], mat.node_tree.nodes["Principled BSDF"].inputs["Base Color"])
+        with m3d_pair.quiet(bpy.context):
+            low.data.materials.append(mat)
+    bpy.ops.m3d.bg_explode()
+    low = bpy.data.objects["Orb_low"]
+    for ob in bpy.data.objects:
+        ob.select_set(ob == low)
+    bpy.context.view_layer.objects.active = low
+    bpy.ops.m3d.bg_cage_preview()
+    bpy.context.view_layer.update()
+    from mathutils import Euler
+    for screen in bpy.data.screens:   # (a three-quarter view in every workspace)
+        for area in screen.areas:
+            if area.type == 'VIEW_3D':
+                area.spaces.active.region_3d.view_perspective = 'PERSP'
+                area.spaces.active.region_3d.view_rotation = Euler((1.15, 0.0, 0.5)).to_quaternion()
+
+    def show():
+        win = bpy.context.window_manager.windows[0]
+        for area in win.screen.areas:
+            if area.type == 'IMAGE_EDITOR':
+                area.spaces.active.image = bpy.data.images["Orb_low_ID"]
+    bpy.app.timers.register(show, first_interval=2.0)
+
+
 def bake():
     ob = bpy.context.active_object
     ob.m3d_bake.resolution, ob.m3d_bake.samples = '128', 8
@@ -593,6 +669,7 @@ SETUP = {
     "+bake": bake,
     "+bakegroups": bake_groups,
     "+bakeresult": bake_result,
+    "+bakeextras": bake_extras,
     "+layers": layers,
     "+folders": folders,
     "+fillsel": fillsel,

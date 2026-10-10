@@ -295,6 +295,7 @@ class M3D_OT_hp_new_low(Operator):
         for collection in surface.users_collection or (context.scene.collection,):
             collection.objects.link(low)
         low.matrix_world = surface.matrix_world.copy()
+        m3d_pair.inherit_explode(low, surface)
         m3d_pair.leave_modes(context)
         finish_low(context, low, group)
         quad_draw_soon(low.name)

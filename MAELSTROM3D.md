@@ -247,8 +247,8 @@ Add Material, Texture Paint Mode).
 | Layers tab | The layer stack of the active material: a list (top layer first: eye, name, blend mode, opacity, channel letters; folders have a triangle and a snowflake), buttons to add a Paint Layer, Fill Layer or **New Folder**, move, duplicate, delete, **Merge Down** and **Flatten**, **Group** / **Move In** / **Move Out** for folders; below it the active layer's settings (name, blend, opacity, channels, fill values, or for a folder Freeze / Unfreeze and Merge Folder), its **Mask** (the stack of mask effects, see below), and closed panels Channels (the paint slots by channel) and All Paint Slots |
 | Brush tab | Stroke and Stabilize, Falloff, Texture, Texture Mask, Stencil, Clone, Options (seam bleed, dither, cavity mask), Cursor, Color Palette |
 | Library tab | Materials, Masks, Brushes, Alphas and Mine as a tile grid with a search field; **Save to Library** is in the Layer and Mask panels (see Library below). Materials of the file that are marked as assets are listed in a closed panel when there are some |
-| Bake tab | **Bake Groups** (the groups of the scene, Auto-Pair by Name, Pair Selected, Rename to Suffixes, **Bake Group**, **Bake All**), the settings of the selected group, maps Normal, AO, Curvature, Position, Thickness, size, margin, the list of baked images; a mesh without a role has the High Poly picker (or Use Selected as High Poly) and a **Bake** button instead |
-| Export tab | Presets glTF, Unreal, Unity; folder; size; **Export**; Save All Images |
+| Bake tab | **Bake Groups** (the groups of the scene, Auto-Pair by Name, Pair Selected, Rename to Suffixes, **Bake Group**, **Bake All**, **Explode** with its axis and gap), the settings of the selected group (with **Show Cage**), maps Normal, AO, Curvature, Position, Thickness, ID, size, margin, **Multires** (for a mesh with Multires levels and no high poly), the list of baked images; a mesh without a role has the High Poly picker (or Use Selected as High Poly) and a **Bake** button instead |
+| Export tab | Presets glTF, Unreal, Unity; folder; size; **Bake meshes**; **Export**; Save All Images |
 | Display tab | Material Preview environment (HDRI, rotation, intensity), Channel View of each channel, UV checker map, wireframe |
 
 A channel is a paint slot of the active material: the first click on **Base Color**, **Roughness**, **Metallic**,
@@ -285,11 +285,39 @@ from the extruded low poly), and **AO Shadows**: **This Group** (the default) or
 occlusion, for contact shadows between the groups. The Maps panel (maps, size, margin) and the Settings panel (samples, Thickness Distance, AO Distance) are shared by the
 group's texture set.
 
+**Explode.** The **Explode** button of the Bake Groups panel moves the groups apart along one axis (**Axis**: X, Y or Z), so that you can look at them one by one or export them to
+another baker. The low polys, high polys and custom cage of a group move together, so a bake while they are apart gives the same maps as before; Whole Model ambient occlusion is the one
+exception, since it sees the groups where they are. The groups are taken in the order they have along the axis, and a group is moved past the one before it only when their bounds overlap or are closer than
+the **Gap** (a share of the average size of a group): a group that has room stays where it is. The button says **Collapse** while they are apart and puts every mesh back exactly where it was; the
+small refresh button beside it lines the groups up again, for a group that was added meanwhile. Changing the axis or the gap while the groups are apart lines them up again at once. Each mesh keeps where it was and what
+was added to it, so this survives saving and opening the file, and Undo works. A mesh that you moved yourself in the meantime goes back by what was added. Exploding or collapsing does not make a baked group stale.
+A copy of a moved mesh (Create High Poly, Auto Low Poly, New Low Poly) goes back with the mesh it was made from; a mesh that you add to an exploded group by hand is left where it is: use the refresh button.
+
+**Cage preview.** **Show Cage** in the Group Settings panel draws the low poly of the active group pushed out along its normals by the group's Extrusion (or the custom Cage, as it is) as an orange wire in the 3D view, so you can check that it
+covers the high poly (show the high poly with Edit High Poly). It follows the Extrusion and the low poly while you work. It is only drawn: the wire is made of temporary objects that share the low poly's mesh, are never rendered or selected, and
+are taken away when you press the button again, pick a mesh of another group, start a bake, and when a file is saved or opened, so they are never in a saved file or in a bake. The distance is the Extrusion in the world, also when the low poly is
+scaled (a scale you change afterwards is not followed: press the button twice).
+
 **Texture sets.** Low polys that share a material are one texture set, for example a blade, a guard and a hilt with one UV layout: they bake into the same images, named after
 the material (`Sword_Normal`, `Sword_AO`), and each adds its own UV islands. Bake All starts the images over; **Bake Group** on one of the groups adds its islands and keeps the
 others (Position is scaled to the bounds of the whole set, so it is baked again for the whole set). The first low poly by name decides the maps, the size, the margin and the
 samples of the set. A low poly whose material nobody else shares, and every mesh without a role, keeps maps named after the mesh (`Cube_Normal`); maps named after a mesh in
 files from earlier versions are still found and used until the set is baked.
+
+**Multires.** A mesh with a Multires modifier that has levels, and no high poly (a low poly of a group without high polys, or a mesh without a role and without a picked High Poly), gets a **Multires** panel in the
+Bake tab: **Normal** and **Displacement** buttons, **Low Level** (the Multires level the detail is baked onto: 0 is the base mesh) and **Bake Multires**. It uses Blender's own Multires baker: what the levels above the Low Level
+add to it becomes a tangent space normal map and / or a displacement map (a float map; grey is no distance), without any high poly, in the size and margin of the Maps panel. The images are named like the other maps (`<mesh>_Normal`,
+`<mesh>_Displacement`; after the material for a low poly of a texture set), so everything that reads a baked map finds them. The Multires modifier has to be the last modifier, and the mesh needs UVs. The render settings of the scene,
+the level of the modifier, the selection and the mode are put back, also when the bake fails. A Low Level of 3 on a modifier with 3 levels has nothing above it, so it bakes the last level only.
+
+**ID map.** The **ID** map of the Maps panel gives each material of the group's high polys a flat colour, or each high poly mesh when they have only one material (or none) between them, baked onto the low poly: one sample, so the edges
+between the colours are hard, and the margin only extends them. The colours follow the names of the materials (or the meshes) in order, so a new bake gives the same ones; a slot without a material is black, like the background. The map is
+named like the others (`<mesh>_ID`) and keeps which colour is which (shown in the Color ID mask effect, see Masks).
+
+**Bake meshes.** The **Bake meshes** option of the Export tab (off by default) also writes the low polys and the high polys of the bake groups as two FBX files in the export folder, for tools that match meshes by name: `<name>_low.fbx` with the
+low polys and `<name>_high.fbx` with the high polys, of the groups of the active mesh's texture set (all the low polys that share its material; the name is the material's when there are several, else the group's). The meshes are named in the
+`_low` / `_high` style inside the files (`Sword_low`, `Sword_high`, `Sword_high_bolts`), whatever style they have in the scene, and have their own names again afterwards. High polys that Maelstrom3D hid are shown for the export only and hidden
+again before anything is drawn. A mesh without a bake group is refused; a group without a high poly only writes the low file.
 
 **Export** writes the active mesh's channels: **glTF** one `.glb` with the mesh, material and textures; **Unreal**
 `T_Name_BC`, `_N` (green channel flipped for DirectX), `_ORM` (red occlusion from the baked AO map, green roughness, blue
@@ -333,6 +361,7 @@ so it starts out gentle; the first one simply sets the mask.
 | Cavity | White in crevices, for dirt: Amount, Contrast, Invert (from the ambient occlusion map) |
 | Top-down | White on surfaces facing a direction (default up, +Z in the world), for dust and snow: Direction, Offset (higher also covers steeper surfaces), Softness, Height Falloff (less toward the bottom of the mesh) |
 | Thickness | White where the mesh is thin: Amount, Contrast, Invert (closed meshes only) |
+| Color ID | White where the baked ID map has the picked colour, so one material (or one mesh) of the high poly: Color, Tolerance (a colour within half of it counts fully, one further than it not at all). The Mask panel lists the colours of the map to pick from |
 | Noise | Procedural noise: Scale, Detail, Contrast, Seed, and Space: UV (breaks where UV islands meet) or Object (follows the 3D position, no breaks) |
 | Levels | Filter: Black In / White In stretch the range, Gamma bends the midtones, Black Out / White Out limit the result |
 | Blur | Filter: softens everything below it (Amount is the width) |
@@ -345,7 +374,7 @@ shows); switching it off puts the material back exactly as it was. **Invert Mask
 takes it off again), **X** next to it removes the whole mask. **Rebake Maps** makes the maps again after the mesh or the
 Bake tab's settings changed.
 
-The generators read maps baked from the mesh (Curvature, AO, Position, Thickness, plus the world normal). The first time
+The generators read maps baked from the mesh (Curvature, AO, Position, Thickness, ID, plus the world normal). The first time
 an effect needs one, it is baked with Cycles at the Bake tab's resolution, like the Bake tab does (named
 `<mesh>_<Map>`, with the high-poly mesh when one is set; for a low poly of a group: from its group, together with the other low polys of its texture set, named after the material) and kept with the file; every layer and effect then reuses it,
 and only a new resolution, Rebake Maps or the Bake tab bake it again. Nothing in the mesh's materials changes while

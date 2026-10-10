@@ -846,8 +846,10 @@ def _dock_steps():
             check(not tracebacks(), "Python error while drawing the %s dock tab %s" % (kind, tab.id))
 
         def all_settings():
+            # As the dock's All Settings tab does: the Object tab is only listed once the editor has an active object
+            # in its context (right after a workspace switch it may not have been drawn yet), else Scene.
             area = GIZMO["tab_area"]
-            area.spaces.active.context = 'OBJECT'
+            m3d_mode.set_dock_context(area.spaces.active, 'OBJECT')
             area.tag_redraw()
 
         def back(kind=kind):
@@ -7686,6 +7688,273 @@ def rt_redo_check():
     window().workspace.m3d_page_right = ""
     check(rt_ts() == GIZMO["rt_ts"], "(the snapping is as it was at the end of the retopology tests)")
     check(not tracebacks(), "Python error in the retopology tests")
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
+# ----------------------------------------------------------------------------------------------------
+# The extras of the high poly / low poly workflow in the real window: Explode and the cage preview in the Bake tab (the preview goes away
+# when another group is picked: by a timer; it is never saved or baked), the ID map, and a parked high poly exported with Bake meshes
+# without ever being drawn.
+import tempfile
+
+
+def bx_state():
+    return {o.name: tuple(o.location) for o in bpy.data.objects}
+
+
+def bx_redraw():
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def bx_to_modeling():
+    if bpy.context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
+step(wait_until(lambda: hp_in('MODEL') and bpy.context.mode == 'OBJECT', "Modeling for the bake extras tests"))
+
+
+@step
+def bx_scene():
+    for ob in list(bpy.data.objects):
+        bpy.data.objects.remove(ob)
+    for entry in list(bpy.context.scene.m3d_bake_groups):
+        bpy.context.scene.m3d_bake_groups.remove(0)
+    for name in ("BxA", "BxB"):
+        if name in bpy.data.materials:
+            bpy.data.materials.remove(bpy.data.materials[name])
+    bpy.context.scene.m3d_explode_axis, bpy.context.scene.m3d_explode_gap = 'X', 0.25
+    for name, x in (("Axe", 0.0), ("Bow", 1.0), ("Cup", 9.0)):
+        bgg_plate(name + "_low", x=x)
+        bgg_plate(name + "_high", x=x, res=8, bump=0.1)
+    high = hp_ob("Axe_high")
+    for name in ("BxA", "BxB"):
+        high.data.materials.append(bpy.data.materials.new(name))
+    for poly in high.data.polygons:
+        poly.material_index = 0 if sum(high.data.vertices[i].co.x for i in poly.vertices) < 0 else 1
+    bpy.context.view_layer.update()
+    check(bpy.ops.m3d.hp_auto_pair() == {'FINISHED'}, "Auto-Pair by Name in the window (bake extras)")
+    for ob in bpy.data.objects:
+        if ob.m3d_pair.role == 'LOW':
+            s = ob.m3d_bake
+            s.resolution, s.margin, s.samples, s.extrusion = '64', 4, 4, 0.5
+            s.use_normal, s.use_ao, s.use_curvature, s.use_position, s.use_thickness, s.use_id = True, False, False, False, False, True
+    HPR.park_all(bpy.context)
+    for ob in bpy.data.objects:
+        ob.select_set(ob.name == "Axe_low")
+    bpy.context.view_layer.objects.active = hp_ob("Axe_low")
+    GIZMO["bx_home"] = bx_state()
+    GIZMO["bx_seen"] = []
+
+    def draws():
+        GIZMO["bx_seen"] += [n for n in ("Axe_high", "Bow_high", "Cup_high") if n in bpy.data.objects and not bpy.data.objects[n].hide_get()]
+    GIZMO["bx_handle"] = bpy.types.SpaceView3D.draw_handler_add(draws, (), 'WINDOW', 'POST_PIXEL')
+    _win, _area, region = view3d()
+    GIZMO["center"] = (region.x + region.width // 2, region.y + region.height // 2)
+    event('MOUSEMOVE', xy=GIZMO["center"])
+
+
+@step
+def bx_f4():
+    hp_press('F4')
+
+
+step(wait_until(lambda: hp_in('TEXTURE') and bpy.context.mode == 'PAINT_TEXTURE', "F4 for the bake extras tests"))
+
+
+@step
+def bx_open_tab():
+    window().workspace.m3d_page_right = "tex_bake"
+    bx_redraw()
+
+
+@step
+def bx_tab_check():
+    check(not tracebacks(), "Python error drawing the Bake tab (bake extras)")
+    dock, region = bgg_dock_context()
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=dock, region=region):
+        check(BGR.PROPERTIES_PT_m3d_tx_bake_groups.poll(bpy.context) and BGR.PROPERTIES_PT_m3d_tx_bake_group.poll(bpy.context), "the Bake tab shows the groups and the settings of the active one")
+    check(not BGR.cage_objects() and not BGR.moved(bpy.context), "(nothing is apart, no cage preview)")
+
+
+# --- Explode: the toggle of the Bake Groups panel
+@step
+def bx_explode():
+    press_ok("m3d.bg_explode", _area=bgg_dock_context()[0])
+
+
+@step
+def bx_explode_check():
+    now, home = bx_state(), GIZMO["bx_home"]
+    check(now["Axe_low"] == home["Axe_low"] and now["Cup_low"] == home["Cup_low"] and now["Cup_high"] == home["Cup_high"]
+          and abs(now["Bow_low"][0] - 2.5) < 1e-5 and now["Bow_high"] == now["Bow_low"], "Explode in the window: Bow moves aside with its high poly, the others stay: %s" % {n: v[0] for n, v in now.items()})
+    check(sorted(o.name for o in BGR.moved(bpy.context)) == ["Bow_high", "Bow_low"], "...the meshes that moved remember it")
+    check(hp_ob("Bow_high").hide_get() and hp_ob("Bow_high").m3d_pair.parked and bgg_group_state("Bow") == 'NONE', "...the parked high poly is still hidden")
+    bx_redraw()
+
+
+@step
+def bx_explode_axis():
+    bpy.context.scene.m3d_explode_axis = 'Y'
+
+
+@step
+def bx_explode_axis_check():
+    now, home = bx_state(), GIZMO["bx_home"]
+    check(all(now[n][0] == home[n][0] for n in home) and now["Bow_low"][1] > 2.0 and now["Axe_low"] == home["Axe_low"],
+          "the axis changed in the window: the groups are lined up along Y instead (from the places they had)")
+    bpy.context.scene.m3d_explode_axis = 'X'
+    check(not tracebacks(), "Python error drawing the Explode toggle")
+    bx_redraw()
+
+
+@step
+def bx_collapse():
+    press_ok("m3d.bg_explode", _area=bgg_dock_context()[0])
+
+
+@step
+def bx_collapse_check():
+    check(bx_state() == GIZMO["bx_home"] and not BGR.moved(bpy.context), "the toggle again: every mesh is exactly where it was")
+    check(not tracebacks(), "Python error after Collapse")
+
+
+# --- Cage preview: the toggle of the Group Settings panel
+@step
+def bx_cage_on():
+    press_ok("m3d.bg_cage_preview", _area=bgg_dock_context()[0])
+
+
+@step
+def bx_cage_on_check():
+    cage = BGR.cage_objects()
+    check(len(cage) == 1 and cage[0].parent == hp_ob("Axe_low") and cage[0].visible_get() and cage[0].display_type == 'WIRE' and cage[0].hide_render,
+          "Show Cage in the window: a wire object in the view, not rendered (%s)" % [o.name for o in cage])
+    dg = bpy.context.evaluated_depsgraph_get()
+    ev = cage[0].evaluated_get(dg)
+    mesh = ev.to_mesh()
+    heights = [(ev.matrix_world @ v.co).z for v in mesh.vertices]
+    ev.to_mesh_clear()
+    check(heights and abs(min(heights) - 0.5) < 1e-4 and abs(max(heights) - 0.5) < 1e-4, "...pushed out by the Extrusion (0.5): %s" % heights[:2])
+    BGR.settings_of(bpy.context, "Axe").extrusion = 0.2
+    check(abs(BGR.cage_objects()[0].modifiers[0].strength - 0.2) < 1e-5, "...and following it")
+    check(not tracebacks(), "Python error drawing the cage preview toggle")
+    bx_redraw()
+
+
+@step
+def bx_cage_other_group():
+    press_ok("m3d.bg_select", _area=bgg_dock_context()[0], group="Bow")
+
+
+step(wait_until(lambda: not BGR.cage_objects(), "the cage preview to go away when another group is picked"))
+
+
+@step
+def bx_cage_gone_check():
+    check(bpy.context.active_object == hp_ob("Bow_low") and not BGR.cage_objects(), "picking another group takes the cage preview away (by a timer, in the real event loop)")
+    check(not tracebacks(), "Python error after the preview went away")
+
+
+@step
+def bx_cage_again():
+    press_ok("m3d.bg_cage_preview", _area=bgg_dock_context()[0])
+
+
+@step
+def bx_cage_save():
+    check(len(BGR.cage_objects()) == 1, "(the preview of Bow is on)")
+    GIZMO["bx_dir"] = tempfile.mkdtemp(prefix="m3d_bx_")
+    path = os.path.join(GIZMO["bx_dir"], "cage.blend")
+    bpy.ops.wm.save_as_mainfile(filepath=path, copy=True)
+    check(not BGR.cage_objects(), "saving the file takes the preview away")
+    with bpy.data.libraries.load(path) as (src, _dst):
+        names = list(src.objects)
+    check("Bow_low" in names and not any(n.startswith("m3dCage") for n in names), "...and the file does not have it: %s" % names)
+
+
+@step
+def bx_cage_bake_on():
+    press_ok("m3d.bg_cage_preview", _area=bgg_dock_context()[0])
+
+
+@step
+def bx_cage_bake():
+    check(len(BGR.cage_objects()) == 1, "(the preview is on before the bake)")
+    press_ok("m3d.bg_bake_all", _area=bgg_dock_context()[0])
+
+
+@step
+def bx_cage_bake_check():
+    check(not BGR.cage_objects() and all(bgg_group_state(g) == 'BAKED' for g in ("Axe", "Bow", "Cup")), "Bake All takes the preview away and bakes every group")
+    check(not GIZMO["bx_seen"], "no parked high poly was drawn during the bakes: %s" % GIZMO["bx_seen"])
+    check(all(hp_ob(n).hide_get() and hp_ob(n).m3d_pair.parked for n in ("Axe_high", "Bow_high", "Cup_high")), "...they are hidden again")
+
+
+# --- The ID map: a colour for each material of the high poly
+@step
+def bx_id_check():
+    import numpy as np
+    image = bpy.data.images.get("Axe_low_ID")
+    check(image is not None and image.colorspace_settings.name == 'Non-Color' and "Axe_low_ID" in hp_ob("Axe_low").m3d_bake.baked.split("|"),
+          "the ID map is baked with the others and listed in the Bake tab")
+    a = px(image).reshape(64, 64, 4)
+    colors = np.unique(np.round(a[..., :3], 3).reshape(-1, 3), axis=0)
+    check(len(colors) == 2, "...two materials, two colours and nothing in between: %d" % len(colors))
+    bpy.data.images["Axe_low_ID"].update()
+    bx_redraw()
+
+
+# --- Bake meshes: the parked high polys are shown for the export only, never drawn
+@step
+def bx_export_setup():
+    dock, _region = bgg_dock_context()
+    for ob in bpy.data.objects:
+        ob.select_set(ob.name == "Axe_low")
+    bpy.context.view_layer.objects.active = hp_ob("Axe_low")
+    press_ok("m3d.tex_add_material", _area=dock)
+    s = bpy.context.scene.m3d_tex
+    s.export_folder, s.export_preset, s.export_bake_meshes = os.path.join(GIZMO["bx_dir"], "out"), 'UNREAL', True
+    GIZMO["bx_flags"] = {n: (o.hide_get(), o.m3d_pair.parked, o.select_get()) for n, o in bpy.data.objects.items()}
+    window().workspace.m3d_page_right = "tex_export"
+    bx_redraw()
+
+
+@step
+def bx_export():
+    press_ok("m3d.tex_export", _area=bgg_dock_context()[0])
+
+
+@step
+def bx_export_check():
+    out = os.path.join(GIZMO["bx_dir"], "out")
+    files = sorted(os.listdir(out)) if os.path.isdir(out) else []
+    check("Axe_low.fbx" in files and "Axe_high.fbx" in files, "Export with Bake meshes writes the two files of the group: %s" % files)
+    check({n: (o.hide_get(), o.m3d_pair.parked, o.select_get()) for n, o in bpy.data.objects.items()} == GIZMO["bx_flags"], "...and puts the parked high poly, the selection and the names back")
+    check(not GIZMO["bx_seen"], "the parked high poly was never drawn while it was exported: %s" % GIZMO["bx_seen"])
+    check(not tracebacks(), "Python error in the export")
+    # The check can see: a high poly that is shown on purpose is seen by the draw handler.
+    hp_ob("Cup_high").hide_set(False)
+    bx_redraw()
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.wm.redraw_timer(type='DRAW_WIN', iterations=1)   # (draws now, whatever the window is doing)
+
+
+@step
+def bx_control():
+    seen = list(GIZMO["bx_seen"])
+    hp_ob("Cup_high").hide_set(True)
+    check("Cup_high" in seen, "(control: a high poly that is shown is seen by the draw handler)")
+    bpy.types.SpaceView3D.draw_handler_remove(GIZMO.pop("bx_handle"), 'WINDOW')
+    import shutil
+    shutil.rmtree(GIZMO.pop("bx_dir"), ignore_errors=True)
+    for ob in list(bpy.data.objects):
+        bpy.data.objects.remove(ob)
+    window().workspace.m3d_page_right = ""
+    check(not tracebacks(), "Python error in the bake extras tests")
     bpy.ops.m3d.workspace(kind='MODEL')
 
 

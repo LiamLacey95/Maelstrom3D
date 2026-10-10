@@ -15,6 +15,10 @@ Low polys that share a material are one texture set: they bake into the same ima
 (m3d_texture.texture_set names the images). The settings of a group live on the scene (Scene.m3d_bake_groups), made on the
 first use from the Bake tab values of the group's low poly. A group is stale when one of its meshes changed after the bake:
 the depsgraph handler notes it in memory (it may not write ID data) and the save handler writes it into the file.
+
+Two aids for checking the groups: Explode moves the groups apart along one axis (each mesh remembers where it was, so Collapse puts
+it back exactly), and the cage preview draws the low poly pushed out by the group's Extrusion as a wire, on temporary objects that
+are never saved and never baked.
 """
 
 import time
@@ -22,6 +26,7 @@ import time
 import bpy
 from bpy.props import CollectionProperty, EnumProperty, FloatProperty, PointerProperty, StringProperty
 from bpy.types import Operator, Panel, PropertyGroup
+from mathutils import Vector
 
 import m3d_pair
 import m3d_texture as T
@@ -46,16 +51,31 @@ def _settings_changed(self, _context):
         self.state = 'STALE'
 
 
+def _extrusion_changed(self, context):
+    """The cage preview of this group follows the Extrusion."""
+    _settings_changed(self, context)
+    for ob in cage_objects():
+        if ob.get(CAGE) == self.name and ob.parent is not None and ob.modifiers:
+            ob.modifiers[0].strength = cage_strength(ob.parent, self.extrusion)
+
+
+def _cage_changed(self, context):
+    """A custom cage was picked or cleared: the cage preview of this group shows it."""
+    _settings_changed(self, context)
+    if any(ob.get(CAGE) == self.name for ob in cage_objects()):
+        cage_show(context, self.name)
+
+
 class M3D_BakeGroup(PropertyGroup):
     """Bake settings of one group (Scene.m3d_bake_groups); the name is the group key of Object.m3d_pair"""
     name: StringProperty(name="Group")
-    extrusion: FloatProperty(name="Extrusion", default=0.02, min=0.0, soft_max=1.0, unit='LENGTH', update=_settings_changed,
+    extrusion: FloatProperty(name="Extrusion", default=0.02, min=0.0, soft_max=1.0, unit='LENGTH', update=_extrusion_changed,
                              description="Distance the rays start from the low-poly surface")
     ray_distance: FloatProperty(name="Max Ray Distance", default=0.0, min=0.0, soft_max=1.0, unit='LENGTH',
                                 update=_settings_changed,
                                 description="Longest distance a ray travels to the high-poly meshes (0: no limit)")
     cage: PointerProperty(
-        name="Cage", type=bpy.types.Object, update=_settings_changed,
+        name="Cage", type=bpy.types.Object, update=_cage_changed,
         description="Mesh the rays start from instead of the extruded low poly (it needs the faces of the low poly; "
                     "for a group with one low poly)", poll=lambda self, ob: ob.type == 'MESH')
     ao_scope: EnumProperty(name="AO Shadows", default='GROUP', items=SCOPES, update=_settings_changed,
@@ -115,6 +135,11 @@ def _depsgraph_update(_scene, depsgraph):
     """A mesh of a group changed its geometry or its transform. Nothing per vertex: the update list only. Hidden (parked)
     meshes are in it too. Going into a mode, and out of a paint mode, is no edit; going out of Sculpt Mode or Edit Mode is
     (a sculpt stroke is only reported then, and Blender does not say whether anything changed)."""
+    cage = bpy.data.objects.get(CAGE)   # (the cage preview goes away when another group is picked: one lookup)
+    if cage is not None and not bpy.app.timers.is_registered(_cage_drop):
+        active = bpy.context.view_layer.objects.active
+        if not (m3d_pair.grouped(active) and active.m3d_pair.group == cage.get(CAGE)):
+            bpy.app.timers.register(_cage_drop, first_interval=0.0)
     if m3d_pair._quiet[0]:
         return
     for update in depsgraph.updates:
@@ -131,7 +156,8 @@ def _depsgraph_update(_scene, depsgraph):
 
 @bpy.app.handlers.persistent
 def _save_pre(*_args):
-    """The marks go into the file (the depsgraph handler could not write them)."""
+    """The marks go into the file (the depsgraph handler could not write them); the cage preview does not."""
+    cage_hide()
     for scene in bpy.data.scenes:
         for entry in scene.m3d_bake_groups:
             if entry.state == 'BAKED' and entry.name in _stale:
@@ -143,6 +169,7 @@ def _load_post(*_args):
     _stale.clear()
     _wanted.clear()
     _modes.clear()
+    cage_hide()   # (an autosave or a crash file may hold the preview)
 
 
 def state_of(entry, group, lows, highs):
@@ -151,6 +178,196 @@ def state_of(entry, group, lows, highs):
         return 'NONE'
     stale = entry.state == 'STALE' or group in _stale or entry.members != signature(lows, highs)
     return 'STALE' if stale else 'BAKED'
+
+
+# -----------------------------------------------------------------------------
+# Explode: the groups side by side along one axis
+
+AXES = (('X', "X", "Line the groups up along X"), ('Y', "Y", "Line the groups up along Y"),
+        ('Z', "Z", "Line the groups up along Z"))
+
+
+def moved(context):
+    """The meshes Explode moved (each keeps its old location and what was added, Object.m3d_pair: they go into the file)."""
+    return [ob for ob in context.scene.objects if ob.type == 'MESH' and any(ob.m3d_pair.explode_offset)]
+
+
+def members_of(context, group, lows, highs):
+    """What moves with a group: its low polys, high polys and custom cage."""
+    entry = context.scene.m3d_bake_groups.get(group)
+    return list(dict.fromkeys([*lows, *highs, *([entry.cage] if entry is not None and entry.cage is not None else [])]))
+
+
+def parents(ob):
+    while ob.parent is not None:
+        ob = ob.parent
+        yield ob
+
+
+def explode_plan(context):
+    """(axis index, [(meshes of a group, shift along the axis)]) for the groups in the order they have along the axis. A
+    group is moved past the one before it when their bounds overlap or are closer than the gap (a share of the average size
+    of a group); a group that has room stays where it is."""
+    axis = 'XYZ'.index(context.scene.m3d_explode_axis)
+    boxes = []
+    for group, (lows, highs) in m3d_pair.all_groups(context).items():
+        obs = members_of(context, group, lows, highs)
+        lo, hi = T.world_bounds(obs)
+        boxes.append((float(lo[axis]), float(hi[axis]), obs))
+    boxes.sort(key=lambda box: box[0])
+    gap = context.scene.m3d_explode_gap * sum(hi - lo for lo, hi, _obs in boxes) / max(len(boxes), 1)
+    plan, edge = [], None
+    for lo, hi, obs in boxes:
+        shift = 0.0 if edge is None else max(0.0, edge + gap - lo)
+        edge = hi + shift if edge is None else max(edge, hi + shift)
+        plan.append((obs, shift))
+    return axis, plan
+
+
+def collapse(context):
+    """Every mesh Explode moved goes back where it was, exactly when nothing moved it since, else by what Explode added.
+    Returns how many meshes moved."""
+    obs = moved(context)
+    with m3d_pair.quiet(context):
+        for ob in obs:
+            p = ob.m3d_pair
+            home, offset, now = Vector(p.explode_from), Vector(p.explode_offset), Vector(ob.location)
+            ob.location = home if (now - (home + offset)).length <= 1e-6 * (1.0 + now.length) else now - offset
+            p.explode_from = p.explode_offset = (0.0, 0.0, 0.0)
+    return len(obs)
+
+
+def explode(context):
+    """Put the groups apart along the axis of the scene (collapsing first, so new groups are included). A mesh moves by
+    changing its location (the one under a parent that moves with its group follows it). Returns how many groups moved."""
+    collapse(context)
+    axis, plan = explode_plan(context)
+    count = 0
+    with m3d_pair.quiet(context):
+        for obs, shift in plan:
+            if not shift:
+                continue
+            world, inside, count = Vector((0.0, 0.0, 0.0)), set(obs), count + 1
+            world[axis] = shift
+            for ob in obs:
+                if any(ob.m3d_pair.explode_offset) or not inside.isdisjoint(parents(ob)):
+                    continue   # (moved with another group, or follows its parent)
+                local = world if ob.parent is None else (ob.parent.matrix_world @ ob.matrix_parent_inverse).to_3x3().inverted_safe() @ world
+                ob.m3d_pair.explode_from, ob.m3d_pair.explode_offset = ob.location, local
+                ob.location = Vector(ob.location) + local
+    return count
+
+
+def _explode_changed(_self, context):
+    """The axis or the gap changed while the groups are apart: line them up again."""
+    if moved(context):
+        explode(context)
+
+
+class M3D_OT_bg_explode(Operator):
+    """Move the groups apart along one axis so that they do not overlap, to look at them one by one or to export them to
+    another baker. The low poly, the high polys and the cage of a group move together, so a bake gives the same maps.
+    Again: every mesh goes back where it was"""
+    bl_idname = "m3d.bg_explode"
+    bl_label = "Explode"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    mode: EnumProperty(name="Mode", default='TOGGLE', options={'HIDDEN'}, items=(
+        ('TOGGLE', "Toggle", "Explode, or collapse when the groups are apart"),
+        ('EXPLODE', "Explode", "Line the groups up again (after a group was added)"),
+        ('COLLAPSE', "Collapse", "Put every mesh back")))
+
+    @classmethod
+    def poll(cls, context):
+        return bool(m3d_pair.all_groups(context)) or bool(moved(context))
+
+    def execute(self, context):
+        if self.mode == 'COLLAPSE' or self.mode == 'TOGGLE' and moved(context):
+            self.report({'INFO'}, "Put %s back" % m3d_pair.plural(collapse(context), "mesh"))
+            return {'FINISHED'}
+        count = explode(context)
+        self.report({'INFO'}, "Moved %s apart along %s" % (m3d_pair.plural(count, "group"), context.scene.m3d_explode_axis) if count else
+                    "The groups have room along %s already" % context.scene.m3d_explode_axis)
+        return {'FINISHED'}
+
+
+# -----------------------------------------------------------------------------
+# Cage preview: the low poly pushed out by the Extrusion, drawn as a wire
+#
+# Temporary objects share the mesh of the low poly (so edits show at once), carry a Displace modifier along the normals, are
+# parented to it (so they follow it) and are drawn as a wire. They are named CAGE and hold the group in a custom property of that
+# name, which is how they are found: nothing is kept in memory, so Undo, Redo and a reload cannot leave it out of step. They are
+# removed when the preview is turned off, when another group is picked, before a bake and before a file is saved or loaded, and they are
+# never rendered or selected.
+
+CAGE = "m3dCage"
+
+
+def cage_objects():
+    return [ob for ob in bpy.data.objects if CAGE in ob]
+
+
+def cage_hide():
+    """Take the preview away (the view layer is brought up to date inside `quiet`: it would still list the removed objects, and
+    the low polys, whose children changed, would be seen as edited)."""
+    gone = cage_objects()
+    if gone:
+        with m3d_pair.quiet(bpy.context):
+            for ob in gone:
+                bpy.data.objects.remove(ob)
+
+
+def cage_strength(low, extrusion):
+    """Strength of the Displace modifier that moves the points of `low` out by `extrusion` in the world (its scale is in the way)."""
+    return extrusion / max(low.matrix_world.median_scale, 1e-6)
+
+
+def cage_show(context, group):
+    """The preview of `group`: each low poly pushed out by the group's Extrusion, or its custom cage as it is. Returns how
+    many objects it is made of."""
+    cage_hide()
+    lows = m3d_pair.group_of(context, group)[0]
+    entry = settings_of(context, group)
+    cage = entry.cage if len(lows) == 1 and entry.cage is not None and entry.cage != lows[0] else None
+    shown = [(cage, None)] if cage is not None else [(low, entry.extrusion) for low in lows]
+    with m3d_pair.quiet(context):
+        for src, extrusion in shown:
+            ob = bpy.data.objects.new(CAGE, src.data)
+            ob[CAGE] = group
+            (src.users_collection or (context.scene.collection,))[0].objects.link(ob)
+            ob.parent = src
+            ob.display_type, ob.color = 'WIRE', (1.0, 0.5, 0.1, 1.0)
+            ob.hide_select = ob.hide_render = True
+            if extrusion is not None:
+                mod = ob.modifiers.new("Cage", 'DISPLACE')
+                mod.direction, mod.mid_level, mod.strength = 'NORMAL', 0.0, cage_strength(src, extrusion)
+    return len(shown)
+
+
+def _cage_drop():
+    """Timer: the preview shows a group that is not the active one any more."""
+    cage_hide()
+
+
+class M3D_OT_bg_cage_preview(Operator):
+    """Show the low poly of this group pushed out by its Extrusion (or its custom cage) as a wire in the 3D view, to check
+    that it covers the high poly. It is only drawn: it is not saved, not baked, and it goes away when you pick another group"""
+    bl_idname = "m3d.bg_cage_preview"
+    bl_label = "Show Cage"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.active_object
+        return m3d_pair.grouped(ob) and (bool(m3d_pair.group_of(context, ob.m3d_pair.group)[0]) or bool(cage_objects()))
+
+    def execute(self, context):
+        if cage_objects():
+            cage_hide()
+        elif not cage_show(context, context.active_object.m3d_pair.group):
+            self.report({'WARNING'}, "This group has no low poly")
+            return {'CANCELLED'}
+        return {'FINISHED'}
 
 
 # -----------------------------------------------------------------------------
@@ -187,7 +404,8 @@ def bake_set(context, lows, maps, times=None, errors=None, progress=None):
     """Bake `maps` ((key, label, flag) as in T.BAKE_MAPS) of `lows`, low polys of one texture set, each from its own group,
     into the maps of the set. All the low polys of the set: the images start over; some: their islands are added to what
     the images hold. `times` {group: seconds}, `errors` {group: message} (a low poly that fails is skipped; without it the
-    error is raised), `progress()` is called after each low poly."""
+    error is raised), `progress()` is called after each low poly. The cage preview is taken away first."""
+    cage_hide()
     name, every = T.texture_set(lows[0])
     s = T.bake_owner(lows[0]).m3d_bake
     groups = m3d_pair.all_groups(context)
@@ -402,6 +620,18 @@ class PROPERTIES_PT_m3d_tx_bake_groups(_PagePanel, Panel):
         row.operator("m3d.bg_bake", icon='RENDER_STILL')
         row.operator("m3d.bg_bake_all", icon='RENDER_ANIMATION')
         reason(layout, "Uses Cycles; the window waits until it is done")
+        apart = bool(moved(context))
+        row = layout.row(align=True)
+        row.operator("m3d.bg_explode", text="Collapse" if apart else "Explode", icon='FULLSCREEN_EXIT' if apart else 'FULLSCREEN_ENTER',
+                     depress=apart).mode = 'TOGGLE'
+        if apart:
+            row.operator("m3d.bg_explode", text="", icon='FILE_REFRESH').mode = 'EXPLODE'
+        row = layout.row(align=True)
+        row.prop(context.scene, "m3d_explode_axis", expand=True)
+        split_props(layout)
+        layout.prop(context.scene, "m3d_explode_gap", slider=True)
+        if apart and any(entry.ao_scope == 'MODEL' for entry in context.scene.m3d_bake_groups):
+            reason(layout, "AO Shadows: Whole Model sees the groups as placed now")
 
 
 def names_line(label, obs, limit=3):
@@ -435,6 +665,10 @@ class PROPERTIES_PT_m3d_tx_bake_group(_PagePanel, Panel):
         sub = layout.column()
         sub.active = len(lows) == 1
         sub.prop(entry, "cage")
+        shown = bool(cage_objects())
+        layout.operator("m3d.bg_cage_preview", icon='MOD_DISPLACE', depress=shown)
+        if shown:
+            reason(layout, "A wire in the 3D view: not saved, not baked")
         layout.prop(entry, "ao_scope", expand=True)
         for low in lows:
             if not low.data.uv_layers:
@@ -447,6 +681,8 @@ class PROPERTIES_PT_m3d_tx_bake_group(_PagePanel, Panel):
 
 classes = (
     M3D_BakeGroup,
+    M3D_OT_bg_explode,
+    M3D_OT_bg_cage_preview,
     M3D_OT_bg_select,
     M3D_OT_bg_bake,
     M3D_OT_bg_bake_all,
@@ -459,6 +695,11 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.m3d_bake_groups = CollectionProperty(type=M3D_BakeGroup)
+    bpy.types.Scene.m3d_explode_axis = EnumProperty(name="Axis", default='X', items=AXES, update=_explode_changed,
+                                                    description="The groups are lined up along this axis")
+    bpy.types.Scene.m3d_explode_gap = FloatProperty(
+        name="Gap", default=0.25, min=0.0, soft_max=2.0, subtype='FACTOR', update=_explode_changed,
+        description="Room between the groups, as a share of the average size of a group along the axis")
     bpy.app.handlers.depsgraph_update_post.append(_depsgraph_update)
     bpy.app.handlers.save_pre.append(_save_pre)
     bpy.app.handlers.load_post.append(_load_post)
@@ -468,6 +709,8 @@ def unregister():
     bpy.app.handlers.load_post.remove(_load_post)
     bpy.app.handlers.save_pre.remove(_save_pre)
     bpy.app.handlers.depsgraph_update_post.remove(_depsgraph_update)
+    del bpy.types.Scene.m3d_explode_gap
+    del bpy.types.Scene.m3d_explode_axis
     del bpy.types.Scene.m3d_bake_groups
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
