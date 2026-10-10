@@ -7620,6 +7620,32 @@ res = bg_try(bpy.ops.m3d.bg_bake)
 check(isinstance(res, RuntimeError) and "UV" in str(res) and bg_flags() == flags, "a low poly without UVs: cancelled with a message, nothing touched (%s)" % (res,))
 er_low.data.uv_layers.new(name="UVMap")
 
+# --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
+# The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture
+# it uses (linked from the alpha library) and the Image of that Texture. The Image used to be left behind in the old file's data
+# and freed with it: the Texture pointed at freed memory, which crashed the next lib-override resync (File > Open) or undo.
+al_dir = tempfile.mkdtemp(prefix="m3d_alpha_open_")
+S.alpha_dir = lambda create=False: al_dir
+clean_scene()
+bpy.ops.mesh.primitive_cube_add()
+bpy.ops.object.mode_set(mode='SCULPT')
+bpy.ops.brush.asset_activate(**S.brush_props("Draw"))
+check(bpy.ops.m3d.alpha_pick(name="Clouds") == {'FINISHED'}, "(an alpha is picked for the Draw brush)")
+bpy.ops.object.mode_set(mode='OBJECT')
+al_path = os.path.join(tempfile.mkdtemp(prefix="m3d_alpha_open_"), "plain.blend")
+bpy.ops.wm.save_as_mainfile(filepath=al_path, copy=True)
+bpy.ops.wm.open_mainfile(filepath=al_path)
+al_brush = next((b for b in bpy.data.brushes if b.name == "Draw" and b.library), None)
+al_tex = al_brush.texture if al_brush else None
+check(al_tex is not None and al_tex.name == "Clouds" and al_tex.library is not None, "the alpha of the brush asset is kept when a file opens")
+check(al_tex is not None and al_tex.image is not None and al_tex.image.as_pointer() in {im.as_pointer() for im in bpy.data.images}
+      and al_tex.image.library == al_tex.library, "...with its Image in the file, not left behind with the old file's data (%s)" % (al_tex and al_tex.image))
+bpy.ops.ed.undo_push(message="alpha one")
+bpy.ops.ed.undo_push(message="alpha two")
+check(bpy.ops.ed.undo() == {'FINISHED'}, "...and Undo goes through the kept alpha")
+check(bpy.ops.wm.open_mainfile(filepath=al_path) == {'FINISHED'}, "...and so does opening a file again")
+shutil.rmtree(al_dir, ignore_errors=True)
+
 print("FAILS:", fails or "none")
 sys.exit(1 if fails else 0)
 

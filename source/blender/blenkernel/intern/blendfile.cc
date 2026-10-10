@@ -481,9 +481,15 @@ static int reuse_editable_asset_bmain_data_dependencies_process_cb(
     return IDWALK_RET_STOP_RECURSION;
   }
 
-  /* Move to new main database. */
-  return reuse_bmain_move_id(reuse_data, id, old_id_new_lib, true) ? IDWALK_RET_STOP_RECURSION :
-                                                                     IDWALK_RET_NOP;
+  /* Move to new main database.
+   *
+   * Maelstrom3D: a moved ID must be recursed into, so that its own dependencies are moved (or
+   * remapped) as well; recursion is only to be stopped when the ID was not moved (a matching one
+   * already exists in the new Main, the old one is discarded). This was the other way around: the
+   * Texture of a linked brush alpha was moved, but its Image was left behind in the old Main and
+   * freed with it, a dangling `Tex::ima` that crashed on the next lib-override resync / undo. */
+  return reuse_bmain_move_id(reuse_data, id, old_id_new_lib, true) ? IDWALK_RET_NOP :
+                                                                     IDWALK_RET_STOP_RECURSION;
 }
 
 static bool reuse_editable_asset_needed(ReuseOldBMainData *reuse_data)
