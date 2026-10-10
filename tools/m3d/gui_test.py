@@ -6767,6 +6767,206 @@ def hp_cleanup():
     check(not tracebacks(), "Python error in the high poly / low poly tests")
 
 
+# ----------------------------------------------------------------------------------------------------
+# Sculpt Mode round trips of a big mesh in the real window (C: the draw buffers of a mesh are reused by the next buffer of
+# the same size, the Tree is built in parallel): the viewport draws the same mesh after every round trip, a brush stroke
+# comes out as the evaluated mesh with the right normals, and Undo brings the old mesh (and its drawing) back.
+import numpy as np
+
+SXG = {}
+
+
+def sxg_positions(mesh):
+    a = np.empty(len(mesh.vertices) * 3, np.float32)
+    mesh.vertices.foreach_get("co", a)
+    return a.reshape(-1, 3)
+
+
+def sxg_face_normals(mesh):
+    co = sxg_positions(mesh).astype(np.float64)
+    corner_verts = np.empty(len(mesh.loops), np.int32)
+    mesh.loops.foreach_get("vertex_index", corner_verts)
+    start = np.empty(len(mesh.polygons), np.int32)
+    mesh.polygons.foreach_get("loop_start", start)
+    total = np.empty(len(mesh.polygons), np.int32)
+    mesh.polygons.foreach_get("loop_total", total)
+    p = co[corner_verts]
+    nxt = np.arange(len(corner_verts)) + 1
+    nxt[start + total - 1] = start
+    n = np.add.reduceat(np.cross(p, p[nxt]), start, axis=0)
+    return n / np.linalg.norm(n, axis=1)[:, None]
+
+
+def sxg_shot():
+    """The 3D view of the Modeling workspace drawn into the Render Result (a viewport render), as an array."""
+    scene = bpy.context.scene
+    scene.render.resolution_x, scene.render.resolution_y, scene.render.resolution_percentage = 320, 240, 100
+    with hp_viewport():
+        bpy.ops.render.opengl(view_context=True)
+    path = os.path.join(SXG["folder"], "shot.png")
+    bpy.data.images["Render Result"].save_render(path)   # (the Render Result reports no size or pixels itself)
+    image = bpy.data.images.load(path)
+    pixels = np.empty(image.size[0] * image.size[1] * 4, np.float32)
+    image.pixels.foreach_get(pixels)
+    bpy.data.images.remove(image)
+    return pixels
+
+
+def sxg_go(kind):
+    def body():
+        bpy.ops.m3d.workspace(kind=kind)
+    return body
+
+
+def sxg_mode(kind, mode):
+    return lambda: hp_in(kind) and bpy.context.mode == mode and bpy.context.active_object is not None
+
+
+@step
+def sxg_setup():
+    import tempfile
+    SXG["folder"] = tempfile.mkdtemp(prefix="m3d_sx_")
+    with hp_viewport():
+        if bpy.context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        for ob in list(bpy.data.objects):
+            bpy.data.objects.remove(ob)
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=200, ring_count=100)
+        bpy.ops.object.shade_smooth()
+        bpy.ops.view3d.view_all(center=True)
+    SXG["ob"] = bpy.context.active_object
+    SXG["before"] = sxg_positions(SXG["ob"].data)
+    check(len(SXG["ob"].data.polygons) == 20000, "the sphere for the Sculpt round trips")
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
+step(wait_until(sxg_mode('MODEL', 'OBJECT'), "Modeling for the Sculpt round trips"))
+
+
+@step
+def sxg_base_shot():
+    SXG["base"] = sxg_shot()
+    check(float(np.abs(SXG["base"]).max()) > 0.0 and len(np.unique(SXG["base"][::4])) > 5, "the viewport render shows something")
+    bpy.ops.ed.undo_push(message="Before the Sculpt round trips")
+
+
+for _i in range(3):
+    step(sxg_go('SCULPT'))
+    step(wait_until(sxg_mode('SCULPT', 'SCULPT'), "Sculpt (round trip %d)" % _i))
+    step(sxg_go('MODEL'))
+    step(wait_until(sxg_mode('MODEL', 'OBJECT'), "Modeling (round trip %d)" % _i))
+
+
+@step
+def sxg_trips_check():
+    now = sxg_shot()
+    check(now.shape == SXG["base"].shape and float(np.abs(now - SXG["base"]).max()) < 0.01,
+          "after three round trips through Sculpt Mode the viewport draws the same mesh (largest difference %.3g)"
+          % (float(np.abs(now - SXG["base"]).max()) if now.shape == SXG["base"].shape else -1.0))
+    check(not tracebacks(), "Python error in the Sculpt round trips")
+
+
+step(sxg_go('SCULPT'))
+step(wait_until(sxg_mode('SCULPT', 'SCULPT'), "Sculpt for the stroke"))
+
+
+def sxg_event(type, value, dx):
+    """A mouse event over the viewport, `dx` pixels from its centre (the sphere fills the middle of the view)."""
+    def body():
+        _win, _area, region = view3d()
+        event(type, value, (region.x + region.width // 2 + dx, region.y + region.height // 2))
+    return body
+
+
+# A brush stroke made with the mouse (the Draw brush in the Sculpt workspace).
+step(sxg_event('MOUSEMOVE', 'NOTHING', -60))
+step(sxg_event('LEFTMOUSE', 'PRESS', -60))
+for _k in range(1, 9):
+    step(sxg_event('MOUSEMOVE', 'NOTHING', -60 + _k * 15))
+step(sxg_event('LEFTMOUSE', 'RELEASE', 60))
+
+
+@step
+def sxg_stroke_done():
+    moved = np.abs(sxg_positions(SXG["ob"].data) - SXG["before"]).max(axis=1)
+    check(int((moved > 1e-6).sum()) > 50, "the brush stroke moved vertices (%d)" % int((moved > 1e-6).sum()))
+
+
+step(sxg_go('MODEL'))
+step(wait_until(sxg_mode('MODEL', 'OBJECT'), "Modeling after the stroke"))
+
+
+@step
+def sxg_stroke_check():
+    ob = SXG["ob"]
+    positions = sxg_positions(ob.data)
+    moved = np.abs(positions - SXG["before"]).max(axis=1)
+    check(int((moved > 1e-6).sum()) > 50, "the sculpted shape is kept after leaving Sculpt Mode")
+    ev = ob.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    check(float(np.abs(sxg_positions(ev.data) - positions).max()) < 1e-5, "...the evaluated mesh has it too")
+    for label, mesh in (("mesh", ob.data), ("evaluated mesh", ev.data)):
+        cached = np.empty(len(mesh.polygons) * 3, np.float32)
+        mesh.polygon_normals.foreach_get("vector", cached)
+        err = float(np.abs(cached.reshape(-1, 3) - sxg_face_normals(mesh)).max())
+        check(err < 1e-3, "...and the face normals of the %s are right (error %.3g)" % (label, err))
+    shot = sxg_shot()
+    check(float(np.abs(shot - SXG["base"]).max()) > 0.02, "...and the viewport draws it")
+    SXG["stroke_shot"] = shot
+    bpy.ops.ed.undo_push(message="After the stroke")
+
+
+def sxg_old_mesh_back():
+    ob = bpy.context.active_object
+    return (ob is not None and ob.type == 'MESH' and bpy.context.mode == 'OBJECT'
+            and float(np.abs(sxg_positions(ob.data) - SXG["before"]).max()) < 1e-6)
+
+
+def sxg_moved_mesh_back():
+    ob = bpy.context.active_object
+    return (ob is not None and ob.type == 'MESH' and bpy.context.mode == 'OBJECT'
+            and float(np.abs(sxg_positions(ob.data) - SXG["before"]).max()) > 1e-3)
+
+
+def sxg_undo_until(back, what, op):
+    """Step body: Undo (or Redo) one step per tick until `back()` holds (each Sculpt Mode round trip is a few steps)."""
+    def body():
+        SXG["steps"] = SXG.get("steps", [])
+        if back() or len(SXG["steps"]) >= 10:
+            check(back(), "%s after %d steps (%s)" % (what, len(SXG["steps"]), SXG["steps"]))
+            SXG["count"] = len(SXG["steps"])
+            SXG["steps"] = []
+            return
+        op()
+        ob = bpy.context.active_object
+        SXG["steps"].append((bpy.context.mode, hp_in('MODEL')))
+        steps.insert(0, body)
+    return body
+
+
+step(sxg_undo_until(sxg_old_mesh_back, "Undo brings the old mesh back", bpy.ops.ed.undo))
+
+
+@step
+def sxg_undo_check():
+    now = sxg_shot()
+    check(float(np.abs(now - SXG["base"]).max()) < 0.01, "...and the viewport draws it (largest difference %.3g)"
+          % float(np.abs(now - SXG["base"]).max()))
+    check(not tracebacks(), "Python error after Undo")
+
+
+step(sxg_undo_until(sxg_moved_mesh_back, "Redo brings the sculpted mesh back", bpy.ops.ed.redo))
+
+
+@step
+def sxg_redo_check():
+    shot = sxg_shot()
+    check(float(np.abs(shot - SXG["stroke_shot"]).max()) < 0.01, "...and the viewport draws it (largest difference %.3g)"
+          % float(np.abs(shot - SXG["stroke_shot"]).max()))
+    for o in list(bpy.data.objects):
+        bpy.data.objects.remove(o)
+    check(not tracebacks(), "Python error in the Sculpt Mode round trip tests")
+
+
 @step
 def finish():
     errors = "".join(stderr_tee.buf + sys.stdout.buf)

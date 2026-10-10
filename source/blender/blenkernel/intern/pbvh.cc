@@ -21,6 +21,8 @@
 #include "BLI_vector.hh"
 #include "BLI_vector_set.hh"
 
+#include "atomic_ops.h"
+
 #include "DNA_object_types.h"
 
 #include "BKE_attribute.hh"
@@ -103,28 +105,49 @@ BLI_NOINLINE static void build_mesh_leaf_nodes(const int verts_num,
     }
   });
 
-  Vector<int> owned_verts;
-  Vector<int> shared_verts;
-  BitVector<> vert_used(verts_num);
-  for (const int i : nodes.index_range()) {
-    MeshNode &node = nodes[i];
-
-    owned_verts.clear();
-    shared_verts.clear();
-    for (const int vert : verts_per_node[i]) {
-      if (vert_used[vert]) {
-        shared_verts.append(vert);
-      }
-      else {
-        vert_used[vert].set();
-        owned_verts.append(vert);
+  /* Maelstrom3D: a vertex is owned by the first node (the lowest index) that uses it. This used to
+   * be found by going through the nodes one after the other, which also filled each node's
+   * #VectorSet (a hash insert for each of the millions of vertices) on one thread: about 7 ms for
+   * 1.5M faces. The lowest node index per vertex is found in parallel instead, then every node
+   * splits its own sorted vertices into owned and shared ones, the result is the same. */
+  Array<int> owner_node(verts_num, std::numeric_limits<int>::max());
+  threading::parallel_for(nodes.index_range(), 8, [&](const IndexRange range) {
+    for (const int i : range) {
+      for (const int vert : verts_per_node[i]) {
+        int current = owner_node[vert];
+        while (i < current) {
+          const int previous = atomic_cas_int32(&owner_node[vert], current, i);
+          if (previous == current) {
+            break;
+          }
+          current = previous;
+        }
       }
     }
-    node.unique_verts_num_ = owned_verts.size();
-    node.vert_indices_.reserve(owned_verts.size() + shared_verts.size());
-    node.vert_indices_.add_multiple(owned_verts);
-    node.vert_indices_.add_multiple(shared_verts);
-  }
+  });
+
+  threading::parallel_for(nodes.index_range(), 8, [&](const IndexRange range) {
+    Vector<int> owned_verts;
+    Vector<int> shared_verts;
+    for (const int i : range) {
+      MeshNode &node = nodes[i];
+
+      owned_verts.clear();
+      shared_verts.clear();
+      for (const int vert : verts_per_node[i]) {
+        if (owner_node[vert] == i) {
+          owned_verts.append(vert);
+        }
+        else {
+          shared_verts.append(vert);
+        }
+      }
+      node.unique_verts_num_ = owned_verts.size();
+      node.vert_indices_.reserve(owned_verts.size() + shared_verts.size());
+      node.vert_indices_.add_multiple(owned_verts);
+      node.vert_indices_.add_multiple(shared_verts);
+    }
+  });
 }
 
 bool leaf_needs_material_split(const Span<int> faces, const Span<int> material_indices)
@@ -137,35 +160,41 @@ bool leaf_needs_material_split(const Span<int> faces, const Span<int> material_i
       faces.begin(), faces.end(), [&](const int face) { return material_indices[face] != first; });
 }
 
-static void build_nodes_recursive_mesh(const Span<int> material_indices,
-                                       const int leaf_limit,
-                                       const int node_index,
-                                       const int parent_index,
-                                       const std::optional<Bounds<float3>> &bounds_precalc,
-                                       const Span<float3> face_centers,
-                                       const int depth,
-                                       MutableSpan<int> faces,
-                                       Vector<MeshNode> &nodes)
+/**
+ * Maelstrom3D: how the faces of a mesh are split up into the nodes of a #Tree. The split is found
+ * first (see #split_faces_recursive_mesh), the nodes are created from it afterwards, in the same
+ * order as when they are created while splitting, so the Tree is the same as before.
+ */
+struct MeshFaceSplit {
+  /** The faces of this part of the Tree, a part of #Tree::prim_indices_. */
+  MutableSpan<int> faces;
+  /** Both are null for a leaf. */
+  std::unique_ptr<MeshFaceSplit> children[2];
+};
+
+/** Parts with at least this many faces split their two children in parallel. */
+constexpr int parallel_split_faces_limit = 16384;
+
+static std::unique_ptr<MeshFaceSplit> split_faces_recursive_mesh(
+    const Span<int> material_indices,
+    const int leaf_limit,
+    const std::optional<Bounds<float3>> &bounds_precalc,
+    const Span<float3> face_centers,
+    const int depth,
+    MutableSpan<int> faces)
 {
   PRF_scope(ProfileCategory::Core);
-  BLI_assert(parent_index >= -1);
 
-  MeshNode &node = nodes[node_index];
-  node.parent_ = parent_index;
+  auto part = std::make_unique<MeshFaceSplit>();
+  part->faces = faces;
 
   /* Decide whether this is a leaf or not */
   const bool below_leaf_limit = faces.size() <= leaf_limit || depth >= STACK_FIXED_DEPTH - 1;
   if (below_leaf_limit) {
     if (!leaf_needs_material_split(faces, material_indices)) {
-      node.flag_ |= Node::Leaf;
-      node.face_indices_ = faces;
-      return;
+      return part;
     }
   }
-
-  /* Add two child nodes */
-  nodes[node_index].children_offset_ = nodes.size();
-  nodes.resize(nodes.size() + 2);
 
   int split;
   if (!below_leaf_limit) {
@@ -197,25 +226,51 @@ static void build_nodes_recursive_mesh(const Span<int> material_indices,
     split = partition_material_indices(material_indices, faces);
   }
 
-  /* Build children */
-  build_nodes_recursive_mesh(material_indices,
-                             leaf_limit,
-                             nodes[node_index].children_offset_,
-                             node_index,
-                             std::nullopt,
-                             face_centers,
-                             depth + 1,
-                             faces.take_front(split),
-                             nodes);
-  build_nodes_recursive_mesh(material_indices,
-                             leaf_limit,
-                             nodes[node_index].children_offset_ + 1,
-                             node_index,
-                             std::nullopt,
-                             face_centers,
-                             depth + 1,
-                             faces.drop_front(split),
-                             nodes);
+  /* Split the children (the two parts don't share any faces). */
+  threading::parallel_invoke(
+      faces.size() >= parallel_split_faces_limit,
+      [&]() {
+        part->children[0] = split_faces_recursive_mesh(material_indices,
+                                                       leaf_limit,
+                                                       std::nullopt,
+                                                       face_centers,
+                                                       depth + 1,
+                                                       faces.take_front(split));
+      },
+      [&]() {
+        part->children[1] = split_faces_recursive_mesh(material_indices,
+                                                       leaf_limit,
+                                                       std::nullopt,
+                                                       face_centers,
+                                                       depth + 1,
+                                                       faces.drop_front(split));
+      });
+  return part;
+}
+
+static void build_nodes_from_face_split_mesh(const MeshFaceSplit &part,
+                                             const int node_index,
+                                             const int parent_index,
+                                             Vector<MeshNode> &nodes)
+{
+  BLI_assert(parent_index >= -1);
+
+  MeshNode &node = nodes[node_index];
+  node.parent_ = parent_index;
+
+  if (!part.children[0]) {
+    node.flag_ |= Node::Leaf;
+    node.face_indices_ = part.faces;
+    return;
+  }
+
+  /* Add two child nodes */
+  const int children_offset = nodes.size();
+  nodes[node_index].children_offset_ = children_offset;
+  nodes.resize(nodes.size() + 2);
+
+  build_nodes_from_face_split_mesh(*part.children[0], children_offset, node_index, nodes);
+  build_nodes_from_face_split_mesh(*part.children[1], children_offset + 1, node_index, nodes);
 }
 
 Tree Tree::from_spatially_organized_mesh(const Mesh &mesh)
@@ -343,8 +398,9 @@ Tree Tree::from_mesh(const Mesh &mesh)
   Vector<MeshNode> &nodes = std::get<Vector<MeshNode>>(pbvh.nodes_);
   nodes.resize(1);
   {
-    build_nodes_recursive_mesh(
-        material_index, leaf_limit, 0, -1, bounds, face_centers, 0, pbvh.prim_indices_, nodes);
+    const std::unique_ptr<MeshFaceSplit> root = split_faces_recursive_mesh(
+        material_index, leaf_limit, bounds, face_centers, 0, pbvh.prim_indices_);
+    build_nodes_from_face_split_mesh(*root, 0, -1, nodes);
   }
 
   build_mesh_leaf_nodes(mesh.verts_num, faces, corner_verts, nodes);
@@ -1158,13 +1214,22 @@ static void update_normals_mesh(Object &object_orig,
   SharedCache<Vector<float3>> &face_normals_cache = face_normals_cache_eval_for_write(object_orig,
                                                                                       object_eval);
 
+  /* Maelstrom3D: a Tree that was just built has every node tagged (entering Sculpt Mode on a huge
+   * mesh). Then the faces and vertices of all the nodes are recalculated below, which covers every
+   * boundary face and vertex too, so collecting them (a serial #VectorSet with up to a million
+   * entries, about 10 ms for 1.5M faces) and calculating them a second time is wasted work. The
+   * result is the same, the boundary part is only needed when some of the nodes are updated. */
+  const bool update_all_nodes = nodes_to_update.size() == nodes.size();
+
   VectorSet<int> boundary_faces;
-  nodes_to_update.foreach_index([&](const int i) {
-    const MeshNode &node = nodes[i];
-    for (const int vert : node.vert_indices_.as_span().drop_front(node.unique_verts_num_)) {
-      boundary_faces.add_multiple(vert_to_face_map[vert]);
-    }
-  });
+  if (!update_all_nodes) {
+    nodes_to_update.foreach_index([&](const int i) {
+      const MeshNode &node = nodes[i];
+      for (const int vert : node.vert_indices_.as_span().drop_front(node.unique_verts_num_)) {
+        boundary_faces.add_multiple(vert_to_face_map[vert]);
+      }
+    });
+  }
 
   VectorSet<int> boundary_verts;
 

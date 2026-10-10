@@ -6721,6 +6721,194 @@ check(hp_labels and not any(w in t for t in hp_labels for w in ("Maya", "ZBrush"
 clean_scene()
 PR._last.clear()
 
+# ----------------------------------------------------------------------------------------------------
+# Sculpt Mode speed work (C code): the Tree of a big mesh is built in parallel and a new Tree updates its normals with a
+# shortcut. Entering Sculpt Mode, changing the mesh and leaving it must give the same mesh as before, with the right
+# normals; undo, Dyntopo, Multires, shape keys, modifiers and masks keep working.
+import numpy as np
+
+SX_TOL = 1e-4
+
+
+def sx_positions(mesh):
+    a = np.empty(len(mesh.vertices) * 3, np.float32)
+    mesh.vertices.foreach_get("co", a)
+    return a.reshape(-1, 3)
+
+
+def sx_face_normals(mesh):
+    """The face normals worked out here (Newell's method) from the positions."""
+    co = sx_positions(mesh).astype(np.float64)
+    corner_verts = np.empty(len(mesh.loops), np.int32)
+    mesh.loops.foreach_get("vertex_index", corner_verts)
+    start = np.empty(len(mesh.polygons), np.int32)
+    mesh.polygons.foreach_get("loop_start", start)
+    total = np.empty(len(mesh.polygons), np.int32)
+    mesh.polygons.foreach_get("loop_total", total)
+    p = co[corner_verts]
+    nxt = np.arange(len(corner_verts)) + 1
+    nxt[start + total - 1] = start
+    n = np.add.reduceat(np.cross(p, p[nxt]), start, axis=0)
+    return n / np.linalg.norm(n, axis=1)[:, None]
+
+
+def sx_cached_normals(mesh, faces):
+    """The normals Blender has for the mesh."""
+    attr = mesh.polygon_normals if faces else mesh.vertex_normals
+    a = np.empty(len(attr) * 3, np.float32)
+    attr.foreach_get("vector", a)
+    return a.reshape(-1, 3)
+
+
+def sx_sphere_ok(mesh, label, tol=SX_TOL):
+    """Face normals match the positions, vertex normals of a sphere point away from its centre."""
+    co = sx_positions(mesh)
+    f_err = float(np.abs(sx_cached_normals(mesh, True) - sx_face_normals(mesh)).max())
+    radial = co / np.linalg.norm(co, axis=1)[:, None]
+    v_dot = float((sx_cached_normals(mesh, False) * radial).sum(axis=1).min())
+    check(f_err < tol and v_dot > 0.99, "%s: normals are right (face error %.2g, vertex alignment %.4f)" % (label, f_err, v_dot))
+
+
+def sx_evaluated(ob):
+    return ob.evaluated_get(bpy.context.evaluated_depsgraph_get())
+
+
+def sx_sphere(segments, rings):
+    clean_scene()
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=segments, ring_count=rings)
+    ob = bpy.context.active_object
+    return ob, ob.data
+
+
+# --- A mesh big enough for the parallel Tree (more than 16384 faces): enter, change it, leave, undo
+ob, me = sx_sphere(200, 100)
+check(len(me.polygons) == 20000, "sphere for the Sculpt Mode tests (%d faces)" % len(me.polygons))
+before = sx_positions(me)
+sx_cached_normals(me, True), sx_cached_normals(me, False)   # (a valid normals cache is what entering takes the shortcut for)
+sx_cached_normals(sx_evaluated(ob).data, True)
+bpy.ops.ed.undo_push(message="Before Sculpt")
+bpy.ops.object.mode_set(mode='SCULPT')
+check(ob.mode == 'SCULPT', "Sculpt Mode on a big mesh")
+sx_sphere_ok(me, "entering Sculpt Mode")
+check(np.abs(sx_positions(me) - before).max() == 0.0, "entering Sculpt Mode leaves the positions alone")
+
+moved = before.copy()
+cap = moved[:, 2] > 0.6
+moved[cap] *= 1.15   # (what a stroke does: some vertices move, the topology stays)
+me.vertices.foreach_set("co", moved.ravel())
+me.update()
+bpy.context.view_layer.update()
+check(np.abs(sx_positions(sx_evaluated(ob).data) - moved).max() < SX_TOL, "in Sculpt Mode the evaluated mesh follows the change")
+bpy.ops.object.mode_set(mode='OBJECT')
+check(ob.mode == 'OBJECT', "leaving Sculpt Mode")
+ev = sx_evaluated(ob)
+check(np.abs(sx_positions(ev.data) - moved).max() < SX_TOL and np.abs(sx_positions(me) - moved).max() < SX_TOL,
+      "after leaving Sculpt Mode the mesh and the evaluated mesh have the new positions")
+check(len(ev.data.polygons) == 20000 and len(ev.data.vertices) == len(before), "...and the same topology")
+check(float(np.abs(sx_cached_normals(ev.data, True) - sx_face_normals(ev.data)).max()) < 1e-3, "...the evaluated face normals are right")
+check(float(np.abs(sx_cached_normals(me, True) - sx_face_normals(me)).max()) < 1e-3, "...and the face normals of the mesh")
+bpy.ops.ed.undo_push(message="After Sculpt")
+bpy.ops.ed.undo()
+me = bpy.context.active_object.data
+check(np.abs(sx_positions(me) - before).max() < SX_TOL, "undo after leaving Sculpt Mode brings the old positions back")
+check(np.abs(sx_positions(sx_evaluated(bpy.context.active_object).data) - before).max() < SX_TOL, "...also in the evaluated mesh")
+bpy.ops.ed.redo()
+check(np.abs(sx_positions(bpy.context.active_object.data) - moved).max() < SX_TOL, "...and redo the new ones")
+
+# Several round trips in a row (the draw buffers of the last one are the ones reused by the next).
+ob = bpy.context.active_object
+for i in range(3):
+    bpy.ops.object.mode_set(mode='SCULPT')
+    bpy.context.view_layer.update()
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.context.view_layer.update()
+check(np.abs(sx_positions(sx_evaluated(ob).data) - moved).max() < SX_TOL, "round trips in and out of Sculpt Mode keep the mesh")
+
+# --- Materials and hidden vertices: the faces are split by material in the Tree, hidden vertices are skipped by it
+ob, me = sx_sphere(160, 80)
+for i in range(3):
+    me.materials.append(bpy.data.materials.new("sx_%d" % i))
+for p in me.polygons:
+    p.material_index = (p.index * 7) % 3
+before = sx_positions(me)
+bpy.ops.object.mode_set(mode='SCULPT')
+sx_sphere_ok(me, "a mesh with 3 materials in Sculpt Mode")
+bpy.ops.object.mode_set(mode='OBJECT')
+check(np.abs(sx_positions(me) - before).max() == 0.0 and [p.material_index for p in me.polygons][:6] == [0, 1, 2, 0, 1, 2],
+      "...leaving it changes neither positions nor materials")
+
+# --- The mesh has modifiers (Subdivision Surface, Mirror): the Tree is built from the deformed mesh, leaving restores the stack
+ob, me = sx_sphere(48, 24)
+ob.modifiers.new("sx_subsurf", 'SUBSURF').levels = 1
+ev_faces = len(sx_evaluated(ob).data.polygons)
+bpy.ops.object.mode_set(mode='SCULPT')
+bpy.context.view_layer.update()
+bpy.ops.object.mode_set(mode='OBJECT')
+check(len(sx_evaluated(ob).data.polygons) == ev_faces and len(me.polygons) == 48 * 24, "a mesh with a Subdivision Surface modifier: enter and leave")
+
+# --- Shape keys: the active key is what changes
+ob, me = sx_sphere(64, 32)
+ob.shape_key_add(name="Basis")
+key = ob.shape_key_add(name="Key 1")
+key.value = 1.0
+ob.active_shape_key_index = 1
+base = sx_positions(me)
+bpy.ops.object.mode_set(mode='SCULPT')
+bpy.context.view_layer.update()
+bpy.ops.object.mode_set(mode='OBJECT')
+check(np.abs(sx_positions(sx_evaluated(ob).data) - base).max() < SX_TOL, "a mesh with shape keys: enter and leave keep the shape")
+
+# --- Masks and face sets are kept (they are drawn in Object Mode too)
+ob, me = sx_sphere(96, 48)
+bpy.ops.object.mode_set(mode='SCULPT')
+try:
+    bpy.ops.paint.mask_flood_fill(mode='VALUE', value=0.4)
+    masked = True
+except RuntimeError:
+    masked = False
+if masked:
+    bpy.ops.object.mode_set(mode='OBJECT')
+    mask = me.attributes.get(".sculpt_mask")
+    values = np.empty(len(me.vertices), np.float32)
+    check(mask is not None and (mask.data.foreach_get("value", values) or True) and abs(float(values.mean()) - 0.4) < 1e-4,
+          "a mask made in Sculpt Mode is still there after leaving it")
+else:
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+# --- Dynamic topology: on, leave, the mesh is whole and on again when coming back
+ob, me = sx_sphere(48, 24)
+bpy.ops.object.mode_set(mode='SCULPT')
+bpy.ops.sculpt.dynamic_topology_toggle()
+check(ob.use_dynamic_topology_sculpting, "Dyntopo on for the round trip")
+bpy.context.view_layer.update()
+bpy.ops.object.mode_set(mode='OBJECT')
+ev = sx_evaluated(ob)
+co = sx_positions(me)
+check(len(me.polygons) > 0 and np.isfinite(co).all() and len(ev.data.vertices) == len(me.vertices)
+      and float(np.abs(sx_positions(ev.data) - co).max()) < SX_TOL, "after Dyntopo the mesh is whole and evaluated")
+check(float(np.abs(np.linalg.norm(co, axis=1) - 1.0).max()) < 0.05, "...and still a sphere")
+bpy.ops.object.mode_set(mode='SCULPT')
+check(ob.use_dynamic_topology_sculpting, "...Dyntopo is back on when Sculpt Mode is entered again")
+bpy.ops.sculpt.dynamic_topology_toggle()
+bpy.ops.object.mode_set(mode='OBJECT')
+check(not ob.use_dynamic_topology_sculpting, "...and off again")
+
+# --- Multires: sculpt level and the evaluated mesh
+ob, me = sx_sphere(32, 16)
+mod = ob.modifiers.new("Multires", 'MULTIRES')
+bpy.ops.object.multires_subdivide(modifier="Multires", mode='CATMULL_CLARK')
+bpy.ops.object.multires_subdivide(modifier="Multires", mode='CATMULL_CLARK')
+faces_before = len(sx_evaluated(ob).data.polygons)
+bpy.ops.object.mode_set(mode='SCULPT')
+bpy.context.view_layer.update()
+bpy.ops.object.mode_set(mode='OBJECT')
+ev = sx_evaluated(ob)
+check(faces_before == 7936 and len(ev.data.polygons) == faces_before and mod.total_levels == 2,
+      "Multires: enter and leave keep the levels and the evaluated mesh (%d faces)" % faces_before)
+r = np.linalg.norm(sx_positions(ev.data), axis=1)
+check(float(r.min()) > 0.9 and float(r.max()) < 1.01, "...and the shape")
+clean_scene()
+
 # Save Layouts as Default writes the startup file (into the temp config folder here, never the real one).
 startup_ = os.path.join(TEST_CONFIG, "config", "startup.blend")
 check(not os.path.exists(startup_), "no startup file before saving")
