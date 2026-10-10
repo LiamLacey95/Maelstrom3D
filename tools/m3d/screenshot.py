@@ -15,7 +15,10 @@ then F6 shows it in Pose Mode), `+toolkit` / `+chanbox` (the Animation dock on i
 bottom editor), `+paths` (motion path of the active bone), `+animlayers` (push down + additive layer), `+animobject` (Object Mode), `+render` (Rendering workspace: a lit scene with a
 camera, three lights, an HDRI and a 480 x 270 render), `+ipr` (the viewport renders: IPR), `+renderblank` (nothing selected),
 `+hplp` (a low poly sword with its high poly, parked: hidden, the low poly active), `+hpwire` (Show Low Poly on), `+hpmouse` /
-`+hpmenu` (the High / Low Poly menu opens at the viewport; needs --enable-event-simulate).
+`+hpmenu` (the High / Low Poly menu opens at the viewport; needs --enable-event-simulate), `+angle` (a three-quarter view), `+bakegroups` (three bake groups: a
+sword with two floaters that is not baked, a shield that is baked and a pommel that is stale; use it before `TEXTURE/tex_bake`,
+`+frame` and `TEXTURE/tex_bake` again), `+bakeresult` (like `+bakegroups`, then Bake All, a normal-mapped material on each low poly and
+the sword's normal map in the paint view).
 """
 
 import sys
@@ -171,6 +174,18 @@ def frame():
         if area.type == 'VIEW_3D':
             with bpy.context.temp_override(window=win, screen=win.screen, area=area, region=next(r for r in area.regions if r.type == 'WINDOW')):
                 bpy.ops.view3d.view_all(center=True)
+
+
+def angle():
+    """A three-quarter view in the 3D views (then `+frame` fits the model)."""
+    from mathutils import Euler
+    win = bpy.context.window_manager.windows[0]
+    for area in win.screen.areas:
+        if area.type == 'VIEW_3D':
+            r3d = area.spaces.active.region_3d
+            r3d.view_perspective = 'PERSP'
+            r3d.view_rotation = Euler((1.15, 0.0, 0.5)).to_quaternion()
+    frame()
 
 
 def rig():
@@ -433,6 +448,82 @@ def sword_menu():
     bpy.app.timers.register(picture, first_interval=0.3)
 
 
+def bake_groups():
+    """Three groups: Sword (a low poly, a high poly and two floaters; not baked), Shield (baked) and Pommel (baked, then its
+    high poly was moved: stale). The high polys are parked, the sword's low poly is active."""
+    import math
+    for ob in list(bpy.data.objects):
+        bpy.data.objects.remove(ob)
+
+    def part(kind, name, x, scale, **kw):
+        getattr(bpy.ops.mesh, "primitive_%s_add" % kind)(location=(x, 0, 0), **kw)
+        ob = bpy.context.active_object
+        ob.name, ob.scale = name, scale
+        bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+        return ob
+
+    lows = [part("cube", "Sword_low", -1.6, (0.14, 0.05, 1.1)), part("cylinder", "Shield_low", 0.0, (0.8, 0.8, 0.07), vertices=12),
+            part("uv_sphere", "Pommel_low", 1.5, (0.3, 0.3, 0.3), segments=8, ring_count=6)]
+    lows[1].rotation_euler.x = math.pi / 2
+    for low in lows:
+        for ob in bpy.data.objects:
+            ob.select_set(ob == low)
+        bpy.context.view_layer.objects.active = low
+        bpy.ops.m3d.hp_create(detail='MULTIRES', levels=2)
+        bpy.ops.object.shade_smooth()
+    for i, z in enumerate((0.5, -0.5)):
+        bpy.ops.mesh.primitive_uv_sphere_add(location=(-1.6, -0.08, z), radius=0.07)
+        bpy.context.active_object.name = "Sword_high_bolts"
+        bpy.ops.object.shade_smooth()
+    bpy.ops.m3d.hp_auto_pair()
+    for low in lows:
+        s = low.m3d_bake
+        s.resolution, s.margin, s.samples, s.extrusion = '128', 4, 8, 0.3
+    import m3d_pair
+    m3d_pair.park_all(bpy.context)
+    for low in lows[1:]:
+        for ob in bpy.data.objects:
+            ob.select_set(ob == low)
+        bpy.context.view_layer.objects.active = low
+        bpy.ops.m3d.bg_bake()
+    bpy.data.objects["Pommel_high"].location.x += 0.04
+    for ob in bpy.data.objects:
+        ob.select_set(ob == lows[0])
+    bpy.context.view_layer.objects.active = lows[0]
+    bpy.context.view_layer.update()
+
+
+def bake_result():
+    """Bake All, then the low polys use their baked normal maps (Material Preview shows the detail of the high polys) and the
+    paint view shows the sword's."""
+    import m3d_pair
+    bake_groups()
+    bpy.ops.m3d.bg_bake_all()
+    colors = {"Sword": (0.55, 0.57, 0.62, 1.0), "Shield": (0.5, 0.22, 0.12, 1.0), "Pommel": (0.75, 0.6, 0.2, 1.0)}
+    for name, color in colors.items():
+        low = bpy.data.objects[name + "_low"]
+        mat = bpy.data.materials.new(name + "_Material")
+        mat.use_nodes = True
+        nodes, links = mat.node_tree.nodes, mat.node_tree.links
+        bsdf = nodes["Principled BSDF"]
+        bsdf.inputs["Base Color"].default_value = color
+        bsdf.inputs["Roughness"].default_value = 0.4
+        bsdf.inputs["Metallic"].default_value = 0.8
+        tex, normal = nodes.new("ShaderNodeTexImage"), nodes.new("ShaderNodeNormalMap")
+        tex.image = bpy.data.images[name + "_low_Normal"]
+        links.new(tex.outputs["Color"], normal.inputs["Color"])
+        links.new(normal.outputs["Normal"], bsdf.inputs["Normal"])
+        with m3d_pair.quiet(bpy.context):   # (a material is no edit of the mesh: the groups stay baked)
+            low.data.materials.append(mat)
+
+    def show():
+        win = bpy.context.window_manager.windows[0]
+        for area in win.screen.areas:
+            if area.type == 'IMAGE_EDITOR':
+                area.spaces.active.image = bpy.data.images["Sword_low_Normal"]
+    bpy.app.timers.register(show, first_interval=2.0)
+
+
 def bake():
     ob = bpy.context.active_object
     ob.m3d_bake.resolution, ob.m3d_bake.samples = '128', 8
@@ -442,6 +533,8 @@ def bake():
 SETUP = {
     "+paint": paint,
     "+bake": bake,
+    "+bakegroups": bake_groups,
+    "+bakeresult": bake_result,
     "+layers": layers,
     "+folders": folders,
     "+fillsel": fillsel,
@@ -449,6 +542,7 @@ SETUP = {
     "+masks": masks,
     "+maskshow": maskshow,
     "+frame": frame,
+    "+angle": angle,
     "+rig": rig,
     "+rigedit": rig_mode('EDIT'),
     "+rigpose": rig_mode('POSE'),

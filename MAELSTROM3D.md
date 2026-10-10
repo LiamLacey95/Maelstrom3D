@@ -26,7 +26,7 @@ named here only to describe compatibility.*
 | Editor names | Attribute Editor, Shader Editor, Script Editor, Command Line, Command History, Time Editor | `rna_space.cc`, `node_shader_tree.cc` |
 | Marking menus | RMB, Shift+RMB, Ctrl+RMB in the viewport; RMB, Shift+RMB in the UV Editor; Space hotbox | `m3d_mode.py`, `m3d_uv.py` |
 | UV editing | UV workspace (F3): dock tabs, Status Line and shelf for Cut/Sew/Unfold/Optimize/Layout, texel density, Auto Unwrap, UDIMs, checker map; sidebar UV Toolkit in other workspaces | `scripts/startup/m3d_uv.py` |
-| Texturing | Texture workspace (F4): brush tray, paint channels, Bake, Export, Display, Status Line and shelves; paint layer stack, painted images are saved or packed with the file; a Library of materials (layer setups), mask presets, brushes, alphas and your own items | `scripts/startup/m3d_texture.py`, `scripts/startup/m3d_layers.py`, `scripts/startup/m3d_masks.py`, `scripts/startup/m3d_library.py` (data: `m3d_library_data.py`) |
+| Texturing | Texture workspace (F4): brush tray, paint channels, Bake, Export, Display, Status Line and shelves; paint layer stack, painted images are saved or packed with the file; a Library of materials (layer setups), mask presets, brushes, alphas and your own items | `scripts/startup/m3d_texture.py`, `scripts/startup/m3d_layers.py`, `scripts/startup/m3d_masks.py`, `scripts/startup/m3d_library.py` (data: `m3d_library_data.py`), `scripts/startup/m3d_bakegroups.py` (bake groups) |
 | Rigging | Rigging workspace (F5): Outliner with the bone hierarchy and bone collections on the left, a large viewport, a dock of Skeleton, Controls & Constraints, Skin, Drive, Test and Collections tabs that follows the mode, Timeline that switches to the Drivers editor; Joint tool, Orient Joint, control shapes, IK with pole, bind with fallback, weight tools, Driven Key, naming check, Rigify on demand; Ctrl+E, Shift+N | `scripts/startup/m3d_rig.py` |
 | Animation | Animation workspace (F6): a large viewport and a camera view, one bottom editor that switches between the Graph Editor and the Dope Sheet, a short Timeline, a dock of Channel Box, Pick, Tween & Poses, Motion, Layers and Playback tabs; Status Line with Auto Key, key type, new key interpolation, keying set, range, FPS, loop mode, Blocking / Polish, Playblast; Tween (Alt+Q), Push / Relax / Breakdown, object selection sets, motion paths, ghost curves, NLA layers, Playblast | `scripts/startup/m3d_anim.py` |
 | Rendering | Rendering workspace (F7): a 3D view and a Render View, a dock of Camera, Lighting, Materials, Render, Output, Passes & Layers and Advanced tabs; Status Line with engine, camera, Draft / Medium / Final presets, Render, IPR; light table, HDRI sky, camera from view; Shift+F12 | `scripts/startup/m3d_render.py` |
@@ -196,6 +196,10 @@ faces from slowing the other workspaces down.
   without its suffix: `Sword_low` and `Sword_high` are group `Sword`. The suffixes `_low` / `_high`, `_lp` / `_hp`, `_lo` / `_hi` and `_lowpoly` / `_highpoly` are known, in any case, with or
   without Blender's `.001`. Words after the suffix make a part of the group: `Panel_high_bolts` belongs with `Panel_low`. The **Channel Box** shows the role and group of the active mesh
   ("Bake: Low · Sword") with a menu to change the role.
+- **Auto-Pair by Name** (the same submenu, the Bake menu and the Bake tab) gives a role and a group to every mesh of the scene that has none and is named with one of the suffixes, and tells you what it
+  paired and which meshes found no partner. `sword_HP` joins `Sword_LP` (case does not matter), a mesh joins a group that exists, and a mesh that already has a role is left alone. **Rename to Suffixes**
+  (a menu of `_low / _high`, `_lp / _hp` and `_lo / _hi`, same places) renames the meshes of every group to one style, so that files exported to other tools find their pairs by name: floaters keep their
+  words (`Panel_high_bolts` becomes `Panel_hp_bolts`), a name that is taken gets `_2`, and the baked maps of a renamed low poly keep up. **Make Pair** turns the old High Poly picker of the Bake tab into a pair (see Bake).
 - **Sculpt shows the high poly.** F2 with the low poly or the high poly selected hides the low poly, shows the high poly (every part of the group) and starts Sculpt Mode on it (with several
   parts, the one you sculpted last). Leaving Sculpt (F1, F3 ... or the workspace picker) leaves Sculpt Mode, hides the high poly again and shows, selects and activates the low poly. The hiding
   happens in the same step as the switch, so the huge mesh is never drawn in the next workspace: switching away from Sculpt takes a few tens of milliseconds
@@ -224,7 +228,7 @@ Add Material, Texture Paint Mode).
 | Layers tab | The layer stack of the active material: a list (top layer first: eye, name, blend mode, opacity, channel letters; folders have a triangle and a snowflake), buttons to add a Paint Layer, Fill Layer or **New Folder**, move, duplicate, delete, **Merge Down** and **Flatten**, **Group** / **Move In** / **Move Out** for folders; below it the active layer's settings (name, blend, opacity, channels, fill values, or for a folder Freeze / Unfreeze and Merge Folder), its **Mask** (the stack of mask effects, see below), and closed panels Channels (the paint slots by channel) and All Paint Slots |
 | Brush tab | Stroke and Stabilize, Falloff, Texture, Texture Mask, Stencil, Clone, Options (seam bleed, dither, cavity mask), Cursor, Color Palette |
 | Library tab | Materials, Masks, Brushes, Alphas and Mine as a tile grid with a search field; **Save to Library** is in the Layer and Mask panels (see Library below). Materials of the file that are marked as assets are listed in a closed panel when there are some |
-| Bake tab | High Poly picker (or Use Selected as High Poly), maps Normal, AO, Curvature, Position, Thickness, size, margin, ray settings, **Bake**, and the list of baked images |
+| Bake tab | **Bake Groups** (the groups of the scene, Auto-Pair by Name, Pair Selected, Rename to Suffixes, **Bake Group**, **Bake All**), the settings of the selected group, maps Normal, AO, Curvature, Position, Thickness, size, margin, the list of baked images; a mesh without a role has the High Poly picker (or Use Selected as High Poly) and a **Bake** button instead |
 | Export tab | Presets glTF, Unreal, Unity; folder; size; **Export**; Save All Images |
 | Display tab | Material Preview environment (HDRI, rotation, intensity), Channel View of each channel, UV checker map, wireframe |
 
@@ -234,13 +238,39 @@ and Emission) and plugs it into the shader; later clicks only pick it. C and Shi
 channel, `[` and `]` change the brush size, Shift+X swaps the two colors (plain X is hold-to-snap in the viewport, so
 it is not used for painting). Channel View shows the picked channel flat in the 3D view and goes back on the next click.
 
-**Bake** needs Cycles: it switches to it, bakes every ticked map into an image named `<mesh>_<Map>` (kept with the file)
-and switches back; the mesh's materials are not changed (a temporary material takes the bake and is removed). With a
-high-poly mesh set, detail is baked from it onto the active mesh (selected to active); without one, the mesh bakes
-itself. Curvature uses the shader's Pointiness (needs enough polygons), Thickness uses ambient occlusion from inside
-the mesh (closed meshes only; white where the mesh is thicker than the Thickness Distance), Position is scaled to 0-1
-within the object's bounds (and is always baked with one sample: Cycles adds a position pass up over its samples). The
-window waits while it bakes. Mask effects use these maps too (see Masks).
+**Bake** needs Cycles: it switches to it, bakes every ticked map into an image (kept with the file) and switches back; the mesh's materials
+are not changed (a temporary material takes the bake and is removed). Curvature uses the shader's Pointiness (needs enough polygons), Thickness uses
+ambient occlusion from inside the mesh (closed meshes only; white where the mesh is thicker than the Thickness Distance), Position is scaled to 0-1
+within the bounds of the baked meshes (and is always baked with one sample: Cycles adds a position pass up over its samples). The window waits while
+it bakes. Mask effects use these maps too (see Masks).
+
+A mesh without a role bakes as before: the images are named `<mesh>_<Map>`, with the **High Poly** mesh when one is picked (selected to active), else
+from the mesh itself. **Make Pair** (below the picker) turns the picked mesh into the high poly of a new group and the mesh into its low poly.
+
+**Bake groups.** A group (see High poly and low poly) is one or more low polys, which get the maps, and one or more high polys, which the detail is
+baked from; several high polys in one group (a panel and its bolts) are baked together. The **Bake Groups** panel at the top of the Bake tab lists the
+groups of the scene with their number of low and high polys and their state: **Baked**, **Stale** (a mesh of the group was moved or edited, joined or left
+the group, or a setting of the group changed, after the bake; the file keeps this) or **Not baked**. Clicking a row selects the group's low poly. Below the
+list: **Auto-Pair by Name**, **Pair Selected**, the **Rename to Suffixes** menu, **Bake Group** (the group of the active mesh) and **Bake All**. Bake All
+shows its progress, writes the time of each group to the Info log, skips a group that fails (a missing UV map, a cage that does not fit) and says which,
+and is one step of Undo. The Bake button of the shelf and the menu bakes the group of the active mesh. Going into a mode, painting a texture, adding or applying a material, the UV checker map, the export and a rename do not make a group stale. Leaving Sculpt Mode or Edit Mode does (Blender only tells then that a mesh may have changed, not whether it did), and so does any other change of a mesh's material slots, which Blender reports like an edit.
+
+Every group is baked on its own, whatever else is in the scene: only its high polys are the source, and all the other meshes (the other groups, the low
+polys, loose meshes) are not rendered meanwhile, so a neighbour that touches the group, or sits in the same place, cannot shadow its ambient occlusion or reach its normal
+map. The low poly that is being baked never shadows its high poly. High polys that are hidden (Maelstrom3D hides them outside Sculpt) are shown for the bake
+only, and hidden again; selection, the active mesh, the mode, the render engine and every visibility and render flag are put back, also when the bake fails.
+
+The **Group Settings** panel (below the list, for the group of the active mesh) has the group's own values, made from the low poly's old Bake tab values:
+**Extrusion** and **Max Ray Distance**, a **Cage** (a mesh with the same faces as the low poly, for a group with one low poly; the rays start from it instead of
+from the extruded low poly), and **AO Shadows**: **This Group** (the default) or **Whole Model**, which lets the high polys of every group shadow this group's ambient
+occlusion, for contact shadows between the groups. The Maps panel (maps, size, margin) and the Settings panel (samples, Thickness Distance, AO Distance) are shared by the
+group's texture set.
+
+**Texture sets.** Low polys that share a material are one texture set, for example a blade, a guard and a hilt with one UV layout: they bake into the same images, named after
+the material (`Sword_Normal`, `Sword_AO`), and each adds its own UV islands. Bake All starts the images over; **Bake Group** on one of the groups adds its islands and keeps the
+others (Position is scaled to the bounds of the whole set, so it is baked again for the whole set). The first low poly by name decides the maps, the size, the margin and the
+samples of the set. A low poly whose material nobody else shares, and every mesh without a role, keeps maps named after the mesh (`Cube_Normal`); maps named after a mesh in
+files from earlier versions are still found and used until the set is baked.
 
 **Export** writes the active mesh's channels: **glTF** one `.glb` with the mesh, material and textures; **Unreal**
 `T_Name_BC`, `_N` (green channel flipped for DirectX), `_ORM` (red occlusion from the baked AO map, green roughness, blue
@@ -298,7 +328,7 @@ Bake tab's settings changed.
 
 The generators read maps baked from the mesh (Curvature, AO, Position, Thickness, plus the world normal). The first time
 an effect needs one, it is baked with Cycles at the Bake tab's resolution, like the Bake tab does (named
-`<mesh>_<Map>`, with the high-poly mesh when one is set) and kept with the file; every layer and effect then reuses it,
+`<mesh>_<Map>`, with the high-poly mesh when one is set; for a low poly of a group: from its group, together with the other low polys of its texture set, named after the material) and kept with the file; every layer and effect then reuses it,
 and only a new resolution, Rebake Maps or the Bake tab bake it again. Nothing in the mesh's materials changes while
 baking. A mesh without UVs shows the usual "Auto Unwrap" message first.
 

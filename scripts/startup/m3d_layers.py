@@ -945,13 +945,14 @@ def map_keys(mat):
 
 def link_maps(mat, ob, replace=False):
     """Effects that read a baked map the mesh has since (a bake in the Bake tab, an effect made before the bake) pick
-    it up; `replace`: every effect reads this mesh's maps."""
+    it up; `replace`: every effect reads this mesh's maps (the texture set's, see m3d_texture.texture_set)."""
+    import m3d_texture
     with muted():
         for layer in mat.m3d_layers:
             for e in layer.mask_stack:
                 have = MK.map_images(e)
                 for key in MK.needed_maps(e):
-                    image = bpy.data.images.get("%s_%s" % (ob.name, MK.MAP_LABELS[key]))
+                    image = m3d_texture.map_image(ob, MK.MAP_LABELS[key])
                     if image is not None and (replace or have[key] is None):
                         assign_map(e, key, image)
 

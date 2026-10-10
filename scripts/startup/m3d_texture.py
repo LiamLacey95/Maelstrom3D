@@ -16,7 +16,7 @@ operation. The Library tab (materials, mask presets, brushes, alphas, your own i
 """
 
 import os
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 
 import bpy
 import numpy as np
@@ -194,20 +194,27 @@ FIXES = {
 }
 
 
+def needed(context, need):
+    """What the active mesh still needs for `need`. The Bake tab of a mesh in a bake group does not ask for UVs: it bakes
+    the group's low polys, which say themselves when they have none."""
+    ob = mesh_of(context)
+    skip = {'UV'} if need == 'BAKE' and m3d_pair.grouped(ob) else set()
+    return [key for key in missing(context) if key in NEEDS[need] and key not in skip]
+
+
 def ready(context, need):
-    return not set(missing(context)) & set(NEEDS[need])
+    return not needed(context, need)
 
 
 def draw_fixes(layout, context, need):
     col = layout.column(align=True)
-    for key in missing(context):
-        if key in NEEDS[need]:
-            if key == 'BIG':   # a huge mesh stays in Object Mode here: the message says which mesh to pick instead
-                m3d_pair.draw_note(col, m3d_pair.big_note(context))
-                continue
-            text, label, icon, idname, props = FIXES[key]
-            col.label(text=text)
-            _button(col, context, label, idname, icon, props)
+    for key in needed(context, need):
+        if key == 'BIG':   # a huge mesh stays in Object Mode here: the message says which mesh to pick instead
+            m3d_pair.draw_note(col, m3d_pair.big_note(context))
+            continue
+        text, label, icon, idname, props = FIXES[key]
+        col.label(text=text)
+        _button(col, context, label, idname, icon, props)
 
 
 # -----------------------------------------------------------------------------
@@ -372,10 +379,11 @@ class M3D_OT_tex_add_material(Operator):
         ob = mesh_of(context)
         mat = bpy.data.materials.new(ob.name + "_Material")
         mat.use_nodes = True
-        if ob.material_slots:
-            ob.material_slots[ob.active_material_index].material = mat
-        else:
-            ob.data.materials.append(mat)
+        with m3d_pair.quiet(context):   # (a new material is no edit of the mesh: a baked group stays baked)
+            if ob.material_slots:
+                ob.material_slots[ob.active_material_index].material = mat
+            else:
+                ob.data.materials.append(mat)
         return {'FINISHED'}
 
 
@@ -464,10 +472,11 @@ class M3D_OT_tex_apply_material(Operator):
         ob, mat = mesh_of(context), bpy.data.materials.get(self.name)
         if mat is None:
             return {'CANCELLED'}
-        if ob.material_slots:
-            ob.material_slots[ob.active_material_index].material = mat
-        else:
-            ob.data.materials.append(mat)
+        with m3d_pair.quiet(context):
+            if ob.material_slots:
+                ob.material_slots[ob.active_material_index].material = mat
+            else:
+                ob.data.materials.append(mat)
         return {'FINISHED'}
 
 
@@ -535,31 +544,94 @@ def materials_swapped(ob, mat):
         bpy.data.materials.remove(mat)
 
 
-def bake_image(ob, label, size, float_buffer):
-    """The image a map is baked into: the object's earlier one of this map (resized) or a new one."""
-    name = "%s_%s" % (ob.name, label)
+def meshes_of(obs):
+    """A list of meshes from None, one mesh or a list."""
+    return [] if obs is None else [obs] if isinstance(obs, bpy.types.Object) else list(obs)
+
+
+def texture_set(ob):
+    """(name, low polys) of the texture set `ob` is baked into. Low polys of bake groups that share a material share its
+    maps: the images are named after the material (Sword_Normal) and every low poly adds its own UV islands to them. Any
+    other mesh has maps of its own, named after the mesh (Cube_Normal), which is what files from before bake groups have."""
+    mat = ob.active_material
+    if m3d_pair.grouped(ob) and ob.m3d_pair.role == 'LOW' and mat is not None and mat.users > 1:
+        lows = sorted((o for o in bpy.context.view_layer.objects
+                       if o.type == 'MESH' and o.m3d_pair.role == 'LOW' and o.m3d_pair.group and o.active_material == mat),
+                      key=lambda o: o.name)
+        if len(lows) > 1:
+            return mat.name, lows
+    return ob.name, [ob]
+
+
+def bake_owner(ob):
+    """The mesh whose Bake tab settings (maps, size, margin, samples) apply to `ob`: the first low poly by name of its
+    texture set, for a high poly the first low poly of its group."""
+    if m3d_pair.grouped(ob) and ob.m3d_pair.role == 'HIGH':
+        lows = m3d_pair.group_of(bpy.context, ob.m3d_pair.group)[0]
+        ob = lows[0] if lows else ob
+    return texture_set(ob)[1][0]
+
+
+def map_image(ob, label):
+    """The baked map `label` ("AO") of `ob`: the texture set's image, else the one named after the mesh, else None."""
+    images = bpy.data.images
+    image = images.get("%s_%s" % (texture_set(ob)[0], label))
+    return image if image is not None else images.get("%s_%s" % (ob.name, label))
+
+
+def rename_maps(ob, old, new):
+    """The low poly `ob` was renamed from `old` to `new`: its maps (named after the mesh) and the records of them follow."""
+    if old == new:
+        return
+    images = bpy.data.images
+    for label in dict.fromkeys([*(label for _key, label, _flag in BAKE_MAPS), *MK.MAP_LABELS.values()]):
+        image = images.get("%s_%s" % (old, label))
+        if image is not None and images.get("%s_%s" % (new, label)) is None:
+            image.name = "%s_%s" % (new, label)
+    for image in images:
+        parts = image.get("m3d_parts")
+        if parts and old in parts.split("|"):
+            image["m3d_parts"] = "|".join(new if name == old else name for name in parts.split("|"))
+    ob.m3d_bake.baked = "|".join(("%s_%s" % (new, name[len(old) + 1:]) if name.startswith(old + "_") else name)
+                                 for name in ob.m3d_bake.baked.split("|") if name)
+
+
+def bake_image(name, label, size, float_buffer):
+    """The image a map is baked into: the earlier one of this name (resized) or a new one."""
+    name = "%s_%s" % (name, label)
     image = bpy.data.images.get(name)
     if image is None or image.source != 'GENERATED':
         image = bpy.data.images.new(name, size, size, alpha=False, float_buffer=float_buffer, is_data=True)
         image.use_half_precision = False   # (float maps keep all 32 bits, in the file too)
     elif tuple(image.size) != (size, size):
         image.generated_width = image.generated_height = size   # (scale() would not stick: the bake clears to this size)
+        image["m3d_parts"] = ""
     image.use_fake_user = True   # Nothing uses it yet: keep it in the file.
-    image.colorspace_settings.name = 'Non-Color'
+    if image.colorspace_settings.name != 'Non-Color':   # (setting it drops the pixels of a generated image, even to the same value)
+        image.colorspace_settings.name = 'Non-Color'
     image["m3d_bake"] = label
     return image
 
 
-def world_bounds(ob):
-    corners = np.array([ob.matrix_world @ Vector(c) for c in ob.bound_box])
+def forget_parts(name, labels):
+    """The next bake into the maps `name`_<label> starts them over (the first low poly clears the image)."""
+    for label in labels:
+        image = bpy.data.images.get("%s_%s" % (name, label))
+        if image is not None:
+            image["m3d_parts"] = ""
+
+
+def world_bounds(obs):
+    """(min, max) corner of the bounding boxes of a mesh or a list of them, in world space."""
+    corners = np.array([o.matrix_world @ Vector(c) for o in meshes_of(obs) for c in o.bound_box])
     return corners.min(axis=0), corners.max(axis=0)
 
 
-def normalise_position(image, ob, owner):
-    """Position bakes world coordinates: scale them to 0-1 within the object's bounds so any image format keeps them.
-    The bounds and the inverse matrix of `owner` (the baked mesh) stay with the image: mask effects turn the map back
-    into object space coordinates with them."""
-    lo, hi = world_bounds(ob)
+def normalise_position(image, obs, owner):
+    """Position bakes world coordinates: scale them to 0-1 within the bounds of the mesh(es) `obs` so any image format
+    keeps them. The bounds and the inverse matrix of `owner` (the baked mesh) stay with the image: mask effects turn the
+    map back into object space coordinates with them."""
+    lo, hi = world_bounds(obs)
     image["m3d_bounds"] = [float(x) for x in (*lo, *hi)]
     image["m3d_inv"] = [float(x) for row in owner.matrix_world.inverted() for x in row]
     px = np.empty(len(image.pixels), np.float32)
@@ -571,22 +643,31 @@ def normalise_position(image, ob, owner):
     image.update()
 
 
+RENDERED = {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT', 'CURVES', 'POINTCLOUD', 'VOLUME', 'GREASEPENCIL'}   # object types that cast shadows
+
+
 @contextmanager
-def bake_scene(context, ob, high):
-    """Cycles on (the bake needs it), the low-poly mesh active and the high-poly selected with it, Object Mode;
-    everything is put back afterwards."""
+def bake_scene(context, ob, highs=None, hide=()):
+    """Cycles on (the bake needs it), the low-poly mesh active and the high-poly meshes `highs` (one, a list or None)
+    selected with it, Object Mode; `hide`: meshes that are not rendered meanwhile (Cycles bakes ambient occlusion against
+    everything it renders, except the low poly itself). Everything is put back afterwards, also after an error."""
     scene, layer = context.scene, context.view_layer
-    objs = [o for o in (ob, high) if o is not None]
+    highs = meshes_of(highs)
+    objs = [ob, *highs]
     if any(o.name not in layer.objects for o in objs):
         raise RuntimeError("Both meshes have to be in the view layer")
-    state = dict(engine=scene.render.engine, samples=scene.cycles.samples, mode=ob.mode, active=layer.objects.active,
-                 selected=[o for o in layer.objects if o.select_get()],
-                 hidden=[(o, o.hide_get(), o.hide_viewport) for o in objs])
-    if ob.mode != 'OBJECT':
+    active = layer.objects.active
+    state = dict(engine=scene.render.engine, samples=scene.cycles.samples, mode=active.mode if active else 'OBJECT',
+                 active=active, selected=[o for o in layer.objects if o.select_get()],
+                 flags=[(o, o.hide_get(), o.hide_viewport, o.hide_render, o.hide_select) for o in objs],
+                 hidden=[(o, o.hide_render) for o in hide])
+    if state["mode"] != 'OBJECT':
         bpy.ops.object.mode_set(mode='OBJECT')
     try:
-        for o in objs:
-            o.hide_viewport = False
+        for o in hide:
+            o.hide_render = True
+        for o in objs:   # (a mesh that is parked is shown for the bake and hidden again before anything is drawn)
+            o.hide_viewport = o.hide_render = o.hide_select = False
             o.hide_set(False)
         for o in state["selected"]:
             o.select_set(False)
@@ -597,37 +678,52 @@ def bake_scene(context, ob, high):
         yield
     finally:
         scene.render.engine, scene.cycles.samples = state["engine"], state["samples"]
-        for o, hide, hide_viewport in state["hidden"]:
-            o.hide_set(hide)
-            o.hide_viewport = hide_viewport
+        for o, hide_render in state["hidden"]:
+            o.hide_render = hide_render
+        for o, hidden, hide_viewport, hide_render, hide_select in state["flags"]:
+            o.hide_set(hidden)
+            o.hide_viewport, o.hide_render, o.hide_select = hide_viewport, hide_render, hide_select
         for o in objs:
             o.select_set(False)
         for o in state["selected"]:
             o.select_set(True)
         layer.objects.active = state["active"]
-        if state["mode"] != 'OBJECT' and state["active"] is ob:
-            bpy.ops.object.mode_set(mode=state["mode"])
+        if state["mode"] != 'OBJECT' and state["active"] is not None:
+            try:
+                bpy.ops.object.mode_set(mode=state["mode"])
+            except RuntimeError:
+                pass   # (the mode can't be entered any more: this must not hide the error that got us here)
 
 
-def bake_maps(context, ob, high, s, maps):
-    """Bake the ticked maps of `ob` (from `high` when set) into images. Returns the images."""
-    size, images = int(s.resolution), []
+def bake_maps(context, ob, high, s, maps, name=None, extrusion=None, ray_distance=None, cage=None, others=(), normalise=True):
+    """Bake the ticked maps of `ob` (from `high`, a mesh or a list, when set) into images named `name`_<Map> (default: the
+    name of `ob`). `extrusion`, `ray_distance` and `cage` (a mesh with the faces of `ob`) are the group's, `s` has the
+    rest. `others`: names of the other low polys that share the images: their islands stay, the image is cleared only
+    when it holds none of them. `normalise`: Position is scaled to 0-1 (not when more low polys follow). Returns the images."""
+    size, images, highs = int(s.resolution), [], meshes_of(high)
+    name = name or ob.name
     for key, label, _flag in maps:
         # The Position pass adds up its samples instead of averaging them: one sample, and it is exact anyway.
         context.scene.cycles.samples = 1 if key == 'POSITION' else s.samples
-        image = bake_image(ob, label, size, key in {'POSITION', 'WORLDNORMAL'})
+        image = bake_image(name, label, size, key in {'POSITION', 'WORLDNORMAL'})
+        held = set(filter(None, str(image.get("m3d_parts", "")).split("|"))) & (set(others) - {ob.name})
         emission = key if BAKE_TYPES[key] == 'EMIT' else None
         # Without a high-poly mesh the low-poly one carries both the emission and the bake target.
-        target = bake_material(image, None if high else emission, s.thickness_distance)
-        with materials_swapped(ob, target):
-            with materials_swapped(high, bake_material(emission=emission, distance=s.thickness_distance)) \
-                    if high and emission else nullcontext():
-                bpy.ops.object.bake(
-                    type=BAKE_TYPES[key], margin=s.margin, use_selected_to_active=high is not None,
-                    cage_extrusion=s.extrusion, max_ray_distance=s.ray_distance, normal_space='TANGENT',
-                    use_clear=True, target='IMAGE_TEXTURES', save_mode='INTERNAL')
-        if key == 'POSITION':
-            normalise_position(image, high or ob, ob)
+        target = bake_material(image, None if highs else emission, s.thickness_distance)
+        with ExitStack() as stack:
+            stack.enter_context(materials_swapped(ob, target))
+            if highs and emission:
+                for h in highs:
+                    stack.enter_context(materials_swapped(h, bake_material(emission=emission, distance=s.thickness_distance)))
+            bpy.ops.object.bake(
+                type=BAKE_TYPES[key], margin=s.margin, use_selected_to_active=bool(highs),
+                cage_extrusion=s.extrusion if extrusion is None else extrusion,
+                max_ray_distance=s.ray_distance if ray_distance is None else ray_distance, normal_space='TANGENT',
+                use_cage=cage is not None, cage_object=cage.name if cage is not None else "",
+                use_clear=not held, target='IMAGE_TEXTURES', save_mode='INTERNAL')
+        image["m3d_parts"] = "|".join(sorted({*held, ob.name}))
+        if key == 'POSITION' and normalise:
+            normalise_position(image, highs or ob, ob)
         image["m3d_map"] = size   # Baked at this size: mask effects reuse it until the resolution changes.
         image["m3d_stamp"] = MK.new_uid()
         images.append(image)
@@ -636,24 +732,31 @@ def bake_maps(context, ob, high, s, maps):
 
 def ensure_maps(context, ob, keys, force=False):
     """The baked maps (MK.MAP_LABELS keys) mask effects read, as {key: image}: the ones the mesh has at the Bake tab's
-    resolution are reused, the others are baked (together, in one go; `force`: all of them again)."""
-    s = ob.m3d_bake
+    resolution are reused, the others are baked (together, in one go; `force`: all of them again). The low poly of a bake
+    group bakes from its group, together with the other low polys of its texture set."""
+    in_group = m3d_pair.grouped(ob) and ob.m3d_pair.role == 'LOW'
+    s = bake_owner(ob).m3d_bake
     size = int(s.resolution)
     todo = []
     for key in keys:
-        image = bpy.data.images.get("%s_%s" % (ob.name, MK.MAP_LABELS[key]))
+        image = map_image(ob, MK.MAP_LABELS[key])
         if force or image is None or image.get("m3d_map") != size:
             todo.append((key, MK.MAP_LABELS[key], None))
     if todo:
         wm = context.window_manager
         wm.progress_begin(0, 1)
         try:
-            with bake_scene(context, ob, s.high):
-                bake_maps(context, ob, s.high, s, todo)
+            if in_group:
+                import m3d_bakegroups
+                m3d_bakegroups.bake_set(context, texture_set(ob)[1], todo)
+            else:
+                with bake_scene(context, ob, s.high):
+                    bake_maps(context, ob, s.high, s, todo)
         finally:
             wm.progress_end()
-        s.baked = "|".join(dict.fromkeys([*filter(None, s.baked.split("|")), *("%s_%s" % (ob.name, label) for _k, label, _f in todo)]))
-    return {key: bpy.data.images["%s_%s" % (ob.name, MK.MAP_LABELS[key])] for key in keys}
+        name = texture_set(ob)[0]
+        s.baked = "|".join(dict.fromkeys([*filter(None, s.baked.split("|")), *("%s_%s" % (name, label) for _k, label, _f in todo)]))
+    return {key: map_image(ob, MK.MAP_LABELS[key]) for key in keys}
 
 
 class M3D_OT_tex_bake_pick(Operator):
@@ -677,8 +780,8 @@ class M3D_OT_tex_bake_pick(Operator):
 
 
 class M3D_OT_tex_bake(Operator):
-    """Bake the ticked maps of the active mesh into images (from the high-poly mesh when set). Cycles is used for the
-    bake and switched back; the mesh's materials are not changed"""
+    """Bake the ticked maps of the active mesh into images (from the high-poly mesh when set; a mesh in a bake group bakes its
+    group). Cycles is used for the bake and switched back; the mesh's materials are not changed"""
     bl_idname = "m3d.tex_bake"
     bl_label = "Bake"
     bl_options = {'REGISTER'}
@@ -686,10 +789,15 @@ class M3D_OT_tex_bake(Operator):
     @classmethod
     def poll(cls, context):
         ob = mesh_of(context)
-        return ob is not None and bool(ob.data.uv_layers)
+        return ob is not None and (bool(ob.data.uv_layers) or m3d_pair.grouped(ob))
 
     def execute(self, context):
         ob = mesh_of(context)
+        if m3d_pair.grouped(ob):
+            if not bpy.ops.m3d.bg_bake.poll():
+                self.report({'WARNING'}, "%s has no low poly to bake onto" % ob.m3d_pair.group)
+                return {'CANCELLED'}
+            return bpy.ops.m3d.bg_bake('EXEC_DEFAULT', group=ob.m3d_pair.group)
         s = ob.m3d_bake
         maps = [m for m in BAKE_MAPS if getattr(s, m[2])]
         if not maps:
@@ -824,7 +932,8 @@ def export_gltf(context, ob, path, size):
     ob.select_set(True)
     layer.objects.active = ob
     try:
-        with L.flattened_material(ob, ob.active_material, size) if ob.active_material.m3d_layers else nullcontext():
+        with m3d_pair.quiet(context), \
+                L.flattened_material(ob, ob.active_material, size) if ob.active_material.m3d_layers else nullcontext():
             bpy.ops.export_scene.gltf(filepath=path, export_format='GLB', use_selection=True)
     finally:
         ob.select_set(False)
@@ -1369,6 +1478,10 @@ class _Bake(_Page):
 class PROPERTIES_PT_m3d_tx_bake_high(_Bake, Panel):
     bl_label = "High Poly"
 
+    @classmethod
+    def page_poll(cls, context):
+        return ready(context, cls.need) and not m3d_pair.grouped(mesh_of(context))   # (a group has its own high polys)
+
     def draw(self, context):
         layout = self.layout
         split_props(layout)
@@ -1377,6 +1490,9 @@ class PROPERTIES_PT_m3d_tx_bake_high(_Bake, Panel):
         layout.operator("m3d.tex_bake_pick", icon='EYEDROPPER')
         if s.high is None:
             reason(layout, "No high poly: the mesh bakes itself")
+        else:
+            layout.operator("m3d.hp_make_pair", icon='LINKED')
+            reason(layout, "Make Pair: bake groups can have several high polys")
 
 
 class PROPERTIES_PT_m3d_tx_bake_maps(_Bake, Panel):
@@ -1384,13 +1500,20 @@ class PROPERTIES_PT_m3d_tx_bake_maps(_Bake, Panel):
 
     def draw(self, context):
         layout = self.layout
-        s = mesh_of(context).m3d_bake
+        ob = mesh_of(context)
+        owner = bake_owner(ob)
+        s = owner.m3d_bake
         grid_ = layout.grid_flow(row_major=True, columns=2, even_columns=True, align=True)
         for _key, _label, flag in BAKE_MAPS:
             grid_.prop(s, flag, toggle=True)
         split_props(layout)
         layout.prop(s, "resolution")
         layout.prop(s, "margin")
+        name, lows = texture_set(owner)
+        if len(lows) > 1:
+            reason(layout, "Texture set %s: %s" % (name, ", ".join(o.name for o in lows)))
+        elif owner != ob:
+            reason(layout, "Set on %s" % owner.name)
         if s.use_curvature:
             reason(layout, "Curvature needs enough polygons")
         if s.use_thickness:
@@ -1404,9 +1527,11 @@ class PROPERTIES_PT_m3d_tx_bake_settings(_Bake, Panel):
     def draw(self, context):
         layout = self.layout
         split_props(layout)
-        s = mesh_of(context).m3d_bake
-        layout.prop(s, "extrusion")
-        layout.prop(s, "ray_distance")
+        ob = mesh_of(context)
+        s = bake_owner(ob).m3d_bake
+        if not m3d_pair.grouped(ob):   # (a group has its own extrusion and ray distance: Group Settings)
+            layout.prop(s, "extrusion")
+            layout.prop(s, "ray_distance")
         layout.prop(s, "samples")
         if s.use_thickness:
             layout.prop(s, "thickness_distance")
@@ -1418,13 +1543,20 @@ class PROPERTIES_PT_m3d_tx_bake_settings(_Bake, Panel):
 class PROPERTIES_PT_m3d_tx_bake_run(_Bake, Panel):
     bl_label = "Bake"
 
+    @classmethod
+    def page_poll(cls, context):
+        ob = mesh_of(context)   # (a group has no button here: only its images, once it has some)
+        return ready(context, cls.need) and (not m3d_pair.grouped(ob) or bool(bake_owner(ob).m3d_bake.baked))
+
     def draw(self, context):
         layout = self.layout
-        s = mesh_of(context).m3d_bake
-        row = layout.row()
-        row.scale_y = 1.6
-        row.operator("m3d.tex_bake", icon='RENDER_STILL')
-        reason(layout, "Uses Cycles; the window waits until it is done")
+        ob = mesh_of(context)
+        s = bake_owner(ob).m3d_bake
+        if not m3d_pair.grouped(ob):   # (a group is baked from the Bake Groups panel)
+            row = layout.row()
+            row.scale_y = 1.6
+            row.operator("m3d.tex_bake", icon='RENDER_STILL')
+            reason(layout, "Uses Cycles; the window waits until it is done")
         for name in filter(None, s.baked.split("|")):
             row = layout.row(align=True)
             row.label(text=name, icon='IMAGE_DATA')

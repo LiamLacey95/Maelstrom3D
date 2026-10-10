@@ -330,8 +330,8 @@ def build_material(mat, item, directory):
 
 def map_ready(ob, key):
     """Does the mesh have this baked map at the Bake tab's resolution (ensure_maps reuses it)?"""
-    image = bpy.data.images.get("%s_%s" % (ob.name, MK.MAP_LABELS[key]))
-    return image is not None and image.get("m3d_map") == int(ob.m3d_bake.resolution)
+    image = T.map_image(ob, MK.MAP_LABELS[key])
+    return image is not None and image.get("m3d_map") == int(T.bake_owner(ob).m3d_bake.resolution)
 
 
 def bake_missing(context, ob, layers):

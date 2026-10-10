@@ -369,29 +369,30 @@ def set_checker(ob, on):
     """Put the checker map on every material slot of `ob` or give the meshes' own materials back. The slots stay,
     so the faces keep their material numbers. The own materials are kept on the object as ID references, which
     count as users: autosave and purging unused data can't drop them while the checker is on."""
-    slots = ob.material_slots
-    if on and CHECKER not in ob:
-        saved = {str(i): s.material for i, s in enumerate(slots) if s.material is not None}
-        saved["count"] = len(slots)
-        ob[CHECKER] = saved
-        checker = checker_material()
-        if not slots:
-            ob.data.materials.append(checker)
-        for slot in slots:
-            slot.material = checker
-    elif not on and CHECKER in ob:
-        saved = ob[CHECKER]
-        if hasattr(saved, "get"):
-            count = saved.get("count", 0)
-            materials = [saved.get(str(i)) for i in range(count)]
-        else:  # Files from before: a list of material names.
-            materials = [bpy.data.materials.get(name) for name in saved]
-        if materials:
-            for slot, mat in zip(slots, materials):
-                slot.material = mat
-        else:
-            ob.data.materials.clear()
-        del ob[CHECKER]
+    with m3d_pair.quiet(bpy.context):   # (the checker is no edit of the mesh: a baked group stays baked)
+        slots = ob.material_slots
+        if on and CHECKER not in ob:
+            saved = {str(i): s.material for i, s in enumerate(slots) if s.material is not None}
+            saved["count"] = len(slots)
+            ob[CHECKER] = saved
+            checker = checker_material()
+            if not slots:
+                ob.data.materials.append(checker)
+            for slot in slots:
+                slot.material = checker
+        elif not on and CHECKER in ob:
+            saved = ob[CHECKER]
+            if hasattr(saved, "get"):
+                count = saved.get("count", 0)
+                materials = [saved.get(str(i)) for i in range(count)]
+            else:  # Files from before: a list of material names.
+                materials = [bpy.data.materials.get(name) for name in saved]
+            if materials:
+                for slot, mat in zip(slots, materials):
+                    slot.material = mat
+            else:
+                ob.data.materials.clear()
+            del ob[CHECKER]
 
 
 def checker_on(context):

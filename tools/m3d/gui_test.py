@@ -6967,6 +6967,337 @@ def sxg_redo_check():
     check(not tracebacks(), "Python error in the Sculpt Mode round trip tests")
 
 
+# ----------------------------------------------------------------------------------------------------
+# Bake groups in the real window: the Bake Groups panel in the Bake tab, a click on a row, Bake Group and Bake All from the dock
+# (the high polys stay parked and are never drawn), the stale mark from the real depsgraph, Undo of Bake All.
+import m3d_bakegroups as BGR
+
+
+def bgg_plate(name, x=0.0, res=1, bump=0.0, size=2.0):
+    me = bpy.data.meshes.new(name)
+    bm = bmesh.new()
+    bmesh.ops.create_grid(bm, x_segments=res, y_segments=res, size=size / 2)
+    layer = bm.loops.layers.uv.new("UVMap")
+    for face in bm.faces:
+        for loop in face.loops:
+            loop[layer].uv = (loop.vert.co.x / size + 0.5, loop.vert.co.y / size + 0.5)
+    if bump:
+        for v in bm.verts:
+            v.co.z += bump * math.exp(-((v.co.x ** 2 + v.co.y ** 2) ** 0.5 * 3) ** 2)
+    bm.to_mesh(me)
+    bm.free()
+    ob = bpy.data.objects.new(name, me)
+    bpy.context.scene.collection.objects.link(ob)
+    ob.location = (x, 0, 0)
+    return ob
+
+
+def bgg_group_state(group):
+    return BGR.state_of(bpy.context.scene.m3d_bake_groups.get(group), group, *HPR.all_groups(bpy.context)[group])
+
+
+def bgg_dock_context():
+    dock = tex_areas()[1]
+    return dock, next(r for r in dock.regions if r.type == 'WINDOW')
+
+
+@step
+def bgg_to_modeling():
+    if bpy.context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
+step(wait_until(lambda: hp_in('MODEL') and bpy.context.mode == 'OBJECT', "Modeling for the bake group tests"))
+
+
+@step
+def bgg_scene():
+    for ob in list(bpy.data.objects):
+        bpy.data.objects.remove(ob)
+    bgg_plate("Sword_low")
+    bgg_plate("Sword_high", res=16, bump=0.15)
+    bgg_plate("Sword_high_bolts", res=4, bump=0.1, size=0.4).location.z = 0.2
+    bgg_plate("Shield_low", x=3.0)
+    bgg_plate("Shield_high", x=3.0, res=16, bump=0.2)
+    bgg_plate("Rock_low", x=6.0)
+    bpy.context.view_layer.update()
+    check(bpy.ops.m3d.hp_auto_pair() == {'FINISHED'}, "Auto-Pair by Name in the window")
+    for ob in bpy.data.objects:
+        if ob.m3d_pair.role == 'LOW':
+            s = ob.m3d_bake
+            s.resolution, s.margin, s.samples, s.extrusion = '64', 4, 4, 0.4
+            s.use_normal = s.use_ao = True
+            s.use_curvature = s.use_position = s.use_thickness = False
+    HPR.park_all(bpy.context)
+    for name in ("Sword_high", "Sword_high_bolts", "Shield_high"):
+        check(hp_ob(name).hide_get() and hp_ob(name).m3d_pair.parked, "(%s is parked)" % name)
+    for ob in bpy.data.objects:
+        ob.select_set(ob.name == "Sword_low")
+    bpy.context.view_layer.objects.active = hp_ob("Sword_low")
+    GIZMO["bgg_seen"] = []
+
+    def draws():
+        GIZMO["bgg_seen"] += [n for n in ("Sword_high", "Sword_high_bolts", "Shield_high") if not bpy.data.objects[n].hide_get()]
+    GIZMO["bgg_handle"] = bpy.types.SpaceView3D.draw_handler_add(draws, (), 'WINDOW', 'POST_PIXEL')
+    win, _area, region = view3d()
+    GIZMO["center"] = (region.x + region.width // 2, region.y + region.height // 2)
+    event('MOUSEMOVE', xy=GIZMO["center"])
+
+
+@step
+def bgg_f4():
+    hp_press('F4')
+
+
+step(wait_until(lambda: hp_in('TEXTURE') and bpy.context.mode == 'PAINT_TEXTURE', "F4 with a bake group"))
+
+
+@step
+def bgg_open_tab():
+    window().workspace.m3d_page_right = "tex_bake"
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def bgg_tab_check():
+    check(not tracebacks(), "Python error drawing the Bake tab with bake groups")
+    dock, region = bgg_dock_context()
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=dock, region=region):
+        check(m3d_workspace.active_page(bpy.context) == "tex_bake", "the dock shows the Bake page")
+        check(BGR.PROPERTIES_PT_m3d_tx_bake_groups.poll(bpy.context), "the Bake Groups panel is shown")
+        check(BGR.PROPERTIES_PT_m3d_tx_bake_group.poll(bpy.context), "...and the settings of the group of the active mesh")
+        check(not m3d_texture.PROPERTIES_PT_m3d_tx_bake_high.poll(bpy.context), "...and not the High Poly picker")
+    groups = HPR.all_groups(bpy.context)
+    check(list(groups) == ["Rock", "Shield", "Sword"] and [len(x) for x in groups["Sword"]] == [1, 2], "three groups, the sword with a floater: %s" % {g: [len(x) for x in v] for g, v in groups.items()})
+    check(bgg_group_state("Sword") == 'NONE', "nothing is baked yet")
+    check(bpy.context.scene.m3d_bake_groups.get("Sword") is not None, "the settings of the group were made for the panel (a moment after it was drawn)")
+
+
+@step
+def bgg_click_row():
+    dock, _region = bgg_dock_context()
+    press_ok("m3d.bg_select", _area=dock, group="Shield")
+
+
+@step
+def bgg_click_row_check():
+    low = hp_ob("Shield_low")
+    check(bpy.context.active_object == low and low.select_get() and not hp_ob("Sword_low").select_get(), "a click on the Shield row selects its low poly")
+    check(bpy.context.mode == 'PAINT_TEXTURE' and low.mode == 'TEXTURE_PAINT', "...and Texture Paint Mode goes with it (%s)" % bpy.context.mode)
+    check(hp_ob("Shield_high").hide_get(), "...the high poly stays hidden")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def bgg_bake_group():
+    GIZMO["bgg_engine"] = bpy.context.scene.render.engine
+    dock, _region = bgg_dock_context()
+    press_ok("m3d.bg_bake", _area=dock)
+
+
+@step
+def bgg_bake_group_check():
+    scene = bpy.context.scene
+    check(scene.render.engine == GIZMO["bgg_engine"], "Cycles switched back after Bake Group (%s)" % scene.render.engine)
+    check(bpy.context.mode == 'PAINT_TEXTURE' and bpy.context.active_object == hp_ob("Shield_low") and hp_ob("Shield_low").select_get(),
+          "Texture Paint Mode, the active mesh and the selection are back (%s)" % bpy.context.mode)
+    check(all(bpy.data.images.get("Shield_low_" + n) is not None for n in ("Normal", "AO")), "Shield's maps are baked")
+    check(bpy.data.images.get("Sword_low_Normal") is None, "...and only Shield's")
+    check(hp_ob("Shield_high").hide_get() and hp_ob("Shield_high").m3d_pair.parked and not hp_ob("Shield_high").select_get(), "the parked high poly is hidden again")
+    check(bgg_group_state("Shield") == 'BAKED' and bgg_group_state("Sword") == 'NONE', "Shield is baked, Sword is not")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def bgg_bake_all():
+    dock, _region = bgg_dock_context()
+    press_ok("m3d.bg_bake_all", _area=dock)
+
+
+@step
+def bgg_bake_all_check():
+    check(all(bgg_group_state(g) == 'BAKED' for g in ("Sword", "Shield", "Rock")), "Bake All: every group is baked: %s" % [bgg_group_state(g) for g in ("Sword", "Shield", "Rock")])
+    check(bpy.data.images.get("Rock_low_Normal") is not None, "...also the one that has no high poly (it bakes itself)")
+    normal = px(bpy.data.images["Sword_low_Normal"])[:, :3]
+    check(normal.std(axis=0).max() > 0.01, "the sword's normal map shows the detail of its high polys and the floater")
+    check(all(hp_ob(n).hide_get() and hp_ob(n).m3d_pair.parked for n in ("Sword_high", "Sword_high_bolts", "Shield_high")), "all the high polys are hidden again")
+    check(bpy.context.mode == 'PAINT_TEXTURE' and bpy.context.active_object == hp_ob("Shield_low"), "mode and active mesh are back")
+    check(not tracebacks(), "Python error while baking the groups")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def bgg_edit_hidden():
+    # A parked high poly is moved (a hidden mesh is in the real depsgraph too): its group is stale.
+    hp_ob("Sword_high").location.x += 0.2
+
+
+@step
+def bgg_stale_check():
+    check(bgg_group_state("Sword") == 'STALE' and bgg_group_state("Shield") == 'BAKED', "moving the parked high poly: Sword is stale, Shield is not (%s %s)" % (
+        bgg_group_state("Sword"), bgg_group_state("Shield")))
+    hp_ob("Sword_high").location.x -= 0.2
+    check(not tracebacks(), "Python error drawing the stale group")
+
+
+@step
+def bgg_never_drawn():
+    check(not GIZMO["bgg_seen"], "no parked high poly was ever drawn while it was shown for a bake: %s" % GIZMO["bgg_seen"])
+    # The check can see: a high poly shown on purpose is seen by the draw handler.
+    hp_ob("Shield_high").hide_set(False)
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def bgg_control():
+    seen = bool(GIZMO["bgg_seen"])
+    hp_ob("Shield_high").hide_set(True)
+    check(seen and "Shield_high" in GIZMO["bgg_seen"], "(control: a high poly that is shown is seen by the draw handler)")
+    bpy.types.SpaceView3D.draw_handler_remove(GIZMO.pop("bgg_handle"), 'WINDOW')
+
+
+# Going into and out of modes and painting are no edits; a sculpt stroke on a parked high poly is.
+def bgg_all(state):
+    return all(bgg_group_state(g) == state for g in ("Sword", "Shield", "Rock"))
+
+
+@step
+def bgg_rebake():
+    press_ok("m3d.bg_bake_all", _area=bgg_dock_context()[0])
+
+
+@step
+def bgg_modes_out():
+    check(bgg_all('BAKED'), "(all baked: %s)" % [bgg_group_state(g) for g in ("Sword", "Shield", "Rock")])
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
+step(wait_until(lambda: hp_in('MODEL') and bpy.context.mode == 'OBJECT', "Modeling after the bakes"))
+
+
+@step
+def bgg_modes_in():
+    bpy.ops.m3d.workspace(kind='TEXTURE')
+
+
+step(wait_until(lambda: hp_in('TEXTURE') and bpy.context.mode == 'PAINT_TEXTURE', "Texture again after the bakes"))
+
+
+@step
+def bgg_paint_setup():
+    check(bgg_all('BAKED'), "leaving and entering Texture Paint Mode does not make a group stale: %s" % [bgg_group_state(g) for g in ("Sword", "Shield", "Rock")])
+    dock, _region = bgg_dock_context()
+    bpy.context.scene.m3d_tex.resolution = '64'
+    press_ok("m3d.tex_add_material", _area=dock)
+    press_ok("m3d.tex_channel", _area=dock, channel='BASE_COLOR')
+    view, region = tex_view()
+    with bpy.context.temp_override(window=window(), area=view, region=region):
+        bpy.ops.view3d.view_all(center=True)
+
+
+@step
+def bgg_paint_aim():
+    ob = bpy.context.active_object
+    view, region = tex_view()
+    p = location_3d_to_region_2d(region, view.spaces.active.region_3d, ob.matrix_world.translation)
+    cx, cy = (int(region.x + p.x), int(region.y + p.y)) if p is not None else tex_xy()
+    GIZMO["bgg_stroke"] = [(cx - 20 + i * 4, cy) for i in range(11)]
+    GIZMO["bgg_image"] = m3d_texture.channel_slots(ob.active_material)['BASE_COLOR'][1]
+    GIZMO["bgg_before"] = px(GIZMO["bgg_image"]).copy()
+    event('MOUSEMOVE', xy=GIZMO["bgg_stroke"][0])
+
+
+@step
+def bgg_paint_press():
+    event('LEFTMOUSE', 'PRESS', GIZMO["bgg_stroke"][0])
+    for xy in GIZMO["bgg_stroke"][1:]:
+        event('MOUSEMOVE', xy=xy)
+
+
+@step
+def bgg_paint_release():
+    event('LEFTMOUSE', 'RELEASE', GIZMO["bgg_stroke"][-1])
+
+
+@step
+def bgg_paint_check():
+    changed = np.abs(px(GIZMO["bgg_image"]) - GIZMO["bgg_before"]).max()
+    check(changed > 0.05, "(the stroke painted: %.3f)" % changed)
+    check(bgg_all('BAKED'), "a texture paint stroke does not make a group stale: %s" % [bgg_group_state(g) for g in ("Sword", "Shield", "Rock")])
+    bpy.ops.m3d.workspace(kind='SCULPT')
+
+
+step(wait_until(lambda: hp_in('SCULPT') and bpy.context.mode == 'SCULPT', "Sculpt on the group of the active mesh"))
+
+
+@step
+def bgg_sculpt_view():
+    check(hp_ob("Shield_high").mode == 'SCULPT' and not hp_ob("Shield_high").hide_get(), "(the shield's high poly is sculpted)")
+    check(bgg_all('BAKED'), "going into Sculpt Mode on a parked high poly does not make a group stale: %s" % [bgg_group_state(g) for g in ("Sword", "Shield", "Rock")])
+    with hp_viewport():
+        bpy.ops.view3d.view_all(center=True)
+    _win, _area, region = view3d()
+    event('MOUSEMOVE', xy=(region.x + region.width // 2 - 60, region.y + region.height // 2))
+    GIZMO["bgg_pos"] = sxg_positions(hp_ob("Shield_high").data)
+
+
+step(sxg_event('MOUSEMOVE', 'NOTHING', -60))
+step(sxg_event('LEFTMOUSE', 'PRESS', -60))
+for _k in range(1, 9):
+    step(sxg_event('MOUSEMOVE', 'NOTHING', -60 + _k * 15))
+step(sxg_event('LEFTMOUSE', 'RELEASE', 60))
+
+
+@step
+def bgg_sculpt_check():
+    moved = int((np.abs(sxg_positions(hp_ob("Shield_high").data) - GIZMO["bgg_pos"]).max(axis=1) > 1e-6).sum())
+    check(moved > 5, "(the stroke moved %d vertices of the shield's high poly)" % moved)
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
+step(wait_until(lambda: hp_in('MODEL') and bpy.context.mode == 'OBJECT', "Modeling after the sculpt stroke"))
+
+
+@step
+def bgg_after_sculpt():
+    check(bgg_group_state("Shield") == 'STALE' and bgg_group_state("Sword") == 'BAKED' and bgg_group_state("Rock") == 'BAKED',
+          "leaving Sculpt Mode after a stroke: the shield is stale, the others are not: %s" % [bgg_group_state(g) for g in ("Sword", "Shield", "Rock")])
+    check(all(hp_ob(n).hide_get() for n in ("Sword_high", "Sword_high_bolts", "Shield_high")), "(the high polys are parked again)")
+    check(not tracebacks(), "Python error in the stale tests")
+
+
+@step
+def bgg_undo_setup():
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for entry in list(bpy.context.scene.m3d_bake_groups):
+        bpy.context.scene.m3d_bake_groups.remove(0)
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.ed.undo_push(message="Before Bake All")
+        res = bpy.ops.m3d.bg_bake_all('INVOKE_DEFAULT', True)
+    check(res == {'FINISHED'}, "Bake All with an undo step: %s" % res)
+    check(bgg_group_state("Sword") == 'BAKED', "(baked)")
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.ed.undo()
+
+
+@step
+def bgg_undo_check():
+    # (the panel makes the settings of the active group again, a moment after Undo, never as baked)
+    check(all(bgg_group_state(g) == 'NONE' for g in ("Sword", "Shield", "Rock")),
+          "one Undo takes the whole Bake All back: %s" % [(e.name, e.state) for e in bpy.context.scene.m3d_bake_groups])
+    check(all(hp_ob(n).hide_get() for n in ("Sword_high", "Sword_high_bolts", "Shield_high")), "...the high polys are still parked")
+    check(not tracebacks(), "Python error after Undo of Bake All")
+    for ob in list(bpy.data.objects):
+        bpy.data.objects.remove(ob)
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
 @step
 def finish():
     errors = "".join(stderr_tee.buf + sys.stdout.buf)

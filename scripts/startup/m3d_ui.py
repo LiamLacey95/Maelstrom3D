@@ -499,6 +499,8 @@ MENUS = {
     ]),
     "M3D_MT_bake": ("Bake", [
         op("Bake Maps", "m3d.tex_bake", 'RENDER_STILL'),
+        op("Bake All Groups", "m3d.bg_bake_all", 'RENDER_ANIMATION'),
+        op("Auto-Pair by Name", "m3d.hp_auto_pair", 'LINKED'),
         op("Use Selected as High Poly", "m3d.tex_bake_pick", 'EYEDROPPER'),
     ]),
     "M3D_MT_export": ("Export", [

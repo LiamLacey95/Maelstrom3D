@@ -13,12 +13,14 @@ the low poly. The hiding happens in the same step as the workspace switch (M3D_O
 millions of faces that is already hidden is not rebuilt for the new mode. Only meshes we hid ourselves (`parked`) are ever
 shown again, and meshes without a role are never touched.
 
-Also here: Create High Poly, Mark / Pair, Edit High Poly, the Channel Box row and the face limit of the UV and Texture
-workspaces (a huge mesh stays in Object Mode there).
+Also here: Create High Poly, Mark / Pair, Auto-Pair by Name, Rename to Suffixes, Make Pair (from the old High Poly picker
+of the Bake tab), Edit High Poly, the Channel Box row and the face limit of the UV and Texture workspaces (a huge mesh stays
+in Object Mode there).
 """
 
 import re
 import time
+from contextlib import contextmanager
 
 import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, PointerProperty, StringProperty
@@ -42,19 +44,26 @@ _ROLE_WORDS = {"low": 'LOW', "lp": 'LOW', "lo": 'LOW', "lowpoly": 'LOW',
                "high": 'HIGH', "hp": 'HIGH', "hi": 'HIGH', "highpoly": 'HIGH'}
 _WORD = re.compile(r"[^_.\- ]+")
 _TAIL = re.compile(r"\.\d+$")
+_SEPARATORS = re.compile(r"[_.\- ]+")
 
 
-def split_role(name):
-    """(base, role) of a mesh name: "Sword_high.001" -> ("Sword", 'HIGH'), "Sword_LP" -> ("Sword", 'LOW'). Blender's
-    .001 tail is ignored. Words after the role make the mesh a floater of that group: "Panel_high_bolts" -> ("Panel",
-    'HIGH'). A name without a role gives (name, None)."""
+def parse_name(name):
+    """(base, role, extra) of a mesh name: "Sword_high.001" -> ("Sword", 'HIGH', ""), "Sword_LP" -> ("Sword", 'LOW', ""). Blender's
+    .001 tail is ignored. Words after the role make the mesh a floater of that group: "Panel_high_bolts" -> ("Panel", 'HIGH',
+    "_bolts"). A name without a role gives (name, None, "")."""
     stem = _TAIL.sub("", name)
     words = list(_WORD.finditer(stem))
     hits = [i for i, w in enumerate(words) if i > 0 and w.group().lower() in _ROLE_WORDS]
     if not hits:
-        return name, None
+        return name, None, ""
     i = hits[-1] if hits[-1] == len(words) - 1 else hits[0]   # (a name ends with its role, unless it is a floater)
-    return stem[:words[i].start()].rstrip("_.- "), _ROLE_WORDS[words[i].group().lower()]
+    rest = stem[words[i].end():].strip("_.- ")
+    return stem[:words[i].start()].rstrip("_.- "), _ROLE_WORDS[words[i].group().lower()], ("_" + _SEPARATORS.sub("_", rest) if rest else "")
+
+
+def split_role(name):
+    """(base, role) of a mesh name, see `parse_name`."""
+    return parse_name(name)[:2]
 
 
 def format_count(n):
@@ -95,6 +104,25 @@ def pair_of(context, ob):
     if not is_mesh(ob) or ob.m3d_pair.role == 'NONE' or not ob.m3d_pair.group:
         return [], []
     return group_of(context, ob.m3d_pair.group)
+
+
+def grouped(ob):
+    """A mesh with a role and a group: what the Bake tab bakes from and onto."""
+    return is_mesh(ob) and ob.m3d_pair.role != 'NONE' and bool(ob.m3d_pair.group)
+
+
+def all_groups(context):
+    """{group: (low polys, high polys)} of the view layer, by group name. Meshes without a role or a group are in none."""
+    found = {}
+    for ob in context.view_layer.objects:
+        if ob.type == 'MESH':
+            p = ob.m3d_pair
+            if p.role != 'NONE' and p.group:
+                found.setdefault(p.group, ([], []))[p.role == 'HIGH'].append(ob)
+    for lows_highs in found.values():
+        for obs in lows_highs:
+            obs.sort(key=lambda o: o.name)
+    return dict(sorted(found.items(), key=lambda item: item[0].lower()))
 
 
 def set_role(ob, role, group=None):
@@ -165,6 +193,25 @@ def put_away(ob):
     park(ob)
 
 
+_quiet = [0]   # > 0 while something changes the meshes without editing them: the stale marks of the bake groups ignore it
+
+
+@contextmanager
+def quiet(context):
+    """Changes that are no edit of the meshes (a bake showing and hiding them and swapping materials, new names, a checker
+    map, an export's temporary material) are made inside this: the bake groups do not go stale from them. The depsgraph is
+    brought up to date before it ends, while the marks are off (Blender reports a change of material slots, of visibility
+    and the like as an edit)."""
+    _quiet[0] += 1
+    try:
+        yield
+    finally:
+        try:
+            context.view_layer.update()
+        finally:
+            _quiet[0] -= 1
+
+
 _last = {}   # group -> name of the high poly sculpted last
 _state = {"ws": None, "pending": None, "group": ""}   # workspace parking was done for, a switch in progress, group of Sculpt
 
@@ -227,11 +274,7 @@ def sculpt_soon(name):
 def park_all(context):
     """Hide every high poly that has a low poly. A high poly that was active hands over to its low poly."""
     vl = context.view_layer
-    groups = {}
-    for ob in vl.objects:
-        if ob.type == 'MESH' and ob.m3d_pair.role != 'NONE' and ob.m3d_pair.group:
-            groups.setdefault(ob.m3d_pair.group, ([], []))[ob.m3d_pair.role == 'HIGH'].append(ob)
-    for lows, highs in groups.values():
+    for lows, highs in all_groups(context).values():
         if lows:
             for high in highs:
                 park(high)
@@ -319,6 +362,7 @@ def _load_post(*_args):
     _state.update(ws=None, pending=None, group="")
     _last.clear()
     _holds.clear()
+    _quiet[0] = 0
 
 
 # -----------------------------------------------------------------------------
@@ -621,6 +665,150 @@ class M3D_OT_hp_pair(Operator):
         return {'FINISHED'}
 
 
+SUFFIX_STYLES = {'LOW_HIGH': ("low", "high"), 'LP_HP': ("lp", "hp"), 'LO_HI': ("lo", "hi")}   # style -> (low word, high word)
+
+
+def auto_pair(context):
+    """Roles and groups for the meshes of the view layer that have none and are named with a suffix (`parse_name`). Meshes
+    that differ only in case belong together, and join a group that exists. Returns the groups that got meshes and, for
+    the meshes that found no partner, the names ({group: (lows, highs)}, [names without a low poly], [names without a
+    high poly])."""
+    spelling = {g.lower(): g for g in all_groups(context)}   # groups in use, by lower case
+    found = {}   # lower case base -> [(mesh, base, role)]
+    for ob in context.view_layer.objects:
+        if ob.type == 'MESH' and ob.library is None and ob.m3d_pair.role == 'NONE':
+            base, role = split_role(ob.name)
+            if role:
+                found.setdefault(base.lower(), []).append((ob, base, role))
+    names = []
+    for key, parts in found.items():
+        group = spelling.get(key) or next((b for _o, b, r in parts if r == 'LOW'), parts[0][1])
+        for ob, _base, role in parts:
+            set_role(ob, role, group)
+        names.append(group)
+    every = all_groups(context)
+    touched = {g: every[g] for g in names}
+    no_low = [h.name for lows, highs in touched.values() if not lows for h in highs]
+    no_high = [low.name for lows, highs in touched.values() if not highs for low in lows]
+    return touched, no_low, no_high
+
+
+def plural(n, word):
+    return "%d %s%s" % (n, word, "" if n == 1 else "es" if word.endswith("sh") else "s")
+
+
+def names_note(label, names, limit=4):
+    return "%s: %s%s" % (label, ", ".join(names[:limit]), "" if len(names) <= limit else " and %d more" % (len(names) - limit))
+
+
+class M3D_OT_hp_auto_pair(Operator):
+    """Give a role and a group to the meshes of the scene whose names end in _low / _high (also _lp / _hp, _lo / _hi,
+    _lowpoly / _highpoly, in any case): Sword_low and Sword_high become the group Sword. Meshes that already have a role are
+    left alone"""
+    bl_idname = "m3d.hp_auto_pair"
+    bl_label = "Auto-Pair by Name"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        touched, no_low, no_high = auto_pair(context)
+        if not touched:
+            self.report({'WARNING'}, "No mesh without a role has a name ending in _low or _high")
+            return {'CANCELLED'}
+        paired = ["%s (%d low, %d high)" % (g, len(lows), len(highs)) for g, (lows, highs) in touched.items() if lows and highs]
+        self.report({'INFO'}, "Paired " + (names_note(plural(len(paired), "group"), paired) if paired else "nothing"))
+        notes = [names_note(label, names) for label, names in (("No low poly for", no_low), ("No high poly for", no_high)) if names]
+        if notes:
+            self.report({'WARNING'}, "; ".join(notes))
+        return {'FINISHED'}
+
+
+def renamed(context, style):
+    """[(mesh, new name)] that give the meshes of every group the suffixes of `style`: Sword_low, Sword_high, and the words
+    of a floater stay (Sword_high_bolts). A name that is taken gets _2, _3 ..."""
+    low_word, high_word = SUFFIX_STYLES[style]
+    taken = set(bpy.data.objects.keys())
+    out = []
+    for group, (lows, highs) in all_groups(context).items():
+        for ob in (*lows, *highs):
+            extra = parse_name(ob.name)[2]
+            word = low_word if ob.m3d_pair.role == 'LOW' else high_word
+            wanted = new = "%s_%s%s" % (group, word, extra)
+            n = 1
+            while new in taken and new != ob.name:
+                n += 1
+                new = "%s_%d" % (wanted, n)
+            if new != ob.name:
+                taken.discard(ob.name)
+                taken.add(new)
+                out.append((ob, new))
+    return out
+
+
+class M3D_OT_hp_rename(Operator):
+    """Rename the meshes of every group to one style of suffixes (Sword_low, Sword_high, Sword_high_bolts), so that other
+    tools find the pairs by name. The baked maps of a renamed low poly keep up"""
+    bl_idname = "m3d.hp_rename"
+    bl_label = "Rename to Suffixes"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    style: EnumProperty(name="Style", default='LOW_HIGH', items=(
+        ('LOW_HIGH', "_low / _high", "Sword_low, Sword_high"),
+        ('LP_HP', "_lp / _hp", "Sword_lp, Sword_hp"),
+        ('LO_HI', "_lo / _hi", "Sword_lo, Sword_hi")))
+
+    @classmethod
+    def poll(cls, context):
+        return bool(all_groups(context))
+
+    def execute(self, context):
+        import m3d_bakegroups
+        import m3d_texture
+        todo = [(ob, ob.name, new) for ob, new in renamed(context, self.style)]
+        before = {g: m3d_bakegroups.signature(*members) for g, members in all_groups(context).items()}
+        with quiet(context):   # (new names are no change of the meshes: the groups don't go stale)
+            for ob, old, new in todo:
+                ob.name = new
+                if ob.data.name == old:
+                    ob.data.name = new
+        for ob, old, new in todo:   # (after all the names are final: Blender may have changed one)
+            if ob.m3d_pair.role == 'LOW':
+                m3d_texture.rename_maps(ob, old, ob.name)
+        after = all_groups(context)
+        for entry in context.scene.m3d_bake_groups:   # (a baked group stays baked under its new names)
+            if entry.name in after and entry.members == before.get(entry.name):
+                entry.members = m3d_bakegroups.signature(*after[entry.name])
+        self.report({'INFO'}, "Renamed %s" % plural(len(todo), "mesh") if todo else "The names already have these suffixes")
+        return {'FINISHED'}
+
+
+def unique_group(context, base):
+    """`base`, or base_2, base_3 ... when a group of that name exists."""
+    groups = all_groups(context)
+    return next(g for g in (base, *("%s_%d" % (base, n) for n in range(2, 10000))) if g not in groups)
+
+
+class M3D_OT_hp_make_pair(Operator):
+    """Turn the High Poly picker of this mesh into a pair: the mesh becomes the low poly, the picked mesh its high poly"""
+    bl_idname = "m3d.hp_make_pair"
+    bl_label = "Make Pair"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.active_object
+        return is_mesh(ob) and ob.m3d_pair.role == 'NONE' and ob.m3d_bake.high is not None
+
+    def execute(self, context):
+        low = context.active_object
+        high = low.m3d_bake.high
+        group = unique_group(context, split_role(low.name)[0])
+        set_role(low, 'LOW', group)
+        set_role(high, 'HIGH', group)
+        low.m3d_bake.high = None
+        self.report({'INFO'}, "%s is the low poly of %s (group %s)" % (low.name, high.name, group))
+        return {'FINISHED'}
+
+
 # -----------------------------------------------------------------------------
 # Show Low Poly (Sculpt Status Line)
 
@@ -683,6 +871,8 @@ class M3D_MT_hplp(Menu):
         layout.operator("m3d.hp_mark", text="Mark as Low Poly").role = 'LOW'
         layout.operator("m3d.hp_mark", text="Clear Role").role = 'NONE'
         layout.operator("m3d.hp_pair", icon='LINKED')
+        layout.operator("m3d.hp_auto_pair", icon='LINKED')
+        layout.operator_menu_enum("m3d.hp_rename", "style", text="Rename to Suffixes")
 
 
 classes = (
@@ -692,6 +882,9 @@ classes = (
     M3D_OT_hp_park,
     M3D_OT_hp_mark,
     M3D_OT_hp_pair,
+    M3D_OT_hp_auto_pair,
+    M3D_OT_hp_rename,
+    M3D_OT_hp_make_pair,
     M3D_MT_hplp,
 )
 

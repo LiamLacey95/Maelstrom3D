@@ -10,8 +10,8 @@ def check(cond, msg):
 # Icons used in m3d_mode exist.
 import re, m3d_mode
 icons = set(bpy.types.UILayout.bl_rna.functions['operator'].parameters['icon'].enum_items.keys())
-import m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_sculpt, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv
-src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_sculpt, m3d_texture, _maya_ui, _maya_uv))
+import m3d_bakegroups, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_sculpt, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv
+src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_bakegroups, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_sculpt, m3d_texture, _maya_ui, _maya_uv))
 for ic in set(re.findall(r"icon='([A-Z_0-9]+)'", src)):
     check(ic in icons, "missing icon " + ic)
 
@@ -6712,8 +6712,10 @@ PR.M3D_MT_hplp.draw(type("Inst", (), {"layout": Rec(hp_log)})(), hp_ctx)
 check_calls("High / Low Poly menu", hp_log)
 hp_ops = [(r._args[0], r.values().get("role"), r.values().get("idname")) for r in hp_log if r._kind == "operator"]
 check(hp_ops == [("m3d.tool", None, "m3d.hp_create"), ("m3d.hp_edit", None, None), ("m3d.hp_park", None, None),
-                 ("m3d.hp_mark", 'HIGH', None), ("m3d.hp_mark", 'LOW', None), ("m3d.hp_mark", 'NONE', None), ("m3d.hp_pair", None, None)],
-      "the submenu: Create, Edit, Park, Mark as High / Low, Clear Role, Pair Selected: %s" % hp_ops)
+                 ("m3d.hp_mark", 'HIGH', None), ("m3d.hp_mark", 'LOW', None), ("m3d.hp_mark", 'NONE', None), ("m3d.hp_pair", None, None),
+                 ("m3d.hp_auto_pair", None, None)],
+      "the submenu: Create, Edit, Park, Mark as High / Low, Clear Role, Pair Selected, Auto-Pair by Name: %s" % hp_ops)
+check(any(r._kind == "operator_menu_enum" and r._args[0] == "m3d.hp_rename" for r in hp_log), "...and Rename to Suffixes")
 hp_labels = [r._kw.get("text") or "" for r in hp_log if r._kind == "operator"] + [
     cls.bl_label + " " + (cls.__doc__ or "") + " " + " ".join(str(getattr(p, "description", "")) for p in cls.bl_rna.properties)
     for cls in PR.classes if hasattr(cls, "bl_label")] + [str(p.description) for p in PR.M3D_Pair.bl_rna.properties]
@@ -6916,6 +6918,115 @@ bpy.ops.wm.save_homefile()
 check(os.path.exists(startup_), "Save Layouts as Default wrote " + startup_)
 os.remove(startup_)
 
+# ----------------------------------------------------------------------------------------------------
+# Bake groups (m3d_bakegroups.py, the bake pipeline of m3d_texture.py, Auto-Pair / Rename / Make Pair of m3d_pair.py): names,
+# settings, isolated bakes, texture sets, stale flags, flags restored after an error, Undo.
+import bmesh, time
+from mathutils import Matrix
+import m3d_bakegroups as BG
+BG._stale.clear()
+
+for name, want in (("Panel_high_bolts", ("Panel", 'HIGH', "_bolts")), ("Panel_hp_bolts_2.003", ("Panel", 'HIGH', "_bolts_2")),
+                   ("Panel.high-bolts", ("Panel", 'HIGH', "_bolts")), ("Sword_high", ("Sword", 'HIGH', "")),
+                   ("Sword_LP", ("Sword", 'LOW', "")), ("Cube.001", ("Cube.001", None, ""))):
+    check(PR.parse_name(name) == want, "parse_name(%r) = %r, wanted %r" % (name, PR.parse_name(name), want))
+
+
+def bg_plate(name, x=0.0, z=0.0, res=1, bump=0.0, size=2.0, uv=(0.0, 0.0, 1.0, 1.0), height=0.0, role='NONE', group=""):
+    """A grid of `size` at (x, 0, z) with UVs in the box `uv`, a round bump of height `bump` in the middle, or (`height`) a box
+    that tall instead of a plane."""
+    me = bpy.data.meshes.new(name)
+    bm = bmesh.new()
+    if height:
+        bmesh.ops.create_cube(bm, size=1.0, matrix=Matrix.LocRotScale(None, None, (size, 2.0, height)))
+    else:
+        bmesh.ops.create_grid(bm, x_segments=res, y_segments=res, size=size / 2)
+    layer = bm.loops.layers.uv.new("UVMap")
+    ext_x, ext_y = max(abs(v.co.x) for v in bm.verts), max(abs(v.co.y) for v in bm.verts)
+    for face in bm.faces:
+        for loop in face.loops:
+            c = loop.vert.co
+            loop[layer].uv = (uv[0] + (c.x / (2 * ext_x) + 0.5) * (uv[2] - uv[0]), uv[1] + (c.y / (2 * ext_y) + 0.5) * (uv[3] - uv[1]))
+    if bump:
+        for v in bm.verts:
+            v.co.z += bump * float(np.exp(-((v.co.x ** 2 + v.co.y ** 2) ** 0.5 * 3) ** 2))
+    bm.to_mesh(me)
+    bm.free()
+    ob = bpy.data.objects.new(name, me)
+    bpy.context.scene.collection.objects.link(ob)
+    ob.location = (x, 0, z)
+    ob.m3d_pair.role, ob.m3d_pair.group = role, group
+    bpy.context.view_layer.update()
+    return ob
+
+
+def bg_small(ob):
+    s = ob.m3d_bake
+    s.resolution, s.margin, s.samples, s.extrusion = '64', 4, 8, 0.4
+    s.use_normal = s.use_ao = True
+    s.use_curvature = s.use_position = s.use_thickness = False
+
+
+def bg_state(group):
+    return BG.state_of(bpy.context.scene.m3d_bake_groups.get(group), group, *PR.all_groups(bpy.context)[group])
+
+
+def bg_flags():
+    """Everything a bake touches and has to put back."""
+    vl = bpy.context.view_layer
+    return ({o.name: (o.hide_get(), o.hide_viewport, o.hide_render, o.hide_select, o.select_get(), o.m3d_pair.parked)
+             for o in bpy.data.objects}, vl.objects.active.name if vl.objects.active else None, bpy.context.scene.render.engine,
+            bpy.context.scene.cycles.samples, bpy.context.mode, PR._quiet[0], len([m for m in bpy.data.materials if m.name.startswith("m3dBake")]))
+
+
+def bg_px(name):
+    return read_image(bpy.data.images[name])
+
+
+def read_image(image):
+    px = np.empty(len(image.pixels), np.float32)
+    image.pixels.foreach_get(px)
+    return px.reshape(image.size[1], image.size[0], 4)
+
+
+def bg_no_uv(ob):
+    for layer in list(ob.data.uv_layers):
+        ob.data.uv_layers.remove(layer)
+
+
+def bg_try(op, *args, **kw):
+    """The result of an operator, or the RuntimeError it raises when it reports an error."""
+    try:
+        return op(*args, **kw)
+    except RuntimeError as err:
+        return err
+
+
+# (the Undo test is here, before the last file load of the suite: Blender 5.2 crashes in a memfile Undo that follows it,
+# with or without bake groups)
+# --- Undo: Bake All is one step
+clean_scene()
+for entry in list(bpy.context.scene.m3d_bake_groups):
+    bpy.context.scene.m3d_bake_groups.remove(0)
+for name in ("Ua", "Ub"):
+    bg_plate(name + "_low", x=4.0 * (name == "Ub"))
+    bg_plate(name + "_high", x=4.0 * (name == "Ub"), res=8, bump=0.1)
+bpy.ops.m3d.hp_auto_pair()
+for name in ("Ua_low", "Ub_low"):
+    bg_small(bpy.data.objects[name])
+bpy.context.view_layer.update()
+bpy.ops.ed.undo_push(message="Before Bake All")
+t0 = time.perf_counter()
+check(bpy.ops.m3d.bg_bake_all('EXEC_DEFAULT', True) == {'FINISHED'}, "Bake All with undo steps")
+bake_all_secs = time.perf_counter() - t0
+check(bg_state("Ua") == 'BAKED' and bg_state("Ub") == 'BAKED', "(both baked)")
+bpy.ops.ed.undo()
+check(bpy.context.scene.m3d_bake_groups.get("Ua") is None and bpy.context.scene.m3d_bake_groups.get("Ub") is None
+      and bpy.data.objects["Ua_low"].m3d_pair.role == 'LOW', "one Undo takes both groups back: %s" % [(e.name, e.state) for e in bpy.context.scene.m3d_bake_groups])
+bpy.ops.ed.redo()
+check(bpy.context.scene.m3d_bake_groups["Ua"].state == 'BAKED' and bpy.context.scene.m3d_bake_groups["Ub"].state == 'BAKED', "...and Redo does them again")
+print("BAKE GROUPS: Bake All of 2 small groups (64 px, Normal + AO): %.2f s" % bake_all_secs)
+
 # A file saved with a parked high poly opens with it parked (it is just hidden, so a stock Blender shows the low poly too).
 hp_o = hp_scene(("Saved_low", 'LOW', "Saved"), ("Saved_high", 'HIGH', "Saved"), ("Saved_other_high", 'HIGH', "Saved"))
 hp_select(hp_o["Saved_low"])
@@ -6930,6 +7041,584 @@ check(hp_o["Saved_high"].hide_get() and hp_o["Saved_high"].m3d_pair.parked and h
       and not hp_o["Saved_low"].hide_get() and hp_o["Saved_low"].m3d_pair.role == 'LOW', "a saved file keeps the high poly parked")
 bpy.ops.m3d.hp_edit()
 check(not hp_o["Saved_high"].hide_get() and not hp_o["Saved_high"].m3d_pair.parked, "...and Edit High Poly still shows it")
+
+# ----------------------------------------------------------------------------------------------------
+# Bake groups, continued (the tests that open files)
+# --- Auto-Pair by Name: suffixes, case, floaters, odd names, what is left alone
+clean_scene()
+for name in ("Sword_low", "Sword_high", "Sword_high_bolts", "Shield_LP", "shield_hp", "Panel_lowpoly", "Panel_highpoly_rim",
+             "Lone_high", "Pot_low", "Hi_Res", "Plain", "Cube.001", "Left_Hi_Arm_lo", "Left_Hi_Arm_hi"):
+    bg_plate(name)
+mine = bg_plate("Old_low", role='HIGH', group="Elsewhere")   # (already has a role: left alone)
+empty = bpy.data.objects.new("Empty_low", None)
+bpy.context.scene.collection.objects.link(empty)
+bpy.context.view_layer.update()
+check(bpy.ops.m3d.hp_auto_pair() == {'FINISHED'}, "Auto-Pair by Name runs")
+bg_o = bpy.data.objects
+roles = {n: (o.m3d_pair.role, o.m3d_pair.group) for n, o in bg_o.items()}
+check(roles["Sword_low"] == ('LOW', "Sword") and roles["Sword_high"] == ('HIGH', "Sword") and roles["Sword_high_bolts"] == ('HIGH', "Sword"),
+      "Sword: a low poly, a high poly and a floater: %s" % [roles[n] for n in ("Sword_low", "Sword_high", "Sword_high_bolts")])
+check(roles["Shield_LP"] == ('LOW', "Shield") and roles["shield_hp"] == ('HIGH', "Shield"), "case is ignored, the low poly's spelling wins: %s" % [roles["Shield_LP"], roles["shield_hp"]])
+check(roles["Panel_lowpoly"] == ('LOW', "Panel") and roles["Panel_highpoly_rim"] == ('HIGH', "Panel"), "_lowpoly / _highpoly and a floater: %s" % [roles["Panel_lowpoly"], roles["Panel_highpoly_rim"]])
+check(roles["Left_Hi_Arm_lo"] == ('LOW', "Left_Hi_Arm") and roles["Left_Hi_Arm_hi"] == ('HIGH', "Left_Hi_Arm"), "odd names: a Hi inside the name: %s" % roles["Left_Hi_Arm_lo"][1])
+check(roles["Lone_high"] == ('HIGH', "Lone") and roles["Pot_low"] == ('LOW', "Pot"), "a mesh without a partner still gets its role")
+check(all(roles[n] == ('NONE', "") for n in ("Hi_Res", "Plain", "Cube.001", "Empty_low")), "names without a suffix and non-meshes are left alone")
+check(roles["Old_low"] == ('HIGH', "Elsewhere"), "a mesh that has a role keeps it")
+check(bpy.ops.m3d.hp_auto_pair() == {'CANCELLED'}, "a second run finds nothing new")
+bg_plate("SWORD_HP_pommel")
+check(bpy.ops.m3d.hp_auto_pair() == {'FINISHED'} and bg_o["SWORD_HP_pommel"].m3d_pair.group == "Sword", "a new mesh joins the group that exists, whatever its case")
+every = PR.all_groups(bpy.context)
+check(list(every) == sorted(every, key=str.lower) and [o.name for o in every["Sword"][1]] == ["SWORD_HP_pommel", "Sword_high", "Sword_high_bolts"],
+      "all_groups: by name, high polys sorted: %s" % [o.name for o in every["Sword"][1]])
+
+# --- Rename to Suffixes
+check(bpy.ops.m3d.hp_rename(style='LP_HP') == {'FINISHED'}, "Rename to Suffixes runs")
+names = sorted(o.name for o in bpy.data.objects if o.m3d_pair.role != 'NONE')
+check(names == sorted(["Sword_lp", "Sword_hp", "Sword_hp_bolts", "Sword_hp_pommel", "Shield_lp", "Shield_hp", "Panel_lp", "Panel_hp_rim", "Lone_hp",
+                       "Pot_lp", "Left_Hi_Arm_lp", "Left_Hi_Arm_hp", "Elsewhere_hp"]), "_lp / _hp names, floaters keep their words: %s" % names)
+check(bpy.data.objects["Sword_lp"].data.name == "Sword_lp", "the mesh data follows the object name")
+check(bpy.ops.m3d.hp_rename(style='LOW_HIGH') == {'FINISHED'} and bpy.data.objects.get("Sword_low") is not None
+      and bpy.data.objects.get("Sword_high_bolts") is not None and bpy.data.objects.get("Panel_high_rim") is not None, "...and back to _low / _high")
+bg_plate("Sword_hp_x", role='HIGH', group="Sword")
+bg_plate("Sword_hp_y", role='HIGH', group="Sword")
+bpy.data.objects["Sword_hp_x"].name = "bolts"
+bpy.data.objects["Sword_hp_y"].name = "bolts.001"
+bpy.ops.m3d.hp_rename(style='LO_HI')
+check(bpy.data.objects.get("Sword_hi") is not None and bpy.data.objects.get("Sword_hi_2") is not None and bpy.data.objects.get("Sword_lo") is not None,
+      "plain names take the suffix, a name that is taken gets _2: %s" % sorted(o.name for o in bpy.data.objects if o.name.startswith("Sword")))
+check(PR.split_role("Sword_hi_2") == ("Sword", 'HIGH') and PR.split_role("Sword_hi_bolts") == ("Sword", 'HIGH'), "...which are still read as one group")
+
+# --- Group settings: made on first use from the low poly's Bake tab values, then of their own
+clean_scene()
+for entry in list(bpy.context.scene.m3d_bake_groups):
+    bpy.context.scene.m3d_bake_groups.remove(0)
+gl = bg_plate("Gs_low", role='LOW', group="Gs")
+gh = bg_plate("Gs_high", role='HIGH', group="Gs")
+gl.m3d_bake.extrusion, gl.m3d_bake.ray_distance = 0.07, 0.4
+bpy.context.view_layer.update()
+check(bpy.context.scene.m3d_bake_groups.get("Gs") is None, "no settings until they are needed")
+e = BG.settings_of(bpy.context, "Gs")
+check(e.name == "Gs" and abs(e.extrusion - 0.07) < 1e-6 and abs(e.ray_distance - 0.4) < 1e-6 and e.ao_scope == 'GROUP' and e.cage is None
+      and e.state == 'NONE', "defaults come from the low poly: %s %s" % (e.extrusion, e.ray_distance))
+gl.m3d_bake.extrusion = 0.5
+check(BG.settings_of(bpy.context, "Gs") == e and abs(e.extrusion - 0.07) < 1e-6 and len(bpy.context.scene.m3d_bake_groups) == 1,
+      "the group keeps its own values afterwards")
+e.state = 'BAKED'
+e.extrusion = 0.1
+check(e.state == 'STALE', "changing a setting of a baked group makes it stale")
+e.state = 'NONE'
+e.extrusion = 0.2
+check(e.state == 'NONE', "...a group that was never baked stays as it is")
+
+# --- Make Pair: the old High Poly picker becomes roles
+clean_scene()
+mp_low, mp_high = bg_plate("Axe"), bg_plate("Axe_scan")
+mp_low.m3d_bake.high = mp_high
+bpy.context.view_layer.objects.active = mp_low
+check(bpy.ops.m3d.hp_make_pair.poll() and bpy.ops.m3d.hp_make_pair() == {'FINISHED'}, "Make Pair runs on a mesh with a High Poly picked")
+check(mp_low.m3d_pair.role == 'LOW' and mp_high.m3d_pair.role == 'HIGH' and mp_low.m3d_pair.group == mp_high.m3d_pair.group == "Axe"
+      and mp_low.m3d_bake.high is None, "the pointer is now a low poly, a high poly and a group (and is cleared)")
+check(not bpy.ops.m3d.hp_make_pair.poll(), "Make Pair is for meshes without a role that have a High Poly")
+mp_other = bg_plate("Axe_b")
+mp_other.m3d_bake.high = bg_plate("Axe_b_scan")
+bg_plate("Elsewhere", role='LOW', group="Axe_b")
+bpy.context.view_layer.objects.active = mp_other
+bpy.ops.m3d.hp_make_pair()
+check(mp_other.m3d_pair.group == "Axe_b_2", "a group name that is taken gets a number: %s" % mp_other.m3d_pair.group)
+check(T.ready(bpy.context, 'BAKE') and not T.needed(bpy.context, 'BAKE'), "the Bake tab of a grouped mesh does not ask for UVs")
+bg_no_uv(mp_high)
+bpy.context.view_layer.objects.active = mp_high
+check(T.needed(bpy.context, 'BAKE') == [], "...not even on a high poly without UVs")
+bpy.context.view_layer.objects.active = bg_plate("Plain_noUV")
+bg_no_uv(bpy.context.active_object)
+check(T.needed(bpy.context, 'BAKE') == ['UV'], "a mesh without a role still does: %s" % T.needed(bpy.context, 'BAKE'))
+
+# --- Bake Group: maps, flags put back, state
+clean_scene()
+for entry in list(bpy.context.scene.m3d_bake_groups):
+    bpy.context.scene.m3d_bake_groups.remove(0)
+bpy.ops.mesh.primitive_cube_add()   # (something else in the scene: selected and active before the bake)
+other = bpy.context.active_object
+other.name = "Other"
+sw_low = bg_plate("Sword_low")
+sw_high = bg_plate("Sword_high", res=24, bump=0.15)
+sw_bolt = bg_plate("Sword_high_bolts", z=0.2, res=4, size=0.4, bump=0.1)
+bpy.ops.m3d.hp_auto_pair()
+bg_small(sw_low)
+bpy.context.view_layer.objects.active = sw_low
+sw_low.select_set(True)
+bpy.context.scene.render.engine = 'BLENDER_EEVEE'
+bpy.context.scene.cycles.samples = 77
+flags = bg_flags()
+check(bpy.ops.m3d.bg_bake.poll(), "Bake Group is available on a mesh of a group")
+check(bpy.ops.m3d.bg_bake() == {'FINISHED'}, "Bake Group runs")
+check(bg_flags() == flags, "engine, samples, selection, visibility and render flags are put back: %s" % (bg_flags(),))
+for label in ("Normal", "AO"):
+    img = bpy.data.images.get("Sword_low_" + label)
+    check(img is not None and tuple(img.size) == (64, 64) and img.colorspace_settings.name == 'Non-Color' and img.use_fake_user
+          and img.get("m3d_map") == 64, "Sword_low_%s is baked at 64 px" % label)
+check(bg_px("Sword_low_Normal")[:, :, :3].std(axis=(0, 1)).max() > 0.01, "the normal map shows the detail of the high polys")
+check(sw_low.m3d_bake.baked == "Sword_low_Normal|Sword_low_AO", "the Bake tab lists the images: %s" % sw_low.m3d_bake.baked)
+check(bg_state("Sword") == 'BAKED' and "Sword" not in BG._stale, "the group is baked, and the bake itself did not make it stale (%s)" % BG._stale)
+# The floater counts: the normal map without it is different where it lies
+normal_with = bg_px("Sword_low_Normal").copy()
+sw_bolt.hide_viewport = True
+check(bpy.ops.m3d.bg_bake() == {'FINISHED'} and sw_bolt.hide_viewport, "a floater that is hidden is still baked from (and hidden again)")
+sw_bolt.hide_viewport = False
+sw_bolt.m3d_pair.role = 'NONE'
+bpy.ops.m3d.bg_bake()
+normal_without = bg_px("Sword_low_Normal")
+check(float(np.abs(normal_with - normal_without).max()) > 0.02, "...it adds to the normal map (largest difference %.3f)" % float(np.abs(normal_with - normal_without).max()))
+sw_bolt.m3d_pair.role, sw_bolt.m3d_pair.group = 'HIGH', "Sword"
+# tex_bake (the shelf and the menu) bakes the group of the active mesh
+bg_px("Sword_low_Normal")
+bpy.context.scene.render.engine = 'BLENDER_EEVEE'
+check(bpy.ops.m3d.tex_bake() == {'FINISHED'} and bpy.data.images["Sword_low_Normal"].get("m3d_stamp"), "Bake from the shelf bakes the group")
+bpy.context.view_layer.objects.active = sw_high
+check(bpy.ops.m3d.tex_bake.poll() and bpy.ops.m3d.bg_bake.poll(), "...also with the high poly active")
+
+# --- Isolation: a second group touching the first one does not change its maps; Whole Model lets it shadow
+clean_scene()
+for entry in list(bpy.context.scene.m3d_bake_groups):
+    bpy.context.scene.m3d_bake_groups.remove(0)
+iso_a_low = bg_plate("A_low", role='LOW', group="A")
+iso_a_high = bg_plate("A_high", res=24, bump=0.15, role='HIGH', group="A")
+iso_b_high = bg_plate("B_high", x=1.25, z=0.25, size=0.5, height=0.5, role='HIGH', group="B")   # a wall: it touches the edge of A
+iso_b_low = bg_plate("B_low", x=1.25, z=0.5, size=0.5, role='LOW', group="B")
+bg_small(iso_a_low)
+iso_a_low.m3d_bake.samples = 16
+bg_small(iso_b_low)
+if bpy.context.scene.world is not None:
+    bpy.context.scene.world.light_settings.distance = 1.0
+bpy.context.view_layer.objects.active = iso_a_low
+iso_a_low.select_set(True)
+BG.settings_of(bpy.context, "A").extrusion = 0.4
+BG.settings_of(bpy.context, "B")
+
+
+def iso_bake(group="A"):
+    check(bpy.ops.m3d.bg_bake(group=group) == {'FINISHED'}, "Bake Group %s" % group)
+    return bg_px("A_low_Normal").copy(), bg_px("A_low_AO").copy()
+
+
+flags = bg_flags()
+near_normal, near_ao = iso_bake()
+check(bg_flags() == flags, "the neighbours' render flags are put back (B not hidden for good): %s" % [f for f in bg_flags()[0].items() if f[1][2]])
+for o in (iso_b_low, iso_b_high):
+    o.location.x += 100.0
+bpy.context.view_layer.update()
+far_normal, far_ao = iso_bake()
+check(float(np.abs(near_normal - far_normal).max()) < 1e-4, "A's normal map with B touching equals the one with B far away (%.2g)" % float(np.abs(near_normal - far_normal).max()))
+check(float(np.abs(near_ao - far_ao).max()) < 1e-3, "A's AO with B touching equals the one with B far away: B does not shadow it (%.2g)" % float(np.abs(near_ao - far_ao).max()))
+for o in (iso_b_low, iso_b_high):
+    o.location.x -= 100.0
+# The test has teeth: without the isolation B shadows A.
+with PR.quiet(bpy.context), T.bake_scene(bpy.context, iso_a_low, [iso_a_high]):
+    T.bake_maps(bpy.context, iso_a_low, [iso_a_high], iso_a_low.m3d_bake, [T.BAKE_MAPS[1]], name="Control", extrusion=0.4, normalise=False)
+control = bg_px("Control_AO")
+check(float(np.abs(control - far_ao).max()) > 0.1, "(control: B visible does shadow A, largest difference %.2f)" % float(np.abs(control - far_ao).max()))
+# Whole Model: A's AO is darker where B stands (its right edge)
+bpy.context.view_layer.update()
+BG.settings_of(bpy.context, "A").ao_scope = 'MODEL'
+whole_normal, whole_ao = iso_bake()
+edge = (slice(None), slice(48, 64), slice(0, 3))   # (rows, columns, channels): x from 0.5 to 1
+check(float(np.abs(whole_normal - far_normal).max()) < 1e-4, "Whole Model does not change the normal map")
+check(float(whole_ao[edge].mean()) < float(far_ao[edge].mean()) - 0.05 and float(np.abs(whole_ao[:, :24] - far_ao[:, :24]).max()) < 0.05,
+      "Whole Model: A is darker at B's wall (%.2f against %.2f) and the same on the far side" % (float(whole_ao[edge].mean()), float(far_ao[edge].mean())))
+# ...also when B's high poly is parked (hidden in the viewport, as it is outside Sculpt): the bake sees it, and puts it back hidden
+PR.park(iso_b_high)
+parked_flags = bg_flags()
+parked_normal, parked_ao = iso_bake()
+check(bg_flags() == parked_flags and iso_b_high.hide_get() and iso_b_high.m3d_pair.parked, "(B's high poly is parked and stays so)")
+check(float(np.abs(parked_ao - whole_ao).max()) < 1e-3, "Whole Model: a parked high poly of another group shadows too (%.2g)" % float(np.abs(parked_ao - whole_ao).max()))
+PR.restore(iso_b_high)
+BG.settings_of(bpy.context, "A").ao_scope = 'GROUP'
+check(bg_state("A") == 'STALE', "(a setting of a baked group changed: stale)")
+# The low poly of the group being baked is never an occluder (it can't be hidden from render: Cycles refuses)
+iso_a_low.location.z = 0.3
+bpy.context.view_layer.update()
+lifted_normal, lifted_ao = iso_bake()
+iso_a_low.location.z = 0.0
+check(float(lifted_ao.mean()) > float(far_ao.mean()) - 0.1, "a low poly above its high poly does not shadow it (%.2f against %.2f)" % (float(lifted_ao.mean()), float(far_ao.mean())))
+iso_a_low.hide_render = True
+check(bpy.ops.m3d.bg_bake(group="A") == {'FINISHED'} and iso_a_low.hide_render, "a low poly that is hidden for rendering is baked and stays hidden")
+iso_a_low.hide_render = False
+
+# --- Parked high polys are baked from and stay hidden
+clean_scene()
+for entry in list(bpy.context.scene.m3d_bake_groups):
+    bpy.context.scene.m3d_bake_groups.remove(0)
+pk_low = bg_plate("Pk_low", role='LOW', group="Pk")
+pk_high = bg_plate("Pk_high", res=24, bump=0.15, role='HIGH', group="Pk")
+pk_far = bg_plate("Pk_high_bump", x=0.0, z=0.0, size=0.5, res=4, bump=0.1, role='HIGH', group="Pk")
+bg_small(pk_low)
+bpy.context.view_layer.objects.active = pk_low
+pk_low.select_set(True)
+bpy.ops.m3d.bg_bake()
+shown_normal = bg_px("Pk_low_Normal").copy()
+for o in (pk_high, pk_far):
+    PR.park(o)
+pk_far.hide_viewport = True
+bpy.context.view_layer.update()
+check(bg_state("Pk") == 'BAKED', "parking meshes does not make a group stale (%s)" % BG._stale)
+pk_flags = bg_flags()
+check(pk_high.hide_get() and pk_high.m3d_pair.parked and pk_far.hide_get(), "(the high polys are parked)")
+check(bpy.ops.m3d.bg_bake() == {'FINISHED'}, "Bake Group with parked high polys")
+check(bg_flags() == pk_flags and pk_high.hide_get() and pk_high.m3d_pair.parked and pk_far.hide_get() and pk_far.hide_viewport and not pk_high.select_get(),
+      "...they are hidden again afterwards, parked, not selected, the hide_viewport one too")
+check(float(np.abs(bg_px("Pk_low_Normal") - shown_normal).max()) < 1e-4, "...and the maps are the same as with them shown")
+for o in (pk_high, pk_far):
+    PR.restore(o)
+pk_far.hide_viewport = False
+
+# --- Texture sets: low polys that share a material bake into the same images, each with its own islands
+clean_scene()
+for entry in list(bpy.context.scene.m3d_bake_groups):
+    bpy.context.scene.m3d_bake_groups.remove(0)
+ts_mat = bpy.data.materials.new("SwordMat")
+ts_blade = bg_plate("Blade_low", uv=(0.05, 0.05, 0.45, 0.95), role='LOW', group="Blade")
+ts_blade_h = bg_plate("Blade_high", res=24, bump=0.15, role='HIGH', group="Blade")
+ts_guard = bg_plate("Guard_low", x=3.0, uv=(0.55, 0.05, 0.95, 0.95), role='LOW', group="Guard")
+ts_guard_h = bg_plate("Guard_high", x=3.0, res=24, bump=0.2, role='HIGH', group="Guard")
+for o in (ts_blade, ts_guard):
+    o.data.materials.append(ts_mat)
+    bg_small(o)
+    o.m3d_bake.margin = 0
+ts_guard.m3d_bake.resolution = '128'   # (the first low poly by name decides)
+ts_guard.m3d_bake.use_position = True
+ts_blade.m3d_bake.use_position = True
+check(T.texture_set(ts_blade) == ("SwordMat", [ts_blade, ts_guard]) and T.texture_set(ts_guard)[0] == "SwordMat", "low polys with one material are a texture set")
+ts_blade.data.materials.clear()
+check(T.texture_set(ts_blade) == ("Blade_low", [ts_blade]), "...one without the material is on its own")
+ts_blade.data.materials.append(ts_mat)
+bg_small_keys = ("use_normal", "use_ao", "use_position")
+for flag in bg_small_keys:
+    setattr(ts_blade.m3d_bake, flag, True)
+    setattr(ts_guard.m3d_bake, flag, True)
+ts_blade.m3d_bake.resolution = '64'
+pre = bpy.data.images.new("SwordMat_Normal", 64, 64, alpha=False, is_data=True)   # (an old image with something in it)
+pre.generated_color = (0.123, 0.456, 0.789, 1.0)
+pre.use_fake_user = True
+check(bpy.ops.m3d.bg_bake_all() == {'FINISHED'}, "Bake All with two groups in one texture set")
+sets_img = {l: bpy.data.images.get("SwordMat_" + l) for l in ("Normal", "AO", "Position")}
+check(all(i is not None and tuple(i.size) == (64, 64) for i in sets_img.values()), "the maps are named after the material, at the size of the first low poly: %s" % {k: v and tuple(v.size) for k, v in sets_img.items()})
+check(not [i.name for i in bpy.data.images if i.name.startswith(("Blade_low_", "Guard_low_"))], "...and there are no maps named after the meshes")
+norm = read_image(sets_img["Normal"])
+left, right, gap = norm[8:56, 6:26, :3], norm[8:56, 36:58, :3], norm[8:56, 30:34, :3]
+check(left.std(axis=(0, 1)).max() > 0.01 and right.std(axis=(0, 1)).max() > 0.01, "both low polys have their islands in the image (std %.3f, %.3f)" % (left.std(axis=(0, 1)).max(), right.std(axis=(0, 1)).max()))
+check(float(np.abs(gap - np.array([0.123, 0.456, 0.789])).max()) > 0.05, "the first bake cleared the image (the gap between the islands is no longer %s)" % gap[0, 0])
+pos = read_image(sets_img["Position"])
+check(pos[8:56, 6:26, :3].std(axis=(0, 1)).max() > 0.01 and pos[8:56, 36:58, :3].std(axis=(0, 1)).max() > 0.01 and pos[..., :3].max() <= 1.0 + 1e-4
+      and sets_img["Position"].get("m3d_bounds") is not None, "Position: both islands, scaled once to 0-1")
+bounds = list(sets_img["Position"]["m3d_bounds"])
+lo, hi = np.asarray(bounds[:3]), np.asarray(bounds[3:])
+check(lo[0] < -0.9 and hi[0] > 3.9, "...within the bounds of both groups: %s %s" % (lo, hi))
+check(bg_state("Blade") == 'BAKED' and bg_state("Guard") == 'BAKED', "both groups are baked")
+before = read_image(sets_img["Normal"]).copy()
+ts_guard_h.data.vertices[0].co.z += 0.3
+ts_guard_h.data.update()
+bpy.context.view_layer.update()
+check(bg_state("Guard") == 'STALE' and bg_state("Blade") == 'BAKED', "editing the guard's high poly: the guard is stale, the blade is not")
+bpy.context.view_layer.objects.active = ts_guard
+check(bpy.ops.m3d.bg_bake() == {'FINISHED'}, "Bake Group on one group of the set")
+after = read_image(sets_img["Normal"])
+check(float(np.abs(after[:, :31] - before[:, :31]).max()) < 1e-6, "...the other group's islands are as they were")
+check(float(np.abs(after[:, 33:] - before[:, 33:]).max()) > 0.01, "...and its own are new")
+check(float(np.abs(after[8:56, 30:34, :3] - np.array([0.123, 0.456, 0.789])).max()) > 0.05, "...the gap is not filled with the old image")
+check(bg_state("Guard") == 'BAKED', "rebaked: no longer stale")
+# Position stays right when one group of the set is baked again
+pos_before = read_image(sets_img["Position"]).copy()
+check(bpy.ops.m3d.bg_bake() == {'FINISHED'}, "a partial bake with Position")
+pos_after = read_image(sets_img["Position"])
+check(float(np.abs(pos_after[:, :31, :2] - pos_before[:, :31, :2]).max()) < 1e-4 and pos_after[..., :3].max() <= 1.0 + 1e-4,
+      "...the whole map is scaled again, the blade's side is as it was (across)")
+# A group baked alone first: its image starts out cleared, the other group adds to it
+bpy.data.images.remove(bpy.data.images["SwordMat_AO"])
+bpy.context.view_layer.objects.active = ts_blade
+bpy.ops.m3d.bg_bake()
+ao = read_image(bpy.data.images["SwordMat_AO"])
+check(ao[8:56, 6:26, :3].mean() > 0.1, "(the blade's AO is in)")
+bpy.context.view_layer.objects.active = ts_guard
+bpy.ops.m3d.bg_bake()
+ao = read_image(bpy.data.images["SwordMat_AO"])
+check(ao[8:56, 6:26, :3].mean() > 0.1 and ao[8:56, 36:58, :3].mean() > 0.1, "...then the guard's adds to it, both stay")
+
+# --- Mask generators read the texture set's maps (and still the old ones named after the mesh)
+bpy.context.view_layer.objects.active = ts_blade
+check(T.map_image(ts_blade, "AO") == bpy.data.images["SwordMat_AO"] and T.map_image(ts_guard, "AO") == bpy.data.images["SwordMat_AO"],
+      "map_image finds the set's map for both low polys")
+check(T.ensure_maps(bpy.context, ts_blade, ['AO'])['AO'] == bpy.data.images["SwordMat_AO"], "ensure_maps reuses it")
+stamp = bpy.data.images["SwordMat_AO"]["m3d_stamp"]
+check(T.ensure_maps(bpy.context, ts_blade, ['AO'], force=True)['AO'].get("m3d_stamp") != stamp, "...force bakes it again")
+guard_ao = read_image(bpy.data.images["SwordMat_AO"])
+check(guard_ao[8:56, 36:58, :3].mean() > 0.1 and guard_ao[8:56, 6:26, :3].mean() > 0.1, "...for the whole set: both low polys' islands are there")
+old_image = bpy.data.images.new("Blade_low_Curvature", 8, 8)
+old_image["m3d_map"] = 64
+check(T.map_image(ts_blade, "Curvature") == old_image, "an old map named after the mesh is still found")
+check(T.ensure_maps(bpy.context, ts_blade, ['CURVATURE'])['CURVATURE'] == old_image and bpy.data.images.get("SwordMat_Curvature") is None,
+      "...and reused at its size")
+T.ensure_maps(bpy.context, ts_blade, ['CURVATURE'], force=True)
+check(bpy.data.images.get("SwordMat_Curvature") is not None and T.map_image(ts_blade, "Curvature") == bpy.data.images["SwordMat_Curvature"],
+      "...a new bake writes the set's map, which then wins")
+ts_mat.use_nodes = True
+with LY.muted():
+    LY.add_layer(ts_mat, 'FILL', "Top")
+    ts_mat.m3d_layer_index = 0
+LY.rebuild_all(ts_mat)
+check(bpy.ops.m3d.mask_effect_add(kind='CAVITY') == {'FINISHED'}, "a mask effect that reads the AO map is added")
+effect = ts_mat.m3d_layers[0].mask_stack[0]
+check(effect.image == bpy.data.images["SwordMat_AO"], "...it is given the set's AO map (%s)" % (effect.image and effect.image.name))
+with LY.muted():
+    ts_mat.m3d_layers.clear()
+
+# --- Selecting a group from its row
+for o in bpy.data.objects:
+    o.select_set(False)
+bpy.context.view_layer.objects.active = ts_guard_h
+check(bpy.ops.m3d.bg_select(group="Blade") == {'FINISHED'} and bpy.context.view_layer.objects.active == ts_blade and ts_blade.select_get()
+      and not ts_guard_h.select_get() and not ts_guard.select_get() and not ts_blade_h.select_get(), "a click on a group's row selects its low poly and makes it active")
+ts_blade.hide_set(True)
+check(bpy.ops.m3d.bg_select(group="Blade") == {'CANCELLED'}, "...not when the low poly is hidden")
+ts_blade.hide_set(False)
+bpy.context.view_layer.objects.active = ts_blade
+
+# --- The panels of the Bake tab draw (recorded: the real layout needs a window)
+def bg_draw(cls, ctx=None):
+    log = []
+    cls.draw(type("Inst", (), {"layout": Rec(log)})(), ctx or bpy.context)
+    check_calls(cls.__name__, log)
+    return log
+
+
+def bg_text(log):
+    return [r._kw.get("text", "") for r in log if r._kind == "label"]
+
+
+bpy.context.view_layer.objects.active = ts_blade
+BG.settings_of(bpy.context, "Blade")
+log = bg_draw(BG.PROPERTIES_PT_m3d_tx_bake_groups)
+rows = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.bg_select"]
+check([r.group for r in rows] == ["Blade", "Guard"] and [r._kw["text"] for r in rows] == ["Blade", "Guard"] and rows[0]._kw["depress"] and not rows[1]._kw["depress"],
+      "Bake Groups: a row for each group, the active one pressed: %s" % [(r.group, r._kw.get("depress")) for r in rows])
+check("1 low  1 high" in bg_text(log) and "Baked" in bg_text(log) and "Stale" not in bg_text(log), "...with the counts and the state: %s" % bg_text(log))
+ops = [r._args[0] for r in log if r._kind == "operator"]
+check({"m3d.hp_auto_pair", "m3d.hp_pair", "m3d.bg_bake", "m3d.bg_bake_all"} <= set(ops), "...and the buttons Auto-Pair, Pair Selected, Bake Group, Bake All: %s" % ops)
+check(any(r._kind == "operator_menu_enum" and r._args[0] == "m3d.hp_rename" for r in log), "...and the menu Rename to Suffixes")
+ts_guard_h.location.x += 0.1
+bpy.context.view_layer.update()
+check("Stale" in bg_text(bg_draw(BG.PROPERTIES_PT_m3d_tx_bake_groups)), "a stale group says so")
+check(BG.PROPERTIES_PT_m3d_tx_bake_group.page_poll(bpy.context), "Group Settings: shown for a mesh of a group")
+log = bg_draw(BG.PROPERTIES_PT_m3d_tx_bake_group)
+props = [r._args[1] for r in log if r._kind == "prop"]
+check(props == ["extrusion", "ray_distance", "cage", "ao_scope"] and "Low: Blade_low" in bg_text(log) and "High: Blade_high" in bg_text(log),
+      "...extrusion, ray distance, cage, AO shadows, the meshes of the group: %s %s" % (props, bg_text(log)))
+log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_maps)
+check("Texture set SwordMat: Blade_low, Guard_low" in bg_text(log), "Maps: names the texture set: %s" % bg_text(log))
+log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_run)
+check(not [r for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_bake"] and any(r._kind == "operator" and r._args[0] == "m3d.tex_show_image" for r in log),
+      "Bake: a group is baked from the Bake Groups panel, the images are listed here")
+log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_settings)
+props = [r._args[1] for r in log if r._kind == "prop"]
+check("samples" in props and not {"extrusion", "ray_distance"} & set(props), "Settings: extrusion and ray distance are the group's, not here: %s" % props)
+check(not T.PROPERTIES_PT_m3d_tx_bake_high.page_poll(bpy.context), "High Poly picker: not for a mesh of a group")
+bg_plain = bg_plate("Plain")
+bpy.context.view_layer.objects.active = bg_plain
+check(not BG.PROPERTIES_PT_m3d_tx_bake_group.page_poll(bpy.context) and T.PROPERTIES_PT_m3d_tx_bake_high.page_poll(bpy.context),
+      "...a mesh without a role has the picker and no group settings")
+bg_plain.m3d_bake.high = ts_blade_h
+log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_high)
+check(any(r._kind == "operator" and r._args[0] == "m3d.hp_make_pair" for r in log), "...and Make Pair once a High Poly is picked")
+check(any(r._kind == "operator" and r._args[0] == "m3d.tex_bake" for r in bg_draw(T.PROPERTIES_PT_m3d_tx_bake_run)), "...and the Bake button")
+bg_plain.m3d_bake.high = None
+bpy.context.view_layer.objects.active = ts_blade
+bpy.data.objects.remove(bg_plain)
+
+# --- Stale flags: transforms, geometry (also of a parked mesh), members, saved with the file
+clean_scene()
+for entry in list(bpy.context.scene.m3d_bake_groups):
+    bpy.context.scene.m3d_bake_groups.remove(0)
+st_low = bg_plate("St_low", role='LOW', group="St")
+st_high = bg_plate("St_high", res=8, bump=0.1, role='HIGH', group="St")
+st_far = bg_plate("Elsewhere", x=5.0)
+bg_small(st_low)
+bpy.context.view_layer.objects.active = st_low
+st_low.select_set(True)
+check(bg_state("St") == 'NONE', "a group that was never baked is 'not baked'")
+st_high.location.x += 0.5
+bpy.context.view_layer.update()
+check(bg_state("St") == 'NONE', "...whatever happens to it")
+st_high.location.x -= 0.5
+bpy.ops.m3d.bg_bake()
+check(bg_state("St") == 'BAKED', "baked")
+st_far.location.x += 1.0
+bpy.context.view_layer.update()
+check(bg_state("St") == 'BAKED', "moving a mesh that is not in the group changes nothing")
+check(bpy.ops.m3d.tex_add_material() == {'FINISHED'}, "(Add Material on the low poly)")
+bpy.context.view_layer.update()
+check(bg_state("St") == 'BAKED', "a new material is no edit of the mesh: the group stays baked")
+import m3d_uv as UVM
+UVM.set_checker(st_low, True)
+bpy.context.view_layer.update()
+UVM.set_checker(st_low, False)
+bpy.context.view_layer.update()
+check(bg_state("St") == 'BAKED' and st_low.active_material is not None and UVM.CHECKER not in st_low, "...nor is the UV checker map")
+st_low.data.materials.append(bpy.data.materials.new("Stock"))   # (Blender reports a new material slot like an edit)
+bpy.context.view_layer.update()
+check(bg_state("St") == 'STALE', "...but a material slot added some other way is seen as one (stale, to be on the safe side)")
+st_low.data.materials.pop()
+bpy.ops.m3d.bg_bake()
+st_high.location.x += 0.5
+bpy.context.view_layer.update()
+check(bg_state("St") == 'STALE', "moving a high poly makes the group stale")
+bpy.ops.m3d.bg_bake()
+check(bg_state("St") == 'BAKED', "...a rebake clears it")
+# Going into a mode is no edit (Blender reports it as one), nor is leaving a paint mode; leaving Sculpt or Edit Mode counts as one
+# (a stroke is only reported then), and so does an edit inside Edit Mode
+def bg_mode(mode):
+    bpy.ops.object.mode_set(mode=mode)
+    bpy.context.view_layer.update()
+
+
+bpy.context.view_layer.objects.active = st_high
+st_high.select_set(True)
+for mode in ('TEXTURE_PAINT', 'VERTEX_PAINT', 'WEIGHT_PAINT'):
+    bg_mode(mode)
+    bg_mode('OBJECT')
+check(bg_state("St") == 'BAKED', "going into and out of the paint modes does not make a group stale")
+bg_mode('SCULPT')
+check(bg_state("St") == 'BAKED', "going into Sculpt Mode does not either")
+bg_mode('OBJECT')
+check(bg_state("St") == 'STALE', "...leaving it does (a stroke is not reported before)")
+st_high.select_set(False)
+bpy.context.view_layer.objects.active = st_low
+st_low.select_set(True)
+bpy.ops.m3d.bg_bake()
+bpy.context.view_layer.objects.active = st_high
+bg_mode('EDIT')
+check(bg_state("St") == 'BAKED', "going into Edit Mode does not make a group stale")
+edit_bm = bmesh.from_edit_mesh(st_high.data)
+edit_bm.verts.ensure_lookup_table()
+edit_bm.verts[0].co.z += 0.2
+bmesh.update_edit_mesh(st_high.data)
+bpy.context.view_layer.update()
+check(bg_state("St") == 'STALE', "an edit inside Edit Mode does")
+bg_mode('OBJECT')
+st_high.select_set(False)
+bpy.context.view_layer.objects.active = st_low
+st_low.select_set(True)
+bpy.ops.m3d.bg_bake()
+bg_mode('EDIT')
+bg_mode('OBJECT')
+check(bg_state("St") == 'STALE', "leaving Edit Mode does, whether or not something was changed (UVs, for one, change the bake)")
+bpy.context.view_layer.objects.active = st_low
+bpy.ops.m3d.bg_bake()
+st_low.rotation_euler.z += 0.1
+bpy.context.view_layer.update()
+check(bg_state("St") == 'STALE', "rotating the low poly does too")
+bpy.ops.m3d.bg_bake()
+bm = bmesh.new()
+bm.from_mesh(st_high.data)
+bm.verts.ensure_lookup_table()
+bm.verts[0].co.z += 0.2
+bm.to_mesh(st_high.data)
+bm.free()
+st_high.data.update()
+bpy.context.view_layer.update()
+check(bg_state("St") == 'STALE', "editing the geometry of a high poly does too")
+bpy.ops.m3d.bg_bake()
+PR.park(st_high)
+bpy.context.view_layer.update()
+check(bg_state("St") == 'BAKED', "(parking it changes nothing)")
+st_high.location.y += 0.3
+bpy.context.view_layer.update()
+check(bg_state("St") == 'STALE', "...but moving a parked, hidden high poly does")
+bpy.ops.m3d.bg_bake()
+PR.restore(st_high)
+st_extra = bg_plate("St_high_more", size=0.3)
+bpy.ops.m3d.hp_auto_pair()
+check(bg_state("St") == 'STALE', "a mesh that joins the group makes it stale")
+bpy.ops.m3d.bg_bake()
+st_extra.m3d_pair.role = 'NONE'
+check(bg_state("St") == 'STALE', "...and one that leaves it")
+bpy.ops.m3d.bg_bake()
+check(bpy.ops.m3d.hp_rename(style='LP_HP') == {'FINISHED'} and bg_state("St") == 'BAKED', "Rename to Suffixes does not make baked groups stale")
+check(bpy.data.images.get("St_lp_Normal") is not None and bpy.data.images.get("St_low_Normal") is None
+      and bpy.data.objects["St_lp"].m3d_bake.baked == "St_lp_Normal|St_lp_AO", "...the maps of the low poly are renamed with it: %s" % bpy.data.objects["St_lp"].m3d_bake.baked)
+bpy.ops.m3d.hp_rename(style='LOW_HIGH')
+check(bpy.data.images.get("St_low_Normal") is not None and bg_state("St") == 'BAKED', "...and back")
+# Saved with the file
+st_high.location.x += 0.1
+bpy.context.view_layer.update()
+BG._save_pre()
+check(bpy.context.scene.m3d_bake_groups["St"].state == 'STALE', "the save handler writes the mark into the scene")
+st_path = os.path.join(tempfile.mkdtemp(prefix="m3d_bg_"), "stale.blend")
+bpy.ops.wm.save_as_mainfile(filepath=st_path, copy=True)
+bpy.ops.wm.open_mainfile(filepath=st_path)
+check(not BG._stale and bpy.context.scene.m3d_bake_groups["St"].state == 'STALE' and bg_state("St") == 'STALE', "a file opens with the group still stale")
+check(bpy.data.images.get("St_low_Normal") is not None and PR._quiet[0] == 0, "(the maps came with the file)")
+bpy.context.view_layer.objects.active = bpy.data.objects["St_low"]
+check(bpy.ops.m3d.bg_bake() == {'FINISHED'} and bg_state("St") == 'BAKED', "(baked again in the opened file)")
+bpy.ops.wm.save_as_mainfile(filepath=st_path, copy=True)
+bpy.ops.wm.open_mainfile(filepath=st_path)
+bpy.context.view_layer.update()
+check(bg_state("St") == 'BAKED', "a baked group is still baked when its file is opened (the first evaluation is no edit)")
+
+# --- The handler does no per-vertex work: a big mesh updating costs the same as a small one
+big = bmesh.new()
+bmesh.ops.create_grid(big, x_segments=400, y_segments=400, size=1.0)
+big_mesh = bpy.data.meshes.new("Big")
+big.to_mesh(big_mesh)
+big.free()
+big_ob = bpy.data.objects.new("Big_high", big_mesh)
+bpy.context.scene.collection.objects.link(big_ob)
+big_ob.m3d_pair.role, big_ob.m3d_pair.group = 'HIGH', "Big"
+bpy.context.view_layer.update()
+big_ob.location.x += 1.0
+big_mesh.vertices[0].co.z += 1.0
+big_mesh.update()
+dg = bpy.context.evaluated_depsgraph_get()
+t0 = time.perf_counter()
+for _ in range(20):
+    BG._depsgraph_update(bpy.context.scene, dg)
+handler_ms = (time.perf_counter() - t0) / 20 * 1000
+check(len(big_mesh.vertices) > 100_000 and handler_ms < 5.0, "the depsgraph handler takes %.3f ms on a mesh of %d vertices" % (handler_ms, len(big_mesh.vertices)))
+bpy.data.objects.remove(big_ob)
+
+# --- Flags come back after an error (a cage with other faces than the low poly: the error comes from inside the bake)
+clean_scene()
+for entry in list(bpy.context.scene.m3d_bake_groups):
+    bpy.context.scene.m3d_bake_groups.remove(0)
+er_low = bg_plate("Er_low", role='LOW', group="Er")
+er_high = bg_plate("Er_high", res=8, bump=0.1, role='HIGH', group="Er")
+er_wall = bg_plate("Er_wall", x=3.0, z=0.4, size=0.5, height=0.5)
+er_cage = bg_plate("Er_cage", res=4, z=0.3)
+ok_low = bg_plate("Ok_low", x=-3.0, role='LOW', group="Ok")
+ok_high = bg_plate("Ok_high", x=-3.0, res=8, bump=0.1, role='HIGH', group="Ok")
+for o in (er_low, ok_low):
+    bg_small(o)
+PR.park(er_high)
+er_high.hide_viewport = True
+er_wall.hide_render = True   # (the user's own render flag: untouched)
+BG.settings_of(bpy.context, "Er").cage = er_cage
+bpy.context.view_layer.objects.active = er_low
+er_low.select_set(True)
+bpy.context.scene.render.engine = 'BLENDER_EEVEE'
+flags = bg_flags()
+res = bg_try(bpy.ops.m3d.bg_bake)
+check(isinstance(res, RuntimeError) or res == {'CANCELLED'}, "a bake that fails is cancelled: %s" % (res,))
+check(isinstance(res, RuntimeError) and "cage" in str(res).lower(), "...with the message of Blender: %s" % str(res).strip()[:100])
+check(bg_flags() == flags, "...everything is put back: engine, selection, active mesh, mode, the parked high poly hidden, render flags, no temporary material")
+check(bg_state("Er") == 'NONE', "...and the group is not marked as baked")
+check(er_wall.hide_render, "(the user's own render flag is untouched)")
+# Bake All skips the group that fails and bakes the other
+res = bg_try(bpy.ops.m3d.bg_bake_all)
+check(res == {'FINISHED'} and bg_state("Ok") == 'BAKED' and bg_state("Er") == 'NONE' and bg_flags() == flags,
+      "Bake All reports the group that failed and bakes the other (%s)" % (res,))
+bg_no_uv(er_low)
+BG.settings_of(bpy.context, "Er").cage = None
+res = bg_try(bpy.ops.m3d.bg_bake)
+check(isinstance(res, RuntimeError) and "UV" in str(res) and bg_flags() == flags, "a low poly without UVs: cancelled with a message, nothing touched (%s)" % (res,))
+er_low.data.uv_layers.new(name="UVMap")
 
 print("FAILS:", fails or "none")
 sys.exit(1 if fails else 0)
