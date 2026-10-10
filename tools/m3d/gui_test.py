@@ -7298,6 +7298,397 @@ def bgg_undo_check():
     bpy.ops.m3d.workspace(kind='MODEL')
 
 
+
+# ----------------------------------------------------------------------------------------------------
+# Retopology in the real window: Make Live on a parked high poly (it asks first), New Low Poly (Quad Draw starts by itself),
+# Poly Build with simulated events over a sphere (the new points land on its surface), Sculpt with a live surface,
+# Make Not Live, Undo of New Low Poly.
+import m3d_retopo as RTP
+
+step(wait_until(lambda: hp_in('MODEL') and bpy.context.mode == 'OBJECT', "Modeling for the retopology tests"))
+
+
+def rt_ts():
+    return RTP.snap_of(bpy.context.scene.tool_settings)
+
+
+def rt_view_on():
+    return view3d()[1].spaces.active.overlay.show_retopology
+
+
+def rt_sp(az, el):
+    """A point of the unit sphere facing the Front view."""
+    return Vector((math.sin(az) * math.cos(el), -math.cos(az) * math.cos(el), math.sin(el)))
+
+
+def rt_xy(co):
+    _win, area, region = view3d()
+    p = location_3d_to_region_2d(region, area.spaces.active.region_3d, co)
+    return int(region.x + p.x), int(region.y + p.y)
+
+
+def rt_points():
+    """The points of the mesh in Edit Mode, with their distance from the middle of the sphere."""
+    mesh = bmesh.from_edit_mesh(bpy.context.active_object.data)
+    return [(v.co.copy(), v.co.length) for v in mesh.verts], len(mesh.faces)
+
+
+@step
+def rt_pair_setup():
+    with hp_viewport():
+        if bpy.context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        for ob in list(bpy.data.objects):
+            bpy.data.objects.remove(ob)
+        bpy.ops.m3d.add_primitive(kind='CUBE')
+        bpy.context.active_object.name = "Gem"
+        check(bpy.ops.m3d.hp_create() == {'FINISHED'}, "(Create High Poly for the retopology tests)")
+        bpy.ops.m3d.hp_park()
+        bpy.ops.view3d.view_all(center=True)
+    GIZMO["rt_ts"], GIZMO["rt_view"] = rt_ts(), rt_view_on()
+    window().workspace.m3d_page_right = "modeling_toolkit"
+    check(hp_ob("Gem_high").hide_get() and hp_ob("Gem_high").m3d_pair.parked, "(the high poly is parked)")
+
+
+@step
+def rt_ask():
+    with hp_viewport():
+        check(bpy.ops.m3d.hp_make_live('INVOKE_DEFAULT') == {'RUNNING_MODAL'} or hp_ob("Gem_high").hide_get(), "Make Live on a parked high poly asks first")
+
+
+@step
+def rt_asked():
+    check(hp_ob("Gem_high").hide_get() and bpy.context.scene.m3d_live_surface is None, "Make Live asks before it shows the high poly")
+    hp_press('RET')
+
+
+step(wait_until(lambda: not hp_ob("Gem_high").hide_get(), "Enter to confirm Make Live"))
+
+
+@step
+def rt_live_check():
+    high, low = hp_ob("Gem_high"), hp_ob("Gem")
+    ts = bpy.context.tool_settings
+    check(bpy.context.scene.m3d_live_surface == high and high.hide_select and not high.m3d_pair.parked and not high.select_get(),
+          "Make Live (confirmed): the high poly is shown, live and unselectable")
+    check(ts.use_snap and set(ts.snap_elements) == {'FACE_PROJECT'} and rt_view_on(), "...snapping and the retopology overlay are on: %s" % rt_ts())
+    check(bpy.context.active_object == low and low.select_get(), "...the low poly stays active and selected")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def rt_live_drawn():
+    check(not tracebacks(), "Python error drawing the Status Line with a live surface")
+    with hp_viewport():
+        check(bpy.ops.m3d.hp_make_not_live() == {'FINISHED'}, "Make Not Live runs in the window")
+    high = hp_ob("Gem_high")
+    check(not high.hide_select and high.hide_get() and high.m3d_pair.parked and bpy.context.active_object == hp_ob("Gem"),
+          "Make Not Live: selectable again, parked again (it has a low poly), the low poly active")
+    check(rt_ts() == GIZMO["rt_ts"] and rt_view_on() == GIZMO["rt_view"], "...the snapping and the overlay are as they were: %s" % rt_ts())
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def rt_sphere_setup():
+    check(not tracebacks(), "Python error drawing the Status Line after Make Not Live")
+    with hp_viewport():
+        for ob in list(bpy.data.objects):
+            bpy.data.objects.remove(ob)
+        bpy.ops.mesh.primitive_uv_sphere_add(radius=1.0, segments=64, ring_count=32)
+        orb = bpy.context.active_object
+        orb.name = "Orb_high"
+        orb.m3d_pair.role, orb.m3d_pair.group = 'HIGH', "Orb"
+        bpy.ops.object.shade_smooth()
+        bpy.ops.view3d.view_axis(type='FRONT')
+        rv3d = view3d()[1].spaces.active.region_3d
+        rv3d.view_distance, rv3d.view_location = 5.0, (0, 0, 0)
+
+
+@step
+def rt_new_low():
+    with hp_viewport():
+        check(bpy.ops.m3d.hp_new_low('INVOKE_DEFAULT') == {'FINISHED'}, "New Low Poly runs in the window")
+
+
+step(wait_until(lambda: bpy.context.mode == 'EDIT_MESH' and bpy.context.workspace.tools.from_space_view3d_mode('EDIT_MESH').idname == "builtin.poly_build",
+                "Edit Mode and Quad Draw to start on the new low poly"))
+
+
+@step
+def rt_new_low_check():
+    low, high = hp_ob("Orb_low"), hp_ob("Orb_high")
+    check(bpy.context.active_object == low and low.mode == 'EDIT' and len(low.data.vertices) == 0, "New Low Poly: an empty mesh in Edit Mode")
+    check(low.m3d_pair.role == 'LOW' and high.m3d_pair.role == 'HIGH' and low.m3d_pair.group == high.m3d_pair.group == "Orb"
+          and bpy.context.scene.m3d_live_surface == high and high.hide_select, "...paired with the live surface")
+    check(rt_view_on() and bpy.context.tool_settings.use_snap, "...with the overlay and the snapping on")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+def rt_add(name, az, el):
+    """Steps: Shift+click at a point of the sphere (Quad Draw adds a point there)."""
+    @step
+    def aim():
+        GIZMO[name] = rt_xy(rt_sp(az, el))
+        event('MOUSEMOVE', xy=GIZMO[name])
+
+    @step
+    def press():
+        xy = GIZMO[name]
+        event('LEFT_SHIFT', 'PRESS', xy, shift=True)
+        event('LEFTMOUSE', 'PRESS', xy, shift=True)
+        event('MOUSEMOVE', xy=(xy[0] + 2, xy[1]), shift=True)
+        event('MOUSEMOVE', xy=xy, shift=True)
+
+    @step
+    def release():
+        xy = GIZMO[name]
+        event('LEFTMOUSE', 'RELEASE', xy, shift=True)
+        event('LEFT_SHIFT', 'RELEASE', xy)
+
+
+def rt_on_surface(count, faces, what):
+    points, nfaces = rt_points()
+    off = [round(r, 4) for _co, r in points if abs(r - 1.0) > 0.01]
+    check(len(points) == count and nfaces == faces and not off,
+          "%s: %d points, %d faces, all on the sphere (radius 1 +- 0.01; off: %s; %s)" % (what, len(points), nfaces, off, [round(r, 4) for _co, r in points]))
+
+
+rt_add("rt_p1", 0.0, 0.0)
+
+
+@step
+def rt_p1_check():
+    rt_on_surface(1, 0, "Shift+click on an empty mesh adds a point on the surface")
+
+
+def rt_extend(name_from, name_to, az, el):
+    """Steps: hover a point, then Shift+press on it and drag to a point of the sphere: Quad Draw adds a point there, joined
+    to the one it started from (to the other two as a quad when that one has two edges)."""
+    @step
+    def aim():
+        GIZMO[name_to] = rt_xy(rt_sp(az, el))
+        xy = GIZMO[name_from]
+        event('MOUSEMOVE', xy=(xy[0] + 3, xy[1] + 3))
+
+    @step
+    def hover():
+        event('MOUSEMOVE', xy=GIZMO[name_from])
+
+    @step
+    def shift():
+        event('LEFT_SHIFT', 'PRESS', GIZMO[name_from], shift=True)   # (the preselection is refreshed when a modifier changes: a step of its own)
+
+    @step
+    def press():
+        x0, y0 = GIZMO[name_from]
+        x1, y1 = GIZMO[name_to]
+        event('LEFTMOUSE', 'PRESS', (x0, y0), shift=True)
+        for i in range(1, 7):
+            event('MOUSEMOVE', xy=(x0 + (x1 - x0) * i // 6, y0 + (y1 - y0) * i // 6), shift=True)
+
+    @step
+    def release():
+        event('LEFTMOUSE', 'RELEASE', GIZMO[name_to], shift=True)
+        event('LEFT_SHIFT', 'RELEASE', GIZMO[name_to])
+
+
+# A chain: each Shift+drag from the last point adds the next one and the edge.
+rt_extend("rt_p1", "rt_p2", 0.4, 0.1)
+
+
+@step
+def rt_p2_check():
+    mesh = bmesh.from_edit_mesh(bpy.context.active_object.data)
+    rt_on_surface(2, 0, "Shift+drag from a point adds a point on the surface")
+    check(len(mesh.edges) == 1, "...and an edge to it (%d edges)" % len(mesh.edges))
+
+
+rt_extend("rt_p2", "rt_p3", 0.5, -0.3)
+
+
+@step
+def rt_p3_check():
+    mesh = bmesh.from_edit_mesh(bpy.context.active_object.data)
+    rt_on_surface(3, 0, "a chain of three points")
+    check(len(mesh.edges) == 2, "...two edges (%d)" % len(mesh.edges))
+
+
+# A quad: Shift+drag from the middle point, which has two edges, to the fourth corner.
+rt_extend("rt_p2", "rt_p4", 0.1, -0.4)
+
+
+@step
+def rt_quad_check():
+    mesh = bmesh.from_edit_mesh(bpy.context.active_object.data)
+    rt_on_surface(4, 1, "a quad over the sphere (Shift+drag from the middle point of the chain)")
+    check(len(mesh.edges) == 4, "...four edges (%d)" % len(mesh.edges))
+    GIZMO["rt_before"] = [tuple(co) for co, _r in rt_points()[0]]
+
+
+# Move a point: a plain drag.
+@step
+def rt_move_aim():
+    GIZMO["rt_from"] = rt_xy(Vector(GIZMO["rt_before"][0]))
+    GIZMO["rt_to"] = rt_xy(rt_sp(-0.3, 0.3))
+    xy = GIZMO["rt_from"]
+    event('MOUSEMOVE', xy=(xy[0] + 3, xy[1] + 3))
+
+
+@step
+def rt_move_hover():
+    event('MOUSEMOVE', xy=GIZMO["rt_from"])
+
+
+@step
+def rt_move_press():
+    x0, y0 = GIZMO["rt_from"]
+    x1, y1 = GIZMO["rt_to"]
+    event('LEFTMOUSE', 'PRESS', (x0, y0))
+    for i in range(1, 7):
+        event('MOUSEMOVE', xy=(x0 + (x1 - x0) * i // 6, y0 + (y1 - y0) * i // 6))
+
+
+@step
+def rt_move_release():
+    event('LEFTMOUSE', 'RELEASE', GIZMO["rt_to"])
+
+
+@step
+def rt_move_check():
+    rt_on_surface(4, 1, "a point moved with a plain drag stays on the sphere")
+    after = [tuple(co) for co, _r in rt_points()[0]]
+    moved = [i for i, (a, b) in enumerate(zip(GIZMO["rt_before"], after)) if (Vector(a) - Vector(b)).length > 0.2]
+    check(len(moved) == 1, "...and it moved (points that moved: %s)" % moved)
+
+
+# Delete a point: Ctrl+click on it.
+@step
+def rt_delete_aim():
+    GIZMO["rt_victim"] = rt_xy(Vector(GIZMO["rt_before"][2]))
+    xy = GIZMO["rt_victim"]
+    event('MOUSEMOVE', xy=(xy[0] + 3, xy[1] + 3))
+
+
+@step
+def rt_delete_hover():
+    event('MOUSEMOVE', xy=GIZMO["rt_victim"])
+
+
+@step
+def rt_delete_ctrl():
+    event('LEFT_CTRL', 'PRESS', GIZMO["rt_victim"], ctrl=True)
+
+
+@step
+def rt_delete_click():
+    xy = GIZMO["rt_victim"]
+    event('LEFTMOUSE', 'PRESS', xy, ctrl=True)
+    event('LEFTMOUSE', 'RELEASE', xy, ctrl=True)
+    event('LEFT_CTRL', 'RELEASE', xy)
+
+
+@step
+def rt_delete_check():
+    points, nfaces = rt_points()
+    victim = Vector(GIZMO["rt_before"][2])
+    check(len(points) == 3 and not any((co - victim).length < 0.05 for co, _r in points),
+          "Ctrl+click deletes the point under the pointer (%d points left, %d faces)" % (len(points), nfaces))
+    check(not tracebacks(), "Python error while drawing with Quad Draw")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+# Sculpt with a live surface: F2 sculpts the high poly (shown, though it can't be selected), F1 leaves it shown.
+@step
+def rt_f2():
+    hp_press('F2')
+
+
+step(wait_until(lambda: hp_in('SCULPT') and bpy.context.mode == 'SCULPT', "F2 with a live surface"))
+
+
+@step
+def rt_f2_check():
+    high, low = hp_ob("Orb_high"), hp_ob("Orb_low")
+    check(bpy.context.active_object == high and high.mode == 'SCULPT' and not high.hide_get() and low.hide_get(),
+          "F2 with a live surface: Sculpt Mode on the high poly, the low poly out of the way (%s, %s)" % (bpy.context.mode, bpy.context.active_object.name))
+    check(bpy.context.scene.m3d_live_surface == high, "...the surface is still live")
+    hp_press('F1')
+
+
+step(wait_until(lambda: hp_in('MODEL') and bpy.context.mode == 'OBJECT', "F1 with a live surface"))
+
+
+@step
+def rt_f1_check():
+    high, low = hp_ob("Orb_high"), hp_ob("Orb_low")
+    check(not high.hide_get() and not high.m3d_pair.parked and not low.hide_get() and bpy.context.active_object == low and low.select_get(),
+          "F1 with a live surface: the high poly stays shown (it is live), the low poly is active and selected: %s" % hp_state())
+    check(not tracebacks(), "Python error switching workspace with a live surface")
+
+
+@step
+def rt_not_live():
+    with hp_viewport():
+        bpy.ops.m3d.hp_make_not_live()
+    high = hp_ob("Orb_high")
+    check(bpy.context.scene.m3d_live_surface is None and not high.hide_select and high.hide_get() and rt_ts() == GIZMO["rt_ts"],
+          "Make Not Live after the drawing: the high poly is parked, the snapping is as it was")
+
+
+# Undo of New Low Poly in the window (Quad Draw starts on a timer; Undo must take the mesh and the live state back).
+@step
+def rt_undo_setup():
+    with hp_viewport():
+        for ob in list(bpy.data.objects):
+            bpy.data.objects.remove(ob)
+        bpy.ops.mesh.primitive_uv_sphere_add(radius=1.0, segments=16, ring_count=8)
+        orb = bpy.context.active_object
+        orb.name = "Orb_high"
+        orb.m3d_pair.role, orb.m3d_pair.group = 'HIGH', "Orb"
+        bpy.ops.ed.undo_push(message="Before New Low Poly")
+        bpy.ops.m3d.hp_new_low('INVOKE_DEFAULT', True)
+
+
+step(wait_until(lambda: bpy.context.mode == 'EDIT_MESH', "Quad Draw to start before the Undo"))
+
+
+@step
+def rt_undo():
+    check(bpy.data.objects.get("Orb_low") is not None, "(New Low Poly with an undo step)")
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.ed.undo()
+
+
+@step
+def rt_undo_check():
+    check(bpy.data.objects.get("Orb_low") is None and bpy.context.mode == 'OBJECT' and bpy.context.scene.m3d_live_surface is None
+          and not hp_ob("Orb_high").hide_select and rt_ts() == GIZMO["rt_ts"] and rt_view_on() == GIZMO["rt_view"],
+          "Undo takes New Low Poly back in the window: the mesh, the live state, the snapping, the overlay (%s %s)" % (bpy.context.mode, rt_ts()))
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.ed.redo()
+
+
+@step
+def rt_redo_check():
+    check(bpy.data.objects.get("Orb_low") is not None and bpy.context.scene.m3d_live_surface == hp_ob("Orb_high") and rt_ts()["use_snap"]
+          and set(rt_ts()["snap_elements"]) == {'FACE_PROJECT'}, "...and Redo makes them again: %s" % rt_ts())
+    with hp_viewport():
+        if bpy.context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        if bpy.ops.m3d.hp_make_not_live.poll():
+            bpy.ops.m3d.hp_make_not_live()
+        for ob in list(bpy.data.objects):
+            bpy.data.objects.remove(ob)
+    window().workspace.m3d_page_right = ""
+    check(rt_ts() == GIZMO["rt_ts"], "(the snapping is as it was at the end of the retopology tests)")
+    check(not tracebacks(), "Python error in the retopology tests")
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
 @step
 def finish():
     errors = "".join(stderr_tee.buf + sys.stdout.buf)

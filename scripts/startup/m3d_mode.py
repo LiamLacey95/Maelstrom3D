@@ -13,6 +13,7 @@ from mathutils import Vector
 
 import m3d_inputs
 import m3d_pair
+import m3d_retopo
 from m3d_workspace import _PagePanel
 
 SMOOTH_MOD = "SmoothPreview"
@@ -1004,6 +1005,7 @@ class PROPERTIES_PT_m3d_mtk_tools(_ToolkitPanel, Panel):
 
     def draw(self, context):
         _buttons(self.layout, context, MTK_TOOLS, options_box=True)
+        m3d_retopo.draw_quad_hint(self.layout, context)
 
 
 @bpy.app.handlers.persistent

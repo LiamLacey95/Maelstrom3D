@@ -14,6 +14,7 @@ from bpy.types import Menu, Panel
 
 import m3d_anim
 import m3d_render
+import m3d_retopo
 import m3d_rig
 import m3d_sculpt
 import m3d_texture
@@ -863,6 +864,7 @@ def draw_status_line_model(layout, context):
     for item in ('GRID', 'EDGE', 'VERTEX', 'FACE'):
         row.prop_enum(ts, "snap_elements", item, text="")
     row.prop(ts, "use_snap", text="", icon='SNAP_ON' if ts.use_snap else 'SNAP_OFF')
+    m3d_retopo.draw_live(layout, context)
 
     # Symmetry (global, on the active mesh).
     if ob is not None and ob.type == 'MESH':

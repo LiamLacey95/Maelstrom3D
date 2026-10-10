@@ -15,7 +15,9 @@ then F6 shows it in Pose Mode), `+toolkit` / `+chanbox` (the Animation dock on i
 bottom editor), `+paths` (motion path of the active bone), `+animlayers` (push down + additive layer), `+animobject` (Object Mode), `+render` (Rendering workspace: a lit scene with a
 camera, three lights, an HDRI and a 480 x 270 render), `+ipr` (the viewport renders: IPR), `+renderblank` (nothing selected),
 `+hplp` (a low poly sword with its high poly, parked: hidden, the low poly active), `+hpwire` (Show Low Poly on), `+hpmouse` /
-`+hpmenu` (the High / Low Poly menu opens at the viewport; needs --enable-event-simulate), `+angle` (a three-quarter view), `+bakegroups` (three bake groups: a
+`+hpmenu` (the High / Low Poly menu opens at the viewport; needs --enable-event-simulate), `+retopo` (a smooth Suzanne that is the live surface, with a
+low poly drawn over part of its face in Edit Mode: use it before `+angle`, `+frame` and the Modeling workspace), `+autolow` (Auto Low Poly on a smooth Suzanne, the low poly
+next to the high poly, drawn with its edges), `+angle` (a three-quarter view), `+bakegroups` (three bake groups: a
 sword with two floaters that is not baked, a shield that is baked and a pommel that is stale; use it before `TEXTURE/tex_bake`,
 `+frame` and `TEXTURE/tex_bake` again), `+bakeresult` (like `+bakegroups`, then Bake All, a normal-mapped material on each low poly and
 the sword's normal map in the paint view).
@@ -429,6 +431,62 @@ def sword_wire():
     bpy.context.scene.m3d_show_low = True
 
 
+def monkey_high(subdivisions):
+    """A smooth Suzanne, `subdivisions` levels, named Monkey_high."""
+    for ob in list(bpy.data.objects):
+        bpy.data.objects.remove(ob)
+    bpy.ops.mesh.primitive_monkey_add()
+    high = bpy.context.active_object
+    high.name = "Monkey_high"
+    mod = high.modifiers.new("s", 'SUBSURF')
+    mod.levels = subdivisions
+    bpy.ops.object.modifier_apply(modifier="s")
+    bpy.ops.object.shade_smooth()
+    return high
+
+
+def retopo():
+    """Make Live and New Low Poly on a smooth Suzanne, then a patch of quads for the low poly, each point on the surface of the
+    face (rays along the direction of the `+angle` view, so the patch looks like a regular grid). Quad Draw and Edit Mode start
+    from a timer a moment later."""
+    import bmesh
+    from mathutils import Euler, Vector
+    high = monkey_high(3)
+    bpy.ops.m3d.hp_new_low()
+    low = bpy.context.active_object
+    rot = Euler((1.15, 0.0, 0.5)).to_quaternion()
+    look, right, up = rot @ Vector((0, 0, -1)), rot @ Vector((1, 0, 0)), rot @ Vector((0, 1, 0))
+    centre = Vector((0.35, -0.75, 0.45))
+    bm = bmesh.new()
+    grid = []
+    for v in (0.4, 0.13, -0.13, -0.4):
+        row = []
+        for u in (-0.6, -0.3, 0.0, 0.3, 0.6):
+            hit, co, _no, _i = high.ray_cast(centre - look * 5 + right * u + up * v, look)
+            row.append(bm.verts.new(co) if hit else None)
+        grid.append(row)
+    for r in range(len(grid) - 1):
+        for c in range(len(grid[0]) - 1):
+            quad = (grid[r][c], grid[r][c + 1], grid[r + 1][c + 1], grid[r + 1][c])
+            if all(quad):
+                bm.faces.new(quad)
+    bm.to_mesh(low.data)
+    bm.free()
+
+
+def autolow():
+    """Auto Low Poly (QuadriFlow, 700 faces) on a smooth Suzanne: the low poly stands next to the high poly, which stays shown,
+    and is drawn with its edges."""
+    high = monkey_high(3)
+    bpy.ops.m3d.hp_auto_low(method='QUADRIFLOW', faces=700)
+    low = bpy.context.active_object
+    low.location.x += 3.0
+    low.show_wire = low.show_all_edges = True
+    bpy.context.view_layer.update()
+    for ob in bpy.data.objects:
+        ob.select_set(ob == low)
+
+
 def mouse_to_viewport():
     win = bpy.context.window_manager.windows[0]
     area = max((a for a in win.screen.areas if a.type == 'VIEW_3D'), key=lambda a: a.width * a.height)
@@ -564,6 +622,8 @@ SETUP = {
     "+hpwire": sword_wire,
     "+hpmouse": mouse_to_viewport,
     "+hpmenu": sword_menu,
+    "+retopo": retopo,
+    "+autolow": autolow,
     "+sphere": lambda: bpy.ops.m3d.add_primitive(kind='SPHERE'),
     "+cube": lambda: bpy.ops.m3d.add_primitive(kind='CUBE'),
     "+unwrap": lambda: bpy.ops.m3d.uv_auto(),

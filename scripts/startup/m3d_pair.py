@@ -11,7 +11,7 @@ Parking: a high poly that has a low poly is hidden everywhere but in the Sculpt 
 poly, shows the high poly and starts Sculpt Mode on it; leaving Sculpt exits the mode, hides the high poly again and shows
 the low poly. The hiding happens in the same step as the workspace switch (M3D_OT_workspace, before the redraw): a mesh of
 millions of faces that is already hidden is not rebuilt for the new mode. Only meshes we hid ourselves (`parked`) are ever
-shown again, and meshes without a role are never touched.
+shown again, and meshes without a role are never touched. The live surface of a retopology (m3d_retopo.py) is never parked.
 
 Also here: Create High Poly, Mark / Pair, Auto-Pair by Name, Rename to Suffixes, Make Pair (from the old High Poly picker
 of the Bake tab), Edit High Poly, the Channel Box row and the face limit of the UV and Texture workspaces (a huge mesh stays
@@ -271,15 +271,22 @@ def sculpt_soon(name):
     bpy.app.timers.register(lambda: start_sculpt(name), first_interval=0.0)
 
 
+def is_live(context, ob):
+    """The live surface of the scene (m3d_retopo.py): it stays shown while it is live."""
+    return ob == context.scene.m3d_live_surface
+
+
 def park_all(context):
-    """Hide every high poly that has a low poly. A high poly that was active hands over to its low poly."""
+    """Hide every high poly that has a low poly (but not the live surface). A high poly that was active hands over to its
+    low poly (the live surface, which can't be selected, too)."""
     vl = context.view_layer
     for lows, highs in all_groups(context).values():
         if lows:
             for high in highs:
-                park(high)
+                if not is_live(context, high):
+                    park(high)
     ob = vl.objects.active
-    if is_mesh(ob) and ob.m3d_pair.role == 'HIGH' and ob.hide_get():
+    if is_mesh(ob) and ob.m3d_pair.role == 'HIGH' and (ob.hide_get() or is_live(context, ob)):
         low = next((o for o in pair_of(context, ob)[0] if not o.hide_get()), None)
         if low is not None:
             low.select_set(True)
@@ -607,7 +614,7 @@ class M3D_OT_hp_park(Operator):
     @classmethod
     def poll(cls, context):
         lows, highs = pair_of(context, context.active_object)
-        return bool(lows) and any(not h.hide_get() for h in highs)
+        return bool(lows) and any(not h.hide_get() and not is_live(context, h) for h in highs)
 
     def execute(self, context):
         leave_modes(context)
@@ -866,6 +873,11 @@ class M3D_MT_hplp(Menu):
         tool_button(layout, context, "Create High Poly", "m3d.hp_create", 'DUPLICATE', {})
         layout.operator("m3d.hp_edit", icon='HIDE_OFF')
         layout.operator("m3d.hp_park", icon='HIDE_ON')
+        layout.separator()
+        layout.operator("m3d.hp_make_live", icon='SNAP_FACE')
+        layout.operator("m3d.hp_make_not_live", icon='X')
+        layout.operator("m3d.hp_new_low", text="New Low Poly (Quad Draw)", icon='GREASEPENCIL')
+        tool_button(layout, context, "Auto Low Poly", "m3d.hp_auto_low", 'MOD_DECIM', {})
         layout.separator()
         layout.operator("m3d.hp_mark", text="Mark as High Poly").role = 'HIGH'
         layout.operator("m3d.hp_mark", text="Mark as Low Poly").role = 'LOW'

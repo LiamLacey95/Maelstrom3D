@@ -10,8 +10,8 @@ def check(cond, msg):
 # Icons used in m3d_mode exist.
 import re, m3d_mode
 icons = set(bpy.types.UILayout.bl_rna.functions['operator'].parameters['icon'].enum_items.keys())
-import m3d_bakegroups, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_sculpt, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv
-src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_bakegroups, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_sculpt, m3d_texture, _maya_ui, _maya_uv))
+import m3d_bakegroups, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_retopo, m3d_sculpt, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv
+src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_bakegroups, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_retopo, m3d_sculpt, m3d_texture, _maya_ui, _maya_uv))
 for ic in set(re.findall(r"icon='([A-Z_0-9]+)'", src)):
     check(ic in icons, "missing icon " + ic)
 
@@ -6712,9 +6712,11 @@ PR.M3D_MT_hplp.draw(type("Inst", (), {"layout": Rec(hp_log)})(), hp_ctx)
 check_calls("High / Low Poly menu", hp_log)
 hp_ops = [(r._args[0], r.values().get("role"), r.values().get("idname")) for r in hp_log if r._kind == "operator"]
 check(hp_ops == [("m3d.tool", None, "m3d.hp_create"), ("m3d.hp_edit", None, None), ("m3d.hp_park", None, None),
+                 ("m3d.hp_make_live", None, None), ("m3d.hp_make_not_live", None, None), ("m3d.hp_new_low", None, None),
+                 ("m3d.tool", None, "m3d.hp_auto_low"),
                  ("m3d.hp_mark", 'HIGH', None), ("m3d.hp_mark", 'LOW', None), ("m3d.hp_mark", 'NONE', None), ("m3d.hp_pair", None, None),
                  ("m3d.hp_auto_pair", None, None)],
-      "the submenu: Create, Edit, Park, Mark as High / Low, Clear Role, Pair Selected, Auto-Pair by Name: %s" % hp_ops)
+      "the submenu: Create, Edit, Park, Make Live, Make Not Live, New Low Poly, Auto Low Poly, Mark as High / Low, Clear Role, Pair Selected, Auto-Pair by Name: %s" % hp_ops)
 check(any(r._kind == "operator_menu_enum" and r._args[0] == "m3d.hp_rename" for r in hp_log), "...and Rename to Suffixes")
 hp_labels = [r._kw.get("text") or "" for r in hp_log if r._kind == "operator"] + [
     cls.bl_label + " " + (cls.__doc__ or "") + " " + " ".join(str(getattr(p, "description", "")) for p in cls.bl_rna.properties)
@@ -7619,6 +7621,500 @@ BG.settings_of(bpy.context, "Er").cage = None
 res = bg_try(bpy.ops.m3d.bg_bake)
 check(isinstance(res, RuntimeError) and "UV" in str(res) and bg_flags() == flags, "a low poly without UVs: cancelled with a message, nothing touched (%s)" % (res,))
 er_low.data.uv_layers.new(name="UVMap")
+
+# ----------------------------------------------------------------------------------------------------
+# Retopology (m3d_retopo.py): Make Live / Make Not Live, New Low Poly (Quad Draw), Auto Low Poly, the keys of Quad Draw.
+import inspect
+import tempfile
+import m3d_retopo as RT
+hp_ws = {name: bpy.data.workspaces[name] for name in ("Modeling", "Sculpt", "UV", "Texture")}   # (the files opened since replaced the workspaces)
+hp_ctx = bpy.context
+
+check(hasattr(bpy.types.Scene, "m3d_live_surface") and hasattr(bpy.types.Scene, "m3d_live_saved"), "live surface properties registered")
+for cls in RT.classes:
+    check(getattr(bpy.types, cls.__name__, None) is not None, "%s registered" % cls.__name__)
+    check('UNDO' in cls.bl_options, "%s is undoable" % cls.bl_idname)
+check(not re.search(r"maya|zbrush", open(RT.__file__).read(), re.I), "no product names in the retopology texts")
+menu_src = inspect.getsource(PR.M3D_MT_hplp.draw)
+check(all(name in menu_src for name in ("m3d.hp_make_live", "m3d.hp_make_not_live", "m3d.hp_new_low", "m3d.hp_auto_low")),
+      "the High / Low Poly menu has Make Live, Make Not Live, New Low Poly and Auto Low Poly")
+rt_props = bpy.ops.m3d.hp_auto_low.get_rna_type().properties
+check(rt_props["faces"].default == 2000 and rt_props["method"].default == 'QUADRIFLOW', "Auto Low Poly: QuadriFlow, 2,000 faces")
+
+# Quad Draw keys: Shift+click adds (a Ctrl+click would run with Ctrl held, which turns snapping around), Ctrl+click deletes.
+PBK = "3D View Tool: Edit Mesh, Poly Build"
+check(find(PBK, "m3d.quad_add", "LEFTMOUSE", shift=True, ctrl=False) and not find(PBK, "mesh.polybuild_face_at_cursor_move", "LEFTMOUSE")
+      and find(PBK, "mesh.polybuild_delete_at_cursor", "LEFTMOUSE", ctrl=True, shift=False)
+      and not find(PBK, "mesh.polybuild_delete_at_cursor", "LEFTMOUSE", shift=True)
+      and find(PBK, "mesh.polybuild_extrude_at_cursor_move", "LEFTMOUSE", shift=False, ctrl=False),
+      "Quad Draw: Shift+click adds (m3d.quad_add), Ctrl+click deletes, a plain click moves")
+
+RT_USER = {"use_snap": False, "snap_elements": ['EDGE', 'VERTEX'], "use_snap_self": True, "use_snap_nonedit": False,
+           "use_snap_selectable": True, "use_snap_translate": True}   # (a user's settings: none of them what retopology sets)
+RT_USER_SAVED = {**RT_USER, "snap_elements": sorted(RT_USER["snap_elements"])}
+
+
+def rt_reset():
+    """A clean scene with the snapping of a user and the retopology overlay off."""
+    sc = bpy.context.scene
+    RT.stop_live(sc)
+    clean_scene()
+    sc.m3d_live_saved = ""
+    RT.set_snap(sc.tool_settings, RT_USER)
+    for space in RT.spaces_3d():
+        space.overlay.show_retopology = False
+    PR._last.clear()
+    PR._state.update(ws=None, pending=None, group="")
+    sc.m3d_show_low = False
+
+
+def rt_sphere(name, role='NONE', group="", segments=64, rings=32):
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=1.0, segments=segments, ring_count=rings)
+    ob = bpy.context.active_object
+    ob.name = name
+    ob.m3d_pair.role, ob.m3d_pair.group = role, group
+    bpy.context.view_layer.update()
+    return ob
+
+
+def rt_try(fn, *args, **kw):
+    """(result, error text) of an operator: Python callers get a reported error as an exception."""
+    try:
+        return fn(*args, **kw), ""
+    except RuntimeError as err:
+        return None, str(err)
+
+
+def rt_ts():
+    return RT.snap_of(bpy.context.scene.tool_settings)
+
+
+def rt_views():
+    return [s.overlay.show_retopology for s in RT.spaces_3d()]
+
+
+def rt_positions(ob):
+    co = np.empty(len(ob.data.vertices) * 3, np.float32)
+    ob.data.vertices.foreach_get("co", co)
+    return co
+
+
+def rt_ob(name):
+    return bpy.data.objects[name]
+
+
+# --- Make Live, Make Not Live
+rt_reset()
+sc = bpy.context.scene
+rt_orb = rt_sphere("Orb_high", 'HIGH', "Orb", segments=16, rings=8)
+rt_plain = hp_cube("Plain")
+rt_plain.location.x = 5
+rt_orb.display_type = 'BOUNDS'
+hp_select(rt_orb, rt_plain, active=rt_orb)
+check(not bpy.ops.m3d.hp_make_not_live.poll(), "Make Not Live needs a live surface")
+check(bpy.ops.m3d.hp_make_live.poll() and bpy.ops.m3d.hp_make_live('EXEC_DEFAULT', True) == {'FINISHED'}, "Make Live runs")
+rt_orb = rt_ob("Orb_high")
+check(sc.m3d_live_surface == rt_orb and rt_orb.hide_select and not rt_orb.select_get() and not rt_orb.hide_get(),
+      "Make Live: the surface is the live one, unselectable and shown")
+check(rt_orb.display_type == 'TEXTURED', "...drawn solid (a bounds box is never snapped to): %s" % rt_orb.display_type)
+ts = bpy.context.scene.tool_settings
+check(ts.use_snap and set(ts.snap_elements) == {'FACE_PROJECT'} and not ts.use_snap_self and ts.use_snap_nonedit
+      and not ts.use_snap_selectable and ts.use_snap_translate, "...snapping on: Face Project (individual elements), not onto itself: %s" % rt_ts())
+check(RT.saved_of(sc).get("snap") == RT_USER_SAVED, "...the settings of the user are saved: %s" % RT.saved_of(sc).get("snap"))
+rt_on = rt_views()
+check(not rt_on or all(rt_on), "...the retopology overlay is on in every 3D view (%d)" % len(rt_on))
+rt_log = []
+RT.draw_live(Rec(rt_log), hp_ctx)
+check([r._kw.get("text") for r in rt_log if r._kind == "label"] == ["Live: Orb_high"]
+      and any(r._kind == "operator" and r._args[0] == "m3d.hp_make_not_live" for r in rt_log),
+      "the Status Line shows \"Live: Orb_high\" and a button that ends it: %s" % [(r._kind, r._kw) for r in rt_log])
+check_calls("Live Status Line", rt_log)
+rt_log = []
+RT.draw_quad_hint(Rec(rt_log), hp_ctx)
+check(not rt_log, "(no hint under Quad Draw while a surface is live)")
+check(bpy.ops.m3d.hp_make_not_live.poll() and bpy.ops.m3d.hp_make_not_live('EXEC_DEFAULT', True) == {'FINISHED'}, "Make Not Live runs")
+rt_orb = rt_ob("Orb_high")
+rt_log = []
+RT.draw_live(Rec(rt_log), hp_ctx)
+check(not rt_log, "the Status Line shows nothing when nothing is live")
+check(sc.m3d_live_surface is None and not rt_orb.hide_select and rt_orb.display_type == 'BOUNDS', "Make Not Live: selectable and drawn as before")
+check(rt_ts() == RT_USER_SAVED and sc.m3d_live_saved == "", "...the snap settings are back: %s" % rt_ts())
+check(not any(rt_views()), "...and the overlay")
+
+# The Modeling Toolkit says "Make Live first" under Quad Draw, with a button when the active mesh has a high poly to make live.
+rt_log = []
+RT.draw_quad_hint(Rec(rt_log), hp_ctx)
+check([r._kw.get("text") for r in rt_log if r._kind == "label"] == ["Quad Draw: Make Live first"]
+      and not any(r._kind == "operator" for r in rt_log), "Quad Draw hint without a live surface: \"Make Live first\" (no button on a mesh that is its own surface)")
+rt_gem = hp_cube("Gem")
+hp_select(rt_gem)
+bpy.ops.m3d.hp_create()
+bpy.ops.m3d.hp_park()
+hp_select(rt_ob("Gem"))
+rt_log = []
+RT.draw_quad_hint(Rec(rt_log), hp_ctx)
+check(any(r._kind == "operator" and r._args[0] == "m3d.hp_make_live" for r in rt_log), "...with a Make Live button on a low poly")
+check_calls("Quad Draw hint", rt_log)
+hp_select(rt_ob("Orb_high"), active=rt_ob("Orb_high"))
+
+# What the user had stays: an unselectable mesh stays that way, the overlay stays on when it was on.
+rt_orb.hide_select = True
+for space in RT.spaces_3d():
+    space.overlay.show_retopology = True
+hp_select(rt_orb, active=rt_orb)
+bpy.ops.m3d.hp_make_live('EXEC_DEFAULT', True)
+bpy.ops.m3d.hp_make_not_live('EXEC_DEFAULT', True)
+rt_orb = rt_ob("Orb_high")
+check(rt_orb.hide_select and all(rt_views()) and rt_ts() == RT_USER_SAVED, "settings the user had before stay: unselectable mesh, overlay on")
+rt_orb.hide_select = False
+
+# A mesh without a role is its own surface; the high poly of a low poly is the surface of the low poly.
+rt_reset()
+rt_plain = rt_sphere("Plain", segments=16, rings=8)
+hp_select(rt_plain)
+check(RT.surface_for(hp_ctx) == rt_plain, "a mesh without a role is its own live surface")
+bpy.ops.m3d.hp_make_live('EXEC_DEFAULT', True)
+check(bpy.context.scene.m3d_live_surface == rt_ob("Plain") and rt_ob("Plain").hide_select and hp_active() == rt_ob("Plain"),
+      "Make Live on a mesh without a role")
+rt_reset()
+rt_gem = hp_cube("Gem")
+hp_select(rt_gem)
+bpy.ops.m3d.hp_create()
+rt_gem, rt_gem_high = rt_ob("Gem"), rt_ob("Gem_high")
+bpy.ops.m3d.hp_park()
+hp_select(rt_gem)
+check(rt_gem_high.hide_get() and rt_gem_high.m3d_pair.parked and RT.surface_for(hp_ctx) == rt_gem_high,
+      "(a low poly with a parked high poly: its surface is the high poly)")
+check(RT.ask_first(hp_ctx, rt_gem_high) and not RT.ask_first(hp_ctx, rt_gem), "a parked high poly is asked about, a shown mesh is not")
+bpy.ops.m3d.hp_make_live('EXEC_DEFAULT', True)
+rt_gem, rt_gem_high = rt_ob("Gem"), rt_ob("Gem_high")
+check(bpy.context.scene.m3d_live_surface == rt_gem_high and not rt_gem_high.hide_get() and not rt_gem_high.m3d_pair.parked
+      and rt_gem_high.hide_select and hp_active() == rt_gem and rt_gem.select_get(),
+      "Make Live on a low poly: its high poly is shown, live and unselectable, the low poly stays selected and active")
+check(not RT.ask_first(hp_ctx, rt_gem_high), "...a live surface is not asked about again")
+
+# A live surface is never parked: not by a workspace switch, not by Park High Poly.
+PR.switch(hp_ctx, hp_ws["Modeling"], hp_ws["Sculpt"], set_mode=True)
+rt_gem, rt_gem_high = rt_ob("Gem"), rt_ob("Gem_high")
+check(not rt_gem_high.hide_get() and rt_gem.hide_get() and bpy.context.mode == 'SCULPT' and hp_active() == rt_gem_high,
+      "Sculpt on a live high poly: it is shown and sculpted (%s, %s)" % (bpy.context.mode, hp_active().name))
+PR.switch(hp_ctx, hp_ws["Sculpt"], hp_ws["Modeling"])
+check(not rt_gem_high.hide_get() and not rt_gem_high.m3d_pair.parked and not rt_gem.hide_get() and hp_active() == rt_gem and rt_gem.select_get()
+      and bpy.context.mode == 'OBJECT', "leaving Sculpt does not park the live surface; the low poly is active and selected again")
+PR.switch(hp_ctx, hp_ws["Modeling"], hp_ws["UV"])
+PR.park_all(hp_ctx)
+check(not rt_gem_high.hide_get() and not bpy.ops.m3d.hp_park.poll(), "a switch of workspace and park_all leave the live surface shown; Park High Poly has nothing to do")
+bpy.ops.m3d.hp_make_not_live('EXEC_DEFAULT', True)
+rt_gem, rt_gem_high = rt_ob("Gem"), rt_ob("Gem_high")
+check(rt_gem_high.hide_get() and rt_gem_high.m3d_pair.parked and not rt_gem_high.hide_select and hp_active() == rt_gem and rt_ts() == RT_USER_SAVED,
+      "Make Not Live parks a high poly that has a low poly again, and the low poly stays active")
+
+# Another surface takes over: the first one is released, what the user had stays saved.
+rt_reset()
+rt_a, rt_b = rt_sphere("A_high", 'HIGH', "A", segments=16, rings=8), rt_sphere("B_high", 'HIGH', "B", segments=16, rings=8)
+hp_select(rt_a)
+bpy.ops.m3d.hp_make_live('EXEC_DEFAULT', True)
+hp_select(rt_ob("B_high"))
+bpy.ops.m3d.hp_make_live('EXEC_DEFAULT', True)
+sc = bpy.context.scene
+check(sc.m3d_live_surface == rt_ob("B_high") and not rt_ob("A_high").hide_select and rt_ob("B_high").hide_select,
+      "a second Make Live releases the first surface")
+check(RT.saved_of(sc).get("snap") == RT_USER_SAVED, "...and keeps the settings of the user, not the retopology ones")
+bpy.ops.m3d.hp_make_not_live('EXEC_DEFAULT', True)
+check(rt_ts() == RT_USER_SAVED, "...Make Not Live gives them back")
+
+# Disabled in the viewport: the error says so, nothing changes.
+rt_reset()
+rt_hid = rt_sphere("Hid_high", 'HIGH', "Hid", segments=16, rings=8)
+rt_hid.hide_viewport = True
+bpy.context.view_layer.update()
+hp_select(rt_hid, active=rt_hid)
+res, err = rt_try(bpy.ops.m3d.hp_make_live, 'EXEC_DEFAULT', True)
+check((res == {'CANCELLED'} or "hidden" in err) and bpy.context.scene.m3d_live_surface is None and rt_ts() == RT_USER_SAVED,
+      "a mesh disabled in the viewport can't be made live: %s %s" % (res, err.strip()[:60]))
+rt_ob("Hid_high").hide_viewport = False
+
+# Deleted, or out of the scene: the settings come back.
+rt_reset()
+rt_orb = rt_sphere("Orb_high", 'HIGH', "Orb", segments=16, rings=8)
+hp_select(rt_orb)
+bpy.ops.m3d.hp_make_live('EXEC_DEFAULT', True)
+sc = bpy.context.scene
+bpy.data.objects.remove(rt_ob("Orb_high"))
+check(RT.stale(sc), "a live surface that was deleted is stale")
+RT.clean_up()
+check(sc.m3d_live_surface is None and sc.m3d_live_saved == "" and rt_ts() == RT_USER_SAVED and not any(rt_views()),
+      "...the settings come back: %s" % rt_ts())
+rt_orb = rt_sphere("Orb_high", 'HIGH', "Orb", segments=16, rings=8)
+hp_select(rt_orb)
+bpy.ops.m3d.hp_make_live('EXEC_DEFAULT', True)
+rt_ob("Orb_high").users_collection[0].objects.unlink(rt_ob("Orb_high"))   # (still in the file: the live pointer holds it)
+check(RT.stale(sc) and rt_ob("Orb_high").users >= 1, "a live surface taken out of the scene is stale")
+RT.clean_up()
+check(sc.m3d_live_surface is None and rt_ts() == RT_USER_SAVED, "...the settings come back")
+check(not RT.stale(sc) and not bpy.ops.m3d.hp_make_not_live.poll(), "(nothing is stale when nothing is live)")
+bpy.data.objects.remove(rt_ob("Orb_high"))
+
+# Undo takes Make Live back (the snap settings and the flags are in the scene and the object).
+rt_reset()
+rt_orb = rt_sphere("Orb_high", 'HIGH', "Orb", segments=16, rings=8)
+hp_select(rt_orb)
+bpy.ops.ed.undo_push(message="Before Make Live")
+bpy.ops.m3d.hp_make_live('EXEC_DEFAULT', True)
+check(bpy.context.scene.m3d_live_surface is not None and rt_ts()["use_snap"], "(live)")
+bpy.ops.ed.undo()
+check(bpy.context.scene.m3d_live_surface is None and not rt_ob("Orb_high").hide_select and rt_ts() == RT_USER_SAVED
+      and bpy.context.scene.m3d_live_saved == "", "Undo takes Make Live back: the flags and the snap settings")
+bpy.ops.ed.redo()
+check(bpy.context.scene.m3d_live_surface == rt_ob("Orb_high") and rt_ob("Orb_high").hide_select
+      and set(rt_ts()["snap_elements"]) == {'FACE_PROJECT'}, "...and Redo makes it live again")
+bpy.ops.ed.undo_push(message="Before Make Not Live")
+bpy.ops.m3d.hp_make_not_live('EXEC_DEFAULT', True)
+check(bpy.context.scene.m3d_live_surface is None and rt_ts() == RT_USER_SAVED, "(not live)")
+bpy.ops.ed.undo()
+check(bpy.context.scene.m3d_live_surface == rt_ob("Orb_high") and rt_ob("Orb_high").hide_select and rt_ts()["use_snap"]
+      and set(rt_ts()["snap_elements"]) == {'FACE_PROJECT'} and all(rt_views()), "Undo of Make Not Live: live again, with the retopology snapping")
+bpy.ops.ed.redo()
+check(bpy.context.scene.m3d_live_surface is None and rt_ts() == RT_USER_SAVED and not any(rt_views()), "...and Redo: not live, the settings of the user")
+
+# --- New Low Poly
+rt_reset()
+rt_orb = rt_sphere("Orb", segments=16, rings=8)   # (no role yet)
+rt_orb.location = (2, 1, 0)
+hp_select(rt_orb)
+check(bpy.ops.m3d.hp_new_low.poll() and bpy.ops.m3d.hp_new_low('EXEC_DEFAULT', True) == {'FINISHED'}, "New Low Poly runs")
+rt_low = bpy.data.objects.get("Orb_low")
+rt_orb = rt_ob("Orb")
+check(rt_low is not None and rt_low.type == 'MESH' and len(rt_low.data.vertices) == 0 and len(rt_low.data.polygons) == 0, "an empty mesh named <group>_low")
+check(rt_orb.m3d_pair.role == 'HIGH' and rt_orb.m3d_pair.group == "Orb" and rt_low.m3d_pair.role == 'LOW' and rt_low.m3d_pair.group == "Orb",
+      "the surface became the high poly of group Orb, the new mesh is its low poly")
+check(PR.pair_of(hp_ctx, rt_low) == ([rt_low], [rt_orb]), "...one pair")
+check(bpy.context.scene.m3d_live_surface == rt_orb and rt_orb.hide_select and not rt_orb.select_get(), "the surface is live and unselectable")
+check(hp_active() == rt_low and rt_low.select_get() and len(bpy.context.selected_objects) == 1, "the new mesh is the only one selected and the active one")
+check(hp_near(rt_low.matrix_world.translation, rt_orb.matrix_world.translation) and list(rt_low.users_collection) == list(rt_orb.users_collection),
+      "...it sits where the surface is, in its collection")
+check(rt_low.mode == 'OBJECT', "(Edit Mode starts once the operator is over: its undo step is one of Object Mode)")
+RT.start_quad_draw("Orb_low")
+check(rt_ob("Orb_low").mode == 'EDIT' and bpy.context.mode == 'EDIT_MESH', "Quad Draw: Edit Mode on the new mesh")
+bpy.ops.object.mode_set(mode='OBJECT')
+
+# Another pass on the same surface adds another low poly; from a low poly, the high poly is the surface.
+hp_select(rt_ob("Orb_low"))
+bpy.ops.m3d.hp_new_low('EXEC_DEFAULT', True)
+rt_low2 = hp_active()
+check(rt_low2.name != "Orb_low" and rt_low2.name.startswith("Orb_low") and rt_low2.m3d_pair.group == "Orb" and rt_low2.m3d_pair.role == 'LOW'
+      and bpy.context.scene.m3d_live_surface == rt_ob("Orb"), "New Low Poly on a low poly: the high poly is the surface, the group is kept")
+bpy.ops.m3d.hp_make_not_live('EXEC_DEFAULT', True)
+
+# Names: a high poly's group; a suffix with .001; a group name that is taken.
+rt_reset()
+rt_sw = rt_sphere("Sword_high", 'HIGH', "Sword", segments=16, rings=8)
+hp_select(rt_sw)
+bpy.ops.m3d.hp_new_low('EXEC_DEFAULT', True)
+check(hp_active().name == "Sword_low" and hp_active().m3d_pair.group == "Sword", "Sword_high gives Sword_low in group Sword")
+bpy.ops.m3d.hp_make_not_live('EXEC_DEFAULT', True)
+rt_reset()
+rt_rock = rt_sphere("Rock_high.001", segments=16, rings=8)
+hp_select(rt_rock)
+bpy.ops.m3d.hp_new_low('EXEC_DEFAULT', True)
+check(hp_active().name == "Rock_low" and hp_active().m3d_pair.group == "Rock" and rt_ob("Rock_high.001").m3d_pair.role == 'HIGH',
+      "a name with a suffix and .001 gives Rock_low, group Rock")
+bpy.ops.m3d.hp_make_not_live('EXEC_DEFAULT', True)
+rt_reset()
+rt_other = rt_sphere("Orb_low", 'LOW', "Orb", segments=8, rings=4)   # (a group Orb exists, with another mesh)
+rt_orb = rt_sphere("Orb", segments=16, rings=8)
+hp_select(rt_orb)
+bpy.ops.m3d.hp_new_low('EXEC_DEFAULT', True)
+check(rt_ob("Orb").m3d_pair.group == "Orb_2" and hp_active().name == "Orb_2_low" and hp_active().m3d_pair.group == "Orb_2",
+      "a mesh whose name is the name of another group starts a group of its own: %s" % hp_active().m3d_pair.group)
+bpy.ops.m3d.hp_make_not_live('EXEC_DEFAULT', True)
+
+# Undo and Redo (with Quad Draw started).
+rt_reset()
+rt_orb = rt_sphere("Orb_high", 'HIGH', "Orb", segments=16, rings=8)
+hp_select(rt_orb)
+bpy.ops.ed.undo_push(message="Before New Low Poly")
+bpy.ops.m3d.hp_new_low('EXEC_DEFAULT', True)
+RT.start_quad_draw("Orb_low")
+check(bpy.context.mode == 'EDIT_MESH', "(Quad Draw started)")
+bpy.ops.ed.undo()
+check(bpy.data.objects.get("Orb_low") is None and bpy.context.mode == 'OBJECT' and bpy.context.scene.m3d_live_surface is None
+      and not rt_ob("Orb_high").hide_select and rt_ts() == RT_USER_SAVED, "Undo takes New Low Poly back: the mesh, the live state, the snap settings")
+bpy.ops.ed.redo()
+check(bpy.data.objects.get("Orb_low") is not None and rt_ob("Orb_low").m3d_pair.role == 'LOW'
+      and bpy.context.scene.m3d_live_surface == rt_ob("Orb_high"), "...and Redo makes the mesh and the live state again")
+if bpy.context.mode != 'OBJECT':
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+# --- Auto Low Poly
+rt_reset()
+rt_orb = rt_sphere("Orb_high", 'NONE', "", segments=64, rings=32)
+hp_select(rt_orb)
+rt_before = rt_positions(rt_orb)
+rt_faces = len(rt_orb.data.polygons)
+check(bpy.ops.m3d.hp_auto_low.poll(), "Auto Low Poly needs a mesh")
+res, err = rt_try(bpy.ops.m3d.hp_auto_low, 'EXEC_DEFAULT', True, method='QUADRIFLOW', faces=500)
+rt_low = bpy.data.objects.get("Orb_low")
+rt_orb = rt_ob("Orb_high")
+check(res == {'FINISHED'} and rt_low is not None, "Auto Low Poly with QuadriFlow runs: %s %s" % (res, err.strip()[:80]))
+check(rt_low is not None and 350 <= len(rt_low.data.polygons) <= 650, "...about the target: %d faces for 500" % (len(rt_low.data.polygons) if rt_low else -1))
+check(rt_low is not None and sum(len(p.vertices) == 4 for p in rt_low.data.polygons) > 0.9 * len(rt_low.data.polygons), "...made of quads")
+check(rt_low.m3d_pair.role == 'LOW' and rt_low.m3d_pair.group == "Orb" and rt_orb.m3d_pair.role == 'HIGH' and rt_orb.m3d_pair.group == "Orb",
+      "the copy is the low poly <base>_low of the group, the high poly stays the high poly")
+check(len(rt_orb.data.polygons) == rt_faces and np.array_equal(rt_positions(rt_orb), rt_before) and not rt_orb.hide_get() and rt_orb.name == "Orb_high",
+      "the high poly is untouched")
+check(not rt_low.modifiers and not rt_low.data.uv_layers and rt_low.data is not rt_orb.data, "the low poly has no modifiers and no UVs, and is a mesh of its own")
+check(hp_active() == rt_low and rt_low.select_get() and not rt_orb.select_get() and not rt_orb.hide_get(),
+      "the low poly is selected and active, the high poly stays shown (it is parked at the next switch)")
+check(rt_low.dimensions[0] > 1.9 and abs(rt_low.dimensions[2] - rt_orb.dimensions[2]) < 0.1, "...it has the size of the high poly: %s" % (tuple(rt_low.dimensions),))
+rt_r = np.linalg.norm(rt_positions(rt_low).reshape(-1, 3), axis=1)
+check(abs(rt_r.mean() - 1.0) < 0.03 and rt_r.max() < 1.03, "...its points lie on the high poly: radius %.3f" % rt_r.mean())
+check(rt_low.data.polygons[0].use_smooth, "...with smooth shading")
+
+# Decimate: triangles, near the target. From a low poly of the pair, the source is the high poly.
+hp_select(rt_low)
+res, err = rt_try(bpy.ops.m3d.hp_auto_low, 'EXEC_DEFAULT', True, method='DECIMATE', faces=300)
+rt_tri = [o for o in bpy.data.objects if o.m3d_pair.role == 'LOW' and o.name.startswith("Orb_low") and o.name != "Orb_low"]
+check(res == {'FINISHED'} and len(rt_tri) == 1, "Auto Low Poly with Decimate runs on a low poly: the high poly is the source (%s %s)" % (res, err.strip()[:60]))
+check(rt_tri and 270 <= len(rt_tri[0].data.polygons) <= 330 and all(len(p.vertices) == 3 for p in rt_tri[0].data.polygons),
+      "...triangles, about the target: %d for 300" % (len(rt_tri[0].data.polygons) if rt_tri else -1))
+check(rt_tri and rt_tri[0].m3d_pair.group == "Orb" and len(rt_ob("Orb_high").data.polygons) == rt_faces
+      and len(PR.group_of(hp_ctx, "Orb")[0]) == 2, "...in the same group, the high poly untouched")
+
+# A Multires high poly: the copy is what the viewport shows, without modifiers; the high poly keeps its modifier.
+rt_reset()
+rt_cube = hp_cube("Gem")
+hp_select(rt_cube)
+bpy.ops.m3d.hp_create(detail='MULTIRES', levels=3)
+rt_gh = rt_ob("Gem_high")
+hp_select(rt_gh)
+res, err = rt_try(bpy.ops.m3d.hp_auto_low, 'EXEC_DEFAULT', True, method='QUADRIFLOW', faces=100)
+rt_gl = bpy.data.objects.get("Gem_low")
+check(res == {'FINISHED'} and rt_gl is not None and 70 <= len(rt_gl.data.polygons) <= 130 and not rt_gl.modifiers,
+      "a Multires high poly: a low poly from what it shows (%d faces for 100)" % (len(rt_gl.data.polygons) if rt_gl else -1))
+check(S.multires_of(rt_ob("Gem_high")) is not None and len(rt_ob("Gem_high").data.polygons) == 6, "...its high poly keeps the Multires modifier")
+
+# A live surface that can't be selected is copied selectable and shown.
+rt_reset()
+rt_orb = rt_sphere("Orb_high", 'HIGH', "Orb", segments=32, rings=16)
+hp_select(rt_orb)
+bpy.ops.m3d.hp_make_live('EXEC_DEFAULT', True)
+hp_select(rt_ob("Orb_high"))
+res, err = rt_try(bpy.ops.m3d.hp_auto_low, 'EXEC_DEFAULT', True, method='DECIMATE', faces=200)
+rt_low = bpy.data.objects.get("Orb_low")
+check(rt_low is not None and not rt_low.hide_select and not rt_low.hide_get() and rt_low.select_get()
+      and bpy.context.scene.m3d_live_surface == rt_ob("Orb_high"), "the copy of a live surface is selectable (the surface stays live)")
+bpy.ops.m3d.hp_make_not_live('EXEC_DEFAULT', True)
+
+# A high poly over the limit is reduced first (Voxel Remesh; Decimate with Preserve Boundary), then QuadriFlow. (A small
+# limit here; a real big one below.)
+for rt_boundary in (False, True):
+    rt_reset()
+    rt_orb = rt_sphere("Orb_high", 'NONE', "", segments=64, rings=32)
+    hp_select(rt_orb)
+    rt_calls, rt_decimate = [], RT.decimate
+    RT.decimate = lambda ctx, ob, target: (rt_calls.append(target), rt_decimate(ctx, ob, target))[1]
+    RT.QUADRIFLOW_LIMIT = 1000
+    try:
+        res, err = rt_try(bpy.ops.m3d.hp_auto_low, 'EXEC_DEFAULT', True, method='QUADRIFLOW', faces=300, boundary=rt_boundary)
+    finally:
+        RT.decimate, RT.QUADRIFLOW_LIMIT = rt_decimate, 300_000
+    rt_low = bpy.data.objects.get("Orb_low")
+    check(res == {'FINISHED'} and rt_calls == ([1000] if rt_boundary else []) and rt_low is not None
+          and 210 <= len(rt_low.data.polygons) <= 400,
+          "over the limit (boundary %s): %s first, then QuadriFlow (%s, %s, %d faces for 300)" % (
+              rt_boundary, "decimated" if rt_boundary else "voxel remeshed", res, rt_calls,
+              len(rt_low.data.polygons) if rt_low else -1))
+    check(len(rt_ob("Orb_high").data.polygons) == 64 * 32, "...the high poly keeps all its faces")
+rt_calls.clear()
+hp_select(rt_ob("Orb_high"))
+RT.decimate = lambda ctx, ob, target: (rt_calls.append(target), rt_decimate(ctx, ob, target))[1]
+try:
+    res, err = rt_try(bpy.ops.m3d.hp_auto_low, 'EXEC_DEFAULT', True, method='QUADRIFLOW', faces=300)
+finally:
+    RT.decimate = rt_decimate
+check(res == {'FINISHED'} and rt_calls == [], "under the limit: no decimating first")
+
+# A real one: over 300,000 faces (about 415,000: a voxel remesh of a sphere).
+rt_reset()
+rt_orb = rt_sphere("Big_high", segments=32, rings=16)
+rt_mod = rt_orb.modifiers.new("r", 'REMESH')
+rt_mod.mode, rt_mod.voxel_size = 'VOXEL', 0.0055
+with bpy.context.temp_override(object=rt_orb, active_object=rt_orb, selected_objects=[rt_orb], selected_editable_objects=[rt_orb]):
+    bpy.ops.object.modifier_apply(modifier="r")
+rt_orb.m3d_pair.role, rt_orb.m3d_pair.group = 'HIGH', "Big"
+hp_select(rt_orb)
+rt_big = len(rt_orb.data.polygons)
+rt_calls = []
+RT.decimate = lambda ctx, ob, target: (rt_calls.append(target), rt_decimate(ctx, ob, target))[1]
+rt_t0 = time.perf_counter()
+try:
+    res, err = rt_try(bpy.ops.m3d.hp_auto_low, 'EXEC_DEFAULT', True, method='QUADRIFLOW', faces=1000, boundary=False)
+finally:
+    RT.decimate = rt_decimate
+rt_dt = time.perf_counter() - rt_t0
+rt_low = bpy.data.objects.get("Big_low")
+check(rt_big > 300_000 and res == {'FINISHED'} and rt_calls == [] and rt_low is not None and 700 <= len(rt_low.data.polygons) <= 1400,
+      "%d faces: voxel remeshed to about 300,000, then QuadriFlow: %d faces in %.1f s (%s %s)" % (rt_big, len(rt_low.data.polygons) if rt_low else -1, rt_dt, res, err.strip()[:80]))
+check(len(rt_ob("Big_high").data.polygons) == rt_big, "...the high poly keeps all its faces")
+
+# A mesh QuadriFlow can't remesh (a loose edge): an error that says what to do, and nothing is left behind.
+rt_reset()
+rt_bm = bmesh.new()
+bmesh.ops.create_cube(rt_bm, size=2.0)
+rt_v1, rt_v2 = rt_bm.verts.new((5, 0, 0)), rt_bm.verts.new((6, 0, 0))
+rt_bm.edges.new((rt_v1, rt_v2))
+rt_me = bpy.data.meshes.new("Bad_high")
+rt_bm.to_mesh(rt_me)
+rt_bm.free()
+rt_bad = bpy.data.objects.new("Bad_high", rt_me)
+bpy.context.scene.collection.objects.link(rt_bad)
+bpy.context.view_layer.update()
+hp_select(rt_bad)
+rt_counts = (len(bpy.data.objects), len(bpy.data.meshes))
+res, err = rt_try(bpy.ops.m3d.hp_auto_low, 'EXEC_DEFAULT', True, method='QUADRIFLOW', faces=500)
+check(res in (None, {'CANCELLED'}) and "Voxel Remesh" in err and (len(bpy.data.objects), len(bpy.data.meshes)) == rt_counts
+      and rt_ob("Bad_high").m3d_pair.role == 'NONE' and hp_active() == rt_ob("Bad_high") and rt_ob("Bad_high").select_get(),
+      "a mesh QuadriFlow can't remesh: the error suggests Voxel Remesh, no object or mesh is left behind (%s)" % err.strip()[:100])
+res, err = rt_try(bpy.ops.m3d.hp_auto_low, 'EXEC_DEFAULT', True, method='DECIMATE', faces=8)
+check(res == {'FINISHED'}, "(Decimate takes a mesh with a loose edge)")
+
+# Undo.
+rt_reset()
+rt_orb = rt_sphere("Orb_high", segments=32, rings=16)
+hp_select(rt_orb)
+rt_meshes = len(bpy.data.meshes)
+bpy.ops.ed.undo_push(message="Before Auto Low Poly")
+bpy.ops.m3d.hp_auto_low('EXEC_DEFAULT', True, method='DECIMATE', faces=200)
+check(bpy.data.objects.get("Orb_low") is not None and rt_ob("Orb_high").m3d_pair.role == 'HIGH', "(made)")
+bpy.ops.ed.undo()
+check(bpy.data.objects.get("Orb_low") is None and rt_ob("Orb_high").m3d_pair.role == 'NONE' and rt_ob("Orb_high").m3d_pair.group == ""
+      and len(bpy.data.meshes) == rt_meshes, "Undo takes Auto Low Poly back")
+bpy.ops.ed.redo()
+check(bpy.data.objects.get("Orb_low") is not None and rt_ob("Orb_low").m3d_pair.role == 'LOW', "...and Redo makes it again")
+
+# --- A file saved while live opens live, with the settings of the user still saved; a file that lost its surface gives them back.
+rt_reset()
+rt_orb = rt_sphere("Orb_high", 'HIGH', "Orb", segments=16, rings=8)
+hp_select(rt_orb)
+bpy.ops.m3d.hp_new_low('EXEC_DEFAULT', True)
+rt_path = os.path.join(tempfile.mkdtemp(prefix="m3d_test_"), "live.blend")
+bpy.ops.wm.save_as_mainfile(filepath=rt_path)
+bpy.ops.wm.open_mainfile(filepath=rt_path)
+sc = bpy.context.scene
+check(sc.m3d_live_surface is not None and sc.m3d_live_surface.name == "Orb_high" and sc.m3d_live_surface.hide_select
+      and set(rt_ts()["snap_elements"]) == {'FACE_PROJECT'} and rt_ts()["use_snap"], "a file saved while live opens live: the surface, its flag, the retopology snapping")
+rt_on = rt_views()
+check(RT.saved_of(sc).get("snap") == RT_USER_SAVED and (not rt_on or all(rt_on)), "...with the settings of the user saved, and the overlay on")
+bpy.ops.m3d.hp_make_not_live('EXEC_DEFAULT', True)
+check(rt_ts() == RT_USER_SAVED and not rt_ob("Orb_high").hide_select and sc.m3d_live_saved == "", "...and Make Not Live gives them back")
+bpy.ops.m3d.hp_make_live('EXEC_DEFAULT', True)
+bpy.context.scene.m3d_live_surface = None   # (a file whose surface is gone)
+bpy.ops.wm.save_as_mainfile(filepath=rt_path)
+bpy.ops.wm.open_mainfile(filepath=rt_path)
+sc = bpy.context.scene
+check(sc.m3d_live_surface is None and sc.m3d_live_saved == "" and rt_ts() == RT_USER_SAVED and not any(rt_views()),
+      "a file that is live without its surface gets the old settings back when it opens: %s" % rt_ts())
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

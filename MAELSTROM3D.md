@@ -53,6 +53,7 @@ named here only to describe compatibility.*
 | Alt+arrows, arrows | Nudge one pixel, pickwalk (up/down hierarchy, left/right siblings) |
 | Y, Ctrl+T | Last tool, universal manipulator |
 | Ctrl+Shift+Q / X | Quad Draw / Multi-Cut |
+| Shift+click, Shift+drag / Ctrl+click / drag (Quad Draw) | Add a point, edge or quad (drag from a point to extend it) / delete a point / move a point |
 | Alt+B, Alt+1/2/4/5 | Cycle background, toggle curves / meshes / image planes / wireframe |
 | Shift+{ / Shift+} | Previous / next workspace |
 | D (hold) / Insert | Edit pivot: objects move their origin; components move a custom pivot. Modify > Reset Pivot to go back |
@@ -212,6 +213,24 @@ faces from slowing the other workspaces down.
   Workspace Settings of the UV and Texture workspaces, 0 turns it off) opens in Object Mode there, and the dock and the Status Line say so ("High poly (2.1M faces): select the low poly to unwrap or paint").
   A high poly with a low poly opens the low poly instead. The Edit Mode and Texture Paint Mode buttons still enter the mode when you do want it.
 - A file saved with a hidden high poly keeps it hidden, and opens the same way in any Blender: it is just a hidden object, with a role and a group stored on it.
+
+### Retopology
+
+Retopology builds the low poly from a high poly you already have, either by drawing it over the high poly or by letting Maelstrom3D make it. All of it is in the **High / Low Poly** submenu (right-click in Object Mode).
+
+- **Make Live** turns the high poly of the selected mesh (or the mesh itself, when it has no role) into a **live surface**: new points snap onto it. A high poly Maelstrom3D hid asks first
+  ("Sword_high has 2,996,586 faces. Showing it takes a moment"), then shows. It cannot be selected while it is live, so clicks go to the mesh you draw, and it stays shown when you switch workspace
+  (a live surface is never hidden). Snapping turns on as Face Project (each point lands on the surface under the pointer), not onto the mesh you are drawing, and the retopology overlay turns on so the new
+  mesh is drawn in front. The Modeling Status Line shows **Live: Sword_high** with a button that ends it. **Make Not Live** (the submenu or that button) gives back what you had: selection, how the surface
+  was drawn, the snapping and the overlay; a high poly with a low poly is hidden again. Deleting the live surface does the same. A file saved while live opens live, with your own snapping still remembered.
+- **New Low Poly (Quad Draw)** starts the drawing: it makes the surface live if it is not, adds an empty mesh `<group>_low` paired with it (a mesh without a role becomes the high poly of a group named after it), enters
+  Edit Mode and picks the **Quad Draw** tool. **Shift+click** on the surface adds the first point. **Shift+drag** from a point adds the next point and an edge to it; from the middle point of two edges it adds a
+  quad. A plain **drag** on a point moves it, **Ctrl+click** on a point deletes it. Points always land on the surface, also when you move them. The Modeling Toolkit says "Make Live first" under its tools until a surface is live.
+  (Poly Build's own Ctrl+click is changed to Shift+click: with Ctrl held, a move snaps the other way round, which would leave the new point off the surface.)
+- **Auto Low Poly** makes the low poly for you from a copy of the high poly: `<group>_low`, paired with it, with the high poly untouched. **Method**: **QuadriFlow** (quads) or **Decimate** (triangles), **Faces**
+  (2,000 by default; the result is about that many), and for QuadriFlow **Preserve Sharp** and **Preserve Boundary**. A high poly over 300,000 faces is voxel remeshed to about that first (decimated instead with Preserve
+  Boundary, since a voxel remesh closes open borders), since QuadriFlow on millions of faces takes very long. A Multires high poly is copied as it shows in the viewport. QuadriFlow needs a closed mesh without loose edges or flipped faces; when it cannot remesh, nothing is
+  added and the message suggests Voxel Remesh on the high poly first, or Decimate. The new low poly has no UVs: unwrap it in the UV workspace (F3).
 
 ## Texture (F4)
 

@@ -61,6 +61,10 @@ WORKSPACE_KEYS = (('MODEL', 'F1'), ('SCULPT', 'F2'), ('UV', 'F3'), ('TEXTURE', '
 
 _SUBMODE = (('F9', 'VERT'), ('F10', 'EDGE'), ('F11', 'FACE'))
 
+# Quad Draw (the Poly Build tool): Shift+click adds a point and Ctrl+click deletes one, like Shift and Ctrl in a selection.
+# Blender adds with Ctrl+click, but a transform that starts with Ctrl held snaps the other way round: with snapping on,
+# which a live surface needs, the new point would not land on the surface. Adding is m3d.quad_add (m3d_retopo.py).
+
 # Keymap name -> items. Each item replaces any existing item on the same key + modifiers.
 OVERRIDES = {
     "Frames": [
@@ -225,6 +229,14 @@ OVERRIDES = {
         ("REMOVE", {"type": 'RIGHT_BRACKET', "value": 'PRESS'}, None),
         ("REMOVE", {"type": 'A', "value": 'PRESS', "ctrl": True}, None),
         ("REMOVE", {"type": 'C', "value": 'PRESS'}, None),
+    ],
+    "3D View Tool: Edit Mesh, Poly Build": [
+        _kmi("m3d.quad_add", 'LEFTMOUSE', shift=True),
+        _kmi("mesh.polybuild_delete_at_cursor", 'LEFTMOUSE', 'CLICK', ctrl=True),
+        _kmi("m3d.quad_add", 'MIDDLEMOUSE', shift=True),
+        _kmi("mesh.polybuild_delete_at_cursor", 'MIDDLEMOUSE', ctrl=True),
+        ("REMOVE", {"type": 'LEFTMOUSE', "value": 'PRESS', "ctrl": True}, None),
+        ("REMOVE", {"type": 'LEFTMOUSE', "value": 'CLICK', "shift": True}, None),
     ],
     "Mesh": [
         _pie("M3D_MT_marking_menu", 'RIGHTMOUSE'),

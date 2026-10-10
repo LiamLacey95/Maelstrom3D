@@ -244,6 +244,17 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 | Ctrl+A | (De)select All (action='SELECT') | *(removed)* |
 | C | Tool: Cursor | *(removed)* |
 
+## 3D View Tool: Edit Mesh, Poly Build
+
+| Key | Before (Industry Compatible) | Now (Maelstrom3D) |
+|---|---|---|
+| Shift+LMB | — | Quad Draw Add |
+| Ctrl+LMB click | — | Poly Build Delete at Cursor |
+| Shift+MMB | Poly Build Delete at Cursor | Quad Draw Add |
+| Ctrl+MMB | Face at Cursor Move (TRANSFORM_OT_translate=[('release_confirm', True)]) | Poly Build Delete at Cursor |
+| Ctrl+LMB | Face at Cursor Move (TRANSFORM_OT_translate=[('release_confirm', True)]) | *(removed)* |
+| Shift+LMB click | Poly Build Delete at Cursor | *(removed)* |
+
 ## Mesh
 
 | Key | Before (Industry Compatible) | Now (Maelstrom3D) |
