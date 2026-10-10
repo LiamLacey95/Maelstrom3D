@@ -546,6 +546,42 @@ class M3D_OT_multires_subdivide(Operator):
         return {'FINISHED'}
 
 
+def uniform_scale(ob):
+    """The test Blender's sculpt mode warns with ("non-uniform scale, sculpting may be unpredictable")."""
+    s = ob.scale
+    return abs(s[0] - s[1]) < 1e-4 and abs(s[1] - s[2]) < 1e-4
+
+
+class M3D_OT_sculpt_apply_scale(Operator):
+    """Apply the object's scale to its mesh: brushes, symmetry and voxel remeshing are only even with a uniform
+    scale"""
+    bl_idname = "m3d.sculpt_apply_scale"
+    bl_label = "Apply Scale"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = mesh_of(context)
+        return ob is not None and not uniform_scale(ob)
+
+    def execute(self, context):
+        ob = mesh_of(context)
+        mode = ob.mode
+        if mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')   # (Apply works in Object Mode only)
+        try:
+            with context.temp_override(active_object=ob, object=ob, selected_objects=[ob],
+                                       selected_editable_objects=[ob]):
+                bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+        except RuntimeError as err:   # e.g. a mesh shared with another object
+            self.report({'WARNING'}, str(err).replace("Error: ", "").strip())
+            return {'CANCELLED'}
+        finally:
+            if mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode=mode)
+        return {'FINISHED'}
+
+
 class M3D_OT_multires_level(Operator):
     """Go one Multires level up or down (viewport and sculpt level)"""
     bl_idname = "m3d.multires_level"
@@ -1886,6 +1922,10 @@ def draw_status_line(layout, context):
         _button(row, context, "Remesh", "object.voxel_remesh", 'NONE', {})
     # The mesh data is not updated while Dyntopo changes it, so no count then.
     layout.label(text="Dyntopo" if dyntopo else "%s faces" % format(len(mesh.polygons), ","))
+    if not uniform_scale(ob):
+        row = layout.row(align=True)
+        row.alert = True
+        row.operator("m3d.sculpt_apply_scale", icon='ERROR')
     if mod is not None:
         row = layout.row(align=True)
         row.operator("m3d.multires_level", text="", icon='TRIA_LEFT').delta = -1
@@ -1955,6 +1995,7 @@ SHELF_MASK = [
 classes = (
     M3D_OT_sculpt_tool,
     M3D_OT_multires_subdivide,
+    M3D_OT_sculpt_apply_scale,
     M3D_OT_multires_level,
     M3D_OT_multires_edit,
     M3D_OT_sculpt_object,

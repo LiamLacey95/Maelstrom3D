@@ -233,7 +233,29 @@ BUILDERS = {'CUBE': _cube, 'SPHERE': _sphere, 'CYLINDER': _cylinder, 'CONE': _co
 def is_frozen(ob):
     """True when the mesh was edited since the inputs built it (read only: safe to call while drawing)."""
     inp = ob.m3d_input
-    return inp.frozen or (bool(inp.signature) and signature(ob.data) != inp.signature)
+    if inp.frozen or not inp.signature:
+        return inp.frozen
+    mesh = ob.data
+    if inp.signature.split(":", 2)[:2] != [str(len(mesh.vertices)), str(len(mesh.polygons))]:
+        return True   # (counts first: no hash of a remeshed mesh of millions of vertices)
+    return signature(mesh) != inp.signature
+
+
+_drawn = {}   # (mesh, signature, frozen) -> is_frozen for the Channel Box, which redraws often; dropped on any edit
+
+
+def is_frozen_cached(ob):
+    inp = ob.m3d_input
+    key = (ob.data.as_pointer(), inp.signature, inp.frozen)
+    if key not in _drawn:
+        _drawn[key] = is_frozen(ob)
+    return _drawn[key]
+
+
+@bpy.app.handlers.persistent
+def _geometry_changed(_scene, depsgraph):
+    if _drawn and any(u.is_updated_geometry for u in depsgraph.updates):
+        _drawn.clear()
 
 
 def rebuild(ob):
@@ -322,7 +344,7 @@ def draw(layout, ob):
     header.label(text="%s inputs" % KINDS[inp.kind][0])
     if body is None:
         return
-    frozen = is_frozen(ob)
+    frozen = is_frozen_cached(ob)
     if frozen:
         body.label(text="Mesh edited: inputs no longer apply", icon='INFO')
     elif ob.mode != 'OBJECT':
@@ -341,9 +363,11 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.Object.m3d_input = bpy.props.PointerProperty(type=M3D_Input)
+    bpy.app.handlers.depsgraph_update_post.append(_geometry_changed)
 
 
 def unregister():
+    bpy.app.handlers.depsgraph_update_post.remove(_geometry_changed)
     del bpy.types.Object.m3d_input
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

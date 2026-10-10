@@ -327,6 +327,21 @@ ob = new_prim('CYLINDER')
 ob.modifiers.new("sub", 'SUBSURF')
 bpy.ops.object.modifier_apply(modifier="sub")
 check(I.is_frozen(ob), "applying a modifier freezes the inputs")
+# The Channel Box's check is cached (a high poly mesh is not hashed on every redraw) and follows edits.
+ob = new_prim('CUBE')
+check(not I.is_frozen_cached(ob) and not I.is_frozen_cached(ob), "cached check: an unedited primitive")
+ob.data.vertices[0].co.x += 0.1
+ob.data.update()
+bpy.context.view_layer.update()
+check(I.is_frozen_cached(ob), "cached check: an edit is seen after the update")
+# Sculpt's Apply Scale (shown when the scale is not uniform) works from Sculpt Mode and stays there.
+ob = new_prim('CYLINDER')
+ob.scale = (0.2, 0.2, 2.0)
+bpy.ops.object.mode_set(mode='SCULPT')
+bpy.ops.m3d.sculpt_apply_scale()
+check(tuple(ob.scale) == (1, 1, 1) and ob.mode == 'SCULPT' and abs(ob.dimensions.z - 4.0) < 1e-4 and
+      abs(ob.dimensions.x - 0.4) < 1e-4, "Apply Scale from Sculpt Mode %s %s" % (tuple(ob.scale), tuple(ob.dimensions)))
+bpy.ops.object.mode_set(mode='OBJECT')
 ob = new_prim('SPHERE')
 ob.modifiers.new("sub", 'SUBSURF')
 bpy.ops.m3d.delete_history(modifiers=True)
@@ -5141,6 +5156,7 @@ check(not any(t == "Mesh edited: inputs no longer apply" for t in labels_), "Cha
 check_calls("channel box inputs", log)
 prim_.data.vertices[0].co.x += 0.1
 prim_.data.update()
+bpy.context.view_layer.update()   # (the app evaluates before it redraws)
 log = channel_box_log()
 check("Mesh edited: inputs no longer apply" in [r._kw.get("text") for r in log if r._kind == "label"]
       and any(r._kind == "operator" and r._args[0] == "m3d.delete_history" for r in log), "Channel Box: frozen note and Delete History")
