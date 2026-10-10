@@ -315,6 +315,7 @@ def draw_object_list(layout):
     _op(layout, "m3d.group", "Group", 'EMPTY_AXIS')
     _op(layout, "m3d.assign_material", "Assign New Material", 'MATERIAL')
     layout.operator_menu_enum("m3d.assign_existing_material", "material", text="Assign Existing Material")
+    layout.menu("M3D_MT_hplp", icon='MOD_MULTIRES')
 
 
 class M3D_OT_assign_existing_material(Operator):

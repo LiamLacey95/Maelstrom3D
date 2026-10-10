@@ -12,6 +12,7 @@ from bpy.types import Menu, Operator, Panel
 from mathutils import Vector
 
 import m3d_inputs
+import m3d_pair
 from m3d_workspace import _PagePanel
 
 SMOOTH_MOD = "SmoothPreview"
@@ -788,6 +789,8 @@ class PROPERTIES_PT_m3d_channel_box(_DockPanel, Panel):
         else:   # A bone of the skeleton in Pose Mode: its own channels, the skeleton's name above.
             layout.label(text=ob.name, icon='ARMATURE_DATA')
             layout.prop(owner.bone, "name", text="")
+        if owner is ob and ob.type == 'MESH':
+            m3d_pair.draw_channel(layout, ob)   # (the role is one lookup: nothing per vertex)
         col = layout.column(align=True)
         rot, rot_label = rotation_channel(owner)
         for label, attr, lock in (("Translate", "location", "lock_location"), (rot_label, rot, "lock_rotation"),

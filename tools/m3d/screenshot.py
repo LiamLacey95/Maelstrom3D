@@ -13,7 +13,9 @@ whose mask is Fill, Edges, Noise and Levels, with the maps baked at 128 px), `+m
 legs, a Driven Key, a saved pose), `+rigedit` / `+rigpose` / `+rigweight` / `+rigobject` (the mode buttons), `+anim` (the rig keyed over 48 frames with a camera;
 then F6 shows it in Pose Mode), `+toolkit` / `+chanbox` (the Animation dock on its pages / the Channel Box), `+inputs` (a cube with its INPUTS in the Channel Box), `+graph` / `+dope` (the
 bottom editor), `+paths` (motion path of the active bone), `+animlayers` (push down + additive layer), `+animobject` (Object Mode), `+render` (Rendering workspace: a lit scene with a
-camera, three lights, an HDRI and a 480 x 270 render), `+ipr` (the viewport renders: IPR), `+renderblank` (nothing selected).
+camera, three lights, an HDRI and a 480 x 270 render), `+ipr` (the viewport renders: IPR), `+renderblank` (nothing selected),
+`+hplp` (a low poly sword with its high poly, parked: hidden, the low poly active), `+hpwire` (Show Low Poly on), `+hpmouse` /
+`+hpmenu` (the High / Low Poly menu opens at the viewport; needs --enable-event-simulate).
 """
 
 import sys
@@ -386,6 +388,51 @@ def rig_mode(mode):
     return lambda: bpy.ops.m3d.rig_mode(mode=mode)
 
 
+def sword():
+    """A low poly sword (blade, guard, grip, pommel as one mesh) and its high poly (Create High Poly, 3 Multires levels), parked."""
+    import bmesh
+    from mathutils import Matrix
+    for ob in list(bpy.data.objects):
+        bpy.data.objects.remove(ob)
+    bm = bmesh.new()
+    for scale, z in (((0.16, 0.03, 1.5), 0.95), ((0.5, 0.07, 0.09), 0.18), ((0.07, 0.07, 0.4), -0.04), ((0.13, 0.13, 0.12), -0.3)):
+        bmesh.ops.create_cube(bm, size=1.0, matrix=Matrix.LocRotScale((0, 0, z), None, scale))
+    mesh = bpy.data.meshes.new("Sword_low")
+    bm.to_mesh(mesh)
+    bm.free()
+    low = bpy.data.objects.new("Sword_low", mesh)
+    bpy.context.scene.collection.objects.link(low)
+    bpy.context.view_layer.objects.active = low
+    low.select_set(True)
+    bpy.ops.m3d.hp_create(detail='MULTIRES', levels=3)
+    bpy.ops.object.shade_smooth()
+    bpy.ops.m3d.hp_park()
+    frame()
+
+
+def sword_wire():
+    bpy.context.scene.m3d_show_low = True
+
+
+def mouse_to_viewport():
+    win = bpy.context.window_manager.windows[0]
+    area = max((a for a in win.screen.areas if a.type == 'VIEW_3D'), key=lambda a: a.width * a.height)
+    win.event_simulate(type='MOUSEMOVE', value='NOTHING', x=area.x + area.width // 2 - 100, y=area.y + area.height // 2 + 80)
+
+
+def sword_menu():
+    """Open the High / Low Poly menu at the pointer and take its picture a moment later (a popup closes when the pointer moves)."""
+    win = bpy.context.window_manager.windows[0]
+    area = max((a for a in win.screen.areas if a.type == 'VIEW_3D'), key=lambda a: a.width * a.height)
+    with bpy.context.temp_override(window=win, screen=win.screen, area=area, region=next(r for r in area.regions if r.type == 'WINDOW')):
+        bpy.ops.wm.call_menu(name="M3D_MT_hplp")
+
+    def picture():
+        with bpy.context.temp_override(window=win, screen=win.screen, area=win.screen.areas[0]):
+            bpy.ops.screen.screenshot(filepath="%smenu.png" % PREFIX, check_existing=False)
+    bpy.app.timers.register(picture, first_interval=0.3)
+
+
 def bake():
     ob = bpy.context.active_object
     ob.m3d_bake.resolution, ob.m3d_bake.samples = '128', 8
@@ -419,6 +466,10 @@ SETUP = {
     "+render": render,
     "+ipr": render_ipr,
     "+renderblank": render_blank,
+    "+hplp": sword,
+    "+hpwire": sword_wire,
+    "+hpmouse": mouse_to_viewport,
+    "+hpmenu": sword_menu,
     "+sphere": lambda: bpy.ops.m3d.add_primitive(kind='SPHERE'),
     "+cube": lambda: bpy.ops.m3d.add_primitive(kind='CUBE'),
     "+unwrap": lambda: bpy.ops.m3d.uv_auto(),

@@ -29,6 +29,7 @@ from mathutils import Vector
 
 import m3d_layers as L
 import m3d_masks as MK
+import m3d_pair
 import m3d_uv
 from m3d_layers import (CHANNEL_BY_ID, CHANNEL_ITEMS, CHANNELS, active_layer, entry_of, pixels_of, principled_of,
                         set_channel_space)
@@ -167,6 +168,8 @@ def missing(context):
     if ob is None:
         return ['MESH']
     out = []
+    if m3d_pair.big_note(context):
+        out.append('BIG')
     if not ob.data.uv_layers:
         out.append('UV')
     if ob.active_material is None:
@@ -178,7 +181,7 @@ def missing(context):
     return out
 
 
-NEEDS = {None: (), 'MESH': ('MESH',), 'PAINT': ('MESH', 'UV', 'MATERIAL', 'CHECKER', 'MODE'),
+NEEDS = {None: (), 'MESH': ('MESH',), 'PAINT': ('MESH', 'BIG', 'UV', 'MATERIAL', 'CHECKER', 'MODE'),
          'BAKE': ('MESH', 'UV'), 'EXPORT': ('MESH', 'MATERIAL')}
 # need -> (message, button, icon, operator, properties)
 FIXES = {
@@ -199,6 +202,9 @@ def draw_fixes(layout, context, need):
     col = layout.column(align=True)
     for key in missing(context):
         if key in NEEDS[need]:
+            if key == 'BIG':   # a huge mesh stays in Object Mode here: the message says which mesh to pick instead
+                m3d_pair.draw_note(col, m3d_pair.big_note(context))
+                continue
             text, label, icon, idname, props = FIXES[key]
             col.label(text=text)
             _button(col, context, label, idname, icon, props)
@@ -1546,6 +1552,9 @@ def draw_status_line(layout, context):
     _call(row, "object.mode_set", 'OBJECT_DATAMODE', "Object Mode", depress=context.mode == 'OBJECT', mode='OBJECT')
     _call(row, "object.mode_set", 'TPAINT_HLT', "Texture Paint Mode", depress=context.mode == 'PAINT_TEXTURE',
           mode='TEXTURE_PAINT')
+    note = m3d_pair.big_note(context)
+    if note:
+        layout.label(text=note, icon='ERROR')
     ob = mesh_of(context)
     if ob is None:
         draw_workspace_picker(layout, context)

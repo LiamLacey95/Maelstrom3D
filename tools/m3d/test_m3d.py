@@ -10,8 +10,8 @@ def check(cond, msg):
 # Icons used in m3d_mode exist.
 import re, m3d_mode
 icons = set(bpy.types.UILayout.bl_rna.functions['operator'].parameters['icon'].enum_items.keys())
-import m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_sculpt, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv
-src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_sculpt, m3d_texture, _maya_ui, _maya_uv))
+import m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_sculpt, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv
+src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_sculpt, m3d_texture, _maya_ui, _maya_uv))
 for ic in set(re.findall(r"icon='([A-Z_0-9]+)'", src)):
     check(ic in icons, "missing icon " + ic)
 
@@ -5883,6 +5883,8 @@ for kind_, (wname_, *_rest) in W.KINDS.items():
           "%s settings: Click to Edit toggle: %s" % (kind_, edit_))
     check("m3d.dock_layout_reset" in [o[0] for o in ws_ops(log)], "%s settings: Reset Dock Layout" % kind_)
     check((ws_, "m3d_show_shelf") in props_, "%s settings: Show Shelf" % kind_)
+    check(((ws_, "m3d_face_limit") in props_) == (ws_.object_mode in {'EDIT', 'TEXTURE_PAINT'}),
+          "%s settings: the face limit is there for Edit and Texture Paint entry modes only" % kind_)
     # Entry mode sticks.
     old_ = ws_.object_mode
     ws_.object_mode = 'EDIT' if old_ != 'EDIT' else 'OBJECT'
@@ -6237,12 +6239,509 @@ check([k.idname for k in user_items_("m3d.workspace") if k.type == 'F1'], "...an
 E._load_post()
 check(not E.editing() and E._capture is None, "loading a file ends edit mode")
 
+# ----------------------------------------------------------------------------------------------------
+# High poly / low poly (m3d_pair.py): names, roles and groups, Create High Poly, Mark / Pair, parking, Edit High Poly,
+# Show Low Poly, the face limit of the UV and Texture workspaces, the Channel Box row and the Status Line button.
+import m3d_pair as PR
+hp_ws = {name: bpy.data.workspaces[name] for name in ("Modeling", "Sculpt", "UV", "Texture")}
+hp_ctx = bpy.context
+
+for name, want in (("Sword_high", ("Sword", 'HIGH')), ("Sword_low", ("Sword", 'LOW')), ("sword_HP", ("sword", 'HIGH')),
+                   ("Sword_LP", ("Sword", 'LOW')), ("Sword_lo", ("Sword", 'LOW')), ("Sword_Hi", ("Sword", 'HIGH')),
+                   ("Sword_lowpoly", ("Sword", 'LOW')), ("Sword_HighPoly", ("Sword", 'HIGH')),
+                   ("Sword_high.001", ("Sword", 'HIGH')), ("Sword_low.012", ("Sword", 'LOW')),
+                   ("Sword-high", ("Sword", 'HIGH')), ("Sword high", ("Sword", 'HIGH')), ("Sword.high", ("Sword", 'HIGH')),
+                   ("Big_Sword_low", ("Big_Sword", 'LOW')), ("Left_Hi_Arm_low", ("Left_Hi_Arm", 'LOW')),
+                   ("Panel_high_bolts", ("Panel", 'HIGH')), ("Panel_hp_bolts_2", ("Panel", 'HIGH')),
+                   ("Panel_high_bolts.003", ("Panel", 'HIGH')), ("Panel_lowpoly_rim", ("Panel", 'LOW')),
+                   ("Sword", ("Sword", None)), ("Sword.001", ("Sword.001", None)), ("High", ("High", None)),
+                   ("high_low", ("high", 'LOW')), ("_high", ("_high", None)), ("Hi_Res", ("Hi_Res", None)), ("", ("", None))):
+    check(PR.split_role(name) == want, "split_role(%r) = %r, wanted %r" % (name, PR.split_role(name), want))
+check(PR.format_count(2_100_000) == "2.1M" and PR.format_count(720_000) == "720k" and PR.format_count(4_200) == "4,200",
+      "face counts read short: %s %s" % (PR.format_count(2_100_000), PR.format_count(720_000)))
+
+check(hasattr(bpy.types.Object, "m3d_pair") and hasattr(bpy.types.Scene, "m3d_show_low")
+      and bpy.types.WorkSpace.bl_rna.properties["m3d_face_limit"].default == 500_000, "pair properties registered")
+check({i.identifier for i in bpy.types.Object.bl_rna.properties["m3d_pair"].fixed_type.properties["role"].enum_items} ==
+      {'NONE', 'LOW', 'HIGH'}, "roles")
+for cls in PR.classes:
+    if issubclass(cls, (bpy.types.Operator, bpy.types.Menu)):
+        check(getattr(bpy.types, cls.__name__, None) is not None, "%s registered" % cls.__name__)
+    if issubclass(cls, bpy.types.Operator):
+        check('UNDO' in cls.bl_options, "%s is undoable" % cls.bl_idname)
+
+
+def hp_cube(name, scale=(1, 1, 1), role='NONE', group=""):
+    bpy.ops.mesh.primitive_cube_add()
+    ob = bpy.context.active_object
+    ob.name, ob.scale = name, scale
+    ob.m3d_pair.role, ob.m3d_pair.group = role, group
+    return ob
+
+
+def hp_select(*obs, active=None):
+    for o in bpy.context.view_layer.objects:
+        o.select_set(False)
+    for o in obs:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = active or (obs[-1] if obs else None)
+
+
+def hp_scene(*specs):
+    """A clean scene with meshes (name, role, group), the last one active."""
+    clean_scene()
+    obs = {name: hp_cube(name, role=role, group=group) for name, role, group in specs}
+    PR._last.clear()
+    PR._state.update(ws=None, pending=None, group="")
+    bpy.context.scene.m3d_show_low = False
+    return obs
+
+
+def hp_active():
+    return bpy.context.view_layer.objects.active
+
+
+def hp_near(a, b):
+    return all(abs(x - y) < 1e-4 for x, y in zip(a, b))
+
+
+# --- Create High Poly
+clean_scene()
+hp_low = hp_cube("Sword", scale=(0.2, 0.1, 1.0))
+bpy.context.view_layer.update()
+hp_dims = tuple(hp_low.dimensions)
+hp_select(hp_low)
+check(bpy.ops.m3d.hp_create() == {'FINISHED'}, "Create High Poly runs")
+hp_high = bpy.data.objects.get("Sword_high")
+check(hp_high is not None and hp_low.name == "Sword" and hp_high.type == 'MESH', "the copy is Sword_high, the original keeps its name")
+check(hp_low.m3d_pair.role == 'LOW' and hp_high.m3d_pair.role == 'HIGH' and hp_low.m3d_pair.group == hp_high.m3d_pair.group == "Sword",
+      "the original is the low poly, the copy the high poly, one group")
+check(hp_high.data is not hp_low.data and hp_high.data.users == 1 and hp_low.data.users == 1, "a full copy: the mesh is not shared")
+check(hp_near(hp_high.scale, (1, 1, 1)) and hp_near(hp_low.scale, (0.2, 0.1, 1.0)), "scale applied on the copy only: %s %s" % (
+      tuple(hp_high.scale), tuple(hp_low.scale)))
+bpy.context.view_layer.update()
+check(hp_near(hp_high.dimensions, hp_dims) and hp_near(hp_low.dimensions, hp_dims) and hp_dims[2] > 1.9,
+      "...the copy has the same size: %s %s" % (tuple(hp_high.dimensions), hp_dims))
+check(list(hp_high.users_collection) == list(hp_low.users_collection), "the copy is in the original's collection")
+check(hp_active() == hp_high and hp_high.select_get() and not hp_low.select_get() and not hp_high.hide_get(),
+      "the copy is selected, shown and active (outside Sculpt it is parked at the next workspace switch)")
+n_objects = len(bpy.data.objects)
+hp_select(hp_low)
+check(bpy.ops.m3d.hp_create() == {'FINISHED'} and len(bpy.data.objects) == n_objects and hp_active() == hp_high and hp_high.select_get(),
+      "a second Create High Poly selects the one that exists")
+hp_select(hp_high)
+check(bpy.ops.m3d.hp_create() == {'CANCELLED'}, "a high poly has no high poly")
+hp_select()
+check(not bpy.ops.m3d.hp_create.poll(), "Create High Poly needs a mesh")
+
+hp_cube("Shield_low", scale=(2, 2, 2))
+hp_select(bpy.data.objects["Shield_low"])
+bpy.ops.m3d.hp_create()
+hp_shield = bpy.data.objects["Shield_high"]
+check(hp_near(hp_shield.scale, (2, 2, 2)) and hp_shield.m3d_pair.group == "Shield" and bpy.data.objects["Shield_low"].name == "Shield_low",
+      "a uniform scale stays; a low poly named _low gives <base>_high and group <base>")
+bpy.ops.m3d.add_primitive(kind='CUBE')
+hp_prim = bpy.context.active_object
+hp_prim.name = "Crate"
+check(hp_prim.m3d_input.kind == 'CUBE', "(a primitive with live inputs)")
+hp_select(hp_prim)
+bpy.ops.m3d.hp_create()
+check(bpy.data.objects["Crate_high"].m3d_input.kind == 'NONE' and hp_prim.m3d_input.kind == 'CUBE',
+      "the copy has no live inputs, the original keeps them")
+
+hp_gem = hp_cube("Gem")
+hp_select(hp_gem)
+check(bpy.ops.m3d.hp_create(detail='MULTIRES', levels=3) == {'FINISHED'}, "Create High Poly with Multires")
+hp_gem_high = bpy.data.objects["Gem_high"]
+hp_mod = S.multires_of(hp_gem_high)
+check(hp_mod is not None and hp_mod.total_levels == 3 and hp_mod.levels == 3 and hp_mod.sculpt_levels == 3
+      and len(hp_gem_high.data.polygons) == 6 and S.multires_of(hp_gem) is None,
+      "Multires: 3 levels on the copy, the base mesh and the original untouched")
+check(PR.face_count(hp_gem_high) == 6 * 4 ** 3 == len(hp_gem_high.evaluated_get(bpy.context.evaluated_depsgraph_get()).data.polygons)
+      and PR.face_count(hp_gem) == 6, "the face count follows the Multires level: %d" % PR.face_count(hp_gem_high))
+hp_mod.levels = 1
+check(PR.face_count(hp_gem_high) == 6 * 4, "...at the level the viewport shows")
+hp_rock = hp_cube("Rock")
+hp_select(hp_rock)
+check(bpy.ops.m3d.hp_create(detail='VOXEL', voxel_size=0.25) == {'FINISHED'}, "Create High Poly with Voxel Remesh")
+hp_rock_high = bpy.data.objects["Rock_high"]
+check(len(hp_rock_high.data.polygons) > 100 and not hp_rock_high.modifiers and len(hp_rock.data.polygons) == 6,
+      "Voxel Remesh: %d faces on the copy, the original untouched" % len(hp_rock_high.data.polygons))
+hp_pebble = hp_cube("Pebble")
+hp_select(hp_pebble)
+n_objects = len(bpy.data.objects)
+try:
+    hp_refused = bpy.ops.m3d.hp_create(detail='VOXEL', voxel_size=0.0005) == {'CANCELLED'}
+except RuntimeError as err:   # (the error is reported: Python callers get it as an exception)
+    hp_refused = "faces" in str(err)
+check(hp_refused and len(bpy.data.objects) == n_objects and hp_pebble.m3d_pair.role == 'NONE',
+      "a voxel size that would make millions of faces is refused before anything is made")
+hp_select(hp_gem, hp_pebble)
+bpy.ops.m3d.hp_create()
+check(bpy.data.objects.get("Pebble_high") is not None and hp_gem.m3d_pair.role == 'LOW' and
+      len([o for o in bpy.data.objects if o.name.startswith("Gem_high")]) == 1, "several meshes: one high poly each")
+
+# Created while Sculpt is the workspace: the new high poly is sculpted, the low poly put away.
+hp_vase = hp_cube("Vase")
+hp_select(hp_vase)
+with bpy.context.temp_override(workspace=hp_ws["Sculpt"]):
+    bpy.ops.m3d.hp_create(detail='MULTIRES', levels=1)
+hp_vase_high = bpy.data.objects["Vase_high"]
+check(hp_active() == hp_vase_high and hp_vase_high.mode == 'OBJECT' and hp_vase.hide_get() and hp_vase.m3d_pair.parked
+      and not hp_vase_high.hide_get(), "Create High Poly in Sculpt: the copy is active, the original put away (Sculpt Mode follows from a timer)")
+with bpy.context.temp_override(workspace=hp_ws["Sculpt"]):
+    PR.start_sculpt("Vase_high")
+check(hp_vase_high.mode == 'SCULPT', "...which starts Sculpt Mode on the copy")
+bpy.ops.object.mode_set(mode='OBJECT')
+
+# Undo takes the copy and the roles back in one step.
+clean_scene()
+hp_undo = hp_cube("Undo")
+hp_select(hp_undo)
+bpy.ops.ed.undo_push(message="Before Create High Poly")
+bpy.ops.m3d.hp_create('EXEC_DEFAULT', True, detail='MULTIRES', levels=1)
+check(bpy.data.objects.get("Undo_high") is not None and bpy.data.objects["Undo"].m3d_pair.role == 'LOW', "(created)")
+bpy.ops.ed.undo()
+check(bpy.data.objects.get("Undo_high") is None and bpy.data.objects["Undo"].m3d_pair.role == 'NONE'
+      and bpy.data.objects["Undo"].m3d_pair.group == "" and bpy.data.objects["Undo"].name == "Undo", "Undo takes the whole Create High Poly back")
+bpy.ops.ed.redo()
+check(bpy.data.objects.get("Undo_high") is not None and bpy.data.objects["Undo_high"].m3d_pair.role == 'HIGH', "...and Redo does it again")
+
+# --- Mark, Clear, Pair Selected
+o = hp_scene(("Hilt_high", 'NONE', ""), ("Grip", 'NONE', ""))
+hp_select(o["Hilt_high"])
+check(bpy.ops.m3d.hp_mark(role='HIGH') == {'FINISHED'} and o["Hilt_high"].m3d_pair.role == 'HIGH' and o["Hilt_high"].m3d_pair.group == "Hilt",
+      "Mark as High Poly: the group is the name without its suffix")
+bpy.ops.m3d.hp_mark(role='LOW')
+check(o["Hilt_high"].m3d_pair.role == 'LOW' and o["Hilt_high"].m3d_pair.group == "Hilt", "Mark as Low Poly keeps the group")
+hp_select(o["Grip"])
+bpy.ops.m3d.hp_mark(role='HIGH')
+check(o["Grip"].m3d_pair.group == "Grip", "a name without a suffix is its own group")
+PR.park(o["Grip"])
+PR.set_role(o["Grip"], 'NONE')
+check(o["Grip"].m3d_pair.role == 'NONE' and o["Grip"].m3d_pair.group == "" and not o["Grip"].hide_get() and not o["Grip"].m3d_pair.parked,
+      "Clear Role: no role, no group, shown again if we had parked it")
+hp_select(o["Hilt_high"])
+bpy.ops.m3d.hp_mark(role='NONE')
+check(o["Hilt_high"].m3d_pair.role == 'NONE' and o["Hilt_high"].m3d_pair.group == "", "Clear Role operator")
+
+o = hp_scene(("Hilt_low", 'NONE', ""), ("Bolt", 'NONE', ""), ("Pommel", 'NONE', ""))
+hp_select(o["Bolt"], o["Pommel"], o["Hilt_low"])
+check(bpy.ops.m3d.hp_pair.poll() and bpy.ops.m3d.hp_pair() == {'FINISHED'}, "Pair Selected runs")
+check(o["Hilt_low"].m3d_pair.role == 'LOW' and o["Bolt"].m3d_pair.role == o["Pommel"].m3d_pair.role == 'HIGH'
+      and {x.m3d_pair.group for x in o.values()} == {"Hilt"}, "Pair Selected: the active mesh is the low poly, the others its high poly, one group")
+check(PR.pair_of(hp_ctx, o["Bolt"]) == ([o["Hilt_low"]], [o["Bolt"], o["Pommel"]]), "pair_of: low polys and high polys of the group")
+hp_select(o["Hilt_low"])
+check(not bpy.ops.m3d.hp_pair.poll(), "Pair Selected needs a second mesh")
+
+# --- Parking: Sculpt shows the high poly, leaving it parks it
+o = hp_scene(("A_low", 'LOW', "A"), ("A_high", 'HIGH', "A"), ("Plain", 'NONE', ""), ("Hidden", 'NONE', ""))
+o["Hidden"].hide_set(True)
+hp_select(o["A_low"], o["Plain"], active=o["A_low"])
+PR.switch(hp_ctx, hp_ws["Modeling"], hp_ws["Sculpt"], set_mode=True)
+check(not o["A_high"].hide_get() and o["A_low"].hide_get() and o["A_low"].m3d_pair.parked and hp_active() == o["A_high"]
+      and o["A_high"].mode == 'SCULPT' and o["A_high"].select_get() and not o["A_low"].select_get(),
+      "Sculpt: the high poly is shown, selected, active and sculpted; the low poly is parked")
+check(o["Plain"].select_get() and not o["Plain"].hide_get() and o["Hidden"].hide_get() and not o["Hidden"].m3d_pair.parked
+      and o["Plain"].m3d_pair.role == 'NONE' and not o["Plain"].m3d_pair.parked, "meshes without a role are left as they were")
+PR.switch(hp_ctx, hp_ws["Sculpt"], hp_ws["Modeling"])
+check(o["A_high"].hide_get() and o["A_high"].m3d_pair.parked and not o["A_low"].hide_get() and not o["A_low"].m3d_pair.parked
+      and hp_active() == o["A_low"] and o["A_low"].select_get() and not o["A_high"].select_get() and o["A_high"].mode == 'OBJECT',
+      "leaving Sculpt: Object Mode, the high poly parked, the low poly shown, selected and active")
+check(o["Plain"].select_get() and not o["Plain"].hide_get() and o["Hidden"].hide_get() and not o["Hidden"].m3d_pair.parked,
+      "...and the meshes without a role again as they were")
+PR.switch(hp_ctx, hp_ws["Modeling"], hp_ws["UV"])
+check(o["A_high"].hide_get() and hp_active() == o["A_low"], "any other switch keeps it parked")
+
+# The same through M3D_OT_workspace (the window is switched by the C code right after it; no window here).
+with bpy.context.temp_override(workspace=hp_ws["Modeling"]):
+    bpy.ops.m3d.workspace(kind='SCULPT')
+check(not o["A_high"].hide_get() and o["A_low"].hide_get() and hp_active() == o["A_high"] and PR._state["ws"] == "Sculpt"
+      and PR._state["pending"] and PR._state["pending"][0] == "Sculpt", "F2 shows the high poly before the window changes")
+PR.before_switch(hp_ctx, hp_ws["Sculpt"], hp_ws["Modeling"])   # (the window never changes here: the second half is gui_test.py)
+check(o["A_high"].hide_get() and not o["A_low"].hide_get() and hp_active() == o["A_low"], "F1 parks it again")
+
+# Floaters: every high poly of the group is shown; the one sculpted last is the one that starts.
+o = hp_scene(("Panel_low", 'LOW', "Panel"), ("Panel_high", 'HIGH', "Panel"), ("Panel_high_bolts", 'HIGH', "Panel"),
+             ("Other_high", 'HIGH', "Other"))
+hp_select(o["Panel_low"])
+PR.switch(hp_ctx, hp_ws["Modeling"], hp_ws["Sculpt"], set_mode=True)
+check(not o["Panel_high"].hide_get() and not o["Panel_high_bolts"].hide_get() and hp_active() == o["Panel_high"]
+      and o["Panel_low"].hide_get(), "floaters: all shown, the first by name is sculpted")
+check(not o["Other_high"].hide_get() and not o["Other_high"].m3d_pair.parked, "a group without a low poly is never parked")
+bpy.ops.object.mode_set(mode='OBJECT')
+hp_select(o["Panel_high_bolts"])
+bpy.ops.object.mode_set(mode='SCULPT')
+PR.switch(hp_ctx, hp_ws["Sculpt"], hp_ws["Modeling"])
+check(o["Panel_high"].hide_get() and o["Panel_high_bolts"].hide_get() and not o["Panel_low"].hide_get() and hp_active() == o["Panel_low"]
+      and PR._last["Panel"] == "Panel_high_bolts" and not o["Other_high"].hide_get(), "floaters: all parked, the last sculpted is remembered")
+PR.switch(hp_ctx, hp_ws["Modeling"], hp_ws["Sculpt"], set_mode=True)
+check(hp_active() == o["Panel_high_bolts"] and o["Panel_high_bolts"].mode == 'SCULPT' and not o["Panel_high"].hide_get(),
+      "...and sculpted again next time")
+PR.switch(hp_ctx, hp_ws["Sculpt"], hp_ws["Modeling"])
+o["Panel_high"].hide_set(False)   # (shown by Edit High Poly, say)
+hp_select(o["Panel_high"])
+PR.switch(hp_ctx, hp_ws["Modeling"], hp_ws["Sculpt"], set_mode=True)
+check(hp_active() == o["Panel_high"], "a high poly that is active starts as it is")
+PR.switch(hp_ctx, hp_ws["Sculpt"], hp_ws["Modeling"])
+
+# High poly first: no low poly, nothing is parked, the high poly is what you look at.
+o = hp_scene(("Rock_high", 'HIGH', "Rock"), ("Cube", 'NONE', ""))
+hp_select(o["Rock_high"])
+for old, new in (("Modeling", "Sculpt"), ("Sculpt", "Modeling"), ("Modeling", "UV"), ("UV", "Modeling")):
+    PR.switch(hp_ctx, hp_ws[old], hp_ws[new], set_mode=new == "Sculpt")
+    check(not o["Rock_high"].hide_get() and not o["Rock_high"].m3d_pair.parked and hp_active() == o["Rock_high"], "no low poly, no parking (%s)" % new)
+bpy.ops.object.mode_set(mode='OBJECT')
+hp_select(o["Cube"])
+PR.switch(hp_ctx, hp_ws["Modeling"], hp_ws["Sculpt"], set_mode=True)
+check(hp_active() == o["Cube"] and not o["Rock_high"].hide_get() and not o["Cube"].hide_get(), "a mesh without a role: Sculpt changes nothing (the window sets the mode)")
+PR.switch(hp_ctx, hp_ws["Sculpt"], hp_ws["Modeling"])
+check(hp_active() == o["Cube"] and not o["Cube"].hide_get() and o["Cube"].select_get(), "...and neither does leaving it")
+
+# What the user hid is not ours to show.
+o = hp_scene(("U_low", 'LOW', "U"), ("U_high", 'HIGH', "U"))
+o["U_high"].hide_set(True)
+hp_select(o["U_low"])
+PR.switch(hp_ctx, hp_ws["Modeling"], hp_ws["Sculpt"], set_mode=True)
+check(o["U_high"].hide_get() and not o["U_low"].hide_get() and hp_active() == o["U_low"] and not o["U_high"].m3d_pair.parked,
+      "a high poly the user hid stays hidden: Sculpt leaves the pair alone")
+bpy.ops.object.mode_set(mode='OBJECT')
+PR.switch(hp_ctx, hp_ws["Sculpt"], hp_ws["Modeling"])
+check(o["U_high"].hide_get() and not o["U_high"].m3d_pair.parked and not o["U_low"].hide_get(), "...and it is not unhidden or marked as parked later")
+o = hp_scene(("V_low", 'LOW', "V"), ("V_high", 'HIGH', "V"))
+o["V_low"].hide_set(True)
+hp_select(o["V_high"])
+PR.switch(hp_ctx, hp_ws["Modeling"], hp_ws["UV"])
+check(o["V_high"].hide_get() and o["V_high"].m3d_pair.parked and o["V_low"].hide_get() and not o["V_low"].m3d_pair.parked,
+      "a low poly the user hid stays hidden (and the active high poly has nothing to hand over to)")
+o = hp_scene(("W_low", 'LOW', "W"), ("W_high", 'HIGH', "W"))
+hp_select(o["W_low"])
+PR.switch(hp_ctx, hp_ws["Modeling"], hp_ws["Sculpt"], set_mode=True)
+o["W_low"].hide_set(False)   # the user shows the low poly while sculpting
+PR.switch(hp_ctx, hp_ws["Sculpt"], hp_ws["Modeling"])
+check(not o["W_low"].hide_get() and not o["W_low"].m3d_pair.parked and o["W_high"].hide_get(), "a low poly the user showed in Sculpt just stays")
+
+# Edit High Poly and Park High Poly
+o = hp_scene(("E_low", 'LOW', "E"), ("E_high", 'HIGH', "E"), ("Lone", 'NONE', ""))
+hp_select(o["E_low"])
+PR.switch(hp_ctx, hp_ws["Modeling"], hp_ws["Sculpt"], set_mode=True)
+PR.switch(hp_ctx, hp_ws["Sculpt"], hp_ws["Modeling"])
+check(bpy.ops.m3d.hp_edit.poll() and not bpy.ops.m3d.hp_park.poll(), "Edit High Poly is there on a low poly with a parked high poly")
+check(bpy.ops.m3d.hp_edit() == {'FINISHED'}, "Edit High Poly runs")
+check(not o["E_high"].hide_get() and not o["E_high"].m3d_pair.parked and hp_active() == o["E_high"] and o["E_high"].select_get()
+      and not o["E_low"].select_get() and not o["E_low"].hide_get(), "it unparks, selects and activates the high poly")
+check(bpy.ops.m3d.hp_park.poll() and bpy.ops.m3d.hp_park() == {'FINISHED'}, "Park High Poly runs")
+check(o["E_high"].hide_get() and o["E_high"].m3d_pair.parked and hp_active() == o["E_low"] and o["E_low"].select_get(),
+      "Park High Poly hides it again and selects the low poly")
+bpy.ops.m3d.hp_edit()
+PR.switch(hp_ctx, hp_ws["Modeling"], hp_ws["UV"])
+check(o["E_high"].hide_get() and hp_active() == o["E_low"], "the next workspace switch parks it again")
+hp_select(o["Lone"])
+check(not bpy.ops.m3d.hp_edit.poll() and not bpy.ops.m3d.hp_park.poll(), "no Edit High Poly on a mesh without a pair")
+hp_select(o["E_low"])
+with bpy.context.temp_override(workspace=hp_ws["Sculpt"]):
+    check(not bpy.ops.m3d.hp_edit.poll(), "no Edit High Poly in Sculpt (the high poly is already there)")
+hp_fake = lambda name, n: NS(name=name, data=NS(polygons=range(n)), modifiers=[])
+check(PR.edit_message([hp_fake("Sword_high", 2996586)]) == "Sword_high has 2,996,586 faces. Showing it takes a moment",
+      "the question names the mesh and its faces: %s" % PR.edit_message([hp_fake("Sword_high", 2996586)]))
+check(PR.edit_message([hp_fake("Panel_high", 1000), hp_fake("Panel_high_bolts", 500)]) ==
+      "Panel_high and 1 more have 1,500 faces. Showing them takes a moment", "...and counts floaters")
+
+# Show Low Poly: the low poly is a wire you can't select while you sculpt.
+o = hp_scene(("S_low", 'LOW', "S"), ("S_high", 'HIGH', "S"))
+hp_select(o["S_low"])
+bpy.context.scene.m3d_show_low = True
+PR.switch(hp_ctx, hp_ws["Modeling"], hp_ws["Sculpt"], set_mode=True)
+low = o["S_low"]
+check(not low.hide_get() and low.display_type == 'WIRE' and low.hide_select and not low.select_get() and low.m3d_pair.ghost == 'TEXTURED'
+      and hp_active() == o["S_high"], "Show Low Poly: a wire, unselectable")
+bpy.context.scene.m3d_show_low = False
+check(low.hide_get() and low.display_type == 'TEXTURED' and not low.hide_select and not low.m3d_pair.ghost and low.m3d_pair.parked,
+      "...turned off in Sculpt: put away again")
+bpy.context.scene.m3d_show_low = True
+check(not low.hide_get() and low.display_type == 'WIRE' and low.hide_select, "...and on again")
+PR.switch(hp_ctx, hp_ws["Sculpt"], hp_ws["Modeling"])
+check(not low.hide_get() and low.display_type == 'TEXTURED' and not low.hide_select and not low.m3d_pair.ghost and low.select_get()
+      and hp_active() == low and o["S_high"].hide_get(), "leaving Sculpt: the low poly is solid and selectable again")
+bpy.context.scene.m3d_show_low = False
+
+# The timer fallback: the window was switched some other way.
+o = hp_scene(("F_low", 'LOW', "F"), ("F_high", 'HIGH', "F"))
+hp_select(o["F_low"])
+hp_win = NS(workspace=hp_ws["Modeling"])
+hp_wm = NS(windows=[hp_win])
+PR.follow(hp_wm)
+check(PR._state["ws"] == "Modeling" and not o["F_low"].hide_get(), "the fallback starts from the current workspace")
+hp_win.workspace = hp_ws["Sculpt"]
+PR.follow(hp_wm)
+check(not o["F_high"].hide_get() and o["F_low"].hide_get() and o["F_high"].mode == 'SCULPT' and hp_active() == o["F_high"],
+      "the workspace picker: the fallback shows the high poly and starts Sculpt Mode on it")
+hp_win.workspace = hp_ws["Modeling"]
+PR.follow(hp_wm)
+check(o["F_high"].hide_get() and not o["F_low"].hide_get() and o["F_high"].mode == 'OBJECT' and hp_active() == o["F_low"], "...and parks it")
+# A switch M3D_OT_workspace started: the window has not caught up, the fallback must not undo it.
+hp_select(o["F_low"])
+PR.before_switch(hp_ctx, hp_ws["Modeling"], hp_ws["Sculpt"])
+check(not o["F_high"].hide_get(), "(the operator showed the high poly)")
+PR.follow(hp_wm)   # the window still shows Modeling
+check(not o["F_high"].hide_get() and o["F_low"].hide_get(), "the fallback leaves a switch in progress alone")
+hp_win.workspace = hp_ws["Sculpt"]
+PR.follow(hp_wm)
+check(PR._state["pending"] is None and not o["F_high"].hide_get() and o["F_low"].hide_get(), "...and ends it when the window arrives")
+bpy.ops.object.mode_set(mode='SCULPT')
+PR.before_switch(hp_ctx, hp_ws["Sculpt"], hp_ws["Modeling"])
+PR._state["pending"] = ("Modeling", 0)   # (the switch never happened)
+PR.follow(hp_wm)
+check(PR._state["pending"] is None and not o["F_high"].hide_get(), "a switch that never arrives is put right after its deadline")
+bpy.ops.object.mode_set(mode='OBJECT')
+
+# --- The face limit of the UV and Texture workspaces
+clean_scene()
+bpy.ops.m3d.add_primitive(kind='SPHERE')
+hp_big = bpy.context.active_object
+hp_big.name = "Orb"
+hp_faces = len(hp_big.data.polygons)
+check(hp_faces > 300, "(a sphere with %d faces)" % hp_faces)
+check(all(ws.m3d_face_limit == 500_000 for ws in bpy.data.workspaces), "the face limit starts at 500,000 in every workspace")
+for key in ("UV", "Texture"):
+    hp_ws[key].m3d_face_limit = 100
+check(PR.too_big(hp_ws["UV"], hp_big) and not PR.too_big(hp_ws["Modeling"], hp_big), "a mesh over the limit is too big for UV and Texture")
+check(PR.keeps_object_mode(hp_ctx, hp_ws["UV"]) and PR.keeps_object_mode(hp_ctx, hp_ws["Texture"])
+      and not PR.keeps_object_mode(hp_ctx, hp_ws["Modeling"]) and not PR.keeps_object_mode(hp_ctx, hp_ws["Sculpt"]),
+      "UV (Edit) and Texture (Texture Paint) stay in Object Mode on a big mesh; Modeling and Sculpt are not limited")
+hp_ws["UV"].m3d_face_limit = hp_faces
+check(not PR.keeps_object_mode(hp_ctx, hp_ws["UV"]), "a mesh at the limit is fine")
+hp_ws["UV"].m3d_face_limit = 0
+check(not PR.keeps_object_mode(hp_ctx, hp_ws["UV"]), "0 means no limit")
+hp_ws["UV"].m3d_face_limit = 100
+check(PR.before_switch(hp_ctx, hp_ws["Modeling"], hp_ws["UV"]) is True, "switching to UV with a big mesh: stay in Object Mode")
+check(PR.before_switch(hp_ctx, hp_ws["UV"], hp_ws["UV"]) is False, "(no switch, nothing to hold)")
+with bpy.context.temp_override(workspace=hp_ws["Modeling"]):
+    check(bpy.ops.m3d.workspace(kind='UV') == {'FINISHED'} and bpy.context.active_object == hp_big and hp_big.mode == 'OBJECT',
+          "F3 with a big mesh runs and leaves it in Object Mode")
+check(hp_ws["UV"].object_mode == 'OBJECT', "the workspace's entry mode is Object Mode for the switch (the C code reads it as the notifier is handled)")
+check(PR.release_hold("UV", 'EDIT', 0) is None and hp_ws["UV"].object_mode == 'EDIT', "...and put back after it (the timer does this)")
+hp_note = PR.big_note(NS(active_object=hp_big, workspace=hp_ws["UV"]))
+check(hp_note == "High poly (%s faces): select the low poly to unwrap or paint" % PR.format_count(hp_faces), "the note: %s" % hp_note)
+check(PR.big_note(NS(active_object=hp_big, workspace=hp_ws["Modeling"])) is None and PR.big_note(NS(active_object=None, workspace=hp_ws["UV"])) is None,
+      "no note without a limit exceeded or a mesh")
+hp_log = []
+PR.draw_note(Rec(hp_log), hp_note)
+check([r._kw["text"] for r in hp_log if r._kind == "label"] == ["High poly (%s faces):" % PR.format_count(hp_faces),
+                                                                 "Select the low poly to unwrap or paint"], "the dock shows it on two lines")
+hp_tex_ctx = NS(active_object=hp_big, workspace=hp_ws["Texture"], area=NS(type='VIEW_3D'), screen=None)
+check(T.missing(hp_tex_ctx)[0] == 'BIG' and not T.ready(hp_tex_ctx, 'PAINT'), "Texture: a big mesh is not ready to paint (%s)" % T.missing(hp_tex_ctx))
+hp_log = []
+T.draw_fixes(Rec(hp_log), hp_tex_ctx, 'PAINT')
+check(any(r._kind == "label" and r._kw.get("text", "").startswith("High poly (") for r in hp_log), "Texture: the dock says why")
+hp_ws["Texture"].m3d_face_limit = 0
+check('BIG' not in T.missing(hp_tex_ctx), "Texture: no note without a limit")
+# A high poly with a low poly: the low poly takes over (parking applies anyway).
+o = hp_scene(("Orb_low", 'LOW', "Orb"), ("Orb_high", 'HIGH', "Orb"))
+bpy.ops.mesh.primitive_uv_sphere_add()
+hp_sphere = bpy.context.active_object
+o["Orb_high"].data = hp_sphere.data
+bpy.data.objects.remove(hp_sphere)
+hp_select(o["Orb_high"])
+check(len(o["Orb_high"].data.polygons) > 100, "(a big high poly)")
+check(PR.before_switch(hp_ctx, hp_ws["Modeling"], hp_ws["UV"]) is False and hp_active() == o["Orb_low"] and o["Orb_high"].hide_get()
+      and o["Orb_low"].select_get(), "F3 on a high poly with a low poly: the low poly opens (Edit Mode), the high poly is parked")
+hp_ws["Texture"].m3d_face_limit = 500_000
+hp_ws["UV"].m3d_face_limit = 500_000
+hp_log = []
+W.M3D_PT_workspace_settings.draw(type("Inst", (), {"layout": Rec(hp_log)})(), NS(workspace=hp_ws["UV"], window_manager=bpy.context.window_manager,
+                                                                                    window=None))
+check(any(r._kind == "prop" and r._args[1] == "m3d_face_limit" for r in hp_log), "Workspace Settings: the face limit in UV")
+hp_log = []
+W.M3D_PT_workspace_settings.draw(type("Inst", (), {"layout": Rec(hp_log)})(), NS(workspace=hp_ws["Modeling"], window_manager=bpy.context.window_manager,
+                                                                                    window=None))
+check(not any(r._kind == "prop" and r._args[1] == "m3d_face_limit" for r in hp_log), "...not in Modeling")
+
+# --- Where it shows: Channel Box, Sculpt Status Line, Meshes page, right-click menu
+o = hp_scene(("Hilt_low", 'LOW', "Hilt"), ("Hilt_high", 'HIGH', "Hilt"), ("Plain", 'NONE', ""))
+hp_select(o["Hilt_low"])
+hp_log = channel_box_log()
+check("Bake: Low · Hilt" in [r._kw.get("text") for r in hp_log if r._kind == "label"], "Channel Box: Bake: Low · Hilt")
+check(any(r._kind == "operator_menu_enum" and r._args[:2] == ("m3d.hp_mark", "role") for r in hp_log), "...with a menu to change the role")
+check_calls("channel box bake row", hp_log)
+hp_select(o["Plain"])
+check("Bake: None" in [r._kw.get("text") for r in channel_box_log() if r._kind == "label"], "Channel Box: Bake: None")
+
+
+def hp_status():
+    c = SCtx()
+    c.region, c.space_data = NS(type='TOOL_HEADER', width=1800), NS(type='TOPBAR')
+    log = []
+    S.draw_status_line(Rec(log), c)
+    check_calls("sculpt status line", log)
+    return ([r for r in log if r._kind == "operator" and r._args[0] == "m3d.tool" and r.values().get("idname") == "m3d.hp_create"],
+            [r for r in log if r._kind == "prop" and r._args[1] == "m3d_show_low"])
+
+
+hp_select(o["Plain"])
+create, show = hp_status()
+check(len(create) == 1 and not show, "Sculpt Status Line: Create High Poly on a mesh without a role")
+hp_select(o["Hilt_low"])
+create, show = hp_status()
+check(not create and len(show) == 1 and show[0]._args[0] == bpy.context.scene, "...Show Low Poly on a pair")
+hp_select(o["Hilt_high"])
+create, show = hp_status()
+check(not create and len(show) == 1, "...and on its high poly")
+o["Hilt_low"].m3d_pair.role = 'NONE'
+create, show = hp_status()
+check(not create and not show, "...nothing on a high poly without a low poly")
+o["Hilt_low"].m3d_pair.role = 'LOW'
+o["Hilt_high"].m3d_pair.role = 'NONE'
+hp_select(o["Hilt_low"])
+create, show = hp_status()
+check(len(create) == 1 and not show, "...Create High Poly on a low poly without a high poly")
+o["Hilt_high"].m3d_pair.role = 'HIGH'
+hp_log = []
+S.PROPERTIES_PT_m3d_sc_objects.draw(type("Inst", (), {"layout": Rec(hp_log)})(), SCtx())
+check_calls("sculpt meshes page", hp_log)
+hp_select(o["Plain"])
+hp_log = []
+S.PROPERTIES_PT_m3d_sc_objects.draw(type("Inst", (), {"layout": Rec(hp_log)})(), SCtx())
+check(any(r._kind == "operator" and r._args[0] == "m3d.tool" and r.values().get("idname") == "m3d.hp_create" for r in hp_log),
+      "Meshes page: Create High Poly")
+hp_log = []
+m3d_marking.draw_object_list(Rec(hp_log))
+check(any(r._kind == "menu" and r._args[0] == "M3D_MT_hplp" for r in hp_log), "the right-click menu has the High / Low Poly submenu")
+hp_log = []
+PR.M3D_MT_hplp.draw(type("Inst", (), {"layout": Rec(hp_log)})(), hp_ctx)
+check_calls("High / Low Poly menu", hp_log)
+hp_ops = [(r._args[0], r.values().get("role"), r.values().get("idname")) for r in hp_log if r._kind == "operator"]
+check(hp_ops == [("m3d.tool", None, "m3d.hp_create"), ("m3d.hp_edit", None, None), ("m3d.hp_park", None, None),
+                 ("m3d.hp_mark", 'HIGH', None), ("m3d.hp_mark", 'LOW', None), ("m3d.hp_mark", 'NONE', None), ("m3d.hp_pair", None, None)],
+      "the submenu: Create, Edit, Park, Mark as High / Low, Clear Role, Pair Selected: %s" % hp_ops)
+hp_labels = [r._kw.get("text") or "" for r in hp_log if r._kind == "operator"] + [
+    cls.bl_label + " " + (cls.__doc__ or "") + " " + " ".join(str(getattr(p, "description", "")) for p in cls.bl_rna.properties)
+    for cls in PR.classes if hasattr(cls, "bl_label")] + [str(p.description) for p in PR.M3D_Pair.bl_rna.properties]
+check(hp_labels and not any(w in t for t in hp_labels for w in ("Maya", "ZBrush", "Substance", "Marmoset")), "no product names in the labels and tooltips")
+clean_scene()
+PR._last.clear()
+
 # Save Layouts as Default writes the startup file (into the temp config folder here, never the real one).
 startup_ = os.path.join(TEST_CONFIG, "config", "startup.blend")
 check(not os.path.exists(startup_), "no startup file before saving")
 bpy.ops.wm.save_homefile()
 check(os.path.exists(startup_), "Save Layouts as Default wrote " + startup_)
 os.remove(startup_)
+
+# A file saved with a parked high poly opens with it parked (it is just hidden, so a stock Blender shows the low poly too).
+hp_o = hp_scene(("Saved_low", 'LOW', "Saved"), ("Saved_high", 'HIGH', "Saved"), ("Saved_other_high", 'HIGH', "Saved"))
+hp_select(hp_o["Saved_low"])
+PR.switch(hp_ctx, hp_ws["Modeling"], hp_ws["Sculpt"], set_mode=True)
+PR.switch(hp_ctx, hp_ws["Sculpt"], hp_ws["Modeling"])
+hp_path = os.path.join(tempfile.mkdtemp(prefix="m3d_hp_"), "parked.blend")
+bpy.ops.wm.save_as_mainfile(filepath=hp_path, copy=True)
+bpy.ops.wm.open_mainfile(filepath=hp_path)
+hp_o = bpy.data.objects
+check(hp_o["Saved_high"].hide_get() and hp_o["Saved_high"].m3d_pair.parked and hp_o["Saved_other_high"].hide_get()
+      and hp_o["Saved_high"].m3d_pair.role == 'HIGH' and hp_o["Saved_high"].m3d_pair.group == "Saved"
+      and not hp_o["Saved_low"].hide_get() and hp_o["Saved_low"].m3d_pair.role == 'LOW', "a saved file keeps the high poly parked")
+bpy.ops.m3d.hp_edit()
+check(not hp_o["Saved_high"].hide_get() and not hp_o["Saved_high"].m3d_pair.parked, "...and Edit High Poly still shows it")
 
 print("FAILS:", fails or "none")
 sys.exit(1 if fails else 0)

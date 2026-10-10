@@ -116,8 +116,13 @@ class M3D_OT_workspace(Operator):
         win = context.window or (wm.windows[0] if wm.windows else None)
         if KINDS[self.kind][2] in MESH_MODES:
             use_selected_mesh(context)
+        # A high poly is hidden (Sculpt shows it) before the window changes, so the redraw never draws the wrong one.
+        import m3d_pair
+        hold = m3d_pair.before_switch(context, win.workspace if win is not None else context.workspace, ws)
         if win is not None:
             win.workspace = ws
+            if hold:
+                m3d_pair.hold_object_mode(ws)   # a huge mesh stays in Object Mode here (the note says so)
         wm.m3d_menu_set = KINDS[self.kind][3]
         return {'FINISHED'}
 
@@ -154,6 +159,8 @@ def _follow_workspace():
         follow(wm)        # The Animation workspace limits what redraws while playing.
         from m3d_render import follow as follow_render
         follow_render(wm)  # The Rendering workspace's Render View shows the Render Result.
+        from m3d_pair import follow as follow_pair
+        follow_pair(wm)    # A high poly is parked / shown when Sculpt is left / entered any other way.
     return 0.25
 
 
@@ -450,6 +457,10 @@ class M3D_PT_workspace_settings(Panel):
         row = layout.row()
         row.label(text="Entry mode")
         row.prop(ws, "object_mode", text="")
+        if ws.object_mode in {'EDIT', 'TEXTURE_PAINT'}:
+            row = layout.row()
+            row.label(text="Face limit")
+            row.prop(ws, "m3d_face_limit", text="")
         layout.separator()
         layout.operator("screen.userpref_show", text="Keyboard Shortcuts...", icon='KEYINGSET').section = 'KEYMAP'
         layout.operator("wm.save_homefile", text="Save Layouts as Default", icon='FILE_TICK')
@@ -541,6 +552,10 @@ def register():
         name="Show Shelf", default=True, update=_shelf_visibility_changed,
         description="Show the shelf tabs and the shelf under the Status Line (off: the viewport gets the space; "
                     "the Custom shelf is then in the left tray in Sculpt). The C top bar reads this property")
+    ws.m3d_face_limit = bpy.props.IntProperty(
+        name="Face Limit", default=500_000, min=0, soft_max=5_000_000, step=10000,
+        description="A mesh with more faces than this opens in Object Mode here, so a huge high poly is not rebuilt for "
+                    "Edit Mode or painting (0: no limit)")
     bpy.app.timers.register(_follow_workspace, first_interval=0.5, persistent=True)
 
 
@@ -548,6 +563,6 @@ def unregister():
     if bpy.app.timers.is_registered(_follow_workspace):
         bpy.app.timers.unregister(_follow_workspace)
     ws = bpy.types.WorkSpace
-    del ws.m3d_show_shelf, ws.m3d_page_left, ws.m3d_page_right, ws.m3d_kind
+    del ws.m3d_face_limit, ws.m3d_show_shelf, ws.m3d_page_left, ws.m3d_page_right, ws.m3d_kind
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

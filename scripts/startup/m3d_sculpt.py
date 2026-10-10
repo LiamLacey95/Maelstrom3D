@@ -21,6 +21,7 @@ from bl_ui.properties_paint_common import (
     BrushSelectPanel, ColorPalettePanel, DisplayPanel, FalloffPanel, SmoothStrokePanel, StrokePanel,
     UnifiedPaintPanel, brush_settings, brush_settings_advanced, brush_texture_settings)
 
+import m3d_pair
 from m3d_mode import _button
 from m3d_workspace import _PagePanel
 
@@ -1715,6 +1716,8 @@ class PROPERTIES_PT_m3d_sc_objects(_Page, Panel):
         meshes = [o for o in context.view_layer.objects if o.type == 'MESH']
         if not meshes:
             layout.label(text="No meshes in the scene")
+        elif mesh_of(context):
+            m3d_pair.draw_sculpt_status(layout, context, context.active_object)
         col = layout.column(align=True)
         for ob in meshes:
             hidden = ob.hide_get()
@@ -1921,7 +1924,10 @@ def draw_status_line(layout, context):
         sub.prop(mesh, "remesh_voxel_size", text="Voxel")
         _button(row, context, "Remesh", "object.voxel_remesh", 'NONE', {})
     # The mesh data is not updated while Dyntopo changes it, so no count then.
-    layout.label(text="Dyntopo" if dyntopo else "%s faces" % format(len(mesh.polygons), ","))
+    # (Multires: the level being sculpted, O(1): each base corner becomes 4^(level - 1) faces)
+    faces = len(mesh.loops) * 4 ** (mod.sculpt_levels - 1) if mod is not None and mod.sculpt_levels else len(mesh.polygons)
+    layout.label(text="Dyntopo" if dyntopo else "%s faces" % format(faces, ","))
+    m3d_pair.draw_sculpt_status(layout, context, ob, tier > 0)
     if not uniform_scale(ob):
         row = layout.row(align=True)
         row.alert = True

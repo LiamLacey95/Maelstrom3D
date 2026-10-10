@@ -181,6 +181,34 @@ viewport afterwards. Shift+1 ... Shift+7 pick Draw, Clay Strips, Smooth, Grab, I
 Sharp. Expand stays on Shift+A (mask) and Shift+W (face sets) over the mesh. Space (hold) lists the brushes first.
 "All Settings" at the end of each tab row is Blender's stock Properties tabs (symmetry locks, tiling, gravity, ...).
 
+## High poly and low poly
+
+A game model has two meshes: the **low poly**, the light mesh you unwrap, paint and export, and the **high poly**, a
+detailed copy you sculpt and bake the detail from. Maelstrom3D keeps the two as a pair, and keeps a mesh of millions of
+faces from slowing the other workspaces down.
+
+- **Create High Poly** copies the selected mesh into `<name>_high` (a full copy; the original keeps its name) and pairs the two. A copy with a non-uniform
+  scale gets it applied, since Sculpt Mode wants a uniform one; the original keeps its own. The options (the box that opens on the click, or Adjust Last
+  Operation) are **Detail**: None, **Multires** (levels, 2 by default) or **Voxel Remesh** (voxel size). It is on the Sculpt Status Line (on a mesh without a
+  high poly), on the Objects tab of Sculpt, and in the right-click menu in Object Mode under **High / Low Poly**. If the mesh already has a high poly, you get that one selected instead of another.
+- **Roles and groups.** Every mesh has a role (None, Low, High) and a group name; meshes with the same group belong together. **Mark as High Poly**,
+  **Mark as Low Poly**, **Clear Role** and **Pair Selected** (the active mesh is the low poly, the other selected meshes are its high poly) are in the same submenu. The group is the name
+  without its suffix: `Sword_low` and `Sword_high` are group `Sword`. The suffixes `_low` / `_high`, `_lp` / `_hp`, `_lo` / `_hi` and `_lowpoly` / `_highpoly` are known, in any case, with or
+  without Blender's `.001`. Words after the suffix make a part of the group: `Panel_high_bolts` belongs with `Panel_low`. The **Channel Box** shows the role and group of the active mesh
+  ("Bake: Low · Sword") with a menu to change the role.
+- **Sculpt shows the high poly.** F2 with the low poly or the high poly selected hides the low poly, shows the high poly (every part of the group) and starts Sculpt Mode on it (with several
+  parts, the one you sculpted last). Leaving Sculpt (F1, F3 ... or the workspace picker) leaves Sculpt Mode, hides the high poly again and shows, selects and activates the low poly. The hiding
+  happens in the same step as the switch, so the huge mesh is never drawn in the next workspace: switching away from Sculpt takes a few tens of milliseconds
+  instead of a fifth of a second or more. **Show Low Poly** on the Sculpt Status Line draws the low poly as a wire, which cannot be selected, while you sculpt.
+- **Only what Maelstrom3D hid is shown again.** A mesh you hid yourself stays hidden, a mesh without a role is never touched, and a high poly without a low poly (sculpting first, retopology later)
+  is never hidden. Marking or pairing does not hide anything by itself: the high poly is hidden at the next switch of workspace.
+- **Edit High Poly** (the submenu, on a low poly whose high poly is hidden) asks first ("Sword_high has 2,996,586 faces. Showing it takes a moment"), then shows, selects and activates the high poly. It stays shown
+  until the next switch of workspace hides it again, or until **Park High Poly** (same submenu) does.
+- **Face limit.** Entering Edit Mode (UV, F3) or Texture Paint Mode (Texture, F4) on a mesh of millions of faces takes seconds, and is rarely what you want. A mesh with more faces than the **Face Limit** (500,000; in
+  Workspace Settings of the UV and Texture workspaces, 0 turns it off) opens in Object Mode there, and the dock and the Status Line say so ("High poly (2.1M faces): select the low poly to unwrap or paint").
+  A high poly with a low poly opens the low poly instead. The Edit Mode and Texture Paint Mode buttons still enter the mode when you do want it.
+- A file saved with a hidden high poly keeps it hidden, and opens the same way in any Blender: it is just a hidden object, with a role and a group stored on it.
+
 ## Texture (F4)
 
 F4 opens the Texture workspace and enters Texture Paint Mode on the active mesh: the 3D view (Material Preview) and the

@@ -20,6 +20,7 @@ from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, Po
 from bpy.types import Menu, Operator, Panel, PropertyGroup
 from mathutils import Vector
 
+import m3d_pair
 from m3d_mode import _button
 from m3d_sculpt import grid, reason, split_props
 from m3d_workspace import _PagePanel, current_kind
@@ -631,7 +632,11 @@ def _gate(page):
             col.label(text="Select a mesh to unwrap")
             _button(col, context, "Add Cube", "m3d.add_primitive", 'MESH_CUBE', {"kind": 'CUBE'})
         else:
-            col.label(text="Enter Edit Mode to use these tools")
+            note = m3d_pair.big_note(context)   # a huge mesh stays in Object Mode here
+            if note:
+                m3d_pair.draw_note(col, note)
+            else:
+                col.label(text="Enter Edit Mode to use these tools")
             _button(col, context, "Edit Mode", "object.mode_set", 'EDITMODE_HLT', {"mode": 'EDIT'})
     return type("PROPERTIES_PT_m3d_uv_%s_gate" % page, (_PagePanel, Panel), {
         "bl_label": "UV", "bl_options": {'HIDE_HEADER'}, "page": "uv_" + page,
@@ -863,6 +868,9 @@ def draw_status_line(layout, context):
     row = layout.row(align=True)
     _call(row, "object.mode_set", 'OBJECT_DATAMODE', "Object Mode", depress=context.mode == 'OBJECT', mode='OBJECT')
     _call(row, "object.mode_set", 'EDITMODE_HLT', "Edit Mode", depress=context.mode == 'EDIT_MESH', mode='EDIT')
+    note = m3d_pair.big_note(context)
+    if note:
+        layout.label(text=note, icon='ERROR')
     ts, space = context.tool_settings, uv_space(context)
     if context.mode == 'EDIT_MESH':
         layout.prop(ts, "use_uv_select_sync", text="UV Sync", icon='UV_SYNC_SELECT', toggle=True)

@@ -6415,6 +6415,358 @@ def rn_shelves_check():
     check(not tracebacks(), "Python error in the Rendering workspace tests")
 
 
+# ----------------------------------------------------------------------------------------------------
+# High poly / low poly in the real window: F1 <-> F2 with a paired mesh (the F-keys, the workspace picker), Edit High Poly,
+# the face limit of UV and Texture, Create High Poly from the Sculpt Status Line and its Undo.
+import m3d_pair as HPR
+
+
+def hp_in(kind):
+    return m3d_workspace.workspace_kind(window().workspace) == kind
+
+
+def hp_press(key):
+    xy = (window().width // 2, window().height // 2)
+    event(key, 'PRESS', xy)
+    event(key, 'RELEASE', xy)
+
+
+def hp_ob(name):
+    return bpy.data.objects[name]
+
+
+def hp_viewport():
+    win, area, region = view3d()
+    return bpy.context.temp_override(window=win, area=area, region=region)
+
+
+def hp_state():
+    return {n: (o.hide_get(), o.m3d_pair.parked, o.select_get(), o.mode) for n, o in bpy.data.objects.items()}
+
+
+@step
+def hp_to_modeling():
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
+step(wait_until(lambda: hp_in('MODEL') and bpy.context.mode == 'OBJECT', "Modeling for the high poly tests"))
+
+
+@step
+def hp_scene():
+    with hp_viewport():
+        if bpy.context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        for ob in list(bpy.data.objects):
+            bpy.data.objects.remove(ob)
+        bpy.ops.m3d.add_primitive(kind='CUBE')
+        bpy.context.active_object.name = "Plain"
+        bpy.context.active_object.location = (3, 0, 0)
+        bpy.ops.m3d.add_primitive(kind='SPHERE')
+        bpy.context.active_object.name = "Sword"
+        for o in bpy.data.objects:
+            o.select_set(o.name == "Sword")
+        check(bpy.ops.m3d.hp_create(detail='MULTIRES', levels=2) == {'FINISHED'}, "Create High Poly in the window")
+        check(hp_ob("Sword_high").m3d_pair.role == 'HIGH' and hp_ob("Sword").m3d_pair.role == 'LOW', "the pair is made")
+        check(bpy.ops.m3d.hp_park() == {'FINISHED'}, "Park High Poly in the window")
+        bpy.ops.view3d.view_all(center=True)
+    win, _area, region = view3d()
+    GIZMO["center"] = (region.x + region.width // 2, region.y + region.height // 2)
+    event('MOUSEMOVE', xy=GIZMO["center"])
+    GIZMO["hp_plain"] = hp_state()["Plain"]
+
+
+@step
+def hp_f2():
+    check(hp_ob("Sword_high").hide_get() and bpy.context.active_object == hp_ob("Sword"), "(the high poly starts parked, the low poly active)")
+    hp_press('F2')
+
+
+step(wait_until(lambda: hp_in('SCULPT') and bpy.context.mode == 'SCULPT', "F2 to enter Sculpt Mode"))
+
+
+@step
+def hp_f2_check():
+    high, low = hp_ob("Sword_high"), hp_ob("Sword")
+    check(bpy.context.mode == 'SCULPT' and bpy.context.active_object == high and high.mode == 'SCULPT',
+          "F2: Sculpt Mode starts on the high poly (%s, %s)" % (bpy.context.mode, bpy.context.active_object.name))
+    check(not high.hide_get() and high.select_get() and low.hide_get() and low.m3d_pair.parked and not low.select_get(),
+          "F2: the high poly is shown and selected, the low poly parked: %s" % hp_state())
+    check(hp_state()["Plain"] == GIZMO["hp_plain"], "F2: a mesh without a role is untouched")
+    check(not tracebacks(), "Python error drawing the Sculpt workspace with a pair")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def hp_f1():
+    hp_press('F1')
+
+
+step(wait_until(lambda: hp_in('MODEL') and bpy.context.mode == 'OBJECT', "F1 to leave Sculpt Mode"))
+
+
+@step
+def hp_f1_check():
+    high, low = hp_ob("Sword_high"), hp_ob("Sword")
+    check(bpy.context.mode == 'OBJECT' and high.mode == 'OBJECT', "F1: Object Mode (%s)" % bpy.context.mode)
+    check(high.hide_get() and high.m3d_pair.parked and not high.select_get(), "F1: the high poly is parked: %s" % hp_state())
+    check(not low.hide_get() and low.select_get() and bpy.context.active_object == low and not low.m3d_pair.parked,
+          "F1: the low poly is shown, selected and active")
+    check(hp_state()["Plain"] == GIZMO["hp_plain"], "F1: a mesh without a role is untouched")
+    check(not tracebacks(), "Python error drawing Modeling with a pair")
+
+
+# Switched some other way (the workspace picker): the timer does the same, a little late.
+@step
+def hp_picker_sculpt():
+    window().workspace = bpy.data.workspaces["Sculpt"]
+
+
+step(wait_until(lambda: hp_in('SCULPT') and bpy.context.mode == 'SCULPT' and bpy.context.active_object == hp_ob("Sword_high"),
+                "the workspace picker to enter Sculpt Mode on the high poly"))
+
+
+@step
+def hp_picker_sculpt_check():
+    high, low = hp_ob("Sword_high"), hp_ob("Sword")
+    check(not high.hide_get() and low.hide_get() and high.mode == 'SCULPT' and low.mode == 'OBJECT',
+          "picker: the high poly is sculpted, the low poly parked: %s" % hp_state())
+    window().workspace = bpy.data.workspaces["Modeling"]
+
+
+step(wait_until(lambda: hp_in('MODEL') and bpy.context.mode == 'OBJECT' and hp_ob("Sword_high").hide_get(), "the workspace picker to leave Sculpt"))
+
+
+@step
+def hp_picker_model_check():
+    high, low = hp_ob("Sword_high"), hp_ob("Sword")
+    check(high.hide_get() and high.m3d_pair.parked and not low.hide_get() and bpy.context.active_object == low and high.mode == 'OBJECT',
+          "picker: the high poly is parked again, the low poly active: %s" % hp_state())
+    check(not tracebacks(), "Python error in the fallback")
+
+
+# Sculpt straight to UV: Sculpt Mode ends, the high poly is parked and Edit Mode opens on the low poly.
+@step
+def hp_sculpt_uv():
+    hp_press('F2')
+
+
+step(wait_until(lambda: hp_in('SCULPT') and bpy.context.mode == 'SCULPT', "F2 before F3"))
+
+
+@step
+def hp_sculpt_uv_f3():
+    hp_press('F3')
+
+
+step(wait_until(lambda: hp_in('UV') and bpy.context.mode == 'EDIT_MESH', "F3 from Sculpt to enter Edit Mode on the low poly"))
+
+
+@step
+def hp_sculpt_uv_check():
+    high, low = hp_ob("Sword_high"), hp_ob("Sword")
+    check(high.hide_get() and high.m3d_pair.parked and bpy.context.active_object == low and low.mode == 'EDIT' and high.mode == 'OBJECT',
+          "F3 from Sculpt: the high poly is parked, the low poly is in Edit Mode: %s" % hp_state())
+    check(not tracebacks(), "Python error going from Sculpt to UV")
+    hp_press('F1')
+
+
+step(wait_until(lambda: hp_in('MODEL') and bpy.context.mode == 'OBJECT', "F1 after Sculpt to UV"))
+
+
+# Edit High Poly: asks first (Enter confirms), shows the high poly until the next switch.
+@step
+def hp_edit_ask():
+    with hp_viewport():
+        bpy.ops.m3d.hp_edit('INVOKE_DEFAULT')
+
+
+@step
+def hp_edit_asked():
+    check(hp_ob("Sword_high").hide_get(), "Edit High Poly asks before it shows the mesh")
+    hp_press('RET')
+
+
+step(wait_until(lambda: not hp_ob("Sword_high").hide_get(), "Enter to confirm Edit High Poly"))
+
+
+@step
+def hp_edit_shown():
+    high, low = hp_ob("Sword_high"), hp_ob("Sword")
+    check(not high.m3d_pair.parked and bpy.context.active_object == high and high.select_get() and not low.select_get(),
+          "Edit High Poly: shown, selected and active: %s" % hp_state())
+    hp_press('F3')
+
+
+step(wait_until(lambda: hp_in('UV') and bpy.context.mode == 'EDIT_MESH', "F3 to enter Edit Mode on the low poly"))
+
+
+@step
+def hp_uv_check():
+    high, low = hp_ob("Sword_high"), hp_ob("Sword")
+    check(high.hide_get() and high.m3d_pair.parked and bpy.context.active_object == low and low.mode == 'EDIT',
+          "F3: the high poly is parked again and the low poly is in Edit Mode: %s" % hp_state())
+    check(not tracebacks(), "Python error drawing the UV workspace with a pair")
+    hp_press('F1')
+
+
+step(wait_until(lambda: hp_in('MODEL') and bpy.context.mode == 'OBJECT', "F1 after UV"))
+
+
+# The face limit: UV and Texture open on a mesh over the limit but leave it in Object Mode, and say why.
+@step
+def hp_limit_setup():
+    for o in bpy.data.objects:
+        o.select_set(o.name == "Plain")
+    bpy.context.view_layer.objects.active = hp_ob("Plain")
+    bpy.data.workspaces["UV"].m3d_face_limit = 3
+    bpy.data.workspaces["Texture"].m3d_face_limit = 3
+    hp_press('F3')
+
+
+step(wait_until(lambda: hp_in('UV'), "F3 with a mesh over the limit"))
+
+
+@step
+def hp_limit_uv_check():
+    plain = hp_ob("Plain")
+    check(bpy.context.mode == 'OBJECT' and plain.mode == 'OBJECT' and bpy.context.active_object == plain,
+          "F3 on a mesh over the face limit: it stays in Object Mode (%s)" % bpy.context.mode)
+    check(bpy.data.workspaces["UV"].object_mode == 'EDIT', "...and the workspace gets its entry mode back (%s)" % bpy.data.workspaces["UV"].object_mode)
+    note = HPR.big_note(bpy.context)
+    check(note and note.startswith("High poly (6 faces): select the low poly"), "...the Status Line and dock say why: %r" % note)
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def hp_limit_uv_drawn():
+    check(not tracebacks(), "Python error drawing the UV workspace over the face limit")
+    check(bpy.data.workspaces["UV"].object_mode == 'EDIT', "the UV entry mode is back after the switch")
+    hp_press('F1')
+
+
+step(wait_until(lambda: hp_in('MODEL') and bpy.context.mode == 'OBJECT', "F1 after the limit in UV"))
+
+
+@step
+def hp_limit_texture():
+    hp_press('F4')
+
+
+step(wait_until(lambda: hp_in('TEXTURE'), "F4 with a mesh over the limit"))
+
+
+@step
+def hp_limit_texture_check():
+    check(bpy.context.mode == 'OBJECT' and bpy.context.active_object == hp_ob("Plain"), "F4 on a mesh over the face limit: Object Mode (%s)" % bpy.context.mode)
+    check(bpy.data.workspaces["Texture"].object_mode == 'TEXTURE_PAINT', "...the Texture entry mode is back")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def hp_limit_texture_drawn():
+    check(not tracebacks(), "Python error drawing the Texture workspace over the face limit")
+    bpy.data.workspaces["UV"].m3d_face_limit = 500_000
+    bpy.data.workspaces["Texture"].m3d_face_limit = 500_000
+    hp_press('F1')
+
+
+step(wait_until(lambda: hp_in('MODEL') and bpy.context.mode == 'OBJECT', "F1 after the limit in Texture"))
+
+
+@step
+def hp_limit_off():
+    hp_press('F3')
+
+
+step(wait_until(lambda: hp_in('UV') and bpy.context.mode == 'EDIT_MESH', "F3 under the limit enters Edit Mode as before"))
+
+
+@step
+def hp_limit_off_check():
+    check(bpy.context.active_object == hp_ob("Plain") and bpy.context.mode == 'EDIT_MESH', "under the limit F3 still enters Edit Mode")
+    hp_press('F1')
+
+
+step(wait_until(lambda: hp_in('MODEL') and bpy.context.mode == 'OBJECT', "F1 after the limit test"))
+
+
+# Create High Poly from the button (the options box), then Undo: first in Object Mode.
+@step
+def hp_undo_object():
+    for o in bpy.data.objects:
+        o.select_set(o.name == "Plain")
+    bpy.context.view_layer.objects.active = hp_ob("Plain")
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.ed.undo_push(message="Before Create High Poly")
+        # (True: undo steps, as a click has them; a Python call without it takes none)
+        res = bpy.ops.m3d.tool('INVOKE_DEFAULT', True, idname="m3d.hp_create", props="{}", label="Create High Poly")
+    check(res == {'FINISHED'} and bpy.data.objects.get("Plain_high") is not None, "the button makes the high poly in Object Mode: %s" % res)
+    check("m3d_options_box" not in bpy.context.window_manager, "the options box flag is cleared")
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.ed.undo()
+
+
+@step
+def hp_undo_object_check():
+    check(bpy.data.objects.get("Plain_high") is None and hp_ob("Plain").m3d_pair.role == 'NONE' and hp_ob("Plain").m3d_pair.group == "",
+          "Undo takes Create High Poly back in Object Mode: %s" % [(o.name, o.m3d_pair.role) for o in bpy.data.objects])
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.ed.redo()
+
+
+@step
+def hp_redo_object_check():
+    check(bpy.data.objects.get("Plain_high") is not None and hp_ob("Plain_high").m3d_pair.role == 'HIGH', "...and Redo makes it again")
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.ed.undo()
+
+
+# ...then from the Sculpt Status Line (a mode change by a workspace switch has its own quirks with Undo: not tested here).
+@step
+def hp_create_status():
+    check(bpy.data.objects.get("Plain_high") is None, "(back to the plain mesh)")
+    for o in bpy.data.objects:
+        o.select_set(o.name == "Plain")
+    bpy.context.view_layer.objects.active = hp_ob("Plain")
+    hp_press('F2')
+
+
+step(wait_until(lambda: hp_in('SCULPT') and bpy.context.mode == 'SCULPT', "F2 on a plain mesh"))
+
+
+@step
+def hp_create_click():
+    check(hp_ob("Plain").mode == 'SCULPT', "a mesh without a role sculpts as before")
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        res = bpy.ops.m3d.tool('INVOKE_DEFAULT', True, idname="m3d.hp_create", props="{}", label="Create High Poly")
+    check(res == {'FINISHED'}, "the Status Line button runs: %s" % res)
+    check("m3d_options_box" not in bpy.context.window_manager, "the options box flag is cleared")
+
+
+@step
+def hp_create_check():
+    high, low = bpy.data.objects.get("Plain_high"), hp_ob("Plain")
+    check(high is not None and bpy.context.active_object == high and high.mode == 'SCULPT' and low.hide_get() and not high.hide_get(),
+          "Create High Poly in Sculpt: the copy is sculpted, the original put away: %s" % hp_state())
+    check(not tracebacks(), "Python error after Create High Poly in Sculpt")
+    hp_press('F1')
+
+
+step(wait_until(lambda: hp_in('MODEL') and bpy.context.mode == 'OBJECT', "F1 after the Sculpt create"))
+
+
+@step
+def hp_cleanup():
+    for ob in list(bpy.data.objects):
+        bpy.data.objects.remove(ob)
+    bpy.context.scene.m3d_show_low = False
+    check(not tracebacks(), "Python error in the high poly / low poly tests")
+
+
 @step
 def finish():
     errors = "".join(stderr_tee.buf + sys.stdout.buf)
