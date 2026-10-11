@@ -318,7 +318,7 @@ is a row of buttons for the channels the fill has (**color height rough metal em
 value and a texture slot: an image picked there (Open loads a file) replaces the value, follows the UV map through the layer's UV
 transform and does not use the image's alpha. A file picked for a channel takes that channel's color space (sRGB for Base Color and
 Emission, Non-Color for the rest); a Normal channel with a texture is a normal map. For a **Folder** it is **Properties - Folder**:
-name, blend mode, opacity, **Freeze**, **Merge Folder**, and the folder's mask. **Properties - Mask** has the **Mask** section
+name, the blend mode and opacity of each channel, **Freeze**, **Merge Folder**, and the folder's mask. **Properties - Mask** has the **Mask** section
 (the effect list and its buttons: see Masks) and the **Effect** section: the selected effect's name, its type (Paint, Fill,
 Generator, Levels or Filter) and its settings.
 
@@ -484,21 +484,61 @@ no memory. A Fill Layer is a value or color over the whole mesh, or a texture (P
 **Paint Mask** sends strokes to the mask's Paint effect instead of the channel (on a Fill Layer strokes always go to
 it; a Fill Layer without a Paint effect can be turned into a Paint Layer with Convert, and until then the brush is
 aimed at a tiny hidden scratch image so no layer is painted by mistake).
-The brush paints the active layer's images of the channels that are on in the brush material (next paragraph). Blend modes
-are Mix, Multiply, Add, Overlay, Screen, Soft Light, Subtract, Difference, Color, Darken and Lighten (the Normal channel
-always mixes). Double-click a name to rename it. In the shader each channel has a frame with one Image Texture and Mix
-node per layer; only nodes made by the stack are ever changed. **Merge Down** combines a layer into the one below with
-its blend mode, opacity and mask baked in (exact when the lower layer is opaque or the upper one uses Mix; the merged
-layer keeps the lower layer's blend mode); **Flatten** replaces the stack by one layer holding what it looks like.
+The brush paints the active layer's images of the channels that are on in the brush material (next paragraph). Every layer
+has its own **blend mode and opacity for each channel** (next paragraph). Double-click a name to rename it. In the shader each
+channel has a frame with one Image Texture and Mix node per layer; only nodes made by the stack are ever changed. **Merge Down**
+combines a layer into the one below with its blend mode, opacity and mask baked in (exact when the lower layer is opaque or the
+upper one uses Normal; the merged layer keeps the lower layer's blend mode in each channel); **Flatten** replaces the stack by one
+layer holding what it looks like.
 Export, glTF included, uses the flattened visible stack of each channel and does not change the layers. The Layers dock warns
 when the layer images add up to more than twelve 4K images of memory.
+
+**The Layers panel.** The header has, from the left, the **channel dropdown** and these icon buttons: **Add Effect** (a menu:
+Generator, Paint, Fill, Levels, Filter, Color ID: they are the effects of the selected layer's mask, see Masks), **Add Mask** (a
+menu: White Mask, Black Mask, Mask with Color Selection, which is a Color ID effect, and Image Mask, which reads an image file),
+**Add Paint Layer**, **Add Fill Layer**, **Add Smart Material** (a grid of the smart materials of the Library: a click adds one as a
+folder), **Add Folder** and **Delete**. The **...** menu has Merge Down, Flatten, Group, Move In and Move Out, Freeze (Unfreeze),
+Merge Folder, Convert to Paint Layer and Cut, Copy and Paste. The list shows the top layer first. A row has the eye, the folder
+triangle (folders), the **content thumbnail**, the **mask thumbnail** when the layer has a mask, the name, and at the right the
+blend mode (a short name: Norm, Pthr, Repl, Mult, Add ...) over the opacity. The thumbnail is a small picture of the layer's image,
+a flat swatch for a fill, a folder icon for a folder, and the layer's kind in grey when it has nothing in the channel. The mask
+thumbnail is the picture of the mask's Paint effect, or the icon of its top effect when it has none (a generator). The row
+at its right shows **the channel picked in the dropdown**: the thumbnail, the blend mode and the opacity of Base Color, Roughness,
+Metallic, Normal, Height or Emission (it changes nothing else: the other channels keep their own). A click on a thumbnail selects
+the layer (Properties shows the layer); a click on the mask thumbnail selects the mask (Properties - Mask), **Alt+click** shows the
+mask alone in the 3D view (Show Mask, again to go back) and **Shift+click** switches the mask off and on (the layer shows as if it
+had none; the mask is kept, and the Mask section has the same switch). The active layer lists the effects of its mask under it, each
+with an eye, its icon, its name, blend mode, opacity and an **x** that removes it: a click on the name selects the effect
+(Properties - Mask). The arrows beside the list move the active layer (a list cannot be dragged); the button under them duplicates it.
+
+The blend modes are Normal (a mix), **Passthrough** (the layer does not touch this channel: it has no nodes in it and nothing
+is exported for it), **Replace** (the layer's pixels replace what is below, also where its image is transparent; opacity and
+mask still fade it), Multiply, Divide, Darken, Lighten, Add (Linear Dodge), Subtract, Difference, Overlay, Screen, Color Burn,
+Color Dodge, Soft Light, Linear Light, Hue, Saturation, Color and Value. New layers mix every channel except Height, which
+is **Linear Light**: Height is stored with 0.5 as flat, and Linear Light leaves 0.5 alone, raises what is above it and digs
+what is below (what Add does to a signed height in other painting tools), so painted or filled bumps add up. The Base layer
+made from existing paint slots, or by Flatten, mixes Height, so the look does not change. The Normal channel mixes (Blender has no normal map combine here). Every mode is exact in the numbers Merge Down,
+Flatten, Freeze and Export use, and was compared with a Cycles bake of the shader nodes. Color Burn and Color Dodge need one more
+Mix node in the channel (their node formulas are not linear in the strength). **Properties - Layer** (and Folder) has the
+blend mode and opacity of every channel. Layers from older files open with their one blend mode and opacity in every channel
+(the Normal channel keeps mixing), so they look the same.
+
+**The right-click menu and the keys.** A right-click on a row opens a menu for the layer under the pointer (it is selected
+first): **Cut**, **Copy**, **Paste**, **Duplicate**, **Delete**, **Group**, **Add Effect**, **Add Mask**, **Create Smart Material**
+(on a folder: the same as Save to Library), **Create Smart Mask** (on a layer with a mask), **Merge Down**, **Flatten** and **Freeze**
+(Unfreeze). Copy and Cut take the active layer (a folder with its layers); Paste puts a copy above the active layer, with its own
+images, also in another material (after Cut it moves the layer instead). In the Layers tab the keys are Ctrl+C, Ctrl+X, Ctrl+V
+(also Ctrl+Shift+V), Ctrl+D, Ctrl+G and Delete. Blender uses the buttons first: with the pointer on a number field or a name,
+Ctrl+D adds a driver and Ctrl+V pastes text into it, so point at a thumbnail or at empty space when you use the keys (Ctrl+V
+needs empty space; Ctrl+Shift+V works over a thumbnail).
 
 **Masks.** A mask decides where a layer shows: white shows the layer, black hides it, grey shows it partly. A layer's
 mask is a list of **effects** that combine from the bottom up (the list shows the top effect first, like the layer
 list). The result starts out white, so a layer without effects shows everywhere; each effect then changes the result
 below it. In the Mask panel: **White (Show All)** / **Black (Hide All)** start a mask with a Paint effect (an image you
 paint: black hides, white shows); **Add Mask Effect** adds one above the selected effect; the arrows move it, the
-buttons beside the list duplicate and delete it. Every effect has an eye, a name, an opacity (how strongly it applies;
+buttons beside the list duplicate and delete it. **Image Mask** (Add Mask in the Layers panel) makes a Paint effect from an image file,
+by its brightness. Every effect has an eye, a name, an opacity (how strongly it applies;
 at 0 it does nothing) and, for the sources, a blend mode (Normal, Multiply, Add, Subtract, Max, Min: Multiply keeps
 only what both agree on, Add and Max grow the white). A new effect on top of others multiplies (a black Paint adds),
 so it starts out gentle; the first one simply sets the mask.
@@ -543,12 +583,12 @@ each mask as a Paint effect (and Invert Mask as an Invert effect), looking the s
 **Folders.** A folder groups layers so a long stack stays manageable and cheap. The layers inside are combined with
 each other first, as if they were laid on an empty sheet, and the result is then blended onto the stack below with the
 folder's own blend mode, opacity, eye and mask, like one more layer. So a folder at 50% fades everything inside together
-(not layer by layer), and a mask on a folder hides or shows the group as a whole. **New Folder** (next to Paint Layer
-and Fill Layer) adds an empty folder above the active layer, **Group** puts the active layer (or folder) into a new
+(not layer by layer), and a mask on a folder hides or shows the group as a whole. **Add Folder** (in the header)
+adds an empty folder above the active layer, **Group** (the ... menu, Ctrl+G) puts the active layer (or folder) into a new
 one. The triangle in front of a folder's name closes or opens it in the list (closing a folder that holds the active
 layer selects the folder). The arrows move the active layer one place of the list at a time: past a neighbour, into an
 open folder next to it, and out of a folder when it is at its first or last place (a closed folder is passed as one
-block); **Move In** lists the folders and moves the layer to the top of the one you pick, **Move Out** puts it just
+block); **Move In** (the ... menu) lists the folders and moves the layer to the top of the one you pick, **Move Out** puts it just
 above its folder. Folders can hold folders, to any depth. Duplicate copies a folder with all its layers and their
 images, Delete removes the folder, its layers and their images (images used elsewhere stay), **Merge Down** merges a
 layer or folder into the layer below it in the same folder (not into a folder: merge that first), and **Merge Folder**
@@ -595,8 +635,9 @@ in it (nested folders, fills, paint layers with their pixels, blend modes, opaci
 panel it saves the layer's mask stack as a mask preset. You are asked for a name. Under Mine, each item has a rename and
 a delete button (Your Items); the starter items have neither. An item is a folder in the user data folder
 `datafiles/m3d_library/user/<name>/` (inside the portable folder in a portable install): `item.json` describes the
-layers (kind, name, visible, opacity, blend, per channel the fill color or value or the PNG of a paint layer, the textures
-of a fill layer and its UV transform, the mask effects with all their settings) and any paint and texture images are saved beside it as PNG, so applying an item makes the layers
+layers (kind, name, visible, the blend mode and opacity of each channel that is not Normal and 100%, per channel the fill color or value
+or the PNG of a paint layer, the textures of a fill layer and its UV transform, the mask effects with all their settings, and whether the
+mask is on; an item from before every channel had its own has one blend mode and opacity, which are read into every channel) and any paint and texture images are saved beside it as PNG, so applying an item makes the layers
 again with the same pixels and values (a saved folder applied back gives the same composite exactly). Applying one
 checks nothing is half done: a damaged item is refused and leaves the stack as it was.
 

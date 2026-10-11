@@ -11,7 +11,10 @@ data is appended from a .blend):
 
     material  {"format": 1, "type": "MATERIAL", "name": ..., "description": ..., "layer": <layer>}
     mask      {"format": 1, "type": "MASK", "name": ..., "description": ..., "mask": [<effect>, ...]}
-    layer     {"name", "kind": PAINT | FILL | FOLDER, "visible", "opacity", "blend", "use_alpha",
+    layer     {"name", "kind": PAINT | FILL | FOLDER, "visible", "use_alpha", "mask_on": false when the mask is switched off,
+               "blends": {channel id: blend mode} and "opacities": {channel id: number} (only the channels that differ from
+               Normal and 1; items from before every channel had its own say "blend" and "opacity" instead: one for all
+               of them, Normal always mixing),
                "channels": {channel id: color list | value | file name | null}, "layers": [<layer>, ...] (folders),
                "textures": {channel id: file name} and "uv": {"tiling": [x, y], "rotation": radians, "offset": [x, y]}
                (fill layers: the textures that replace the values, and how they sit on the UV map), "mask": [<effect>, ...]}
@@ -151,10 +154,14 @@ def describe_layer(layer, files):
     out = {"name": layer.name, "kind": layer.kind}
     if not layer.visible:
         out["visible"] = False
-    if layer.opacity != 1.0:
-        out["opacity"] = f32(layer.opacity)
-    if layer.blend != 'MIX':
-        out["blend"] = layer.blend
+    blends = {ch.id: L.blend_of(layer, ch.id) for ch in L.CHANNELS if L.blend_of(layer, ch.id) != 'MIX'}
+    opacities = {ch.id: f32(L.opacity_of(layer, ch.id)) for ch in L.CHANNELS if L.opacity_of(layer, ch.id) != 1.0}
+    if blends:
+        out["blends"] = blends
+    if opacities:
+        out["opacities"] = opacities
+    if not layer.use_mask:
+        out["mask_on"] = False
     if layer.kind == 'FOLDER':
         out["layers"] = [describe_layer(kid, files) for kid in L.children(layer)]
     else:
@@ -296,8 +303,11 @@ def add_layer_spec(mat, spec, parent, directory, made, name=None):
     layer = L.add_layer(mat, kind, name or spec["name"])
     made.uids.append(uid)
     layer.uid, layer.parent = uid, parent
-    layer.visible, layer.opacity = spec.get("visible", True), spec.get("opacity", 1.0)
-    layer.blend, layer.use_alpha = spec.get("blend", 'MIX'), spec.get("use_alpha", True)
+    layer.visible, layer.use_alpha, layer.use_mask = spec.get("visible", True), spec.get("use_alpha", True), spec.get("mask_on", True)
+    blend, opacity, blends, opacities = spec.get("blend", 'MIX'), spec.get("opacity", 1.0), spec.get("blends", {}), spec.get("opacities", {})
+    for ch in L.CHANNELS:   # (an item from before every channel had its own blend and opacity: the one for all of them)
+        e = L.entry_of(layer, ch.id)
+        e.blend, e.opacity = blends.get(ch.id, 'MIX' if ch.id == 'NORMAL' else blend), opacities.get(ch.id, opacity)
     channels = spec.get("channels", {})
     for ch in L.CHANNELS if kind != 'FOLDER' else ():
         e = L.entry_of(layer, ch.id)
@@ -996,13 +1006,14 @@ def matching(items, text, name=lambda x: x):
     return [x for x in items if text.lower() in name(x).lower()]
 
 
-def tile_rows(layout, context, cells, min_px=84):
+def tile_rows(layout, context, cells, min_px=84, columns=0, width=0):
     """Square tiles with the name under each one. `cells` are (name, draw) pairs: draw(flow) adds the tile's button to
     the grid row (the buttons are children of the grid, which is what makes an icon-only button fill its cell). Row by
-    row: a grid of tiles, a grid of names; the last row is padded so its tiles are as wide as the others."""
+    row: a grid of tiles, a grid of names; the last row is padded so its tiles are as wide as the others. The number of
+    columns follows the width of the region; a popover gives both (`columns`, `width` in pixels at UI scale 1)."""
     ui_scale = context.preferences.system.ui_scale or 1.0   # 0 without a window
-    avail = (context.region.width if context.region else 300) - 24 * ui_scale
-    columns = min(max(int(avail // (min_px * ui_scale)), 3), 8)
+    avail = width * ui_scale if width else (context.region.width if context.region else 300) - 24 * ui_scale
+    columns = columns or min(max(int(avail // (min_px * ui_scale)), 3), 8)
     for i in range(0, len(cells), columns):
         row = cells[i:i + columns]
         tiles = layout.grid_flow(row_major=True, columns=columns, even_columns=True, even_rows=True, align=True)
@@ -1184,6 +1195,35 @@ class M3D_OT_env_pick(Operator):
         return {'FINISHED'}
 
 
+class M3D_PT_lib_smart(Panel):
+    """Add Smart Material: the smart materials of the library; a click adds one as a folder on top of the layers"""
+    bl_space_type = 'TOPBAR'
+    bl_region_type = 'HEADER'
+    bl_label = "Smart Materials"
+    bl_ui_units_x = 18
+
+    @classmethod
+    def poll(cls, context):
+        return mesh_of(context) is not None
+
+    def draw(self, context):
+        layout = self.layout
+        start_thumbnails()
+        found = [e for e in entries('MATERIAL') if not is_plain(e)]
+        layout.label(text="Smart Materials")
+        if not found:
+            reason(layout, "No smart materials yet")
+            return
+
+        def cell(entry):
+            def draw(flow):
+                flow.operator("m3d.library_apply", text="", icon_value=thumb_icon(entry)).item = entry.ref
+            return entry.item["name"], draw
+        tile_rows(layout, context, [cell(e) for e in found], columns=4, width=18 * 20 - 24)
+        reason(layout, "A click adds a folder of layers")
+        reason(layout, "It uses the baked mesh maps")
+
+
 class _Lib(_PagePanel):
     page = "tex_assets"
 
@@ -1266,6 +1306,7 @@ classes = (
     M3D_OT_library_refresh,
     M3D_OT_env_pick,
     M3D_LibrarySettings,
+    M3D_PT_lib_smart,
     PROPERTIES_PT_m3d_lib_browse,
     PROPERTIES_PT_m3d_lib_manage,
     PROPERTIES_PT_m3d_lib_assets,

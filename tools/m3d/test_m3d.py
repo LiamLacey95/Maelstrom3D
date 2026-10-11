@@ -2198,11 +2198,15 @@ check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in LY.cla
 check(hasattr(bpy.types.Material, "m3d_layers") and hasattr(bpy.types.Material, "m3d_layer_index")
       and hasattr(bpy.types.Material, "m3d_channel"), "Material layer properties")
 check(T.CHANNELS is LY.CHANNELS and T.principled_of is LY.principled_of, "channels live in m3d_layers")
-check([b for b, _l in LY.BLENDS] == ['MIX', 'MULTIPLY', 'ADD', 'OVERLAY', 'SCREEN', 'SOFT_LIGHT', 'SUBTRACT', 'DIFFERENCE',
-                                      'COLOR', 'DARKEN', 'LIGHTEN'], "blend modes")
+check([b for b, _l in LY.BLENDS] == ['MIX', 'PASSTHROUGH', 'REPLACE', 'MULTIPLY', 'DIVIDE', 'DARKEN', 'LIGHTEN', 'ADD', 'SUBTRACT',
+                                      'DIFFERENCE', 'OVERLAY', 'SCREEN', 'BURN', 'DODGE', 'SOFT_LIGHT', 'LINEAR_LIGHT', 'HUE',
+                                      'SATURATION', 'COLOR', 'VALUE'], "blend modes")
 node_blends = {i.identifier for i in bpy.types.ShaderNodeMix.bl_rna.properties['blend_type'].enum_items}
-check({b for b, _l in LY.BLENDS} <= node_blends and set(LY.BLEND_FUNCTIONS) == {b for b, _l in LY.BLENDS},
-      "every blend mode is a Mix node blend type with numpy math")
+check({b for b, _l in LY.BLENDS} - {'PASSTHROUGH', 'REPLACE'} <= node_blends
+      and set(LY.BLEND_FUNCTIONS) == {b for b, _l in LY.BLENDS} - {'PASSTHROUGH', 'REPLACE'},
+      "every blend mode but Passthrough and Replace is a Mix node blend type with numpy math")
+check({i.identifier for i in LY.M3D_LayerChannel.bl_rna.properties['blend'].enum_items} == {b for b, _l in LY.BLENDS}
+      and set(LY.BLEND_SHORT) == {b for b, _l in LY.BLENDS}, "the channel's blend enum has every mode, each with a short name")
 layer_ops = {e.get("idname") for e in m3d_ui.MENUS["M3D_MT_layers"][1]}
 check({"m3d.layer_add", "m3d.layer_duplicate", "m3d.layer_remove", "m3d.layer_move", "m3d.layer_visible",
        "m3d.layer_mask_add", "m3d.layer_mask_remove", "m3d.layer_mask_invert", "m3d.layer_paint_mask",
@@ -2286,11 +2290,11 @@ def expect_chain(mat, ch_id, msg):
     got = level(mat, ch_id) if layers else []
     want = [LY.part(ch_id, l.uid, "mix") for l in layers]
     check([n.name for n in got] == want, "%s: %s chain is %s, want %s" % (msg, ch_id, [n.name for n in got], want))
-    modes = [('MIX' if ch_id == 'NORMAL' else l.blend) for l in layers]
+    modes = [('MIX' if LY.two_step(l, ch_id) else LY.mode_of(l, ch_id)) for l in layers]   # (Burn / Dodge: a Mix node before it)
     check([n.blend_type for n in got] == modes, "%s: %s blend modes %s" % (msg, ch_id, [n.blend_type for n in got]))
     for l, n in zip(layers, got):
         opv = mat.node_tree.nodes[LY.part(ch_id, l.uid, "opv")].inputs[1].default_value
-        check(abs(opv - (l.opacity if l.visible else 0.0)) < 1e-5, "%s: %s opacity node of %s is %s" % (msg, ch_id, l.name, opv))
+        check(abs(opv - (LY.opacity_of(l, ch_id) if l.visible else 0.0)) < 1e-5, "%s: %s opacity node of %s is %s" % (msg, ch_id, l.name, opv))
     return got
 
 
@@ -2367,16 +2371,14 @@ frames = [n for n in mat.node_tree.nodes if n.type == 'FRAME']
 check(len(frames) == 5 and all(n.get(LY.TAG) for n in frames) and all(n.parent in frames for n in mat.node_tree.nodes
       if n.type == 'MIX'), "one frame per channel holds its chain")
 nodes_ptr = {n.name: n.as_pointer() for n in mat.node_tree.nodes}
-top.blend = 'MULTIPLY'
-top.opacity = 0.4
+LY.set_look(top, blend='MULTIPLY', opacity=0.4)
 expect_chain(mat, 'BASE_COLOR', "blend and opacity")
 check({n.name: n.as_pointer() for n in mat.node_tree.nodes} == nodes_ptr, "blend and opacity only change values (no node is remade)")
 top.visible = False
 expect_chain(mat, 'BASE_COLOR', "hidden")
 check(len(level(mat, 'BASE_COLOR')) == 2, "a hidden layer keeps its nodes (opacity 0)")
 top.visible = True
-top.blend = 'MIX'
-top.opacity = 1.0
+LY.set_look(top, blend='MIX', opacity=1.0)
 check(bpy.ops.m3d.layer_move(delta=-1) == {'FINISHED'} and [l.name for l in mat.m3d_layers] == ["Paint Layer", "Base"]
       and mat.m3d_layer_index == 0, "Move Down")
 expect_chain(mat, 'BASE_COLOR', "moved down")
@@ -2548,7 +2550,7 @@ def two_layers(ch_id, mode, opacity, srgb=False):
         e = LY.entry_of(m.m3d_layers[len(m.m3d_layers) - 1], ch_id)
         e.image, e.use = img, True
     hi = m.m3d_layers[1]
-    hi.blend, hi.opacity = mode, opacity
+    LY.set_look(hi, blend=mode, opacity=opacity)
     LY.rebuild_all(m)
     return o, m, base_img, top_img
 
@@ -2573,7 +2575,7 @@ for mode in ('MIX', 'MULTIPLY', 'ADD', 'OVERLAY'):
         check(err <= 1.5 / 255 and np.abs(got[..., 1] - got[..., 0]).max() < 1e-6 and np.abs(got[..., 3] - 1).max() < 1e-6,
               "Merge Down %s on %s matches the hand-worked pixels (error %.4f)" % (mode, ch_id, err))
         check([l.name for l in m.m3d_layers] == ["Low"] and high_name not in bpy.data.images
-              and m.m3d_layers[0].opacity == 1.0 and m.m3d_layer_index == 0, "Merge Down leaves the lower layer only")
+              and LY.opacity_of(m.m3d_layers[0], ch_id) == 1.0 and m.m3d_layer_index == 0, "Merge Down leaves the lower layer only")
         expect_chain(m, ch_id, "merged")
 
 # Merge Down with a mask, a fill layer and a hidden layer.
@@ -2614,7 +2616,7 @@ for i in range(3):
     LY.add_layer(m, 'PAINT', "L%d" % i)
     e = LY.entry_of(m.m3d_layers[i], 'ROUGHNESS')
     e.image, e.use = imgs[i], True
-    m.m3d_layers[i].blend, m.m3d_layers[i].opacity = modes[i], opacities[i]
+    LY.set_look(m.m3d_layers[i], blend=modes[i], opacity=opacities[i])
 set_mask(m.m3d_layers[1], small("fm", grid_rgba(lambda x, y: (mask_vals[x],) * 3, lambda y: 1.0), alpha=False))
 LY.rebuild_all(m)
 old_names = [im.name for im in imgs] + ["fm"]
@@ -2700,11 +2702,15 @@ for ch_id, srgb in (('BASE_COLOR', True), ('ROUGHNESS', False)):
             for i in range(3):
                 layer = pmat.m3d_layers[i]
                 e = LY.entry_of(layer, ch_id)
-                e.image, e.use = noise_image("nc%d" % i, srgb, opaque=i == 0), True
-                layer.blend, layer.opacity = (mode if i else 'MIX'), (0.65 if i == 1 else 0.9)
+                # (Cycles premultiplies an 8 bit sRGB image with alpha in 8 bit and divides the color by the alpha again: where the
+                # alpha is small that rounding is amplified by the modes that divide or lift small values: those are compared with
+                # opaque images; the data channel, which has no such rounding, checks them with transparency)
+                opaque = i == 0 or (srgb and mode in {'REPLACE', 'DIVIDE', 'BURN', 'DODGE', 'LINEAR_LIGHT'})
+                e.image, e.use = noise_image("nc%d" % i, srgb, opaque=opaque), True
+                LY.set_look(layer, blend=(mode if i else 'MIX'), opacity=(0.65 if i == 1 else 0.9))
             set_mask(pmat.m3d_layers[1], noise_image("ncm", False, alpha=False))
             set_mask(pmat.m3d_layers[2], noise_image("ncm2", False, alpha=False), invert=True)
-            pmat.m3d_layers[2].blend = 'SCREEN' if mode != 'SCREEN' else 'DARKEN'
+            LY.set_look(pmat.m3d_layers[2], blend='SCREEN' if mode != 'SCREEN' else 'DARKEN')
         LY.rebuild_all(pmat)
         nodes_lin = bake_chain(plane, pmat, ch_id)
         mine = LY.composite(pmat, ch_id, N)
@@ -2796,14 +2802,14 @@ fill_rgb(T.channel_slots(exp_mat)['ROUGHNESS'][1], (0.2, 0.2, 0.2))
 fill_rgb(T.channel_slots(exp_mat)['METALLIC'][1], (0.9, 0.9, 0.9))
 bpy.ops.m3d.layer_add(kind='FILL')
 fill = exp_mat.m3d_layers[1]
-fill.blend, fill.opacity = 'MULTIPLY', 0.5
+LY.set_look(fill, blend='MULTIPLY', opacity=0.5)
 fill.channels[0].color = (0.5, 0.25, 0.8, 1.0)
 LY.entry_of(fill, 'ROUGHNESS').use = True
 LY.entry_of(fill, 'ROUGHNESS').value = 0.8
 LY.entry_of(fill, 'METALLIC').use = True
 LY.entry_of(fill, 'METALLIC').value = 0.0
-fill.opacity = 0.5
-lay_state = [(l.name, l.blend, l.opacity, l.visible, [(e.channel, e.use, e.image.name if e.image else None) for e in l.channels])
+LY.set_look(fill, opacity=0.5)
+lay_state = [(l.name, [(e.blend, e.opacity) for e in l.channels], l.visible, [(e.channel, e.use, e.image.name if e.image else None) for e in l.channels])
              for l in exp_mat.m3d_layers]
 nodes_state = sorted(n.name for n in exp_mat.node_tree.nodes)
 images_state = {i.name for i in bpy.data.images}
@@ -2822,7 +2828,7 @@ base_lin = [linear_py(0.6), linear_py(0.3), linear_py(0.1)]
 fill_lin = (0.5, 0.25, 0.8)
 want_bc = [srgb_py(over_py(b, f, 0.5, 'MULTIPLY')) for b, f in zip(base_lin, fill_lin)]
 check(np.abs(bc[0, :3] - want_bc).max() < 3 / 255, "BC has the flattened base color (%s, want %s)" % (bc[0, :3], want_bc))
-check(lay_state == [(l.name, l.blend, l.opacity, l.visible, [(e.channel, e.use, e.image.name if e.image else None) for e in l.channels])
+check(lay_state == [(l.name, [(e.blend, e.opacity) for e in l.channels], l.visible, [(e.channel, e.use, e.image.name if e.image else None) for e in l.channels])
                     for l in exp_mat.m3d_layers] and nodes_state == sorted(n.name for n in exp_mat.node_tree.nodes)
       and images_state <= {i.name for i in bpy.data.images} and not [i for i in bpy.data.images if i.name.startswith("m3dExport")],
       "export leaves the layers, nodes and images untouched")
@@ -2835,7 +2841,7 @@ tx.export_preset, tx.export_folder = 'GLTF', tempfile.mkdtemp(prefix="m3d_export
 fill.visible = True
 check(bpy.ops.m3d.tex_export() == {'FINISHED'} and os.path.getsize(os.path.join(tx.export_folder, "Show.glb")) > 1000,
       "glTF export of a stack writes a .glb")
-check(lay_state == [(l.name, l.blend, l.opacity, l.visible, [(e.channel, e.use, e.image.name if e.image else None) for e in l.channels])
+check(lay_state == [(l.name, [(e.blend, e.opacity) for e in l.channels], l.visible, [(e.channel, e.use, e.image.name if e.image else None) for e in l.channels])
                     for l in exp_mat.m3d_layers] and exp_ob.active_material == exp_mat
       and sorted(n.name for n in exp_mat.node_tree.nodes) == nodes_state
       and not [i for i in bpy.data.images if i.name.startswith("m3dFlat")]
@@ -2929,7 +2935,8 @@ for active in (0, 1):   # Paint layer, then the fill layer with a mask
 log = []
 LY.M3D_UL_layers.draw_item(None, ctx, Rec(log), None, mem_mat.m3d_layers[1], 0, None, "", 0)
 check_calls("layer list row", log)
-check({r._args[1] for r in log if r._kind == "prop"} >= {"visible", "name", "blend", "opacity"}, "the list row shows eye, name, blend and opacity")
+check({r._args[1] for r in log if r._kind == "prop"} >= {"visible", "name", "opacity"} and any(r._kind == "prop_menu_enum" and r._args[1] == "blend" for r in log),
+      "the list row shows eye, name, blend and opacity")
 log = []
 T.draw_status_line(Rec(log), ctx)
 check_calls("Texture status line with layers", log)
@@ -3048,7 +3055,7 @@ stack[3].gamma, stack[3].black_in, stack[3].white_in = 2.0, 0.1, 0.9
 stack[5].visible = False
 stack[6].amount = 0.9
 stack[0].name = "Dirt"
-mtop.opacity = 0.5
+LY.set_look(mtop, opacity=0.5)
 check(snapshot() == before, "value edits only set node values (no node was made again)")
 mix = LY.mask_node(mm.node_tree, mtop, "mix", stack[1])
 check(abs(mix.inputs[0].default_value - 0.5) < 1e-6 and mix.blend_type == 'ADD'
@@ -3061,7 +3068,7 @@ check(abs(grp.inputs["Gamma"].default_value - 2.0) < 1e-6 and abs(grp.inputs["Wh
 check(LY.mask_node(mm.node_tree, mtop, "mix", stack[5]).inputs[0].default_value == 0.0, "a hidden effect has factor 0")
 check(LY.mask_node(mm.node_tree, mtop, "mix", stack[0]).label == "Dirt", "renaming sets the node label")
 check(abs(mnodes[LY.part('BASE_COLOR', mtop.uid, "opv")].inputs[1].default_value - 0.5) < 1e-6, "the layer's own opacity is still its own")
-mtop.opacity = 1.0
+LY.set_look(mtop, opacity=1.0)
 
 before = snapshot()
 mtop.mask_index = 1
@@ -3188,10 +3195,10 @@ LY.rebuild_all(mm)
 check(len(calls) == 1 and abs(read(cache)[0, 0] - 64 / 255) < 1e-5, "painting below the Blur makes the cache again")
 blur_e.amount = 0.8
 check(len(calls) == 2, "so does its amount")
-mtop.opacity = 0.5
+LY.set_look(mtop, opacity=0.5)
 check(len(calls) == 2, "...but not an edit of the layer")
 MK.blur = real_blur
-mtop.opacity = 1.0
+LY.set_look(mtop, opacity=1.0)
 
 # --- Migration: a layer's single mask image (and Invert Mask) becomes a Paint effect (and an Invert effect), same look
 for invert in (False, True):
@@ -3199,7 +3206,7 @@ for invert in (False, True):
         mtop.mask_stack.clear()
         legacy = mimg("mkLegacy%d" % invert)
         mtop.mask, mtop.mask_invert = legacy, invert
-        mtop.opacity, mtop.blend = 0.8, 'MULTIPLY'
+        LY.set_look(mtop, opacity=0.8, blend='MULTIPLY')
         mtop.channels[0].color = (0.9, 0.3, 0.1, 1.0)
     lum = read(legacy).reshape(MN, MN, 4)[..., :3] @ MK.LUMA
     want_alpha = np.clip(1.0 - lum if invert else lum, 0.0, 1.0) * 0.8
@@ -3214,7 +3221,7 @@ for invert in (False, True):
     check(np.abs(mine - nodes_look).max() < 1e-4, "migration (invert %s): numpy composite == node bake (%.6f)" % (invert, np.abs(mine - nodes_look).max()))
     check(np.abs(nodes_look - old_look).max() < 1e-4, "migration (invert %s): the look is what the old chain made (%.6f)" % (invert, np.abs(nodes_look - old_look).max()))
     check(not [n for n in mnodes if n.name.endswith("maskinv")], "migration (invert %s): no old nodes are left" % invert)
-mtop.opacity, mtop.blend = 1.0, 'MIX'
+LY.set_look(mtop, opacity=1.0, blend='MIX')
 bpy.ops.m3d.layer_mask_remove()
 check(not mtop.mask_stack, "Remove Mask clears the stack")
 
@@ -3313,7 +3320,7 @@ check(out_node.inputs["Surface"].links[0].from_node.type == 'BSDF_PRINCIPLED', "
 
 # --- Merge Down and the flattening use the mask stack
 setup([('EDGES', dict(amount=0.6, softness=0.3)), ('NOISE', dict(scale=4.0, noise_contrast=2.0, blend='MULTIPLY'))])
-mtop.opacity = 0.8
+LY.set_look(mtop, opacity=0.8)
 mtop.channels[0].color = (0.2, 0.7, 0.4, 1.0)
 mask_now = MK.stack_value(mtop, MN)
 base_px = MK.pixels_of(LY.entry_of(mm.m3d_layers[0], 'BASE_COLOR').image, MN)
@@ -3332,7 +3339,7 @@ bc2, _ = load_png(exp_dir2, "T_MaskPlane_BC.png")
 check(np.abs(bc2.reshape(MN, MN, 4)[..., :3] - want_flat[..., :3]).max() < 3 / 255, "the exported base color has the mask applied (%.4f)" % np.abs(bc2.reshape(MN, MN, 4)[..., :3] - want_flat[..., :3]).max())
 tx.export_preset, tx.export_folder = 'UNITY', "//textures/"
 mat_images = {i.name for i in LY.stack_images(mm)}
-mtop.blend = 'MIX'
+LY.set_look(mtop, blend='MIX')
 mm.m3d_layer_index = 1
 check(bpy.ops.m3d.layer_merge_down() == {'FINISHED'} and [l.name for l in mm.m3d_layers] == ["Base"], "Merge Down of a layer with a mask stack")
 merged = read(LY.entry_of(mm.m3d_layers[0], 'BASE_COLOR').image).reshape(MN, MN, 4)
@@ -3489,12 +3496,16 @@ def expected_nodes(layers, ch_id, root=True):
             out |= expected_nodes(LY.children(l), ch_id, False)
         elif LY.uses_image(l):
             out.add(part("tex"))
+            if LY.replaces(l, ch_id):
+                out.add(part("one"))
         elif not root:
             out.add(part("fill"))
         if l.mask_stack:
             out.add(part("maskmul"))
         if root:
             out.add(part("mix"))
+            if LY.two_step(l, ch_id):
+                out.add(part("pre"))
         elif i:
             out |= {part(k) for k in ("mix", "shown", "total", "share", "out")}
     return out
@@ -3574,13 +3585,16 @@ check(not LY.has_content(fold, 'METALLIC') and LY.has_content(fold, 'ROUGHNESS')
 
 # Values only set node values.
 nodes_ptr = {n.name: n.as_pointer() for n in nt.nodes}
-fold.opacity, fold.blend = 0.5, 'MULTIPLY'
-c_layer.opacity, c_layer.blend, c_layer.visible = 0.4, 'OVERLAY', False
+LY.set_look(fold, opacity=0.5, blend='MULTIPLY')
+LY.set_look(c_layer, opacity=0.4, blend='OVERLAY')
+c_layer.visible = False
 check({n.name: n.as_pointer() for n in nt.nodes} == nodes_ptr, "folder and layer values only change node values")
 check(abs(nd('BASE_COLOR', fold, "opv").inputs[1].default_value - 0.5) < 1e-6 and fm.blend_type == 'MULTIPLY'
       and nd('BASE_COLOR', c_layer, "opv").inputs[1].default_value == 0.0 and nd('BASE_COLOR', c_layer, "mix").blend_type == 'OVERLAY',
       "...opacity, blend mode and visibility of the folder and of a layer inside it")
-fold.opacity, fold.blend, c_layer.opacity, c_layer.blend, c_layer.visible = 1.0, 'MIX', 1.0, 'MIX', True
+LY.set_look(fold, opacity=1.0, blend='MIX')
+LY.set_look(c_layer, opacity=1.0, blend='MIX')
+c_layer.visible = True
 
 # The arrows step through the list, in and out of open folders.
 select(fo_mat, "C")
@@ -3671,14 +3685,14 @@ check(bpy.ops.m3d.layer_move_out() == {'FINISHED'} and shape(fo_mat) == "Folder[
 # --- Merge Folder: the folder becomes one paint layer holding what its layers made together
 select(fo_mat, "Folder")
 fold = LY.active_layer(fo_mat)
-fold.blend, fold.opacity = 'MULTIPLY', 0.6
+LY.set_look(fold, blend='MULTIPLY', opacity=0.6)
 bpy.ops.m3d.layer_mask_add(fill='WHITE')
 LY.write_pixels(LY.paint_effect(fold).image, np.concatenate([fold_rng.random((64 * 64, 3)), np.ones((64 * 64, 1))], axis=-1).astype(np.float32))
 before = {c: LY.composite(fo_mat, c, 64) for c in ('BASE_COLOR', 'ROUGHNESS')}
 mask_name, kids_images = LY.paint_effect(fold).image.name, [e.image.name for l in LY.descendants(fold) for e in l.channels if e.image]
 check(bpy.ops.m3d.layer_merge_folder() == {'FINISHED'} and shape(fo_mat) == "Folder Folder 2[A]" and well_formed(fo_mat), "Merge Folder: %s" % shape(fo_mat))
 merged = named(fo_mat, "Folder")
-check(merged.kind == 'PAINT' and merged.blend == 'MULTIPLY' and abs(merged.opacity - 0.6) < 1e-6 and merged.visible and merged.use_alpha
+check(merged.kind == 'PAINT' and LY.blend_of(merged, 'ROUGHNESS') == 'MULTIPLY' and abs(LY.opacity_of(merged, 'ROUGHNESS') - 0.6) < 1e-6 and merged.visible and merged.use_alpha
       and LY.paint_effect(merged) is not None and LY.paint_effect(merged).image.name == mask_name and not merged.frozen,
       "...it keeps the folder's name, blend mode, opacity and mask")
 check(not [n for n in kids_images if n in bpy.data.images] and len(LY.kids_of(fo_mat)) == 2 and not LY.children(merged), "...the layers inside and their images are gone")
@@ -3701,20 +3715,31 @@ for what, name in (("folder", "Folder 2"), ("layer in a folder", "A")):
         check_calls("%s with the active %s" % (cls.__name__, what), log)
         if cls is T.PROPERTIES_PT_m3d_tx_stack:
             ops = {r._args[0] for r in log if r._kind in {"operator", "operator_menu_enum"}}
-            check({"m3d.layer_add", "m3d.layer_folder_add", "m3d.layer_move_into", "m3d.layer_move_out"} <= ops,
-                  "the Layers panel has New Folder, Group, Move In and Move Out: %s" % sorted(ops))
-            check(sum(1 for r in log if r._kind == "operator" and r._args[0] == "m3d.layer_folder_add") == 2, "...New Folder next to Paint Layer and Fill Layer, and Group")
+            check({"m3d.layer_add", "m3d.layer_folder_add", "m3d.layer_move", "m3d.layer_duplicate", "m3d.layer_remove"} <= ops
+                  and not ops & {"m3d.layer_merge_down", "m3d.layer_flatten", "m3d.layer_move_into", "m3d.layer_move_out"},
+                  "the Layers panel has the header buttons and the arrows; Merge Down, Flatten and Move In / Out are in the menu: %s" % sorted(ops))
+            check(sum(1 for r in log if r._kind == "operator" and r._args[0] == "m3d.layer_folder_add") == 1, "...one New Folder button (Group is in the menu)")
+            more = []
+            LY.M3D_MT_layer_more.draw(NS(layout=Rec(more)), fo_ctx)
+            check_calls("Layers panel ... menu", more)
+            more_ops = {r._args[0] for r in more if r._kind in {"operator", "operator_menu_enum"}}
+            check({"m3d.layer_merge_down", "m3d.layer_flatten", "m3d.layer_folder_add", "m3d.layer_move_into", "m3d.layer_move_out"} <= more_ops
+                  and bool(more_ops & {"m3d.layer_freeze", "m3d.layer_unfreeze"}),
+                  "the ... menu has Merge Down, Flatten, Group, Move In / Out and Freeze: %s" % sorted(more_ops))
         if cls is T.PROPERTIES_PT_m3d_tx_layer and what == "folder":
             ops = {r._args[0] for r in log if r._kind == "operator"}
             check({"m3d.layer_freeze", "m3d.layer_merge_folder"} <= ops
-                  and {r._args[1] for r in log if r._kind == "prop"} >= {"name", "blend", "opacity", "visible"}, "the Layer panel of a folder: properties, Freeze, Merge Folder")
+                  and {r._args[1] for r in log if r._kind == "prop"} >= {"name", "blend", "opacity", "visible"}
+                  and {r._args[0].channel for r in log if r._kind == "prop" and r._args[1] == "blend"} == set(LY.CHANNEL_BY_ID),
+                  "the Layer panel of a folder: name, blend and opacity of every channel, visibility, Freeze, Merge Folder")
 rows = []
 for layer in fo_mat.m3d_layers:
     log = []
     LY.M3D_UL_layers.draw_item(None, fo_ctx, Rec(log), None, layer, 0, None, "", LY.index_of(fo_mat, layer.uid))
     check_calls("layer list row of " + layer.name, log)
     props = {r._args[1] for r in log if r._kind == "prop"}
-    check(props >= {"visible", "name", "blend", "opacity"} and ("expanded" in props) == (layer.kind == 'FOLDER'), "list row of %s: %s" % (layer.name, sorted(props)))
+    check(props >= {"visible", "name", "opacity"} and any(r._kind == "prop_menu_enum" and r._args[1] == "blend" for r in log)
+          and ("expanded" in props) == (layer.kind == 'FOLDER'), "list row of %s: %s" % (layer.name, sorted(props)))
     check(any(r._kind == "separator" for r in log) == bool(layer.parent), "...children are indented")
     check(any(r._kind == "operator" and r._args[0] == "m3d.layer_freeze" for r in log) == (layer.kind == 'FOLDER'), "...a folder row has the freeze toggle")
 check(bpy.ops.m3d.layer_folder_add.poll(), "New Folder works in Texture Paint Mode")
@@ -3754,7 +3779,10 @@ def build_stack(mat, spec, chans=('ROUGHNESS',)):
                 if img:
                     e.image = noise_image("fx_%s_%s_%s" % (name, ch_id, fold_rng.integers(10 ** 6)), CH[ch_id], opaque=img == 'opaque')
             for key, value_ in props.items():
-                setattr(l, key, value_)
+                if key in {"blend", "opacity"}:
+                    LY.set_look(l, **{key: value_})
+                else:
+                    setattr(l, key, value_)
             if mask:
                 set_mask(l, noise_image("fxm_%s_%s" % (name, fold_rng.integers(10 ** 6)), False, alpha=False))
         mat.m3d_layer_index = 0
@@ -3845,7 +3873,7 @@ live = {c: LY.composite(fpm, c, N) for c in CHANS2}
 state_live = material_state(fpm)
 count_live, tagged_live = len(fpm.node_tree.nodes), len([n for n in fpm.node_tree.nodes if LY.TAG in n.keys()])
 images_live = {i.name for i in bpy.data.images}
-kids_before = [(l.name, l.uid, l.opacity, l.visible) for l in LY.descendants(fold)]
+kids_before = [(l.name, l.uid, LY.opacity_of(l, 'ROUGHNESS'), l.visible) for l in LY.descendants(fold)]
 t0 = time.perf_counter()
 LY.freeze_folder(fpm, LY.index_of(fpm, fold.uid), 16)
 freeze_time = time.perf_counter() - t0
@@ -3858,7 +3886,7 @@ check(frozen_images['BASE_COLOR'].colorspace_settings.name == 'sRGB' and frozen_
       and all(img["m3d_channel"] == c for c, img in frozen_images.items()) and all(img.depth == 32 for img in frozen_images.values()),
       "...sRGB for color, Non-Color for data, with alpha, tagged with their channel")
 check(all("Frozen" in img.name for img in frozen_images.values()) and fold.use_alpha, "...named after the folder")
-check(shape(fpm) == "Base F[C1 C2 C3] Top" and [(l.name, l.uid, l.opacity, l.visible) for l in LY.descendants(fold)] == kids_before
+check(shape(fpm) == "Base F[C1 C2 C3] Top" and [(l.name, l.uid, LY.opacity_of(l, 'ROUGHNESS'), l.visible) for l in LY.descendants(fold)] == kids_before
       and all(e.image is not None for l in LY.descendants(fold) for e in l.channels if e.use and l.kind == 'PAINT'),
       "the layers are kept in the data, untouched")
 for ch_id in CHANS2:
@@ -3894,7 +3922,7 @@ for ch_id in CHANS2:
     check(np.abs(LY.composite(fpm, ch_id, N) - live[ch_id]).max() < 1e-6, "...and the same look: %s" % ch_id)
 # Refreshed after an edit: unfreeze, change a layer, freeze again.
 rand_image(LY.entry_of(named(fpm, "C1"), 'ROUGHNESS').image)
-named(fpm, "C2").opacity = 0.2
+LY.set_look(named(fpm, "C2"), opacity=0.2)
 live2 = LY.composite(fpm, 'ROUGHNESS', N)
 LY.freeze_folder(fpm, LY.index_of(fpm, named(fpm, "F").uid), 16)
 check(np.abs(LY.composite(fpm, 'ROUGHNESS', N) - live2).max() < FREEZE_TOL and len(bpy.data.images) == len(images_live) + 2,
@@ -4010,7 +4038,7 @@ check(LY.target_image(bpy.context, fz_mat, True) is None, "a frozen layer has no
 fz_folder.visible = False
 check(fz_mat.node_tree.nodes[LY.part('BASE_COLOR', fz_folder.uid, "opv")].inputs[1].default_value == 0.0, "a frozen folder can still be hidden")
 fz_folder.visible = True
-fz_folder.opacity, fz_folder.blend = 0.4, 'MULTIPLY'
+LY.set_look(fz_folder, opacity=0.4, blend='MULTIPLY')
 check(fz_mat.node_tree.nodes[LY.part('BASE_COLOR', fz_folder.uid, "mix")].blend_type == 'MULTIPLY'
       and abs(fz_mat.node_tree.nodes[LY.part('BASE_COLOR', fz_folder.uid, "opv")].inputs[1].default_value - 0.4) < 1e-6,
       "...and have its own blend mode and opacity")
@@ -4125,8 +4153,10 @@ def lib_valid_effect(spec):
 
 
 def lib_valid_layer(spec):
-    ok = spec["kind"] in KIND_SET and set(spec) <= {"name", "kind", "visible", "opacity", "blend", "use_alpha", "channels", "layers", "mask"}
+    ok = spec["kind"] in KIND_SET and set(spec) <= {"name", "kind", "visible", "opacity", "blend", "blends", "opacities", "mask_on", "use_alpha", "channels", "layers", "mask"}
     ok = ok and spec.get("blend", 'MIX') in dict(LY.BLENDS) and all(lib_valid_effect(e) for e in spec.get("mask", ()))
+    ok = ok and set(spec.get("blends", {})) <= set(LY.CHANNEL_BY_ID) and all(b in dict(LY.BLENDS) for b in spec.get("blends", {}).values())
+    ok = ok and set(spec.get("opacities", {})) <= set(LY.CHANNEL_BY_ID) and all(0 <= o <= 1 for o in spec.get("opacities", {}).values())
     for ch, value in spec.get("channels", {}).items():
         ok = ok and ch in LY.CHANNEL_BY_ID and (value is None or isinstance(value, str) or (isinstance(value, list) and len(value) == 4
                                                                                              and all(0 <= c <= 1 for c in value))
@@ -4183,7 +4213,10 @@ def lib_spec_shape(spec, name=None):
 
 def lib_values_ok(layer, spec):
     """The fill values and the enabled channels of a layer are the item's; so are blend, opacity and the effect settings."""
-    ok = layer.blend == spec.get("blend", 'MIX') and abs(layer.opacity - spec.get("opacity", 1.0)) < 1e-6 and layer.visible == spec.get("visible", True)
+    ok = layer.visible == spec.get("visible", True)
+    for ch in LY.CHANNELS:   # (the one blend and opacity of an item from before the channels had their own are for every channel)
+        want = spec.get("blends", {}).get(ch.id, 'MIX' if ch.id == 'NORMAL' else spec.get("blend", 'MIX'))
+        ok = ok and LY.blend_of(layer, ch.id) == want and abs(LY.opacity_of(layer, ch.id) - spec.get("opacities", {}).get(ch.id, spec.get("opacity", 1.0))) < 1e-6
     for ch in LY.CHANNELS if layer.kind != 'FOLDER' else ():
         e, value = LY.entry_of(layer, ch.id), spec.get("channels", {}).get(ch.id, "absent")
         ok = ok and e.use == (value != "absent")
@@ -4255,7 +4288,7 @@ for entry in lb_masks.values():
     lb_counts.update(rebuild=0, bake=0)
     res = bpy.ops.m3d.library_apply(item=entry.ref, mode='REPLACE')
     layer = named(lb_mat, "Target")
-    check(res == {'FINISHED'} and [e.kind for e in layer.mask_stack] == [x["kind"] for x in entry.item["mask"]] and lib_values_ok(layer, {"mask": entry.item["mask"], "channels": {"BASE_COLOR": None}}),
+    check(res == {'FINISHED'} and [e.kind for e in layer.mask_stack] == [x["kind"] for x in entry.item["mask"]] and lib_values_ok(layer, {"mask": entry.item["mask"], "channels": {"BASE_COLOR": None}, "blends": {"HEIGHT": 'LINEAR_LIGHT'}}),
           "%s replaces the mask with its effects" % entry.item["name"])
     check(layer.mask_stack[0].blend == 'MIX' and layer.mask_index == len(layer.mask_stack) - 1 and lb_counts["rebuild"] == 1 and lb_counts["bake"] <= 1,
           "%s: the first effect sets the mask, one rebuild (%s)" % (entry.item["name"], lb_counts))
@@ -4324,15 +4357,17 @@ with LY.muted():
     LY.entry_of(tint, 'BASE_COLOR').color = (0.1, 0.4, 0.7, 1.0)
     LY.entry_of(tint, 'ROUGHNESS').use = True
     LY.entry_of(tint, 'ROUGHNESS').value = 0.37
-    tint.blend, tint.opacity = 'MULTIPLY', 0.7
+    LY.set_look(tint, blend='MULTIPLY', opacity=0.7)
     for ch_id, value in (('BASE_COLOR', (1.0, 0.77, 0.34, 1.0)), ('ROUGHNESS', 0.21), ('METALLIC', 1.0)):
         LY.entry_of(gold, ch_id).use = True
         if ch_id == 'BASE_COLOR':
             LY.entry_of(gold, ch_id).color = value
         else:
             LY.entry_of(gold, ch_id).value = value
-    gold.blend, gold.opacity = 'OVERLAY', 0.8
-    outer.blend, outer.opacity, inner.opacity, inner.visible = 'SOFT_LIGHT', 0.9, 0.6, True
+    LY.set_look(gold, blend='OVERLAY', opacity=0.8)
+    LY.set_look(outer, blend='SOFT_LIGHT', opacity=0.9)
+    LY.set_look(inner, opacity=0.6)
+    inner.visible = True
 LY.rebuild_all(rt_mat)
 select(rt_mat, "Tint")
 bpy.ops.m3d.mask_effect_add(kind='PAINT', fill='WHITE')
@@ -4392,7 +4427,8 @@ tint2, outer2 = named(rt_mat, "Tint"), named(rt_mat, "Outer")
 check(same_effects(rt_tint_fx, rt_effects(tint2)) and same_effects(rt_outer_fx, rt_effects(outer2)), "the mask effects, their settings and their paint images")
 check(np.array_equal(rt_tint_mask, MK.stack_value(tint2, 64)), "the same mask values")
 check(np.array_equal(rt_brush_px, read(LY.entry_of(named(rt_mat, "Brush"), 'BASE_COLOR').image)), "the paint layer's pixels")
-check((outer2.blend, round(outer2.opacity, 5), tint2.blend, round(tint2.opacity, 5), round(named(rt_mat, "Inner").opacity, 5)) == ('SOFT_LIGHT', 0.9, 'MULTIPLY', 0.7, 0.6),
+check((LY.blend_of(outer2, 'ROUGHNESS'), round(LY.opacity_of(outer2, 'ROUGHNESS'), 5), LY.blend_of(tint2, 'ROUGHNESS'), round(LY.opacity_of(tint2, 'ROUGHNESS'), 5),
+       round(LY.opacity_of(named(rt_mat, "Inner"), 'ROUGHNESS'), 5)) == ('SOFT_LIGHT', 0.9, 'MULTIPLY', 0.7, 0.6),
       "blend modes and opacities")
 check(_rebuild_all(rt_mat) is False, "the nodes of the applied item are in step")
 # a mask preset: the same
@@ -9812,7 +9848,7 @@ LY.write_pixels(tex_b, ramp_px)
 with LY.muted():
     LY.entry_of(pp_base, 'ROUGHNESS').use = True
     LY.entry_of(pp_base, 'ROUGHNESS').image = LY.make_channel_image(pp_mat, pp_base, LY.CHANNEL_BY_ID['ROUGHNESS'], 8, opaque=True)
-    pp_fill.blend, pp_fill.opacity = 'MIX', 1.0
+    LY.set_look(pp_fill, blend='MIX', opacity=1.0)
     LY.entry_of(pp_fill, 'ROUGHNESS').use = True
     LY.entry_of(pp_fill, 'ROUGHNESS').texture = tex_b
 LY.rebuild_all(pp_mat)
@@ -9843,7 +9879,8 @@ check(np.abs(flat - want).max() < 1e-5, "Offset 0.125 (linear): halfway between 
 pp_fill.uv_offset = (0.0, 0.0)
 
 # the same through Merge Down, Flatten and Export
-pp_fill.uv_tiling, pp_fill.uv_rotation, pp_fill.uv_offset, pp_fill.opacity = (1.5, 2.0), 0.7, (0.1, -0.2), 0.6
+pp_fill.uv_tiling, pp_fill.uv_rotation, pp_fill.uv_offset = (1.5, 2.0), 0.7, (0.1, -0.2)
+LY.set_look(pp_fill, opacity=0.6)
 LY.rebuild_all(pp_mat)
 tex_node.interpolation = 'Closest'
 base_img = LY.entry_of(pp_base, 'ROUGHNESS').image
@@ -9874,7 +9911,8 @@ LY.set_channel_space(tex_c, LY.CHANNEL_BY_ID['BASE_COLOR'])
 LY.write_pixels(tex_c, col_px)
 with LY.muted():
     LY.entry_of(pp_fill2, 'BASE_COLOR').texture = tex_c
-    pp_fill2.blend, pp_fill2.opacity, pp_fill2.uv_tiling = 'MULTIPLY', 0.5, (2.0, 2.0)
+    pp_fill2.uv_tiling = (2.0, 2.0)
+    LY.set_look(pp_fill2, blend='MULTIPLY', opacity=0.5)
 LY.rebuild_all(pp_mat2)
 LY.write_pixels(LY.entry_of(pp_base2, 'BASE_COLOR').image, np.full((8, 8, 4), (0.6, 0.5, 0.4, 1.0), np.float32))
 pp_mat2.node_tree.nodes[LY.part('BASE_COLOR', pp_fill2.uid, "tex")].interpolation = 'Closest'
@@ -10127,6 +10165,712 @@ clean_scene()
 for image in [i for i in bpy.data.images if i.name.startswith(("pp", "fit"))]:
     bpy.data.images.remove(image)
 shutil.rmtree(pp_alphas, ignore_errors=True)
+
+# ----------------------------------------------------------------------------------------------------
+# Phase 3e: the layer stack like the reference: a blend mode and an opacity for every channel (data, node chains, numpy, migration,
+# library), the Layers panel header, rows with thumbnails and effect rows, the right-click menu and the keys.
+
+p3_modes = [b for b, _l in LY.BLENDS if b not in {'PASSTHROUGH', 'REPLACE'}]
+p3_all = p3_modes + ['REPLACE']
+p3_quiet = NS(report=lambda *a, **k: None)
+
+# --- New layers: Height adds, the other channels mix (Normal mixes: there is no normal combine), every opacity is 1
+p3_ob, p3_mat = fresh_cube("Stack3e", '64')
+bpy.ops.m3d.layer_add(kind='PAINT')
+bpy.ops.m3d.layer_add(kind='FILL')
+bpy.ops.m3d.layer_folder_add()
+check(len(p3_mat.m3d_layers) == 3 and all(l.per_channel for l in p3_mat.m3d_layers), "three new layers")
+for l in p3_mat.m3d_layers:
+    check({e.channel: e.blend for e in l.channels} == {c.id: ('LINEAR_LIGHT' if c.id == 'HEIGHT' else 'MIX') for c in LY.CHANNELS}
+          and all(e.opacity == 1.0 for e in l.channels), "a new %s raises / digs Height (Linear Light) and mixes the other channels, all at 100%%: %s" % (l.kind, [(e.channel, e.blend) for e in l.channels]))
+p3_ob2, p3_mat2 = fresh_cube("Slots3e", '64')
+bpy.ops.m3d.tex_channel(channel='HEIGHT')
+bpy.ops.m3d.tex_channel(channel='BASE_COLOR')
+bpy.ops.m3d.layer_add(kind='PAINT')
+check(LY.blend_of(p3_mat2.m3d_layers[0], 'HEIGHT') == 'MIX' and LY.blend_of(p3_mat2.m3d_layers[1], 'HEIGHT') == 'LINEAR_LIGHT',
+      "the Base layer made from paint slots mixes Height (the look does not change); the layer above is Linear Light")
+bpy.ops.m3d.layer_flatten()
+check([l.name for l in p3_mat2.m3d_layers] == ["Base"] and LY.blend_of(p3_mat2.m3d_layers[0], 'HEIGHT') == 'MIX', "Flatten leaves a Base layer that mixes Height")
+
+# --- Each channel has its own blend mode and opacity, in the data and in the node chains
+p3_ob, p3_mat = fresh_cube("Stack3f", '64')
+with LY.muted():
+    for name in ("Low", "High"):
+        LY.add_layer(p3_mat, 'PAINT', name)
+    for l in p3_mat.m3d_layers:
+        for cid in ('ROUGHNESS', 'METALLIC', 'HEIGHT'):
+            e = LY.entry_of(l, cid)
+            e.use, e.image = True, small("p3%s%s" % (l.name, cid), grid_rgba(lambda x, y: ((cx[x] if l.name == "Low" else ry[y]),) * 3, lambda y: 1.0 if l.name == "Low" else ay[y]))
+low3, high3 = p3_mat.m3d_layers
+LY.set_look(high3, blend='MULTIPLY', opacity=0.5, channel='ROUGHNESS')
+LY.set_look(high3, blend='SCREEN', opacity=0.3, channel='METALLIC')
+check([(LY.blend_of(high3, c.id), round(LY.opacity_of(high3, c.id), 5)) for c in LY.CHANNELS] ==
+      [('MIX', 1.0), ('MULTIPLY', 0.5), ('SCREEN', 0.3), ('MIX', 1.0), ('LINEAR_LIGHT', 1.0), ('MIX', 1.0)], "set_look with a channel changes that channel only")
+for cid, mode in (('ROUGHNESS', 'MULTIPLY'), ('METALLIC', 'SCREEN'), ('HEIGHT', 'LINEAR_LIGHT')):
+    top = expect_chain(p3_mat, cid, "per channel")[-1]
+    check(top.blend_type == mode, "the %s chain's top Mix is %s (%s)" % (cid, mode, top.blend_type))
+nodes3 = p3_mat.node_tree.nodes
+ptr = {n.name: n.as_pointer() for n in nodes3}
+LY.set_look(high3, blend='OVERLAY', channel='ROUGHNESS')
+check({n.name: n.as_pointer() for n in nodes3} == ptr and nodes3[LY.part('ROUGHNESS', high3.uid, "mix")].blend_type == 'OVERLAY',
+      "another blend mode of one channel only sets a value (no node is made again)")
+LY.set_look(high3, blend='LIGHTEN')
+check([LY.blend_of(high3, c.id) for c in LY.CHANNELS] == ['LIGHTEN', 'LIGHTEN', 'LIGHTEN', 'MIX', 'LIGHTEN', 'LIGHTEN'] and abs(LY.opacity_of(high3, 'METALLIC') - 0.3) < 1e-6,
+      "set_look without a channel sets every channel but Normal (which keeps mixing): %s" % [LY.blend_of(high3, c.id) for c in LY.CHANNELS])
+LY.set_look(high3, blend='MULTIPLY', channel='ROUGHNESS')
+LY.set_look(high3, blend='SCREEN', channel='METALLIC')
+LY.set_look(high3, blend='ADD', channel='HEIGHT')
+
+# Color Burn and Dodge are a Mix at full strength and a plain Mix by the factor (the node formulas are not linear in the factor)
+LY.set_look(high3, blend='BURN', channel='ROUGHNESS')
+pre = nodes3.get(LY.part('ROUGHNESS', high3.uid, "pre"))
+mix = nodes3[LY.part('ROUGHNESS', high3.uid, "mix")]
+check(pre is not None and pre.blend_type == 'BURN' and pre.inputs[0].default_value == 1.0 and mix.blend_type == 'MIX'
+      and mix.inputs[7].links[0].from_node == pre and pre.inputs[6].links[0].from_node == nodes3[LY.part('ROUGHNESS', low3.uid, "mix")]
+      and chain_names(p3_mat, 'ROUGHNESS') == expected_nodes(LY.kids_of(p3_mat), 'ROUGHNESS'), "Color Burn: a Mix of the blend at full strength feeds the plain Mix")
+check(nodes3.get(LY.part('METALLIC', high3.uid, "pre")) is None, "...only in the channel that has it")
+LY.set_look(high3, blend='DODGE', channel='ROUGHNESS')
+check(nodes3[LY.part('ROUGHNESS', high3.uid, "pre")].blend_type == 'DODGE', "Color Dodge: the same, with its own mode (a value only)")
+LY.set_look(high3, blend='MULTIPLY', channel='ROUGHNESS')
+check(nodes3.get(LY.part('ROUGHNESS', high3.uid, "pre")) is None and chain_names(p3_mat, 'ROUGHNESS') == expected_nodes(LY.kids_of(p3_mat), 'ROUGHNESS'),
+      "...and gone again with another mode")
+# Replace reads the alpha (so the image node gives its own color) but does not use it; Passthrough leaves the layer out
+LY.set_look(high3, blend='REPLACE', channel='ROUGHNESS')
+opv = nodes3[LY.part('ROUGHNESS', high3.uid, "opv")]
+one = nodes3.get(LY.part('ROUGHNESS', high3.uid, "one"))
+check(one is not None and one.operation == 'POWER' and opv.inputs[0].links[0].from_node == one and one.inputs[0].links[0].from_socket.name == "Alpha"
+      and nodes3[LY.part('ROUGHNESS', high3.uid, "mix")].blend_type == 'MIX' and chain_names(p3_mat, 'ROUGHNESS') == expected_nodes(LY.kids_of(p3_mat), 'ROUGHNESS'),
+      "Replace: the image's alpha goes through alpha ^ 0, so the factor is the opacity")
+LY.set_look(high3, blend='PASSTHROUGH', channel='ROUGHNESS')
+check(len(level(p3_mat, 'ROUGHNESS')) == 1 and not any(n.name.startswith(LY.part('ROUGHNESS', high3.uid, "")) for n in nodes3)
+      and len(level(p3_mat, 'METALLIC')) == 2 and not LY.has_content(high3, 'ROUGHNESS') and LY.has_content(high3, 'METALLIC'),
+      "Passthrough: the layer has no nodes in that channel, and the other channels keep it")
+low_only = LY.composite(p3_mat, 'ROUGHNESS', 4)
+LY.set_look(high3, blend='MIX', channel='ROUGHNESS')
+check(np.abs(LY.composite(p3_mat, 'ROUGHNESS', 4) - low_only).max() > 0.01 and len(level(p3_mat, 'ROUGHNESS')) == 2, "...and it counts again when the mode is back")
+LY.set_look(low3, blend='PASSTHROUGH', channel='HEIGHT')
+LY.set_look(high3, blend='PASSTHROUGH')
+check('HEIGHT' not in LY.content_channels(p3_mat) and 'ROUGHNESS' in LY.content_channels(p3_mat) and 'METALLIC' in LY.content_channels(p3_mat),
+      "a channel that only Passthrough layers touch is not content (it is not exported): %s" % LY.content_channels(p3_mat))
+LY.set_look(high3, blend='MIX')
+LY.set_look(low3, blend='ADD', channel='HEIGHT')
+LY.set_look(high3, blend='ADD', channel='HEIGHT')
+
+# --- Every mode, different in each channel, against a Cycles bake: paint layers with transparency and a mask, fills, a folder
+clean_scene()
+bpy.ops.mesh.primitive_plane_add()
+p3_plane = bpy.context.active_object
+p3_plane.name = "Stack3Bake"
+bpy.ops.m3d.tex_add_material()
+p3_bake = p3_plane.active_material
+p3_worst = 0.0
+for i, mode_a in enumerate(p3_all):
+    mode_b = p3_all[(i * 5 + 3) % len(p3_all)]
+    with LY.muted():
+        p3_bake.m3d_layers.clear()
+        for name, kind in (("A", 'PAINT'), ("B", 'PAINT'), ("C", 'FILL'), ("G1", 'PAINT'), ("G2", 'FILL'), ("F", 'FOLDER')):
+            LY.add_layer(p3_bake, kind, name)
+        by = {l.name: l for l in p3_bake.m3d_layers}
+        by["G1"].parent = by["G2"].parent = by["F"].uid
+        for l in p3_bake.m3d_layers:
+            for cid in ('ROUGHNESS', 'METALLIC'):
+                e = LY.entry_of(l, cid)
+                e.use = l.kind != 'FOLDER'
+                e.value = 0.15 + 0.7 * rng.random()
+                if l.kind == 'PAINT':
+                    e.image = noise_image("p3%s%s%d" % (l.name, cid, i), False, opaque=l.name == "A")
+        LY.set_look(by["B"], blend=mode_a, opacity=0.7, channel='ROUGHNESS')
+        LY.set_look(by["B"], blend=mode_b, opacity=0.55, channel='METALLIC')
+        LY.set_look(by["C"], blend=mode_b, opacity=0.8, channel='ROUGHNESS')
+        LY.set_look(by["C"], blend=mode_a, opacity=0.6, channel='METALLIC')
+        LY.set_look(by["G2"], blend=mode_b, opacity=0.9, channel='ROUGHNESS')
+        LY.set_look(by["G2"], blend=mode_a, opacity=0.9, channel='METALLIC')
+        LY.set_look(by["F"], blend=mode_a, opacity=0.8, channel='ROUGHNESS')
+        LY.set_look(by["F"], blend=mode_b, opacity=0.85, channel='METALLIC')
+        set_mask(by["B"], noise_image("p3m%d" % i, False, alpha=False))
+    LY.rebuild_all(p3_bake)
+    for cid in ('ROUGHNESS', 'METALLIC'):
+        err = np.abs(bake_chain(p3_plane, p3_bake, cid) - LY.composite(p3_bake, cid, N)).max()
+        p3_worst = max(p3_worst, err)
+        check(err < 2e-4, "per-channel %s / %s: the %s node chain is what numpy makes (error %.6f)" % (mode_a, mode_b, cid, err))
+print("per-channel blend math vs Cycles bake: worst linear error %.7f" % p3_worst)
+# Hue, Saturation, Color, Value and the modes that lift small values, on color (opaque images: Cycles premultiplies an 8 bit image
+# with alpha in 8 bit and divides by the alpha again, which amplifies the rounding where the alpha is small)
+p3_worst = 0.0
+for mode in ('HUE', 'SATURATION', 'COLOR', 'VALUE', 'BURN', 'DODGE', 'LINEAR_LIGHT', 'DIVIDE', 'REPLACE'):
+    with LY.muted():
+        p3_bake.m3d_layers.clear()
+        for name in ("A", "B", "C"):
+            LY.add_layer(p3_bake, 'PAINT', name)
+        for l in p3_bake.m3d_layers:
+            e = LY.entry_of(l, 'BASE_COLOR')
+            e.use, e.image = True, noise_image("p3c%s%s" % (l.name, mode), True, opaque=True)
+        LY.set_look(p3_bake.m3d_layers[1], blend=mode, opacity=0.8, channel='BASE_COLOR')
+        LY.set_look(p3_bake.m3d_layers[2], blend=mode, opacity=1.0, channel='BASE_COLOR')
+    LY.rebuild_all(p3_bake)
+    err = np.abs(bake_chain(p3_plane, p3_bake, 'BASE_COLOR') - LY.composite(p3_bake, 'BASE_COLOR', N)).max()
+    p3_worst = max(p3_worst, err)
+    check(err < 0.006, "%s on Base Color matches the node chain (error %.5f)" % (mode, err))
+print("color blend modes vs Cycles bake: worst linear error %.5f" % p3_worst)
+bpy.data.objects.remove(p3_plane)
+
+# --- Merge Down, Flatten, Freeze, Convert and Export use the channel's own mode: the look stays
+for mode in p3_all:
+    o, m, low_img, high_img = two_layers('ROUGHNESS', mode, 0.6)
+    before = LY.composite(m, 'ROUGHNESS', 4)
+    m.m3d_layer_index = 1
+    check(bpy.ops.m3d.layer_merge_down() == {'FINISHED'}, "Merge Down %s" % mode)
+    err = np.abs(LY.composite(m, 'ROUGHNESS', 4) - before).max()
+    check(err < 1.5 / 255, "Merge Down with %s keeps the look (error %.4f)" % (mode, err))
+o, m, low_img, high_img = two_layers('ROUGHNESS', 'MULTIPLY', 0.6)
+LY.set_look(m.m3d_layers[1], blend='BURN', opacity=0.4, channel='ROUGHNESS')
+for l, values in ((m.m3d_layers[0], grid_rgba(lambda x, y: (cx[x],) * 3, lambda y: 1.0)), (m.m3d_layers[1], grid_rgba(lambda x, y: (ry[y],) * 3, lambda y: ay[y]))):
+    with LY.muted():
+        LY.entry_of(l, 'METALLIC').use = True
+        LY.entry_of(l, 'METALLIC').image = small("p3met%s" % l.name, values)
+LY.set_look(m.m3d_layers[1], blend='DIFFERENCE', channel='METALLIC', opacity=0.7)
+before = {c: LY.composite(m, c, 4) for c in ('ROUGHNESS', 'METALLIC')}
+m.m3d_layer_index = 1
+bpy.ops.m3d.layer_merge_down()
+check(all(np.abs(LY.composite(m, c, 4) - before[c]).max() < 1.5 / 255 for c in before), "Merge Down with another mode in each channel keeps both looks")
+check(all(LY.blend_of(m.m3d_layers[0], c.id) == ('LINEAR_LIGHT' if c.id == 'HEIGHT' else 'MIX') and LY.opacity_of(m.m3d_layers[0], c.id) == 1.0 for c in LY.CHANNELS),
+      "...the merged layer keeps the lower layer's modes, and the opacities are baked into the pixels")
+# Flatten, Freeze, Convert and Export with a folder and another mode in each channel
+o, m = fresh_cube("Flat3e", '64')
+with LY.muted():
+    for name, kind in (("A", 'PAINT'), ("B", 'PAINT'), ("C", 'FILL'), ("G1", 'PAINT'), ("G2", 'FILL'), ("F", 'FOLDER')):
+        LY.add_layer(m, kind, name)
+    by = {l.name: l for l in m.m3d_layers}
+    by["G1"].parent = by["G2"].parent = by["F"].uid
+    for l in m.m3d_layers:
+        for cid in ('ROUGHNESS', 'HEIGHT'):
+            e = LY.entry_of(l, cid)
+            e.use, e.value = l.kind != 'FOLDER', 0.2 + 0.6 * rng.random()
+            if l.kind == 'PAINT':
+                e.image = noise_image("fl3%s%s" % (l.name, cid), False, opaque=l.name == "A")
+    LY.set_look(by["B"], blend='DIVIDE', opacity=0.7, channel='ROUGHNESS')
+    LY.set_look(by["C"], blend='DODGE', opacity=0.5, channel='ROUGHNESS')
+    LY.set_look(by["G1"], blend='SOFT_LIGHT', opacity=0.8, channel='ROUGHNESS')
+    LY.set_look(by["G2"], blend='LINEAR_LIGHT', opacity=0.9, channel='ROUGHNESS')
+    LY.set_look(by["F"], blend='OVERLAY', opacity=0.75, channel='ROUGHNESS')
+    LY.set_look(by["B"], blend='ADD', opacity=0.6, channel='HEIGHT')
+    LY.set_look(by["F"], blend='LIGHTEN', opacity=0.9, channel='HEIGHT')
+LY.rebuild_all(m)
+live = {c: LY.composite(m, c, N) for c in ('ROUGHNESS', 'HEIGHT')}
+LY.freeze_folder(m, LY.index_of(m, by["F"].uid), 16)
+check(all(np.abs(LY.composite(m, c, N) - live[c]).max() < 0.02 for c in live), "Freeze with another mode in each channel keeps the look")
+check(LY.blend_of(named(m, "F"), 'ROUGHNESS') == 'OVERLAY' and abs(LY.opacity_of(named(m, "F"), 'HEIGHT') - 0.9) < 1e-6, "...the frozen folder keeps its own modes")
+LY.unfreeze_folder(m, LY.index_of(m, by["F"].uid))
+tx = bpy.context.scene.m3d_tex
+tx.export_folder, tx.export_size, tx.export_preset = tempfile.mkdtemp(prefix="m3d_p3e_"), '64', 'UNREAL'
+check(bpy.ops.m3d.tex_export() == {'FINISHED'}, "Export of a stack with another mode in each channel")
+orm3, _ = load_png(tx.export_folder, "T_Flat3e_ORM.png")
+flat_roughness = LY.flatten_channel(m, 'ROUGHNESS', 64)
+check(np.abs(orm3[:, 1] - flat_roughness[..., 0].ravel()).max() < 2.5 / 255, "...writes the roughness numpy flattens (error %.4f)" % np.abs(orm3[:, 1] - flat_roughness[..., 0].ravel()).max())
+live = {c: LY.composite(m, c, N) for c in ('ROUGHNESS', 'HEIGHT')}
+m.m3d_layer_index = LY.index_of(m, named(m, "C").uid)
+check(bpy.ops.m3d.layer_convert() == {'FINISHED'} and LY.blend_of(named(m, "C"), 'ROUGHNESS') == 'DODGE' and LY.opacity_of(named(m, "C"), 'ROUGHNESS') == 0.5
+      and all(np.abs(LY.composite(m, c, N) - live[c]).max() < 1.5 / 255 for c in live), "Convert to Paint Layer keeps the modes and the look")
+lum = lambda c: LY.composite(m, c, N) @ MK.LUMA   # (a single-value channel is what the shader reads of its color: the luminance, which is what Flatten keeps)
+before = {c: lum(c) for c in ('ROUGHNESS', 'HEIGHT')}
+bpy.ops.m3d.layer_flatten()
+check([l.name for l in m.m3d_layers] == ["Base"] and all(np.abs(lum(c) - before[c]).max() < 2 / 255 for c in before)
+      and LY.blend_of(m.m3d_layers[0], 'HEIGHT') == 'MIX', "Flatten with another mode in each channel keeps the look (and the Base layer mixes): %s %s" % (
+          [l.name for l in m.m3d_layers], [float(np.abs(lum(c) - before[c]).max()) for c in before]))
+
+# --- Migration: a layer from before every channel had its own blend and opacity gets them in every channel (Normal mixes)
+mg_ob, mg_mat = fresh_cube("Migrate3e", '64')
+with LY.muted():
+    for name, kind in (("Low", 'PAINT'), ("Old", 'FILL'), ("Kid", 'FILL'), ("Folder", 'FOLDER')):
+        LY.add_layer(mg_mat, kind, name)
+    by = {l.name: l for l in mg_mat.m3d_layers}
+    by["Kid"].parent = by["Folder"].uid
+    for cid in ('ROUGHNESS', 'METALLIC'):
+        e = LY.entry_of(by["Low"], cid)
+        e.use, e.image = True, small("mg%s" % cid, grid_rgba(lambda x, y: (cx[x],) * 3, lambda y: 1.0))
+        for l in (by["Old"], by["Kid"]):
+            LY.entry_of(l, cid).use = True
+            LY.entry_of(l, cid).value = 0.8
+legacy_old = {}
+for l, (index, opacity) in ((by["Old"], (LY.LEGACY_BLENDS.index('MULTIPLY'), 0.4)), (by["Folder"], (LY.LEGACY_BLENDS.index('SCREEN'), 0.75)), (by["Kid"], (0, 1.0))):
+    with LY.muted():
+        for e in l.channels:
+            e.blend, e.opacity = 'MIX', 1.0   # (what the channels of an old file read: their defaults)
+        l.per_channel = False
+        l["blend"], l["opacity"] = index, opacity   # (what the layer stored)
+    legacy_old[l.name] = (LY.LEGACY_BLENDS[index], opacity)
+check(not any(l.per_channel for l in (by["Old"], by["Folder"], by["Kid"])) and by["Low"].per_channel, "old layers are marked as not yet upgraded")
+LY.rebuild_all(mg_mat)
+check(all(l.per_channel for l in mg_mat.m3d_layers) and not [k for l in mg_mat.m3d_layers for k in ("blend", "opacity") if k in l.keys()],
+      "rebuilding upgrades them and drops the old numbers")
+for l in (by["Old"], by["Folder"], by["Kid"]):
+    blend, opacity = legacy_old[l.name]
+    check({e.channel: e.blend for e in l.channels} == {c.id: ('MIX' if c.id == 'NORMAL' else blend) for c in LY.CHANNELS}
+          and all(abs(e.opacity - opacity) < 1e-6 for e in l.channels), "%s: %s at %.2f in every channel, Normal mixing: %s" % (l.name, blend, opacity, [(e.channel, e.blend) for e in l.channels]))
+for cid in ('ROUGHNESS', 'METALLIC'):
+    check(chain_names(mg_mat, cid) == expected_nodes(LY.kids_of(mg_mat), cid) and [n.blend_type for n in level(mg_mat, cid)] == ['MIX', 'MULTIPLY', 'SCREEN'],
+          "the upgraded %s chain has the old blend modes: %s" % (cid, [n.blend_type for n in level(mg_mat, cid)]))
+ref_rgb = LY.pixels_of(LY.entry_of(by["Low"], 'ROUGHNESS').image, 4)[..., :3]
+ones = np.ones((4, 4), np.float32)
+step1, _a = LY.over(ref_rgb, ones, np.full((4, 4, 3), 0.8, np.float32), ones * 0.4, 'MULTIPLY')
+step2, _a = LY.over(step1, ones, np.full((4, 4, 3), 0.8, np.float32), ones * 0.75, 'SCREEN')
+check(np.abs(LY.composite(mg_mat, 'ROUGHNESS', 4) - step2).max() < 1e-5, "the upgraded stack looks like the one blend and opacity made (%.2e)" % np.abs(LY.composite(mg_mat, 'ROUGHNESS', 4) - step2).max())
+# every old blend mode keeps its meaning (the saved number is the place in the old list)
+for i, name in enumerate(LY.LEGACY_BLENDS):
+    with LY.muted():
+        by["Old"].per_channel = False
+        by["Old"]["blend"] = i
+    LY.upgrade(mg_mat)
+    check(LY.blend_of(by["Old"], 'ROUGHNESS') == name and LY.blend_of(by["Old"], 'NORMAL') == 'MIX', "the old blend number %d is %s" % (i, name))
+with LY.muted():
+    by["Old"].per_channel = False
+    by["Old"]["blend"], by["Old"]["opacity"] = 99, "x"
+LY.upgrade(mg_mat)
+check(LY.blend_of(by["Old"], 'ROUGHNESS') == 'MIX' and LY.opacity_of(by["Old"], 'ROUGHNESS') == 1.0, "a damaged old value falls back to Normal and 100%")
+with LY.muted():
+    by["Old"].per_channel = False
+    by["Old"]["opacity"] = 0.3
+LY.load_post()
+check(by["Old"].per_channel and abs(LY.opacity_of(by["Old"], 'METALLIC') - 0.3) < 1e-6, "opening a file upgrades its old layers right away (load_post)")
+bpy.ops.m3d.layer_add(kind='FILL')
+check(LY.active_layer(mg_mat).per_channel and LY.blend_of(LY.active_layer(mg_mat), 'HEIGHT') == 'LINEAR_LIGHT', "...and a new layer is per channel from the start")
+
+# --- The library: per-channel blends and opacities in the JSON; items from before read as one for all channels
+lb3_ob, lb3_mat = fresh_cube("Lib3e", '64')
+with LY.muted():
+    for name, kind in (("Fa", 'FILL'), ("Fb", 'FILL'), ("Box", 'FOLDER')):
+        LY.add_layer(lb3_mat, kind, name)
+    lb3 = {l.name: l for l in lb3_mat.m3d_layers}
+    lb3["Fa"].parent = lb3["Fb"].parent = lb3["Box"].uid
+    for l in (lb3["Fa"], lb3["Fb"]):
+        for cid in ('BASE_COLOR', 'ROUGHNESS', 'HEIGHT'):
+            LY.entry_of(l, cid).use = True
+        LY.entry_of(l, 'ROUGHNESS').value, LY.entry_of(l, 'HEIGHT').value = 0.35, 0.65
+    LY.set_look(lb3["Fa"], blend='BURN', opacity=0.7, channel='ROUGHNESS')
+    LY.set_look(lb3["Fa"], blend='PASSTHROUGH', channel='BASE_COLOR')
+    LY.set_look(lb3["Fb"], blend='REPLACE', channel='BASE_COLOR')
+    LY.set_look(lb3["Fb"], blend='MIX', opacity=0.25, channel='HEIGHT')
+    LY.set_look(lb3["Box"], blend='HUE', opacity=0.5, channel='BASE_COLOR')
+    LY.add_effect(lb3["Fb"], 'FILL').value = 0.4
+    LY.add_effect(lb3["Fb"], 'NOISE')
+    lb3["Fb"].use_mask = False
+LY.rebuild_all(lb3_mat)
+lb3_item = LIB.describe_material("Box3e", lb3["Box"], LIB.Files())
+lb3_text = json.dumps(lb3_item)
+check(json.loads(lb3_text) == lb3_item and lb3_item["layer"]["blends"] == {"BASE_COLOR": 'HUE', "HEIGHT": 'LINEAR_LIGHT'} and lb3_item["layer"]["opacities"] == {"BASE_COLOR": 0.5}
+      and "blend" not in lb3_item["layer"] and "opacity" not in lb3_item["layer"],
+      "a folder is described with the modes and opacities of the channels that differ from Normal and 100%%: %s" % {k: v for k, v in lb3_item["layer"].items() if k != "layers"})
+fa_spec = next(k for k in lb3_item["layer"]["layers"] if k["name"] == "Fa")
+fb_spec = next(k for k in lb3_item["layer"]["layers"] if k["name"] == "Fb")
+check(fa_spec["blends"] == {"BASE_COLOR": 'PASSTHROUGH', "ROUGHNESS": 'BURN', "HEIGHT": 'LINEAR_LIGHT'} and fa_spec["opacities"] == {"ROUGHNESS": 0.7}
+      and fb_spec["blends"] == {"BASE_COLOR": 'REPLACE'} and fb_spec["opacities"] == {"HEIGHT": 0.25} and fb_spec["mask_on"] is False and "mask_on" not in fa_spec,
+      "...a layer with its own: %s %s" % (fa_spec.get("blends"), fb_spec.get("blends")))
+lb3_before = {c: LY.composite(lb3_mat, c, 8).copy() for c in ('BASE_COLOR', 'ROUGHNESS', 'HEIGHT')}
+lb3_ob2, lb3_mat2 = fresh_cube("Lib3f", '64')
+lb3_name = LIB.apply_material(bpy.context, lb3_ob2, lb3_mat2, json.loads(lb3_text), None)
+LY.refresh(bpy.context, lb3_mat2)
+applied = named(lb3_mat2, lb3_name)
+check(LIB.describe_material("Box3e", applied, LIB.Files()) == lb3_item, "applying the item and describing it again gives the item (every mode, opacity and the mask switch)")
+check(all(np.abs(LY.composite(lb3_mat2, c, 8) - lb3_before[c]).max() < 1e-6 for c in lb3_before), "...and the same composite")
+check(lib_values_ok(applied, lb3_item["layer"]), "the applied folder has the item's modes and opacities")
+old_item = {"format": 1, "type": 'MATERIAL', "name": "Old3e", "layer": {"name": "Old3e", "kind": 'FOLDER', "blend": "SCREEN", "opacity": 0.6, "layers": [
+    {"name": "x", "kind": 'FILL', "blend": "MULTIPLY", "opacity": 0.5, "channels": {"BASE_COLOR": [0.2, 0.3, 0.4, 1.0], "ROUGHNESS": 0.3, "HEIGHT": 0.4, "NORMAL": None}},
+    {"name": "plain", "kind": 'FILL', "channels": {"ROUGHNESS": 0.3, "HEIGHT": 0.4}}]}}
+lb3_ob3, lb3_mat3 = fresh_cube("Lib3g", '64')
+LIB.apply_material(bpy.context, lb3_ob3, lb3_mat3, old_item, None)
+old_x, old_plain, old_folder = named(lb3_mat3, "x"), named(lb3_mat3, "plain"), named(lb3_mat3, "Old3e")
+check(all(LY.blend_of(old_x, c.id) == ('MIX' if c.id == 'NORMAL' else 'MULTIPLY') and LY.opacity_of(old_x, c.id) == 0.5 for c in LY.CHANNELS)
+      and all(LY.blend_of(old_plain, c.id) == 'MIX' and LY.opacity_of(old_plain, c.id) == 1.0 for c in LY.CHANNELS)
+      and all(LY.blend_of(old_folder, c.id) == ('MIX' if c.id == 'NORMAL' else 'SCREEN') and abs(LY.opacity_of(old_folder, c.id) - 0.6) < 1e-6 for c in LY.CHANNELS),
+      "an item from before reads its one blend and opacity into every channel (Height too, so it looks as it did); no key means Normal and 100%")
+check(lib_values_ok(old_x, old_item["layer"]["layers"][0]) and lib_values_ok(old_folder, old_item["layer"]), "...which is what the validator of an item says too")
+bad_item = json.loads(lb3_text)
+bad_item["layer"]["blends"] = {"BASE_COLOR": "NOPE"}
+n_before = len(lb3_mat2.m3d_layers)
+try:
+    LIB.apply_material(bpy.context, lb3_ob2, lb3_mat2, bad_item, None)
+    check(False, "a damaged blend mode in an item is refused")
+except RuntimeError as err:
+    check("damaged" in str(err) and len(lb3_mat2.m3d_layers) == n_before, "a damaged blend mode in an item is refused and leaves the stack alone")
+
+# --- Thumbnails: made on a timer from a small numpy downscale, cached, made again when the image changes; drawing does no pixel work
+thumb_ob, thumb_mat = fresh_cube("Thumbs3e", '64')
+bpy.ops.m3d.layer_add(kind='PAINT')
+bpy.ops.m3d.layer_add(kind='FILL')
+bpy.ops.m3d.layer_folder_add()
+th_paint, th_fill, th_folder = thumb_mat.m3d_layers
+th_img = LY.make_channel_image(thumb_mat, th_paint, LY.CHANNEL_BY_ID['BASE_COLOR'], 64, opaque=True)
+with LY.muted():
+    LY.entry_of(th_paint, 'BASE_COLOR').use = True
+    LY.entry_of(th_paint, 'BASE_COLOR').image = th_img
+fill_rgb(th_img, (1.0, 0.0, 0.0))
+LY.entry_of(th_fill, 'BASE_COLOR').color = (0.5, 0.2, 0.05, 1.0)
+LY.thumbs_clear()
+spec, icon = LY.content_thumb(thumb_mat, th_paint, 'BASE_COLOR')
+key = "c:%s:%s:BASE_COLOR" % (thumb_mat.name, th_paint.uid)
+check(spec == ('IMAGE', th_img.name, False) and key in LY.thumb_collection() and len(LY._thumbs["todo"]) == 1 and not LY._thumbs["made"],
+      "a thumbnail is asked for: a flat placeholder now, the pixels queued")
+check(np.allclose(np.array(LY.thumb_collection()[key].image_pixels_float[:4]), 0.25, atol=0.005) and tuple(LY.thumb_collection()[key].image_size) == (LY.THUMB, LY.THUMB),
+      "...a grey THUMB x THUMB preview")
+LY.content_thumb(thumb_mat, th_fill, 'BASE_COLOR')
+real_pixels, calls = LY.thumb_pixels, []
+LY.thumb_pixels = lambda s: calls.append(s) or real_pixels(s)
+for _i in range(5):   # (drawing the rows again and again asks for the thumbnails, and makes nothing)
+    LY.M3D_UL_layers.draw_item(None, ctx, Rec([]), None, th_paint, 0, None, "", 0)
+check(not calls and len(LY._thumbs["todo"]) == 2, "drawing a row does no pixel work and queues a thumbnail once")
+LY.drain_thumbs()
+LY.thumb_pixels = real_pixels
+check(len(calls) == 2 and not LY._thumbs["todo"], "the timer's work makes each queued thumbnail once")
+px = np.array(LY.thumb_collection()[key].image_pixels_float).reshape(LY.THUMB, LY.THUMB, 4)
+check(np.abs(px[..., 0] - 1.0).max() < 1e-6 and px[..., 1:3].max() < 1e-6 and px[..., 3].min() == 1.0, "a red opaque image gives a red thumbnail")
+LY.content_thumb(thumb_mat, th_paint, 'BASE_COLOR')
+check(not LY._thumbs["todo"], "a thumbnail that was made is not queued again (cached)")
+spec, _icon = LY.content_thumb(thumb_mat, th_fill, 'BASE_COLOR')
+px = np.array(LY.thumb_collection()["c:%s:%s:BASE_COLOR" % (thumb_mat.name, th_fill.uid)].image_pixels_float).reshape(LY.THUMB, LY.THUMB, 4)
+want = LY.to_srgb(np.array([0.5, 0.2, 0.05], np.float32))
+check(spec[0] == 'COLOR' and np.abs(px[..., :3] - want).max() < 0.004, "a fill is a flat swatch of its color (as it shows, not linear)")
+LY.entry_of(th_fill, 'BASE_COLOR').color = (0.05, 0.2, 0.5, 1.0)
+LY.content_thumb(thumb_mat, th_fill, 'BASE_COLOR')
+check(len(LY._thumbs["todo"]) == 1, "a new fill color queues the swatch again")
+LY.drain_thumbs()
+spec, icon = LY.content_thumb(thumb_mat, th_folder, 'BASE_COLOR')
+check(spec is None and icon == 0, "a folder has no thumbnail (its row shows a folder icon)")
+check(LY.content_thumb(thumb_mat, th_paint, 'NORMAL')[0] is None, "a channel the layer has nothing in has none (the row shows its kind, dimmed)")
+fill_rgb(th_img, (0.0, 0.0, 1.0))   # a stroke: the depsgraph reports the image, the timer queues its thumbnails again
+LY._changed_images.add(th_img.name)
+LY._follow_strokes()
+check(len(LY._thumbs["todo"]) == 1 and not LY._changed_images, "an updated image queues the thumbnails that show it")
+LY.drain_thumbs()
+px = np.array(LY.thumb_collection()[key].image_pixels_float).reshape(LY.THUMB, LY.THUMB, 4)
+check(np.abs(px[..., 2] - 1.0).max() < 1e-6 and px[..., 0].max() < 1e-6, "...and it shows the new pixels")
+LY.depsgraph_post(None, NS(id_type_updated=lambda t: t == 'IMAGE', updates=[NS(id=th_img), NS(id=thumb_mat)]))
+check(LY._changed_images == {th_img.name} and LY._pending[0], "the depsgraph handler collects the names of the updated images")
+try:
+    bpy.app.timers.unregister(LY._follow_strokes)
+except ValueError:
+    pass
+LY._changed_images.clear()
+LY._pending[0] = False
+thumb_mat.m3d_layer_index = 0   # a mask thumbnail: the paint effect's image; a generator has none (its icon is drawn)
+bpy.ops.m3d.layer_mask_add(fill='BLACK')
+spec, icon = LY.mask_thumb(thumb_mat, th_paint)
+LY.drain_thumbs()
+px = np.array(LY.thumb_collection()["m:%s:%s" % (thumb_mat.name, th_paint.uid)].image_pixels_float).reshape(LY.THUMB, LY.THUMB, 4)
+check(spec == ('IMAGE', LY.paint_effect(th_paint).image.name, True) and px[..., :3].max() == 0.0 and px[..., 3].min() == 1.0, "a black mask is a black thumbnail")
+thumb_mat.m3d_layer_index = 1
+bpy.ops.m3d.mask_effect_add(kind='NOISE')
+check(LY.mask_thumb(thumb_mat, th_fill)[0] is None, "a generator mask has no thumbnail: its effect's icon is drawn")
+LY.thumbs_clear()
+check(len(LY.thumb_collection()) == 0 and not LY._thumbs["made"], "thumbs_clear forgets them (a new file)")
+
+# --- The rows of the list (a recording layout)
+th_ctx = TCtx()
+thumb_mat.m3d_layer_index = 0
+rows3 = {}
+for ch_id in ('BASE_COLOR', 'HEIGHT'):
+    thumb_mat.m3d_row_channel = ch_id
+    for layer in thumb_mat.m3d_layers:
+        log = []
+        LY.M3D_UL_layers.draw_item(None, th_ctx, Rec(log), None, layer, 0, None, "", LY.index_of(thumb_mat, layer.uid))
+        check_calls("row of %s (%s)" % (layer.name, ch_id), log)
+        rows3[(ch_id, layer.name)] = log
+        menus = [r for r in log if r._kind == "prop_menu_enum" and r._args[1] == "blend"]
+        check(menus and menus[0]._args[0] == LY.entry_of(layer, ch_id) and menus[0]._kw["text"] == LY.BLEND_SHORT[LY.entry_of(layer, ch_id).blend],
+              "the %s row shows the %s blend of its entry, abbreviated: %s" % (layer.name, ch_id, [m_._kw.get("text") for m_ in menus]))
+        check(any(r._kind == "prop" and r._args[1] == "opacity" and r._args[0] == LY.entry_of(layer, ch_id) for r in log), "...and its opacity")
+        check(any(r._kind == "operator" and r._args[0] == "m3d.layer_pick" for r in log), "...and a thumbnail button")
+check([r for r in rows3[('HEIGHT', "Paint Layer")] if r._kind == "prop_menu_enum" and r._args[1] == "blend"][0]._kw["text"] == "LLgt", "on Height the rows show Linear Light (LLgt)")
+check([r for r in rows3[('BASE_COLOR', "Paint Layer")] if r._kind == "prop_menu_enum" and r._args[1] == "blend"][0]._kw["text"] == "Norm", "...and Norm on Base Color")
+log = rows3[('BASE_COLOR', "Paint Layer")]
+check(any(r._kind == "operator" and r._args[0] == "m3d.layer_pick" and "icon_value" in r._kw for r in log), "the paint layer's row has a content thumbnail")
+check(any(r._kind == "operator" and r._args[0] == "m3d.layer_pick" and r.values().get("part") == 'MASK' and "icon_value" in r._kw for r in log),
+      "...and a mask thumbnail (the paint mask's image) that selects the mask")
+log = rows3[('HEIGHT', "Paint Layer")]
+check(any(r._kind == "operator" and r._args[0] == "m3d.layer_pick" and r._kw.get("icon") == 'IMAGE_DATA' for r in log), "a layer with nothing in the channel shows its kind")
+thumb_mat.m3d_row_channel = 'BASE_COLOR'
+thumb_mat.m3d_layer_index = 1   # the active layer lists the effects of its mask under it
+log = []
+LY.M3D_UL_layers.draw_item(None, th_ctx, Rec(log), None, th_fill, 0, None, "", 1)
+check_calls("row of the fill layer with a mask", log)
+effects = [r for r in log if r._kind == "operator" and r.values().get("part") == 'EFFECT']
+check([r.values()["effect"] for r in effects] == [0] and effects[0]._kw["text"] == th_fill.mask_stack[0].name
+      and any(r._kind == "operator" and r._args[0] == "m3d.mask_effect_remove" and r.values().get("index") == 0 for r in log)
+      and any(r._kind == "prop" and r._args[0] == th_fill.mask_stack[0] and r._args[1] == "visible" for r in log)
+      and any(r._kind == "prop" and r._args[0] == th_fill.mask_stack[0] and r._args[1] == "opacity" for r in log)
+      and any(r._kind == "prop_menu_enum" and r._args[0] == th_fill.mask_stack[0] and r._args[1] == "blend" for r in log),
+      "the active layer lists the effects of its mask under it: eye, icon, name, blend, opacity, x")
+log = []
+LY.M3D_UL_layers.draw_item(None, th_ctx, Rec(log), None, th_paint, 0, None, "", 0)
+check(not [r for r in log if r._kind == "operator" and r.values().get("part") == 'EFFECT'], "...a layer that is not active lists none")
+log = []
+LY.M3D_UL_layers.draw_item(None, th_ctx, Rec(log), None, th_folder, 0, None, "", 2)
+check(any(r._kind == "operator" and r._args[0] == "m3d.layer_pick" and r._kw.get("icon") == 'FILE_FOLDER' for r in log)
+      and any(r._kind == "operator" and r._args[0] == "m3d.layer_freeze" for r in log), "a folder's row has a folder icon in place of the thumbnail, and the freeze button")
+
+# --- Picking: thumbnails select the layer, its mask, or an effect; Alt shows the mask, Shift switches it off
+tex = bpy.context.scene.m3d_tex
+tex.props_mode = 'AUTO'
+thumb_mat.m3d_layer_index = 2
+check(bpy.ops.m3d.layer_pick(part='MASK', index=0) == {'FINISHED'} and thumb_mat.m3d_layer_index == 0 and tex.props_mode == 'MASK' and T.props_context(bpy.context) == 'MASK',
+      "a mask thumbnail selects the layer and Properties shows its mask")
+check(bpy.ops.m3d.layer_pick(part='LAYER', index=1) == {'FINISHED'} and thumb_mat.m3d_layer_index == 1 and tex.props_mode == 'AUTO',
+      "a content thumbnail selects the layer and Properties shows the layer again")
+check(bpy.ops.m3d.layer_pick(part='EFFECT', index=1, effect=0) == {'FINISHED'} and tex.props_mode == 'MASK' and th_fill.mask_index == 0,
+      "an effect row selects the effect: Properties - Mask")
+tex.props_mode = 'AUTO'
+check(not thumb_mat.m3d_show_mask and bpy.ops.m3d.layer_pick(part='MASK', index=0, action='SHOW') == {'FINISHED'} and thumb_mat.m3d_show_mask
+      and thumb_mat.m3d_layer_index == 0 and tex.props_mode == 'AUTO', "Alt+click on a mask thumbnail shows the mask alone (Show Mask) and leaves Properties as it is")
+check(thumb_mat.node_tree.nodes[LY.MASKVIEW].inputs["Color"].links, "...the material shows the mask")
+bpy.ops.m3d.layer_pick(part='MASK', index=0, action='SHOW')
+check(not thumb_mat.m3d_show_mask and thumb_mat.node_tree.nodes.get(LY.MASKVIEW) is None, "...and again the shader")
+check(th_paint.use_mask and bpy.ops.m3d.layer_pick(part='MASK', index=0, action='TOGGLE') == {'FINISHED'} and not th_paint.use_mask,
+      "Shift+click on a mask thumbnail switches the mask off")
+mul = thumb_mat.node_tree.nodes[LY.part('BASE_COLOR', th_paint.uid, "maskmul")]
+check(not mul.inputs[1].links and mul.inputs[1].default_value == 1.0 and len(th_paint.mask_stack) == 1, "...the layer's mask multiply reads 1 and the mask is kept")
+fill_rgb(LY.entry_of(th_paint, 'BASE_COLOR').image, (0.9, 0.2, 0.2))
+with_off = LY.composite(thumb_mat, 'BASE_COLOR', 4).copy()
+bpy.ops.m3d.layer_pick(part='MASK', index=0, action='TOGGLE')
+with_on = LY.composite(thumb_mat, 'BASE_COLOR', 4)
+check(th_paint.use_mask and mul.inputs[1].links and np.abs(with_off - with_on).max() > 0.01,
+      "...numpy leaves the mask out while it is off and uses it again when it is on (this black mask hides the layer)")
+for event_, want_action in ((NS(alt=True, shift=False), 'SHOW'), (NS(alt=False, shift=True), 'TOGGLE'), (NS(alt=False, shift=False), 'PICK')):
+    inst = NS(part='MASK', action='PICK', execute=lambda c: None)
+    LY.M3D_OT_layer_pick.invoke(inst, bpy.context, event_)
+    check(inst.action == want_action, "invoke: %s means %s" % ("Alt" if event_.alt else "Shift" if event_.shift else "a plain click", want_action))
+thumb_mat.m3d_layer_index = 1   # the x of an effect row removes that effect
+th_fill.mask_index = 0
+bpy.ops.m3d.mask_effect_add(kind='FILL')
+check(len(th_fill.mask_stack) == 2 and bpy.ops.m3d.mask_effect_remove(index=0) == {'FINISHED'} and [e.kind for e in th_fill.mask_stack] == ['FILL'],
+      "the x of an effect row removes that effect (not the selected one)")
+
+# --- A mask from an image file
+mk_dir = tempfile.mkdtemp(prefix="m3d_p3e_mask_")
+mk_path = os.path.join(mk_dir, "mask.png")
+ramp3 = np.zeros((16, 16, 4), np.float32)
+ramp3[..., :3] = np.linspace(0.0, 1.0, 16, dtype=np.float32)[None, :, None]
+ramp3[..., 3] = 1.0
+T.write_png(mk_path, ramp3, False)
+thumb_mat.m3d_layer_index = 0
+check(bpy.ops.m3d.layer_mask_image(filepath=mk_path) == {'FINISHED'} and [e.kind for e in th_paint.mask_stack] == ['PAINT', 'PAINT'] and th_paint.paint_mask
+      and tuple(LY.paint_effect(th_paint).image.size) == (16, 16) and LY.paint_effect(th_paint).image.colorspace_settings.name == 'Non-Color',
+      "Add Mask from an image file: a Paint effect (above the mask there) that holds its pixels")
+mask_px = read(LY.paint_effect(th_paint).image).reshape(16, 16, 4)
+check(np.abs(mask_px[0, :, 0] - np.linspace(0, 1, 16)).max() < 1 / 255 and (mask_px[..., 3] == 1).all(), "...the same pixels (brightness is the mask)")
+check("mask.png" not in bpy.data.images, "...the file's own image is not kept")
+try:
+    bpy.ops.m3d.layer_mask_image(filepath=os.path.join(mk_dir, "nothing.png"))
+    check(False, "a file that is not there is refused")
+except RuntimeError:
+    check(len(th_paint.mask_stack) == 2, "a file that is not there is refused and changes nothing")
+
+# --- Copy, Cut and Paste of layers (also a folder, also into another material), the layer commands (a right-click on another layer)
+cb_ob, cb_mat = fresh_cube("Clip3e", '64')
+cb_mat2 = bpy.data.materials.new("Clip3f")
+cb_mat2.use_nodes = True
+cb_ob.data.materials.append(cb_mat2)
+
+
+def use_material(mat):
+    cb_ob.active_material_index = [s.material for s in cb_ob.material_slots].index(mat)
+
+
+use_material(cb_mat)
+for name in ("L1", "L2", "L3"):
+    bpy.ops.m3d.layer_add(kind='PAINT')
+    LY.active_layer(cb_mat).name = name
+    bpy.ops.m3d.tex_channel(channel='BASE_COLOR')
+    fill_rgb(LY.entry_of(LY.active_layer(cb_mat), 'BASE_COLOR').image, (0.2, 0.5, 0.8))
+LY._clip.update(mat="", uid="", cut=False)
+check(not bpy.ops.m3d.layer_paste.poll(), "Paste needs something copied")
+select(cb_mat, "L1")
+LY.set_look(named(cb_mat, "L1"), blend='MULTIPLY', opacity=0.4, channel='BASE_COLOR')
+check(bpy.ops.m3d.layer_copy() == {'FINISHED'} and bpy.ops.m3d.layer_paste.poll(), "Copy")
+select(cb_mat, "L2")
+check(bpy.ops.m3d.layer_paste() == {'FINISHED'} and [l.name for l in cb_mat.m3d_layers] == ["L1", "L2", "L1 Copy", "L3"] and LY.active_layer(cb_mat).name == "L1 Copy",
+      "Paste puts a copy above the active layer: %s" % [l.name for l in cb_mat.m3d_layers])
+cp = named(cb_mat, "L1 Copy")
+check(LY.blend_of(cp, 'BASE_COLOR') == 'MULTIPLY' and abs(LY.opacity_of(cp, 'BASE_COLOR') - 0.4) < 1e-6 and LY.entry_of(cp, 'BASE_COLOR').image != LY.entry_of(named(cb_mat, "L1"), 'BASE_COLOR').image
+      and np.array_equal(read(LY.entry_of(cp, 'BASE_COLOR').image), read(LY.entry_of(named(cb_mat, "L1"), 'BASE_COLOR').image)), "...with its modes and its own copy of the pixels")
+check(bpy.ops.m3d.layer_paste() == {'FINISHED'} and len(cb_mat.m3d_layers) == 5, "...and again (the clipboard keeps it)")
+select(cb_mat, "L3")
+check(bpy.ops.m3d.layer_cut() == {'FINISHED'}, "Cut")
+select(cb_mat, "L1")
+check(bpy.ops.m3d.layer_paste() == {'FINISHED'} and [l.name for l in cb_mat.m3d_layers][:2] == ["L1", "L3"] and len(cb_mat.m3d_layers) == 5 and not bpy.ops.m3d.layer_paste.poll(),
+      "Paste after Cut moves the layer (no copy; the clipboard is empty then): %s" % [l.name for l in cb_mat.m3d_layers])
+check(bpy.ops.m3d.layer_folder_add(group=True) == {'FINISHED'} and LY.active_layer(cb_mat).kind == 'FOLDER' and [l.name for l in LY.children(LY.active_layer(cb_mat))] == ["L3"], "Group")
+select(cb_mat, "Folder")
+bpy.ops.m3d.layer_copy()
+use_material(cb_mat2)
+bpy.ops.m3d.layer_add(kind='FILL')
+check(bpy.ops.m3d.layer_paste() == {'FINISHED'} and [l.name for l in cb_mat2.m3d_layers] == ["Fill Layer", "L3", "Folder"] and LY.active_layer(cb_mat2).kind == 'FOLDER'
+      and LY.children(LY.active_layer(cb_mat2))[0].name == "L3" and LY.entry_of(LY.children(LY.active_layer(cb_mat2))[0], 'BASE_COLOR').image not in LY.stack_images(cb_mat),
+      "Paste into another material: the folder with its layers and their own images (%s)" % [l.name for l in cb_mat2.m3d_layers])
+use_material(cb_mat)
+select(cb_mat, "Folder")
+n_cb = len(cb_mat.m3d_layers)
+bpy.ops.m3d.layer_cut()
+use_material(cb_mat2)
+select(cb_mat2, "Fill Layer")
+check(bpy.ops.m3d.layer_paste() == {'FINISHED'} and len(cb_mat.m3d_layers) == n_cb - 2 and len(cb_mat2.m3d_layers) == 5, "Cut and Paste into another material moves the folder there")
+use_material(cb_mat)
+select(cb_mat, "L1")
+n = len(cb_mat.m3d_layers)
+other_uid = named(cb_mat, "L1 Copy").uid
+check(bpy.ops.m3d.layer_do(action='DUPLICATE', uid=other_uid) == {'FINISHED'} and len(cb_mat.m3d_layers) == n + 1 and LY.active_layer(cb_mat).name == "L1 Copy Copy",
+      "a layer command runs on the layer the right-click was on (it is selected first): %s" % [l.name for l in cb_mat.m3d_layers])
+check(bpy.ops.m3d.layer_do(action='DELETE', uid=other_uid) == {'FINISHED'} and "L1 Copy" not in [l.name for l in cb_mat.m3d_layers], "...Delete too")
+check(bpy.ops.m3d.layer_do(action='MASK_WHITE', uid=named(cb_mat, "L1").uid) == {'FINISHED'} and named(cb_mat, "L1").mask_stack and LY.active_layer(cb_mat).name == "L1", "...and the Add Mask items")
+check(bpy.ops.m3d.layer_do(action='EFFECT', effect='NOISE') == {'FINISHED'} and named(cb_mat, "L1").mask_stack[-1].kind == 'NOISE', "...and the Add Effect items (the effect kind goes with them)")
+check(bpy.ops.m3d.layer_do(action='MASK_WHITE') == {'CANCELLED'}, "...a command that cannot run now (the layer has a mask) is refused, not an error")
+
+# --- The header and its menus
+thumb_mat.m3d_layer_index = 0
+log = []
+T.draw_layers_header(Rec(log), thumb_mat)
+check_calls("Layers header", log)
+header = [(r._kind, r._args[1] if r._kind == "prop" else r._args[0] if r._args else r._kw.get("panel"), r.values().get("kind")) for r in log
+          if r._kind in {"prop", "menu", "operator", "popover"}]
+check(header == [("prop", "m3d_row_channel", None), ("menu", "M3D_MT_layer_effect_add", None), ("menu", "M3D_MT_layer_mask_add", None),
+                 ("operator", "m3d.layer_add", 'PAINT'), ("operator", "m3d.layer_add", 'FILL'), ("popover", "M3D_PT_lib_smart", None),
+                 ("operator", "m3d.layer_folder_add", None), ("operator", "m3d.layer_remove", None), ("menu", "M3D_MT_layer_more", None)],
+      "the header: channel dropdown, Add Effect, Add Mask, Add Paint, Add Fill, Add Smart Material, Add Folder, Delete, ...: %s" % header)
+check(all(r._kw.get("text") == "" and r._kw.get("icon") for r in log if r._kind in {"menu", "operator", "popover"}), "...icon buttons without text")
+check(thumb_mat.bl_rna.properties["m3d_row_channel"].enum_items.keys() == [c.id for c in LY.CHANNELS], "the dropdown lists the channels")
+log = []
+LY.draw_effect_items(Rec(log))
+check_calls("Add Effect menu", log)
+adds = [(r.values().get("kind"), r.values().get("fill")) for r in log if r._kind == "operator"]
+check({k for k, _f in adds} == {'EDGES', 'CAVITY', 'TOPDOWN', 'THICKNESS', 'NOISE', 'PAINT', 'FILL', 'LEVELS', 'BLUR', 'INVERT', 'SHARPEN', 'COLORID'}
+      and ('PAINT', 'WHITE') in adds and ('PAINT', 'BLACK') in adds and {r._kw["text"] for r in log if r._kind == "label"} == {"Generator", "Filter"},
+      "Add Effect lists the mask effects: %s" % adds)
+labels = [r._kw["text"] for r in log if r._kind in {"label", "operator"}]
+check(labels.index("Generator") < labels.index("Paint (White)") < labels.index("Fill") < labels.index("Levels") < labels.index("Filter") < labels.index("Color ID"),
+      "...Generator, Paint, Fill, Levels, Filter, Color ID in that order")
+log = []
+LY.draw_mask_items(Rec(log))
+check_calls("Add Mask menu", log)
+mask_items = [(r._args[0], r.values().get("fill"), r.values().get("kind")) for r in log if r._kind == "operator"]
+check(mask_items == [("m3d.layer_mask_add", 'WHITE', None), ("m3d.layer_mask_add", 'BLACK', None), ("m3d.mask_effect_add", None, 'COLORID'), ("m3d.layer_mask_image", None, None)],
+      "Add Mask: white, black, with color selection (Color ID), image: %s" % mask_items)
+log = []
+LY.draw_mask_items(Rec(log), "abc")
+check_calls("Add Mask menu (list)", log)
+check([r.values().get("action") for r in log if r._kind == "operator"] == ['MASK_WHITE', 'MASK_BLACK', 'MASK_COLORID', 'MASK_IMAGE'] and all(r.values().get("uid") == "abc" for r in log if r._kind == "operator"),
+      "...the same items in the right-click menu run on the layer under the pointer")
+log = []
+LIB.M3D_PT_lib_smart.draw(NS(layout=Rec(log)), th_ctx)
+check_calls("Add Smart Material popover", log)
+smart_ops = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.library_apply"]
+check(len(smart_ops) == len([e for e in LIB.entries('MATERIAL') if not LIB.is_plain(e)]) > 0 and all("icon_value" in r._kw and r.values().get("item", "").startswith(("starter:", "user:")) for r in smart_ops),
+      "Add Smart Material: a grid with a tile for each smart material of the library (%d)" % len(smart_ops))
+log = []
+LY.M3D_MT_layer_more.draw(NS(layout=Rec(log)), th_ctx)
+check_calls("... menu", log)
+check({"m3d.layer_merge_down", "m3d.layer_flatten", "m3d.layer_folder_add", "m3d.layer_move_into", "m3d.layer_move_out", "m3d.layer_freeze", "m3d.layer_cut",
+       "m3d.layer_copy", "m3d.layer_paste"} <= {r._args[0] for r in log if r._kind in {"operator", "operator_menu_enum"}}, "the ... menu has Merge Down, Flatten, Group, Move In / Out, Freeze and the clipboard")
+
+# --- The right-click menu: items of the list item context menu, for this list only
+check(LY.draw_list_menu in bpy.types.UI_MT_list_item_context_menu._dyn_ui_initialize(), "the commands are items of the list item context menu")
+
+
+class MenuCtx(TCtx):
+    """A context of the right-click menu: the list is ours, the button under the pointer belongs to the layer."""
+    def __init__(self, layer, pointer):
+        super().__init__()
+        self.ui_list = NS(bl_idname="M3D_UL_layers")
+        if pointer == "entry":
+            self.button_pointer = LY.entry_of(layer, 'ROUGHNESS')
+        elif pointer == "layer":
+            self.button_pointer = layer
+        elif pointer == "effect":
+            self.button_pointer = layer.mask_stack[0]
+        else:
+            self.button_operator = NS(index=LY.index_of(layer.id_data, layer.uid))
+
+
+use_material(cb_mat)
+cb_mat.m3d_layer_index = 0
+folder_cb = LY.add_layer(cb_mat, 'FOLDER', "MenuFolder")
+LY.rebuild_all(cb_mat)
+target = named(cb_mat, "L1")
+for pointer in ("entry", "layer", "effect", "operator"):
+    log = []
+    LY.draw_list_menu(NS(layout=Rec(log)), MenuCtx(target, pointer))
+    check_calls("right-click menu (%s)" % pointer, log)
+    cmds = [(r.values().get("action"), r.values().get("uid")) for r in log if r._kind == "operator"]
+    check({a for a, _u in cmds} == {'CUT', 'COPY', 'PASTE', 'DUPLICATE', 'DELETE', 'GROUP', 'SMART_MASK', 'MERGE_DOWN', 'FLATTEN'} and all(u == target.uid for _a, u in cmds),
+          "right-click on a layer with a mask (button: %s): Cut, Copy, Paste, Duplicate, Delete, Group, Create Smart Mask, Merge Down, Flatten, for the layer under the pointer: %s" % (pointer, cmds))
+    check([r._args[0] for r in log if r._kind == "menu"] == ["M3D_MT_layer_ctx_effect_add", "M3D_MT_layer_ctx_mask_add"] and LY._menu_target["uid"] == target.uid,
+          "...and the Add Effect and Add Mask menus")
+log = []
+LY.draw_list_menu(NS(layout=Rec(log)), MenuCtx(folder_cb, "layer"))
+cmds = {r.values().get("action") for r in log if r._kind == "operator"}
+check({'SMART_MATERIAL', 'FREEZE'} <= cmds and 'SMART_MASK' not in cmds, "on a folder: Create Smart Material (the existing Save to Library) and Freeze, no Create Smart Mask: %s" % sorted(cmds))
+log = []
+LY.draw_list_menu(NS(layout=Rec(log)), TCtx())
+LY.draw_list_menu(NS(layout=Rec(log)), type("OtherList", (TCtx,), {"ui_list": NS(bl_idname="MATERIAL_UL_matslots")})())
+check(not log, "outside our list the menu adds nothing")
+log = []
+LY._menu_target["uid"] = target.uid
+LY.M3D_MT_layer_ctx_effect_add.draw(NS(layout=Rec(log)), th_ctx)
+check_calls("right-click Add Effect", log)
+check(all(r.values().get("uid") == target.uid and r.values().get("action") == 'EFFECT' for r in log if r._kind == "operator")
+      and {r.values().get("effect") for r in log if r._kind == "operator"} >= {'NOISE', 'COLORID', 'PAINT'}, "the right-click Add Effect items run on that layer, with the effect kind")
+
+# --- The keys over the stack
+for key, action, mods in (('C', 'COPY', {"ctrl": True}), ('X', 'CUT', {"ctrl": True}), ('V', 'PASTE', {"ctrl": True}), ('D', 'DUPLICATE', {"ctrl": True}),
+                          ('G', 'GROUP', {"ctrl": True}), ('DEL', 'DELETE', {})):
+    items = find("Property Editor", "m3d.layer_key", key, **mods)
+    check(items and items[0].properties.action == action and items[0].value == 'PRESS', "%s%s over the layer list is %s" % ("Ctrl+" if mods else "", key, action))
+check(find("Property Editor", "object.modifier_remove", 'DEL') and find("Property Editor", "constraint.delete", 'DEL'), "Delete over a modifier or constraint panel is still theirs (the layer key goes after)")
+check(not bpy.ops.m3d.layer_key.poll(), "the keys do nothing outside the Layers tab of the Texture workspace (no editor here)")
+check({i.identifier for i in bpy.ops.m3d.layer_key.get_rna_type().properties["action"].enum_items} <= set(LY.LAYER_ACTIONS), "every key is a layer command")
+tex_ws.m3d_page_right = "tex_layers"
+check(LY.M3D_OT_layer_key.poll(TCtx()), "the keys work in the Layers tab of the Texture workspace")
+tex_ws.m3d_page_right = "tex_settings"
+check(not LY.M3D_OT_layer_key.poll(TCtx()), "...and not in Texture Set Settings")
+tex_ws.m3d_page_right = ""
+cb_mat.m3d_layer_index = LY.index_of(cb_mat, target.uid)
+n = len(cb_mat.m3d_layers)
+check(LY.run_action(p3_quiet, bpy.context, 'DUPLICATE') == {'FINISHED'} and len(cb_mat.m3d_layers) == n + 1, "Ctrl+D duplicates (the command the key runs)")
+check(LY.run_action(p3_quiet, bpy.context, 'COPY') == {'FINISHED'} and LY.run_action(p3_quiet, bpy.context, 'PASTE') == {'FINISHED'} and len(cb_mat.m3d_layers) == n + 2,
+      "Ctrl+C, Ctrl+V pastes a copy")
+check(LY.run_action(p3_quiet, bpy.context, 'CUT') == {'FINISHED'} and LY.run_action(p3_quiet, bpy.context, 'PASTE') == {'CANCELLED'}, "Ctrl+X, then Ctrl+V on the same layer refuses to move a layer onto itself")
+LY._clip.update(mat="", uid="", cut=False)
+check(LY.run_action(p3_quiet, bpy.context, 'GROUP') == {'FINISHED'} and LY.active_layer(cb_mat).kind == 'FOLDER', "Ctrl+G groups")
+n = len(cb_mat.m3d_layers)
+check(LY.run_action(p3_quiet, bpy.context, 'DELETE') == {'FINISHED'} and len(cb_mat.m3d_layers) < n, "Delete deletes")
+
+# --- The panels: the old layout (Workspace.m3d_layout 0) and the new one draw every kind of layer without an error
+use_material(cb_mat)
+tex_ws.m3d_layout = 0
+for cls in (T.PROPERTIES_PT_m3d_tx_stack, T.PROPERTIES_PT_m3d_tx_layer, T.PROPERTIES_PT_m3d_tx_mask):
+    for index in range(len(cb_mat.m3d_layers)):
+        cb_mat.m3d_layer_index = index
+        try:
+            check_calls("%s (old layout, layer %d)" % (cls.__name__, index), draw_stub(cls, TCtx('LEFT')))
+        except Exception as err:
+            check(False, "%s draws in the old layout: %r" % (cls.__name__, err))
+tex_ws.m3d_layout = 1
+for layer in cb_mat.m3d_layers:
+    for cls in (T.PROPERTIES_PT_m3d_tx_layer, T.PROPERTIES_PT_m3d_tx_mask):
+        cb_mat.m3d_layer_index = LY.index_of(cb_mat, layer.uid)
+        try:
+            log = draw_stub(cls, th_ctx)
+            check_calls("%s of %s" % (cls.__name__, layer.name), log)
+            if cls is T.PROPERTIES_PT_m3d_tx_layer and layer.kind != 'FOLDER':
+                check({r._args[0].channel for r in log if r._kind == "prop" and r._args[1] == "blend"} == set(LY.CHANNEL_BY_ID),
+                      "the Layer panel of %s has a blend mode for every channel" % layer.name)
+            if cls is T.PROPERTIES_PT_m3d_tx_mask and layer.mask_stack:
+                check(any(r._kind == "prop" and r._args[1] == "use_mask" for r in log), "the Mask panel has the mask switch")
+        except Exception as err:
+            check(False, "%s draws for %s: %r" % (cls.__name__, layer.name, err))
+clean_scene()
+for image in [i for i in bpy.data.images if i.name.startswith(("p3", "mg", "fl3", "Stack3", "Thumbs"))]:
+    bpy.data.images.remove(image)
+shutil.rmtree(mk_dir, ignore_errors=True)
+shutil.rmtree(tx.export_folder, ignore_errors=True)
+tx.export_preset, tx.export_folder, tx.export_size = 'UNITY', "//textures/", 'SAME'
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

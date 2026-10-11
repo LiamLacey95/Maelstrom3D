@@ -75,8 +75,30 @@ def step(fn):
     return fn
 
 
+def restore_window():
+    """A window started behind the apps in use can come up minimized, and a minimized window draws nothing (every picture is black):
+    show it again without taking the focus. Windows only."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32, pid = ctypes.windll.user32, os.getpid()
+
+        def show(hwnd, _param):
+            owner = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+            if owner.value == pid and user32.IsWindowVisible(hwnd) and user32.IsIconic(hwnd):
+                user32.ShowWindow(hwnd, 4)   # SW_SHOWNOACTIVATE
+            return True
+        user32.EnumWindows(ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)(show), 0)
+    except Exception as err:   # (a picture of a minimized window shows it)
+        print("restore_window:", err)
+
+
 @step
 def setup():
+    restore_window()
     lb_sandbox()   # (the Library tab: temporary folders and no thumbnails for the tests of the other phases, see lb_setup)
     win, area, region = view3d()
     with bpy.context.temp_override(window=win, area=area, region=region):
@@ -3778,7 +3800,7 @@ def lay_fill_check():
     check(lay_names() == ["Base", "Paint Layer", "Fill Layer"] and m.m3d_layers[2].kind == 'FILL' and m.m3d_layer_index == 2,
           "Add Fill Layer: %s" % lay_names())
     m.m3d_layers[2].channels[0].color = (0.1, 0.6, 0.2, 1.0)
-    m.m3d_layers[2].blend, m.m3d_layers[2].opacity = 'OVERLAY', 0.5
+    LY.set_look(m.m3d_layers[2], blend='OVERLAY', opacity=0.5)
     press_ok("m3d.layer_mask_add", _area=tex_areas()[1], fill='WHITE')
 
 
@@ -3825,7 +3847,7 @@ def lay_merge_check():
     m = lay_mat()
     check(lay_names() == ["Base", "Fill Layer"] and m.m3d_layer_index == 1, "Merge Down: %s" % lay_names())
     low = m.m3d_layers[1]
-    check(low.kind == 'PAINT' and not low.mask_stack and low.opacity == 1.0 and lay_image(1) is not None,
+    check(low.kind == 'PAINT' and not low.mask_stack and LY.opacity_of(low, 'BASE_COLOR') == 1.0 and lay_image(1) is not None,
           "the fill layer became a paint layer without mask or opacity")
     check(GIZMO["stroke_img"] not in bpy.data.images and GIZMO["fill_mask"] not in bpy.data.images, "the merged layer's and the old mask images are gone")
     merged = px(lay_image(1))
@@ -4680,7 +4702,8 @@ def mk_setup():
     m.m3d_layer_index = len(m.m3d_layers) - 1
     layer = mk_layer()
     check(layer.kind == 'FILL' and not layer.mask_stack, "mask tests start on a Fill Layer without a mask (%s)" % lay_names())
-    layer.channels[0].color, layer.opacity, layer.blend, layer.visible = (0.1, 0.6, 0.2, 1.0), 1.0, 'MIX', False
+    layer.channels[0].color, layer.visible = (0.1, 0.6, 0.2, 1.0), False
+    LY.set_look(layer, blend='MIX', opacity=1.0)
     GIZMO["mk_base"] = LY.composite(m, 'BASE_COLOR', 128)   # What the base layer alone looks like.
     layer.visible = True
     dock = tex_areas()[1]
@@ -5038,7 +5061,7 @@ def fo_collapsed():
 def fo_opacity():
     m = lay_mat()
     check(fo_layer("Folder").expanded and not tracebacks(), "opening the folder again")
-    fo_layer("Folder").opacity = 0.5
+    LY.set_look(fo_layer("Folder"), opacity=0.5)
     opv = m.node_tree.nodes[LY.part('BASE_COLOR', fo_layer("Folder").uid, "opv")]
     check(abs(opv.inputs[1].default_value - 0.5) < 1e-6, "the folder's opacity is on its node")
     a = LY.composite(m, 'BASE_COLOR', 128)
@@ -6378,6 +6401,489 @@ def tex4_done():
     check(not tracebacks(), "Python error in the Properties tests")
     check(window().workspace.m3d_layout == 1, "the Texture workspace is still the new layout")
     for image in [i for i in bpy.data.images if i.name.startswith("Tex4")]:
+        bpy.data.images.remove(image)
+
+
+# ----------------------------------------------------------------------------------------------------
+# Phase 3e: the layer stack like the reference, in the real window: the rows draw with thumbnails, the channel dropdown (a click, then
+# the key of the channel) changes the blend modes the rows show, a click on a mask thumbnail selects the mask (Alt+click shows it, Shift+click switches it
+# off), the right-click menu opens on the layer under the pointer, Ctrl+D / C / V and Delete over the stack. Buttons are found by
+# hovering the window and asking Blender what is under the pointer (the key F19 runs a probe that reads the Python command or the
+# data path of the active button).
+
+S3E = {"probes": {}, "expected": 0, "looks": [], "menu": []}
+
+
+class M3D_OT_test_probe(bpy.types.Operator):
+    """Test only: what is the button under the pointer (its Python command, or its data path)."""
+    bl_idname = "m3d.test_probe"
+    bl_label = "Test Probe"
+    bl_options = {'INTERNAL'}
+
+    def invoke(self, context, event):
+        wm = context.window_manager
+        old, text = wm.clipboard, ""
+        try:
+            for op in (lambda: bpy.ops.ui.copy_python_command_button(), lambda: bpy.ops.ui.copy_data_path_button(full_path=True)):
+                wm.clipboard = ""
+                try:
+                    op()
+                except RuntimeError:
+                    continue
+                text = wm.clipboard
+                if text:
+                    break
+        finally:
+            wm.clipboard = old
+        S3E["probes"][(event.mouse_x, event.mouse_y)] = text
+        return {'PASS_THROUGH'}
+
+
+def s3e_region():
+    area = tex4_dock()
+    return area, next(r for r in area.regions if r.type == 'WINDOW')
+
+
+def s3e_scan(points):
+    S3E["probes"], S3E["expected"] = {}, len(points)
+    for xy in points:
+        event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]))
+        event('MOUSEMOVE', xy=xy)
+        event('F19', 'PRESS', xy)
+        event('F19', 'RELEASE', xy)
+
+
+def s3e_scanned():
+    return len(S3E["probes"]) >= S3E["expected"]
+
+
+def s3e_hits(pattern):
+    """The scanned points whose probe text matches `pattern` (a regular expression)."""
+    import re
+    return [xy for xy, text in S3E["probes"].items() if re.search(pattern, text)]
+
+
+def s3e_center(points):
+    return (sum(p[0] for p in points) // len(points), sum(p[1] for p in points) // len(points))
+
+
+def s3e_top_center(points, height):
+    """The middle of a button found by scanning down: the pointer keeps the last button for a while over empty space, so the run of
+    points is longer than the button at its lower end: the first point (the top) is the edge, `height` pixels (at UI scale 1) the size."""
+    scale = bpy.context.preferences.system.ui_scale or 1.0
+    return (sum(p[0] for p in points) // len(points), max(p[1] for p in points) - int(height * scale / 2))
+
+
+def s3e_mat():
+    return bpy.context.active_object.active_material
+
+
+def s3e_layer(name):
+    return next(l for l in s3e_mat().m3d_layers if l.name == name)
+
+
+@step
+def s3e_enter():
+    restore_window()
+    lb_sandbox()   # (no thumbnails of the Library are made meanwhile)
+    if window().workspace.name != "Texture":
+        bpy.ops.m3d.workspace(kind='TEXTURE')
+
+
+step(wait_until(lambda: window().workspace.name == "Texture" and len([a for a in window().screen.areas if a.type == 'IMAGE_EDITOR']) == 1
+                and len(props_areas()) == 6, "the Texture workspace for the layer stack tests", tries=30))
+
+
+@step
+def s3e_setup():
+    # A cube with three layers: a paint layer with a painted mask, a fill with a generator mask, a paint layer.
+    if bpy.context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    for ob in list(bpy.data.objects):
+        bpy.data.objects.remove(ob)
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.m3d.add_primitive(kind='CUBE')
+    bpy.context.active_object.name = "Stack3e"
+    bpy.ops.m3d.tex_add_material()
+    bpy.context.scene.m3d_tex.resolution = '64'
+    bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+    for name in ("Paint A", "Fill B", "Paint C"):
+        bpy.ops.m3d.layer_add(kind='FILL' if name == "Fill B" else 'PAINT')
+        LY.active_layer(s3e_mat()).name = name
+        if name != "Fill B":
+            bpy.ops.m3d.tex_channel(channel='BASE_COLOR')
+        if name == "Paint A":
+            LY.write_pixels(LY.entry_of(LY.active_layer(s3e_mat()), 'BASE_COLOR').image, np.tile(np.array([1.0, 0.1, 0.1, 1.0], np.float32), (64 * 64, 1)))
+            bpy.ops.m3d.layer_mask_add(fill='WHITE')
+            ramp = np.ones((64, 64, 4), np.float32)
+            ramp[..., :3] = np.linspace(0.0, 1.0, 64, dtype=np.float32)[None, :, None]
+            LY.write_pixels(LY.paint_effect(LY.active_layer(s3e_mat())).image, ramp)
+        if name == "Fill B":
+            LY.active_layer(s3e_mat()).channels[0].color = (0.1, 0.5, 0.9, 1.0)
+            bpy.ops.m3d.mask_effect_add(kind='NOISE')
+            bpy.ops.m3d.mask_effect_add(kind='LEVELS')
+    s3e_mat().m3d_layer_index = 1   # (Fill B: its effects are listed under it)
+    S3E["real_look"], S3E["looks"] = LY.draw_look, []
+
+    def recorded(layout, entry):
+        S3E["looks"].append((entry.id_data.name, entry.channel, entry.blend, round(entry.opacity, 3)))
+        S3E["real_look"](layout, entry)
+    LY.draw_look = recorded
+    LY.thumbs_clear()
+    S3E["real_menu"] = LY.draw_list_menu
+    bpy.types.UI_MT_list_item_context_menu.remove(LY.draw_list_menu)
+
+    def menu_spy(self, context):
+        mat = bpy.context.active_object.active_material
+        ui_list = getattr(context, "ui_list", None)
+        S3E["menu"].append((ui_list.bl_idname if ui_list is not None else None, LY.hovered_layer(context, mat) if mat is not None else ""))
+        S3E["real_menu"](self, context)
+    S3E["menu_spy"] = menu_spy
+    bpy.types.UI_MT_list_item_context_menu.append(menu_spy)
+    bpy.utils.register_class(M3D_OT_test_probe)
+    km = bpy.context.window_manager.keyconfigs.addon.keymaps.new(name="Window", space_type='EMPTY', region_type='WINDOW')
+    S3E["km"], S3E["kmi"] = km, km.keymap_items.new("m3d.test_probe", 'F19', 'PRESS')
+    lay_show_tab()
+    tex4_redraw()
+
+
+def s3e_rows_ready():
+    tex4_redraw()   # (asked again every tick: a window that is not on screen draws nothing)
+    return len(S3E["looks"]) >= 3 and not LY._thumbs["todo"] and len(LY._thumbs["made"]) >= 4
+
+
+step(wait_until(s3e_rows_ready, "the rows and their thumbnails", tries=40))
+
+
+@step
+def s3e_rows_check():
+    mat = s3e_mat()
+    check(not tracebacks(), "Python error drawing the layer rows")
+    check({ch for _m, ch, _b, _o in S3E["looks"]} == {'BASE_COLOR'}, "the rows show Base Color first")
+    coll = LY.thumb_collection()
+    check(len(coll) >= 4 and all(t.icon_id for t in coll.values()), "the thumbnails are preview icons in the window (%d, ids %s)" % (len(coll), [t.icon_id for t in coll.values()]))
+    key = "c:%s:%s:BASE_COLOR" % (mat.name, s3e_layer("Paint A").uid)
+    px = np.array(coll[key].image_pixels_float).reshape(LY.THUMB, LY.THUMB, 4)
+    check(key in LY._thumbs["made"] and px[..., 0].min() > 0.9 and px[..., 1].max() < 0.2, "the red paint layer has a red thumbnail")
+    mkey = "m:%s:%s" % (mat.name, s3e_layer("Paint A").uid)
+    mp = np.array(coll[mkey].image_pixels_float).reshape(LY.THUMB, LY.THUMB, 4)
+    check(mp[:, 0, 0].max() < 0.05 and mp[:, -1, 0].min() > 0.95, "...and the mask thumbnail is the black to white ramp of its mask (%.2f to %.2f)" % (mp[:, 0, 0].max(), mp[:, -1, 0].min()))
+    fkey = "c:%s:%s:BASE_COLOR" % (mat.name, s3e_layer("Fill B").uid)
+    check(np.abs(np.array(coll[fkey].image_pixels_float[:3]) - LY.to_srgb(np.array([0.1, 0.5, 0.9], np.float32))).max() < 0.01, "the fill's thumbnail is its color")
+    check(LY.mask_thumb(mat, s3e_layer("Fill B"))[0] is None, "a generator mask has no thumbnail")
+    # find the header dropdown: scan the top of the dock under its tabs
+    area, region = s3e_region()
+    s3e_scan([(region.x + 40, y) for y in range(region.y + region.height - 20, region.y + region.height - 160, -4)])
+
+
+step(wait_until(s3e_scanned, "the probes of the dock header", tries=40))
+
+
+@step
+def s3e_dropdown_find():
+    hits = s3e_hits(r"m3d_row_channel")
+    check(bool(hits), "the channel dropdown is under the pointer at the top of the Layers tab (found at %d points)" % len(hits))
+    S3E["dropdown"] = s3e_top_center(hits, 20) if hits else None
+    check(s3e_mat().m3d_row_channel == 'BASE_COLOR', "the dropdown starts on Base Color")
+    S3E["cycles"] = 0
+    if hits:
+        x, y = S3E["dropdown"]
+        event('MOUSEMOVE', xy=(x + 1, y))
+        event('MOUSEMOVE', xy=(x, y))
+
+
+@step
+def s3e_dropdown_open():
+    """A click on the dropdown opens the list of channels; the key H (the first letter of Height, which no other channel starts with)
+    picks it."""
+    if S3E.get("dropdown") is not None:
+        xy = S3E["dropdown"]
+        event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]))
+        event('MOUSEMOVE', xy=xy)
+        event('LEFTMOUSE', 'PRESS', xy)
+        event('LEFTMOUSE', 'RELEASE', xy)
+
+
+@step
+def s3e_dropdown_pick():
+    if S3E.get("dropdown") is not None:
+        event('H', 'PRESS', S3E["dropdown"])
+        event('H', 'RELEASE', S3E["dropdown"])
+
+
+step(wait_until(lambda: S3E.get("dropdown") is None or s3e_mat().m3d_row_channel == 'HEIGHT', "Height to be picked in the channel list", tries=10))
+
+
+@step
+def s3e_dropdown_check():
+    mat = s3e_mat()
+    if mat.m3d_row_channel != 'HEIGHT':   # (a failure is on record: go on with the rest)
+        mat.m3d_row_channel = 'HEIGHT'
+    S3E["looks"].clear()
+    tex4_redraw()
+
+
+def s3e_looks_drawn():
+    tex4_redraw()
+    return len(S3E["looks"]) >= 3
+
+
+step(wait_until(s3e_looks_drawn, "the rows to draw Height", tries=30))
+
+
+@step
+def s3e_dropdown_shown():
+    check(not tracebacks(), "Python error after switching the channel")
+    check(s3e_mat().m3d_row_channel == 'HEIGHT', "the dropdown is on Height")
+    shown = {(ch, blend) for _m, ch, blend, _o in S3E["looks"]}
+    check(shown == {('HEIGHT', 'LINEAR_LIGHT')}, "the rows show the Height blend of each layer: Linear Light (%s)" % sorted(shown))
+    # find the rows: the content thumbnails of every layer, in a column at the left of the list
+    area, region = s3e_region()
+    S3E["col"] = region.x + int(70 * (bpy.context.preferences.system.ui_scale or 1.0))
+    s3e_scan([(S3E["col"], y) for y in range(region.y + region.height - 12, region.y + 12, -5)])
+
+
+step(wait_until(s3e_scanned, "the probes of the list", tries=40))
+
+
+def s3e_find_rows():
+    """{layer index: where its content thumbnail is} from the scan of the list."""
+    import re
+    rows = {}
+    for (x, y), text in S3E["probes"].items():
+        m = re.search(r"layer_pick\((?!.*part=)index=(\d+)\)", text)
+        if m:
+            rows.setdefault(int(m.group(1)), []).append((x, y))
+    check(set(rows) == {0, 1, 2}, "a content thumbnail button for each of the three layers (rows found: %s)" % sorted(rows))
+    return {i: s3e_top_center(points, 30) for i, points in rows.items()}
+
+
+@step
+def s3e_rows_find():
+    S3E["rows"] = s3e_find_rows()
+    eyes = {text for text in S3E["probes"].values() if "mask_stack[" in text and text.endswith(".visible")}
+    check(len(eyes) == 2, "the active layer (Fill B) lists the two effects of its mask, each with an eye (%s)" % sorted(eyes))
+    # Paint C (the top row) active: another layer's list rows do not move when a thumbnail further down is clicked
+    s3e_mat().m3d_layer_index = 2
+    tex4_redraw()
+
+
+@step
+def s3e_rescan():
+    area, region = s3e_region()
+    s3e_scan([(S3E["col"], y) for y in range(region.y + region.height - 12, region.y + 12, -5)])
+
+
+step(wait_until(s3e_scanned, "the probes of the list again", tries=40))
+
+
+@step
+def s3e_rows_again():
+    S3E["rows"] = s3e_find_rows()
+    area, region = s3e_region()
+    # the mask thumbnail of layer 0 (Paint A): scan along its row
+    if 0 in S3E["rows"]:
+        y = S3E["rows"][0][1]
+        s3e_scan([(x, y) for x in range(region.x + 10, region.x + int(region.width * 0.7), 6)])
+    else:
+        s3e_scan([])
+
+
+step(wait_until(s3e_scanned, "the probes of the first row", tries=40))
+
+
+@step
+def s3e_mask_find():
+    hits = s3e_hits(r"layer_pick\(part='MASK', index=0\)")
+    check(bool(hits), "Paint A's mask thumbnail is a button of its row (found at %d points)" % len(hits))
+    S3E["mask_xy"] = s3e_center(hits) if hits else S3E["rows"].get(0)
+    mat = s3e_mat()
+    S3E["props_before"] = bpy.context.scene.m3d_tex.props_mode
+    check(mat.m3d_layer_index == 2 and not mat.m3d_show_mask, "Paint C is the active layer before the clicks")
+    xy = S3E["mask_xy"]
+    event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]))
+    event('MOUSEMOVE', xy=xy)
+    event('LEFTMOUSE', 'PRESS', xy)
+    event('LEFTMOUSE', 'RELEASE', xy)
+
+
+step(wait_until(lambda: bpy.context.scene.m3d_tex.props_mode == 'MASK', "a click on the mask thumbnail to show the mask in Properties", tries=15))
+
+
+@step
+def s3e_mask_selected():
+    mat = s3e_mat()
+    check(mat.m3d_layer_index == 0 and LY.active_layer(mat).name == "Paint A", "the click selected Paint A")
+    check(m3d_texture.props_context(bpy.context) == 'MASK', "Properties shows the mask")
+    tex4_redraw()
+
+
+step(wait_until(lambda: "mk_stack" in tex4_sections(), "Properties to draw the Mask section", tries=15))
+
+
+def s3e_modifier_click(name, key, mods, cond, what):
+    """Steps for a click with a modifier held: the modifier goes down in one step, the click is made in the next and the modifier goes up
+    in a third. (A button runs its operator after the queued events have been handled: with everything in one step the modifier would be
+    up again by then, which a hand on the keyboard never does.)"""
+    def down():
+        xy = S3E["mask_xy"]
+        event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]))
+        event('MOUSEMOVE', xy=xy)
+        event(key, 'PRESS', xy, **mods)
+
+    def click():
+        xy = S3E["mask_xy"]
+        event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]), **mods)
+        event('MOUSEMOVE', xy=xy, **mods)
+        event('LEFTMOUSE', 'PRESS', xy, **mods)
+        event('LEFTMOUSE', 'RELEASE', xy, **mods)
+
+    def up():
+        event(key, 'RELEASE', S3E["mask_xy"])
+    down.__name__, click.__name__, up.__name__ = name + "_down", name + "_click", name + "_up"
+    step(down)
+    step(click)
+    step(wait_until(cond, what, tries=15))
+    step(up)
+
+
+@step
+def s3e_alt_prepare():
+    check(not tracebacks(), "Python error after the mask click")
+
+
+s3e_modifier_click("s3e_alt", 'LEFT_ALT', {"alt": True}, lambda: s3e_mat().m3d_show_mask, "Alt+click on the mask thumbnail to show the mask alone")
+
+
+@step
+def s3e_alt_shown():
+    mat = s3e_mat()
+    check(mat.node_tree.nodes.get(LY.MASKVIEW) is not None and mat.node_tree.nodes[LY.MASKVIEW].inputs["Color"].links, "the material shows the mask (Show Mask)")
+    check(not tracebacks(), "Python error showing the mask")
+
+
+s3e_modifier_click("s3e_alt2", 'LEFT_ALT', {"alt": True}, lambda: not s3e_mat().m3d_show_mask, "a second Alt+click to show the shader again")
+
+
+@step
+def s3e_shift_prepare():
+    S3E["use_mask"] = LY.active_layer(s3e_mat()).use_mask
+
+
+s3e_modifier_click("s3e_shift", 'LEFT_SHIFT', {"shift": True}, lambda: LY.active_layer(s3e_mat()).use_mask != S3E["use_mask"],
+                   "Shift+click on the mask thumbnail to switch the mask off")
+
+
+@step
+def s3e_shift_check():
+    layer = LY.active_layer(s3e_mat())
+    check(S3E["use_mask"] and not layer.use_mask and layer.mask_stack, "Shift+click switched the mask off and kept it")
+    mul = s3e_mat().node_tree.nodes[LY.part('BASE_COLOR', layer.uid, "maskmul")]
+    check(not mul.inputs[1].links, "the material no longer uses the mask")
+    layer.use_mask = True
+    check(not tracebacks(), "Python error switching the mask")
+    # right-click on the content thumbnail of Paint C (layer 2, not the active one)
+    S3E["menu"].clear()
+    xy = S3E["rows"][2]
+    event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]))
+    event('MOUSEMOVE', xy=xy)
+    event('RIGHTMOUSE', 'PRESS', xy)
+    event('RIGHTMOUSE', 'RELEASE', xy)
+
+
+step(wait_until(lambda: bool(S3E["menu"]), "the right-click menu to open", tries=15))
+
+
+@step
+def s3e_menu_check():
+    mat = s3e_mat()
+    check(S3E["menu"][0][0] == "M3D_UL_layers", "the list item menu is asked for our list (%s)" % (S3E["menu"][0],))
+    check(S3E["menu"][0][1] == s3e_layer("Paint C").uid and mat.m3d_layer_index != 2, "...and the layer under the pointer is the one clicked, not the active one (%s)" % (S3E["menu"][0],))
+    check(not tracebacks(), "Python error opening the right-click menu")
+    event('ESC', 'PRESS', S3E["rows"][2])
+    event('ESC', 'RELEASE', S3E["rows"][2])
+
+
+@step
+def s3e_menus_open():
+    # The Add Smart Material popover and the header menus open in the real window (the drawing runs in a real region)
+    area, region = s3e_region()
+    S3E["popups"] = []
+    for kind, name in (("call_panel", "M3D_PT_lib_smart"), ("call_menu", "M3D_MT_layer_effect_add"), ("call_menu", "M3D_MT_layer_mask_add"),
+                       ("call_menu", "M3D_MT_layer_more")):
+        with bpy.context.temp_override(window=window(), screen=window().screen, area=area, region=region, space_data=area.spaces.active):
+            S3E["popups"].append((name, getattr(bpy.ops.wm, kind)('INVOKE_DEFAULT', name=name)))
+        event('ESC', 'PRESS', S3E["rows"][2])
+        event('ESC', 'RELEASE', S3E["rows"][2])
+
+
+@step
+def s3e_menus_check():
+    check(all(res <= {'FINISHED', 'RUNNING_MODAL', 'INTERFACE'} for _name, res in S3E["popups"]), "the header menus and the smart material popover open: %s" % S3E["popups"])
+    check(not tracebacks(), "Python error drawing the header menus and the smart material popover")
+
+
+@step
+def s3e_dup_key():
+    # Ctrl+D over a thumbnail duplicates the active layer (over a property button Blender's own Ctrl+D would add a driver)
+    mat = s3e_mat()
+    S3E["count"] = len(mat.m3d_layers)
+    mat.m3d_layer_index = LY.index_of(mat, s3e_layer("Paint C").uid)
+    xy = S3E["rows"][2]
+    event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]))
+    event('MOUSEMOVE', xy=xy)
+    event('LEFT_CTRL', 'PRESS', xy, ctrl=True)
+    event('D', 'PRESS', xy, ctrl=True)
+    event('D', 'RELEASE', xy, ctrl=True)
+    event('LEFT_CTRL', 'RELEASE', xy)
+
+
+step(wait_until(lambda: len(s3e_mat().m3d_layers) == S3E["count"] + 1, "Ctrl+D over the layer list to duplicate the layer", tries=15))
+
+
+@step
+def s3e_dup_check():
+    mat = s3e_mat()
+    check(LY.active_layer(mat).name == "Paint C Copy" and not tracebacks(), "Ctrl+D duplicated the active layer: %s" % [l.name for l in mat.m3d_layers])
+    S3E["count"] = len(mat.m3d_layers)
+    area, region = s3e_region()
+    xy = S3E["blank"] = (region.x + region.width // 2, region.y + 14)   # (the bottom of the dock: no button there; Blender's own Ctrl+V takes a button)
+    event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]))
+    event('MOUSEMOVE', xy=xy)
+    for key in ('C', 'V'):   # Ctrl+C, Ctrl+V: a copy above the active layer
+        event('LEFT_CTRL', 'PRESS', xy, ctrl=True)
+        event(key, 'PRESS', xy, ctrl=True)
+        event(key, 'RELEASE', xy, ctrl=True)
+        event('LEFT_CTRL', 'RELEASE', xy)
+
+
+step(wait_until(lambda: len(s3e_mat().m3d_layers) == S3E["count"] + 1, "Ctrl+C, Ctrl+V over the layer list to paste a copy", tries=15))
+
+
+@step
+def s3e_delete_key():
+    mat = s3e_mat()
+    check(not tracebacks(), "Python error pasting")
+    S3E["count"] = len(mat.m3d_layers)
+    xy = S3E["blank"]
+    event('DEL', 'PRESS', xy)
+    event('DEL', 'RELEASE', xy)
+
+
+step(wait_until(lambda: len(s3e_mat().m3d_layers) == S3E["count"] - 1, "Delete over the layer list to delete the layer", tries=15))
+
+
+@step
+def s3e_done():
+    check(not tracebacks(), "Python error in the layer stack tests")
+    LY.draw_look = S3E["real_look"]
+    bpy.types.UI_MT_list_item_context_menu.remove(S3E["menu_spy"])
+    bpy.types.UI_MT_list_item_context_menu.append(S3E["real_menu"])
+    S3E["km"].keymap_items.remove(S3E["kmi"])
+    bpy.utils.unregister_class(M3D_OT_test_probe)
+    check(window().workspace.m3d_layout == 1, "the Texture workspace is still the new layout")
+    for image in [i for i in bpy.data.images if i.name.startswith("Stack3e")]:
         bpy.data.images.remove(image)
 
 
@@ -9646,6 +10152,7 @@ def finish():
 
 def run_next():
     fn = steps.pop(0)
+    restore_window()   # (minimized while the steps run, e.g. started behind the apps in use: it would draw nothing)
     try:
         fn()
     except Exception as err:  # Report and quit rather than leave a window hanging.

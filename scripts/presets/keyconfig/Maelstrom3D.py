@@ -165,6 +165,15 @@ OVERRIDES = {
         _kmi("wm.call_panel", 'E', props={"name": "M3D_PT_tex_export"}, ctrl=True, shift=True),
         _kmi("m3d.tex_frame", 'F'),
     ],
+    # Texture, over the layer list (the Layers tab; m3d.layer_key checks that): Ctrl+C / X / V copy, cut and paste a layer, Ctrl+D
+    # duplicates it, Ctrl+G groups it into a folder, Delete deletes it (Ctrl+Shift+V also pastes: Blender's own Ctrl+V takes the button under the
+    # pointer, so Ctrl+V only reaches the layer when the pointer is not on one). They go after the editor's own keys (Delete over a
+    # modifier or constraint panel still deletes that).
+    "Property Editor": [
+        *(_kmi("m3d.layer_key", key, props={"action": action}, **mods) for key, action, mods in (
+            ('C', 'COPY', {"ctrl": True}), ('X', 'CUT', {"ctrl": True}), ('V', 'PASTE', {"ctrl": True}),
+            ('V', 'PASTE', {"ctrl": True, "shift": True}), ('D', 'DUPLICATE', {"ctrl": True}), ('G', 'GROUP', {"ctrl": True}), ('DEL', 'DELETE', {}))),
+    ],
     # Rigging: Ctrl+E extrudes a bone right away (Industry Compatible only switches tools); P parents and Shift+P
     # unparents bones in Edit Mode already; Shift+N is the naming marking menu in Edit and Pose Mode (Ctrl+N is New Scene).
     "Armature": [
@@ -326,6 +335,7 @@ def selection_modifiers(keyconfig_data):
 
 # Items that go before the keymap's own (a key does what the first item of the keymap that can run does).
 FIRST = {"m3d.tex_polyfill"}
+KEEP_OTHERS = {"m3d.layer_key"}   # items that go last and leave the keymap's own items on the same key alone
 
 
 def apply_overrides(keyconfig_data, overrides):
@@ -333,7 +343,7 @@ def apply_overrides(keyconfig_data, overrides):
         new_items = overrides.get(km_name)
         if not new_items:
             continue
-        taken = {_key(args) for idname, args, _ in new_items if idname not in FIRST}   # (a FIRST item sits on a key that stays)
+        taken = {_key(args) for idname, args, _ in new_items if idname not in FIRST | KEEP_OTHERS}   # (a FIRST item sits on a key that stays)
         km_content["items"][:] = [it for it in km_content["items"] if _key(it[1]) not in taken]
         km_content["items"][:0] = [it for it in new_items if it[0] in FIRST]
         km_content["items"].extend(it for it in new_items if it[0] != "REMOVE" and it[0] not in FIRST)

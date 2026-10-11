@@ -8,7 +8,7 @@ Each name is a workspace name or kind (MODEL, SCULPT, ...); writes <prefix><name
 `KIND/page` also shows that dock page (e.g. SCULPT/sculpt_mask). Setup steps (no picture): `+sphere` / `+cube` add a
 mesh, `+unwrap` runs Auto Unwrap (Edit Mode, UV workspace), `+checker` toggles the checker map, `+distortion` shows
 the UV Editor's distortion, `+paint` (Texture workspace: a material, four painted channels), `+bake` (bakes Normal and
-AO at 128 px), `+layers` (like `+paint`, then a paint layer with a mask and a fill layer), `+fillsel` (select the fill layer), `+folders` (like `+paint`, then a folder of three layers, open, and a folder of two layers, frozen), `+monkey` (a smooth Suzanne, unwrapped; use it before `+paint`), `+masks` (`+paint`, then a rust Fill layer
+AO at 128 px), `+layers` (like `+paint`, then a paint layer with a mask and a fill layer), `+stack` (like `+paint`, then a folder, a fill with a Noise and Levels mask, a paint layer with a painted mask, with Height in the rows of the Layers panel), `+fillsel` (select the fill layer), `+folders` (like `+paint`, then a folder of three layers, open, and a folder of two layers, frozen), `+monkey` (a smooth Suzanne, unwrapped; use it before `+paint`), `+masks` (`+paint`, then a rust Fill layer
 whose mask is Fill, Edges, Noise and Levels, with the maps baked at 128 px), `+maskshow` (Show Mask on), `+frame` (frame the object in the 3D view), `+rig` (Rigging workspace: a cylinder bound to a spine and two legs, control shapes on the
 legs, a Driven Key, a saved pose), `+rigedit` / `+rigpose` / `+rigweight` / `+rigobject` (the mode buttons), `+anim` (the rig keyed over 48 frames with a camera;
 then F6 shows it in Pose Mode), `+toolkit` / `+chanbox` (the Animation dock on its pages / the Channel Box), `+inputs` (a cube with its INPUTS in the Channel Box), `+graph` / `+dope` (the
@@ -30,6 +30,7 @@ the sword's normal map in the paint view), `+bakeextras` (two groups that overla
 preview of one of them; use it before `+angle`, `+frame` and `TEXTURE/tex_bake`).
 """
 
+import os
 import sys
 from types import SimpleNamespace
 
@@ -68,7 +69,8 @@ def layers():
     mat = bpy.context.active_object.active_material
     bpy.ops.m3d.layer_add(kind='PAINT')
     stripes = mat.m3d_layers[1]
-    stripes.name, stripes.blend, stripes.opacity = "Scratches", 'MULTIPLY', 0.8
+    stripes.name = "Scratches"
+    L.set_look(stripes, blend='MULTIPLY', opacity=0.8)
     image = L.entry_of(stripes, 'BASE_COLOR').image
     n = image.size[0]
     ys, xs = np.mgrid[0:n, 0:n]
@@ -83,7 +85,8 @@ def layers():
     L.write_pixels(mask, ramp)
     bpy.ops.m3d.layer_add(kind='FILL')
     tint = mat.m3d_layers[2]
-    tint.name, tint.blend, tint.opacity = "Tint", 'OVERLAY', 0.6
+    tint.name = "Tint"
+    L.set_look(tint, blend='OVERLAY', opacity=0.6)
     tint.channels[0].color = (0.1, 0.45, 0.9, 1.0)
     mat.m3d_layer_index = 1
 
@@ -102,7 +105,7 @@ def folders():
         layer = L.active_layer(mat)
         layer.name = name
         for key, value in props.items():
-            setattr(layer, key, value)
+            L.set_look(layer, **{key: value})
         return layer
 
     def pattern(name, rgb, period, share):
@@ -121,7 +124,8 @@ def folders():
     pattern("Stains", (0.35, 0.22, 0.1), 61, 0.8)
     bpy.ops.m3d.layer_folder_add()
     weathering = L.active_layer(mat)
-    weathering.name, weathering.opacity = "Weathering", 0.85
+    weathering.name = "Weathering"
+    L.set_look(weathering, opacity=0.85)
     for name in ("Scratches", "Tint", "Stains"):
         L.move_into(mat, named(name), named("Weathering"))
     new('PAINT', "Stripes", opacity=0.9)
@@ -135,6 +139,79 @@ def folders():
     mat.m3d_layer_index = L.index_of(mat, named("Decals").uid)
     bpy.ops.m3d.layer_freeze()
     mat.m3d_layer_index = L.index_of(mat, named("Weathering").uid)
+
+
+def stack():
+    """The layer stack of the redesigned Layers panel: a paint layer, a folder of two layers, a fill layer whose mask is a Noise generator
+    and a Levels filter, and a paint layer with a painted mask on top; the rows show Height (Add)."""
+    import numpy as np
+    import m3d_layers as L
+    paint()
+    mat = bpy.context.active_object.active_material
+    n = 512
+    ys, xs = np.mgrid[0:n, 0:n]
+
+    def new(kind, name, **look):
+        bpy.ops.m3d.layer_add(kind=kind)
+        layer = L.active_layer(mat)
+        layer.name = name
+        L.set_look(layer, **look)
+        return layer
+
+    def image_of(layer, channel='BASE_COLOR'):
+        e = L.entry_of(layer, channel)
+        with L.muted():
+            e.use = True
+            if e.image is None:
+                e.image = L.make_channel_image(mat, layer, L.CHANNEL_BY_ID[channel], n, opaque=False)
+        return e.image
+
+    def stripes(layer, rgb, period, share, height):
+        px = np.zeros((n, n, 4), np.float32)
+        px[..., :3] = rgb
+        px[..., 3] = (((xs + ys) // period) % 3 == 0) * share
+        L.write_pixels(image_of(layer), px)
+        px = np.zeros((n, n, 4), np.float32)
+        px[..., :3] = height * (0.5 + 0.5 * np.sin(xs / 9.0))[..., None]
+        px[..., 3] = (((xs + ys) // period) % 3 == 0) * 1.0
+        L.write_pixels(image_of(layer, 'HEIGHT'), px)
+
+    stains = new('PAINT', "Stains", opacity=0.7)   # (the paint slots become the Base layer first)
+    base = mat.m3d_layers[0]
+    h = np.ones((n, n, 4), np.float32)
+    h[..., :3] = (0.25 + 0.2 * np.sin(xs / 31.0) * np.cos(ys / 23.0))[..., None]
+    L.write_pixels(image_of(base, 'HEIGHT'), h)
+    stripes(stains, (0.35, 0.22, 0.1), 61, 0.8, 0.8)
+    tint = new('FILL', "Tint", blend='OVERLAY', opacity=0.6)
+    tint.channels[0].color = (0.1, 0.45, 0.9, 1.0)
+    with L.muted():
+        L.entry_of(tint, 'HEIGHT').use = True
+        L.entry_of(tint, 'HEIGHT').value = 0.1
+    bpy.ops.m3d.layer_folder_add()
+    folder = L.active_layer(mat)
+    folder.name = "Weathering"
+    for layer in (stains, tint):
+        L.move_into(mat, next(l for l in mat.m3d_layers if l.name == layer.name), next(l for l in mat.m3d_layers if l.name == "Weathering"))
+    rust = new('FILL', "Rust", opacity=0.9)
+    rust.channels[0].color = (0.32, 0.1, 0.03, 1.0)
+    with L.muted():
+        L.entry_of(rust, 'HEIGHT').use = True
+        L.entry_of(rust, 'HEIGHT').value = 0.3
+    L.set_look(rust, blend='ADD', channel='HEIGHT', opacity=0.6)
+    bpy.ops.m3d.mask_effect_add(kind='NOISE')
+    bpy.ops.m3d.mask_effect_add(kind='LEVELS')
+    noise, levels = rust.mask_stack
+    noise.scale, noise.noise_contrast, noise.detail = 9.0, 3.5, 4.0
+    levels.black_in, levels.white_in = 0.25, 0.7
+    dents = new('PAINT', "Dents", opacity=0.9)
+    stripes(dents, (0.9, 0.85, 0.2), 97, 1.0, 0.9)
+    bpy.ops.m3d.layer_mask_add(fill='WHITE')
+    mask = L.paint_effect(dents).image
+    ramp = np.ones((n, n, 4), np.float32)
+    ramp[..., :3] = np.clip(1.6 - 1.6 * xs[..., None] / n, 0.0, 1.0)
+    L.write_pixels(mask, ramp)
+    mat.m3d_layer_index = L.index_of(mat, rust.uid)
+    mat.m3d_row_channel = 'HEIGHT'
 
 
 def fillsel():
@@ -808,6 +885,7 @@ SETUP = {
     "+bakeextras": bake_extras,
     "+layers": layers,
     "+folders": folders,
+    "+stack": stack,
     "+fillsel": fillsel,
     "+monkey": monkey,
     "+masks": masks,
@@ -882,7 +960,29 @@ for name in NAMES:
 steps.append(bpy.ops.wm.quit_blender)
 
 
+def restore_window():
+    """A window started behind the apps in use can come up minimized, and a minimized window draws nothing (every picture is black):
+    show it again without taking the focus. Windows only."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32, pid = ctypes.windll.user32, os.getpid()
+
+        def show(hwnd, _param):
+            owner = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+            if owner.value == pid and user32.IsWindowVisible(hwnd) and user32.IsIconic(hwnd):
+                user32.ShowWindow(hwnd, 4)   # SW_SHOWNOACTIVATE
+            return True
+        user32.EnumWindows(ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)(show), 0)
+    except Exception as err:   # (a picture of a minimized window shows it)
+        print("restore_window:", err)
+
+
 def run_next():
+    restore_window()
     steps.pop(0)()
     return 0.6 if steps else None
 

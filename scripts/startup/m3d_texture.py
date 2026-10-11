@@ -709,6 +709,8 @@ def set_tool(context, tool):
     if region is not None and context.area != areas[0]:
         with context.temp_override(area=areas[0], region=region):
             bpy.ops.brush.asset_activate(**brush_props(name))
+    else:
+        bpy.ops.brush.asset_activate(**brush_props(name))
     brush = image_brush(context)
     if brush is None:
         return "No texture brush"
@@ -2748,6 +2750,23 @@ def has_active_layer(mat):
     return principled_of(mat) is not None and active_layer(mat) is not None
 
 
+def draw_layers_header(layout, mat):
+    """The channel dropdown (the channel the rows show: thumbnails, blend modes, opacities), then Add Effect, Add Mask, Add Paint
+    Layer, Add Fill Layer, Add Smart Material, Add Folder, Delete and the "..." menu (Merge Down, Flatten, Group, Move In /
+    Out, Freeze)."""
+    split = layout.split(factor=0.3, align=True)
+    split.prop(mat, "m3d_row_channel", text="")
+    row = split.row(align=True)
+    row.menu("M3D_MT_layer_effect_add", text="", icon='SHADERFX')
+    row.menu("M3D_MT_layer_mask_add", text="", icon='MOD_MASK')
+    row.operator("m3d.layer_add", text="", icon='IMAGE_DATA').kind = 'PAINT'
+    row.operator("m3d.layer_add", text="", icon='COLOR').kind = 'FILL'
+    row.popover(panel="M3D_PT_lib_smart", text="", icon='NODE_MATERIAL')
+    row.operator("m3d.layer_folder_add", text="", icon='NEWFOLDER')
+    row.operator("m3d.layer_remove", text="", icon='TRASH')
+    row.menu("M3D_MT_layer_more", text="", icon='DOWNARROW_HLT')
+
+
 class PROPERTIES_PT_m3d_tx_stack(_Page, Panel):
     page = "tex_layers"
     bl_label = "Layers"
@@ -2763,10 +2782,7 @@ class PROPERTIES_PT_m3d_tx_stack(_Page, Panel):
             reason(layout, "Layers need a Principled BSDF in the material")
             return
         layer = active_layer(mat)
-        row = layout.row(align=True)
-        row.operator("m3d.layer_add", text="Paint Layer", icon='ADD').kind = 'PAINT'
-        row.operator("m3d.layer_add", text="Fill Layer", icon='COLOR').kind = 'FILL'
-        row.operator("m3d.layer_folder_add", text="New Folder", icon='FILE_FOLDER')
+        draw_layers_header(layout, mat)
         if layer is None:
             n = len(paint_slots(mat))
             reason(layout, "The %d paint slots become the Base layer" % n if n else "Add a layer to start painting")
@@ -2777,21 +2793,13 @@ class PROPERTIES_PT_m3d_tx_stack(_Page, Panel):
             row.label(text="Fill layer: paint its Mask, or", icon='INFO')
             row.operator("m3d.layer_convert", text="Convert to Paint", icon='IMAGE_DATA')
         row = layout.row()
-        row.template_list("M3D_UL_layers", "", mat, "m3d_layers", mat, "m3d_layer_index", rows=8,
-                          sort_reverse=True, sort_lock=True)
+        row.template_list("M3D_UL_layers", "", mat, "m3d_layers", mat, "m3d_layer_index", rows=6,
+                          sort_reverse=True, sort_lock=True)   # (a UI list has no drag and drop: the arrows move the layer)
         col = row.column(align=True)
         col.operator("m3d.layer_move", text="", icon='TRIA_UP').delta = 1
         col.operator("m3d.layer_move", text="", icon='TRIA_DOWN').delta = -1
         col.separator()
         col.operator("m3d.layer_duplicate", text="", icon='DUPLICATE')
-        col.operator("m3d.layer_remove", text="", icon='TRASH')
-        row = layout.row(align=True)
-        row.operator("m3d.layer_merge_down", icon='TRIA_DOWN_BAR')
-        row.operator("m3d.layer_flatten", icon='IMAGE_DATA')
-        row = layout.row(align=True)
-        row.operator("m3d.layer_folder_add", text="Group", icon='FILE_FOLDER').group = True
-        row.operator_menu_enum("m3d.layer_move_into", "folder", text="Move In", icon='TRIA_RIGHT')
-        row.operator("m3d.layer_move_out", text="Move Out", icon='TRIA_LEFT')
         effect = L.paint_effect(layer)
         if L.in_frozen(layer):
             reason(layout, "Frozen with its folder: nothing to paint")
@@ -2810,6 +2818,19 @@ class PROPERTIES_PT_m3d_tx_stack(_Page, Panel):
             reason(layout, "That is %d images of 4K: use smaller sizes or merge layers" % equivalent)
 
 
+def draw_looks(layout, layer):
+    """The blend mode and the opacity of every channel of a layer (the list shows the channel picked in its header)."""
+    col = layout.column(align=True)
+    col.use_property_split = False
+    for ch in CHANNELS:
+        e = entry_of(layer, ch.id)
+        split = col.split(factor=0.3, align=True)
+        split.label(text=ch.label)
+        row = split.row(align=True)
+        row.prop(e, "blend", text="")
+        row.prop(e, "opacity", text="", slider=True)
+
+
 def frozen_banner(layout, mat, layer):
     """For a layer inside a frozen folder: what it is, an Unfreeze button, and the layout to draw its (off) properties in."""
     if not L.in_frozen(layer):
@@ -2824,10 +2845,9 @@ def frozen_banner(layout, mat, layer):
 
 
 def draw_folder(layout, layer):
-    """The Layer panel of a folder: name, blend, opacity, visibility, Freeze / Unfreeze, Merge Folder."""
+    """The Layer panel of a folder: name, blend and opacity of each channel, visibility, Freeze / Unfreeze, Merge Folder."""
     layout.prop(layer, "name")
-    layout.prop(layer, "blend")
-    layout.prop(layer, "opacity", slider=True)
+    draw_looks(layout, layer)
     layout.prop(layer, "visible")
     layout.label(text="%d layers inside" % len([l for l in L.descendants(layer) if l.kind != 'FOLDER']), icon='FILE_FOLDER')
     row = layout.row(align=True)
@@ -2865,8 +2885,7 @@ class PROPERTIES_PT_m3d_tx_layer(_Page, Panel):
             draw_folder(layout, layer)
             return
         layout.prop(layer, "name")
-        layout.prop(layer, "blend")
-        layout.prop(layer, "opacity", slider=True)
+        draw_looks(layout, layer)
         layout.prop(layer, "visible")
         if layer.kind == 'PAINT':
             layout.prop(layer, "use_alpha")
@@ -2951,6 +2970,7 @@ def draw_mask_stack(layout, context, mat, layer, explain=True):
     row = layout.row(align=True)
     row.operator("m3d.layer_paint_mask", text="Paint Mask", icon='BRUSH_DATA', depress=layer.paint_mask)
     row.prop(mat, "m3d_show_mask", text="Show Mask", toggle=True, icon='HIDE_OFF')
+    row.prop(layer, "use_mask", text="On", toggle=True)
     row = layout.row(align=True)
     row.operator("m3d.mask_rebake", icon='FILE_REFRESH')
     row.operator("m3d.layer_mask_invert", icon='ARROW_LEFTRIGHT',

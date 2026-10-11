@@ -23,19 +23,34 @@ sub-chain that carries a coverage socket next to the color), then the result is 
 folder's blend, opacity and mask like a layer's own image. Freezing bakes that result into one image per channel (the
 alpha is the coverage), after which the folder is a leaf of the chains: one Image Texture and one Mix per channel.
 
+Blend mode and opacity are per channel: every layer has an entry for each channel (M3D_LayerChannel) with its own blend
+mode and opacity, so a layer can add to Height and multiply Roughness at different strengths. Passthrough leaves a channel
+out of the layer (no nodes, no pixels), Replace ignores the image's own transparency; Color Burn and Color Dodge are a
+blend Mix node followed by a plain Mix (their node formulas are not linear in the factor, the numpy math is). Layers saved
+before that have one blend and one opacity for all channels: `upgrade` copies them into every channel.
+
+The list rows draw a content thumbnail (the image of the channel the panel's dropdown picks, a swatch for a fill) and a mask
+thumbnail as preview icons made on a timer from a small numpy downscale: drawing only asks for them, and the depsgraph hook
+below makes the ones whose image was painted again (see "Thumbnails"). The right-click menu of the list is an item of
+UI_MT_list_item_context_menu; its commands run through m3d.layer_do, which selects the layer under the pointer first. A UI list has
+no drag and drop, so the arrows (m3d.layer_move) order the layers.
+
 The Layers page (panels) is in m3d_texture.py.
 """
 
 import math
+import re
+import time
 import uuid
 from collections import namedtuple
 from contextlib import contextmanager
 
 import bpy
+import bpy.utils.previews
 import numpy as np
 from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProperty, FloatVectorProperty,
                        IntProperty, PointerProperty, StringProperty)
-from bpy.types import Operator, PropertyGroup, UIList
+from bpy.types import Menu, Operator, PropertyGroup, UIList
 
 import m3d_masks as MK
 from m3d_masks import image_size, muted, pixels_of, write_pixels
@@ -62,11 +77,30 @@ SCALARS = {'ROUGHNESS', 'METALLIC', 'HEIGHT'}   # One value per pixel: fill laye
 SOCKETS = {'BASE_COLOR': "Base Color", 'ROUGHNESS': "Roughness", 'METALLIC': "Metallic", 'EMISSION': "Emission Color"}
 SOCKET_CHANNELS = {name: ch for ch, name in SOCKETS.items()}
 
-BLENDS = (   # Mix node blend types. All of them are exact in the numpy flattening too (see BLEND_FUNCTIONS).
-    ('MIX', "Mix"), ('MULTIPLY', "Multiply"), ('ADD', "Add"), ('OVERLAY', "Overlay"), ('SCREEN', "Screen"),
-    ('SOFT_LIGHT', "Soft Light"), ('SUBTRACT', "Subtract"), ('DIFFERENCE', "Difference"), ('COLOR', "Color"),
-    ('DARKEN', "Darken"), ('LIGHTEN', "Lighten"),
+BLENDS = (   # (id, label): the Mix node's blend types, Replace and Passthrough. All but those two are exact in numpy (BLEND_FUNCTIONS).
+    ('MIX', "Normal"), ('PASSTHROUGH', "Passthrough"), ('REPLACE', "Replace"), ('MULTIPLY', "Multiply"), ('DIVIDE', "Divide"),
+    ('DARKEN', "Darken"), ('LIGHTEN', "Lighten"), ('ADD', "Add (Linear Dodge)"), ('SUBTRACT', "Subtract"),
+    ('DIFFERENCE', "Difference"), ('OVERLAY', "Overlay"), ('SCREEN', "Screen"), ('BURN', "Color Burn"), ('DODGE', "Color Dodge"),
+    ('SOFT_LIGHT', "Soft Light"), ('LINEAR_LIGHT', "Linear Light"), ('HUE', "Hue"), ('SATURATION', "Saturation"),
+    ('COLOR', "Color"), ('VALUE', "Value"),
 )
+BLEND_SHORT = {'MIX': "Norm", 'PASSTHROUGH': "Pthr", 'REPLACE': "Repl", 'MULTIPLY': "Mult", 'DIVIDE': "Div", 'DARKEN': "Dark",
+               'LIGHTEN': "Light", 'ADD': "Add", 'SUBTRACT': "Sub", 'DIFFERENCE': "Diff", 'OVERLAY': "Ovrl", 'SCREEN': "Scrn",
+               'BURN': "Burn", 'DODGE': "Dodge", 'SOFT_LIGHT': "Soft", 'LINEAR_LIGHT': "LLgt", 'HUE': "Hue", 'SATURATION': "Sat",
+               'COLOR': "Col", 'VALUE': "Val"}
+BLEND_TEXT = {
+    'MIX': "The layer covers what is below, as much as its opacity, image transparency and mask say",
+    'PASSTHROUGH': "The layer does not touch this channel (no nodes, no pixels, whatever the channel holds)",
+    'REPLACE': "The layer's pixels replace what is below, also where the image is transparent (opacity and mask still fade it)",
+    'ADD': "Adds the layer to what is below (Linear Dodge). With a Height image that is 0.5 flat, Linear Light is the "
+           "mode that leaves 0.5 alone",
+    'LINEAR_LIGHT': "Adds twice the layer minus one: 0.5 changes nothing, white raises, black lowers",
+}
+# (the saved value of an enum is its number: a new mode goes last, with the next number)
+BLEND_ITEMS = [(k, label, BLEND_TEXT.get(k, ""), 'NONE', i) for i, (k, label) in enumerate(BLENDS)]
+LEGACY_BLENDS = ('MIX', 'MULTIPLY', 'ADD', 'OVERLAY', 'SCREEN', 'SOFT_LIGHT', 'SUBTRACT', 'DIFFERENCE', 'COLOR', 'DARKEN',
+                 'LIGHTEN')   # the modes of the one blend a layer had before every channel had its own, in their saved order
+TWO_STEP = {'BURN', 'DODGE'}   # modes whose node formula is not linear in the factor: a Mix node at full strength, then a plain Mix
 TAG = "m3d_layer"   # Custom property (value: channel id) and name prefix of every node the stack creates.
 FILL_TEXTURE = "m3d_fill_texture"   # Custom property of an image file picked as a fill's texture (value: the channel it was first picked for).
 MEMORY_WARN = 12    # Warn from this many 4K images (8 bit RGBA) on.
@@ -128,20 +162,64 @@ def blend_color(back, src):
     return np.where((s != 0)[..., None], hsv_to_rgb(h, s, rgb_to_hsv(back)[2]), back)
 
 
-# What the Mix node's blend types compute before the factor: result = back + factor * (blend - back).
+def blend_hue(back, src):
+    """Hue of `src` on the saturation and value of `back` (nothing happens where `src` is grey)."""
+    h, s, _ = rgb_to_hsv(src)
+    _, sb, vb = rgb_to_hsv(back)
+    return np.where((s != 0)[..., None], hsv_to_rgb(h, sb, vb), back)
+
+
+def blend_saturation(back, src):
+    hb, sb, vb = rgb_to_hsv(back)
+    return np.where((sb != 0)[..., None], hsv_to_rgb(hb, rgb_to_hsv(src)[1], vb), back)
+
+
+def blend_value(back, src):
+    hb, sb, _ = rgb_to_hsv(back)
+    return hsv_to_rgb(hb, sb, rgb_to_hsv(src)[2])
+
+
+def blend_divide(back, src):
+    """back / src; where src is 0 the Mix node leaves back as it is."""
+    return np.where(src != 0, back / np.where(src != 0, src, 1.0), back)
+
+
+def blend_burn(back, src):
+    return np.where(src > 0, np.clip(1.0 - (1.0 - back) / np.where(src > 0, src, 1.0), 0.0, 1.0), 0.0)
+
+
+def blend_dodge(back, src):
+    return np.where(back != 0, np.where(src >= 1, 1.0, np.minimum(back / np.where(src < 1, 1.0 - src, 1.0), 1.0)), 0.0)
+
+
+# What the Mix node's blend types compute at full strength: result = back + factor * (blend - back) (Color Burn and Dodge
+# are the two that are not linear in the factor: the chain makes them a Mix node at factor 1, then a plain Mix by the factor).
+# Replace is Normal with the layer's own transparency ignored (see node_mode), Passthrough is no layer at all.
 BLEND_FUNCTIONS = {
     'MIX': lambda b, s: s,
     'MULTIPLY': lambda b, s: b * s,
-    'ADD': lambda b, s: b + s,
-    'OVERLAY': lambda b, s: np.where(b < 0.5, 2 * b * s, 1 - 2 * (1 - b) * (1 - s)),
-    'SCREEN': lambda b, s: 1 - (1 - b) * (1 - s),
-    'SOFT_LIGHT': lambda b, s: (1 - b) * s * b + b * (1 - (1 - s) * (1 - b)),
-    'SUBTRACT': lambda b, s: b - s,
-    'DIFFERENCE': lambda b, s: np.abs(b - s),
-    'COLOR': blend_color,
+    'DIVIDE': blend_divide,
     'DARKEN': np.minimum,
     'LIGHTEN': np.maximum,
+    'ADD': lambda b, s: b + s,
+    'SUBTRACT': lambda b, s: b - s,
+    'DIFFERENCE': lambda b, s: np.abs(b - s),
+    'OVERLAY': lambda b, s: np.where(b < 0.5, 2 * b * s, 1 - 2 * (1 - b) * (1 - s)),
+    'SCREEN': lambda b, s: 1 - (1 - b) * (1 - s),
+    'BURN': blend_burn,
+    'DODGE': blend_dodge,
+    'SOFT_LIGHT': lambda b, s: (1 - b) * s * b + b * (1 - (1 - s) * (1 - b)),
+    'LINEAR_LIGHT': lambda b, s: b + 2 * s - 1,
+    'HUE': blend_hue,
+    'SATURATION': blend_saturation,
+    'COLOR': blend_color,
+    'VALUE': blend_value,
 }
+
+
+def node_mode(blend):
+    """The blend type of the Mix node a mode uses (Replace mixes; Passthrough has no node)."""
+    return 'MIX' if blend == 'REPLACE' else blend
 
 
 def over(back_rgb, back_a, rgb, a, mode):
@@ -192,6 +270,10 @@ class M3D_LayerChannel(PropertyGroup):
     color: FloatVectorProperty(name="Color", size=4, subtype='COLOR', min=0.0, max=1.0, default=(0.8, 0.8, 0.8, 1.0),
                                update=_changed)
     value: FloatProperty(name="Value", min=0.0, max=1.0, default=0.5, update=_changed)
+    blend: EnumProperty(name="Blend", default='MIX', items=BLEND_ITEMS, update=_changed,
+                        description="How the layer combines with the layers below in this channel")
+    opacity: FloatProperty(name="Opacity", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_changed,
+                           description="How strongly the layer applies in this channel")
 
 
 def _expanded_changed(self, context):
@@ -223,9 +305,10 @@ class M3D_Layer(PropertyGroup):
     use_alpha: BoolProperty(name="Image Alpha", default=True, update=_changed,
                             description="The image's transparency shows the layers below (off for the Base layer made from "
                             "existing paint slots, where alpha was never used)")
-    opacity: FloatProperty(name="Opacity", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_changed)
-    blend: EnumProperty(name="Blend", default='MIX', items=[(k, label, "") for k, label in BLENDS], update=_changed,
-                        description="How the layer combines with the layers below (the Normal channel always mixes)")
+    per_channel: BoolProperty(description="The blend mode and opacity are the channels' own. Off: a layer saved before that, "
+                              "whose one blend and opacity (raw properties 'blend' and 'opacity') `upgrade` copies into every channel")
+    use_mask: BoolProperty(name="Mask On", default=True, update=_changed,
+                           description="The layer's mask applies (off: the layer shows as if it had none; the mask is kept)")
     channels: CollectionProperty(type=M3D_LayerChannel)
     mask_stack: CollectionProperty(type=MK.M3D_MaskEffect)   # The mask: effects combined from the bottom up.
     mask_index: IntProperty(name="Active Effect", default=0, min=0, update=_changed)
@@ -245,6 +328,59 @@ class M3D_Layer(PropertyGroup):
 
 def entry_of(layer, ch_id):
     return layer.channels[CHANNEL_INDEX[ch_id]]
+
+
+def blend_of(layer, ch_id):
+    return entry_of(layer, ch_id).blend
+
+
+def opacity_of(layer, ch_id):
+    return entry_of(layer, ch_id).opacity
+
+
+def passes(layer, ch_id):
+    """Does the layer leave this channel alone (Passthrough)?"""
+    return entry_of(layer, ch_id).blend == 'PASSTHROUGH'
+
+
+def replaces(layer, ch_id):
+    """Does the layer ignore its image's own transparency in this channel (Replace)? A folder always counts what its
+    layers cover, so for a folder Replace is Normal."""
+    return entry_of(layer, ch_id).blend == 'REPLACE' and (layer.kind != 'FOLDER' or layer.frozen)
+
+
+def two_step(layer, ch_id):
+    """Color Burn and Color Dodge: a Mix node at full strength, then a plain Mix by the factor."""
+    return entry_of(layer, ch_id).blend in TWO_STEP
+
+
+def mode_of(layer, ch_id):
+    """The blend function (BLEND_FUNCTIONS) the layer's channel uses."""
+    return node_mode(entry_of(layer, ch_id).blend)
+
+
+def set_look(layer, blend=None, opacity=None, channel=None):
+    """Set the blend mode and / or the opacity of a layer's channel `channel`, or of every channel (Normal keeps its blend
+    mode then: it is a direction, not a value: name it to change it). The chains are rebuilt once."""
+    with muted():
+        for ch in CHANNELS:
+            if channel not in {None, ch.id}:
+                continue
+            e = entry_of(layer, ch.id)
+            if blend is not None and (channel is not None or ch.id != 'NORMAL'):
+                e.blend = blend
+            if opacity is not None:
+                e.opacity = opacity
+    if not MK._muted[0] and isinstance(layer.id_data, bpy.types.Material):
+        refresh(bpy.context, layer.id_data)
+
+
+def legacy_look(layer):
+    """(blend, opacity) a layer saved before every channel had its own: the single values it stored (the properties are gone,
+    the numbers are still in the layer's raw data)."""
+    index, opacity = layer.get("blend", 0), layer.get("opacity", 1.0)
+    return (LEGACY_BLENDS[index] if isinstance(index, int) and 0 <= index < len(LEGACY_BLENDS) else 'MIX',
+            float(opacity) if isinstance(opacity, (int, float)) else 1.0)
 
 
 def active_layer(mat):
@@ -342,7 +478,9 @@ def uses_image(layer):
 
 def has_content(layer, ch_id):
     """Does the layer change this channel: a fill value, a painted (or frozen) image, or (a folder that is not frozen)
-    anything inside it."""
+    anything inside it. Not when its blend mode is Passthrough."""
+    if passes(layer, ch_id):
+        return False
     if layer.kind == 'FOLDER' and not layer.frozen:
         return any(has_content(kid, ch_id) for kid in children(layer))
     e = entry_of(layer, ch_id)
@@ -481,10 +619,13 @@ def walk(tree):
         yield layer
 
 
-def signature(tree, ch_id):
-    """What decides the chain's nodes and links; anything else (opacity, blend, fill, names) is only a value."""
+def signature(tree, ch_id, top=True):
+    """What decides the chain's nodes and links; anything else (opacity, blend, fill, names) is only a value, except the
+    blend modes that change the nodes: Replace (the image's alpha is not linked), and at the top level Color Burn / Dodge
+    (one more Mix node)."""
     return repr([(l.uid, l.kind, entry_of(l, ch_id).image.name if uses_image(l) else "", bool(l.mask_stack), l.use_alpha,
-                  *((signature(inside, ch_id),) if inside else ()),
+                  *(("replace",) if replaces(l, ch_id) else ()), *(("two",) if top and two_step(l, ch_id) else ()),
+                  *((signature(inside, ch_id, False),) if inside else ()),
                   *(("texture", entry_of(l, ch_id).texture.name) if has_texture(l, ch_id) else ())) for l, inside in tree])
 
 
@@ -493,15 +634,22 @@ def set_values(nt, layer, ch_id):
     opv = nt.nodes.get(part(ch_id, layer.uid, "opv"))
     if opv is None:
         return
+    e = entry_of(layer, ch_id)
     mix, fill = nt.nodes.get(part(ch_id, layer.uid, "mix")), nt.nodes.get(part(ch_id, layer.uid, "fill"))
-    want = layer.opacity if layer.visible else 0.0
+    pre = nt.nodes.get(part(ch_id, layer.uid, "pre"))   # (Color Burn / Dodge at the top level: the blend, then the plain Mix)
+    want = e.opacity if layer.visible else 0.0
     if abs(opv.inputs[1].default_value - want) > 1e-6:
         opv.inputs[1].default_value = want
-    blend = 'MIX' if ch_id == 'NORMAL' else layer.blend
+    blend = node_mode(e.blend)
+    if pre is not None:
+        if pre.blend_type != blend:
+            pre.blend_type = blend
+        blend = 'MIX'
     if mix is not None and mix.blend_type != blend:
         mix.blend_type = blend
     if layer.kind == 'FILL' and not has_texture(layer, ch_id):   # (inside a folder a fill is a color node: both its Mix nodes read it)
-        target = fill.outputs[0] if fill is not None else mix.inputs[7] if mix is not None else None
+        place = pre or mix
+        target = fill.outputs[0] if fill is not None else place.inputs[7] if place is not None else None
         if target is not None:
             _set(target, fill_rgba(layer, ch_id))
     mapping = nt.nodes.get(part(ch_id, layer.uid, "map"))   # (the UV transform of a fill's texture)
@@ -652,14 +800,24 @@ def rebuild_masks(mat):
 
 
 def link_masks(mat):
-    """Feed every channel chain's mask multiply from its layer's mask chain (the chains are made apart)."""
+    """Feed every channel chain's mask multiply from its layer's mask chain (the chains are made apart); a mask that is
+    switched off (Layer.use_mask) multiplies by 1."""
     nt = mat.node_tree
     for layer in mat.m3d_layers:
         top = mask_top(nt, layer)
-        for ch in CHANNELS if top is not None else ():
+        if top is None:
+            continue
+        for ch in CHANNELS:
             mul = nt.nodes.get(part(ch.id, layer.uid, "maskmul"))
-            if mul is not None and not any(l.from_socket == top for l in mul.inputs[1].links):
-                nt.links.new(top, mul.inputs[1])
+            if mul is None:
+                continue
+            if layer.use_mask:
+                if not any(l.from_socket == top for l in mul.inputs[1].links):
+                    nt.links.new(top, mul.inputs[1])
+            else:
+                for link in list(mul.inputs[1].links):
+                    nt.links.remove(link)
+                _set(mul.inputs[1], 1.0)
 
 
 def build_channel(mat, ch, tree, sig):
@@ -706,7 +864,15 @@ def build_channel(mat, ch, tree, sig):
             tex = new("ShaderNodeTexImage", part(ch.id, uid, "tex"), x, y_)
             tex.image = entry_of(layer, ch.id).image
             color = tex.outputs["Color"]
-            if layer.use_alpha:
+            if replaces(layer, ch.id):
+                # Replace: the image's alpha is read (an image node whose Alpha goes nowhere returns the color times its
+                # alpha) but counts for nothing: alpha ^ 0 is 1
+                one = new("ShaderNodeMath", part(ch.id, uid, "one"), x + 150, y_ - 160)
+                one.operation = 'POWER'
+                one.inputs[1].default_value = 0.0
+                links.new(tex.outputs["Alpha"], one.inputs[0])
+                links.new(one.outputs[0], opv.inputs[0])
+            elif layer.use_alpha:
                 links.new(tex.outputs["Alpha"], opv.inputs[0])
             else:
                 opv.inputs[0].default_value = 1.0
@@ -768,13 +934,22 @@ def build_channel(mat, ch, tree, sig):
     for layer, inside in tree:
         x, y_, src, factor = source(layer, inside, 0)
         mix = mix_node(layer, "mix", x + 750, y_, clamp=True)
-        if src is not None:
-            links.new(src, mix.inputs[7])
         links.new(factor, mix.inputs[0])
         if below is None:
             mix.inputs[6].default_value = (*default_linear(ch), 1.0)
         else:
             links.new(below.outputs[2], mix.inputs[6])
+        into = mix
+        if two_step(layer, ch.id):   # Color Burn / Dodge: the blend at full strength, then the plain Mix by the factor
+            into = mix_node(layer, "pre", x + 500, y_ + 150)
+            into.inputs[0].default_value = 1.0
+            links.new(into.outputs[2], mix.inputs[7])
+            if below is None:
+                into.inputs[6].default_value = (*default_linear(ch), 1.0)
+            else:
+                links.new(below.outputs[2], into.inputs[6])
+        if src is not None:
+            links.new(src, into.inputs[7])
         below = mix
         set_values(nt, layer, ch.id)
     top = below.outputs[2]
@@ -976,8 +1151,21 @@ def show_view(mat, mask=False, map_name=""):
 
 def upgrade(mat):
     """Files from before mask stacks: a layer's mask image becomes a Paint effect (and Invert Mask an Invert filter),
-    so the layer looks the same. True when a layer was upgraded."""
+    so the layer looks the same; a layer from before every channel had its own blend and opacity gets its one blend and
+    opacity in every channel (Normal always mixed, so it keeps mixing). True when a layer was upgraded."""
     done = False
+    for layer in mat.m3d_layers:
+        if not layer.per_channel:
+            blend, opacity = legacy_look(layer)
+            with muted():
+                for ch in CHANNELS:
+                    e = entry_of(layer, ch.id)
+                    e.blend, e.opacity = 'MIX' if ch.id == 'NORMAL' else blend, opacity
+                layer.per_channel = True
+            for key in ("blend", "opacity"):
+                if key in layer.keys():
+                    del layer[key]
+            done = True
     for layer in mat.m3d_layers:
         if layer.mask is None:
             continue
@@ -1320,11 +1508,11 @@ def layer_planes(layer, ch, size):
         alpha = np.ones((size, size), np.float32)
     else:
         px = pixels_of(e.image, size)
-        rgb, alpha = px[..., :3], px[..., 3] if layer.use_alpha else np.ones((size, size), np.float32)
+        rgb, alpha = px[..., :3], px[..., 3] if layer.use_alpha and not replaces(layer, ch.id) else np.ones((size, size), np.float32)
         if ch.srgb:
             rgb = to_linear(rgb)
-    alpha = alpha * np.float32(layer.opacity if layer.visible else 0.0)
-    if layer.mask_stack:
+    alpha = alpha * np.float32(e.opacity if layer.visible else 0.0)
+    if layer.mask_stack and layer.use_mask:
         alpha = alpha * MK.stack_value(layer, size)
     return rgb, alpha
 
@@ -1336,7 +1524,7 @@ def stack_planes(layers, ch, size, rgb=None, alpha=None):
     for layer in layers:
         if has_content(layer, ch.id):
             lrgb, la = layer_planes(layer, ch, size)
-            rgb, alpha = over(rgb, alpha, lrgb, la, 'MIX' if ch.id == 'NORMAL' else layer.blend)
+            rgb, alpha = over(rgb, alpha, lrgb, la, mode_of(layer, ch.id))
     return rgb, alpha
 
 
@@ -1411,24 +1599,30 @@ def flattened_material(ob, mat, size):
 # -----------------------------------------------------------------------------
 # Layer edits (all of them leave the chains rebuilt by their operator)
 
-def unique_name(mat, base):
-    names = {l.name for l in mat.m3d_layers}
+def unique_name(mat, base, skip=None):
+    names = {l.name for l in mat.m3d_layers if skip is None or l.uid != skip.uid}
     return next(n for n in (base, *("%s %d" % (base, i) for i in range(2, 10000))) if n not in names)
 
 
-def add_layer(mat, kind, name=None):
-    """A new layer at the end of the stack (the caller moves it)."""
+def add_layer(mat, kind, name=None, base=False):
+    """A new layer at the end of the stack (the caller moves it). Every channel mixes, except Height, which adds (Linear
+    Dodge). `base`: the layer holds what the channels look like (the Base layer that migrating slots or Flatten make), so
+    Height mixes too."""
     layer = mat.m3d_layers.add()
     with muted():
         layer.uid = uuid.uuid4().hex[:6]
         layer.name = name or unique_name(mat, {'PAINT': "Paint Layer", 'FILL': "Fill Layer", 'FOLDER': "Folder"}[kind])
         layer.kind = kind
+        layer.per_channel = True
         for ch in CHANNELS:
             e = layer.channels.add()
             e.channel = ch.id
             e.use = kind == 'PAINT' or (kind == 'FILL' and ch.id == 'BASE_COLOR')
             e.color = (*default_linear(ch), 1.0)
             e.value = ch.color[0]
+            # Height is 0.5 flat: Linear Light leaves 0.5 alone, raises above it and digs below (what Add does to a
+            # signed height); the Base layer sets the height, so it mixes.
+            e.blend = 'LINEAR_LIGHT' if ch.id == 'HEIGHT' and not base else 'MIX'
     return layer
 
 
@@ -1578,7 +1772,7 @@ def migrate(mat):
         return False
     images = list(mat.texture_paint_images)
     active = images[mat.paint_active_slot] if mat.paint_active_slot < len(images) else None
-    layer = add_layer(mat, 'PAINT', "Base")
+    layer = add_layer(mat, 'PAINT', "Base", base=True)
     with muted():
         layer.use_alpha = False   # A slot's alpha never showed anything through: the look must not change.
         for ch in CHANNELS:
@@ -1627,19 +1821,21 @@ def delete_layer(mat, index):
     release(images)
 
 
-def copy_layer(mat, uid):
-    """A copy of one layer, with copies of its images, at the end of the stack (the caller places it)."""
-    src = layer_by_uid(mat, uid)
-    new = add_layer(mat, src.kind)   # Adding can move the collection: look the source up again.
-    src = layer_by_uid(mat, uid)
+def copy_layer(mat, uid, source=None):
+    """A copy of one layer of `source` (default: of `mat`), with copies of its images, at the end of the stack of `mat` (the
+    caller places it)."""
+    source = source or mat
+    new = add_layer(mat, layer_by_uid(source, uid).kind)   # Adding can move the collection: look the source up again.
+    src = layer_by_uid(source, uid)
     with muted():
-        new.name = unique_name(mat, src.name + " Copy")
-        new.visible, new.opacity, new.blend, new.use_alpha = src.visible, src.opacity, src.blend, src.use_alpha
+        new.name = unique_name(mat, src.name + (" Copy" if source == mat else ""), skip=new)
+        new.visible, new.use_alpha, new.use_mask = src.visible, src.use_alpha, src.use_mask
         new.paint_mask, new.expanded, new.frozen = src.paint_mask, src.expanded, src.frozen
         new.uv_tiling, new.uv_rotation, new.uv_offset = src.uv_tiling, src.uv_rotation, src.uv_offset
         for ch in CHANNELS:
             a, b = entry_of(src, ch.id), entry_of(new, ch.id)
             b.use, b.color, b.value, b.texture = a.use, a.color, a.value, a.texture
+            b.blend, b.opacity = a.blend, a.opacity
             if a.image is not None:
                 b.image = copy_image(a.image, image_name(mat, new, ch.label))
         for e in src.mask_stack:   # Paint images are copied; the blur caches are made again; baked maps are shared.
@@ -1655,22 +1851,31 @@ def copy_layer(mat, uid):
     return new
 
 
+def clone_layers(mat, uid, anchor_uid, source=None):
+    """Copy the layer `uid` of `source` (default: of `mat`; a folder with everything inside it) into `mat`, directly above
+    the layer `anchor_uid` and in the folder that one is in (the top of the stack without an anchor). Images are copied.
+    -> the uid of the copy"""
+    source = source or mat
+    top = layer_by_uid(source, uid)
+    group = subtree(top)
+    uids, parents = [l.uid for l in group], {l.uid: l.parent for l in group}
+    copies = {u: copy_layer(mat, u, source).uid for u in uids}
+    tree = read_tree(mat)
+    for c in copies.values():
+        tree[""].remove(c)
+    for u in uids[:-1]:
+        tree[copies[parents[u]]].append(copies[u])
+    kids = next((k for k in tree.values() if anchor_uid and anchor_uid in k), tree[""])
+    kids.insert(kids.index(anchor_uid) + 1 if anchor_uid in kids else len(kids), copies[uid])
+    write_tree(mat, tree)
+    return copies[uid]
+
+
 def duplicate_layer(mat, index):
     """Copy a layer, or a folder with everything inside it, just above it (images are copied). Returns the index of the
     copy (a folder's copy is listed after its layers)."""
     top = mat.m3d_layers[index]
-    group = subtree(top)
-    uids, parents, top_uid, top_parent = [l.uid for l in group], {l.uid: l.parent for l in group}, top.uid, top.parent
-    copies = {uid: copy_layer(mat, uid).uid for uid in uids}
-    tree = read_tree(mat)
-    for uid in copies.values():
-        tree[""].remove(uid)
-    for uid in uids[:-1]:
-        tree[copies[parents[uid]]].append(copies[uid])
-    kids = tree[top_parent]
-    kids.insert(kids.index(top_uid) + 1, copies[top_uid])
-    write_tree(mat, tree)
-    return index_of(mat, copies[top_uid])
+    return index_of(mat, clone_layers(mat, top.uid, top.uid))
 
 
 def below_sibling(layer):
@@ -1684,7 +1889,7 @@ def merge_down(mat, index, default_size):
     """Flatten layer `index` (a folder with its layers is one layer too) into the one below it in the same folder. Per
     channel the two are composited (the upper layer's blend mode over the lower layer) into the lower layer's image; its
     opacity and mask are baked into the pixels. Exact when the lower layer is opaque or the upper one uses Mix; the
-    merged layer keeps the lower layer's blend mode."""
+    merged layer keeps the lower layer's blend mode of each channel."""
     top = mat.m3d_layers[index]
     low = below_sibling(top)
     group = subtree(top)
@@ -1700,7 +1905,7 @@ def merge_down(mat, index, default_size):
                 zero = (np.zeros((size, size, 3), np.float32), np.zeros((size, size), np.float32))
                 rgb, alpha = layer_planes(low, ch, size) if has_content(low, ch.id) else zero
                 top_rgb, top_alpha = layer_planes(top, ch, size) if has_content(top, ch.id) else zero
-                rgb, alpha = over(rgb, alpha, top_rgb, top_alpha, 'MIX' if ch.id == 'NORMAL' else top.blend)
+                rgb, alpha = over(rgb, alpha, top_rgb, top_alpha, mode_of(top, ch.id))
                 e = entry_of(low, ch.id)
                 if e.image is None:
                     e.image = make_channel_image(mat, low, ch, size, opaque=False)
@@ -1708,7 +1913,11 @@ def merge_down(mat, index, default_size):
                     e.image.scale(size, size)
                 write_pixels(e.image, encode(ch, rgb, alpha))
                 e.use = True
-            low.kind, low.opacity, low.visible, low.use_alpha = 'PAINT', 1.0, True, True
+                if e.blend == 'PASSTHROUGH':   # (the lower layer showed nothing here: the pixels blend as the upper layer's did)
+                    e.blend = entry_of(top, ch.id).blend
+            for e in low.channels:
+                e.opacity = 1.0   # (baked into the pixels)
+            low.kind, low.visible, low.use_alpha = 'PAINT', True, True
             old_masks = MK.owned_images(low)
             low.mask_stack.clear()
             low.mask_index, low.paint_mask = 0, False
@@ -1799,7 +2008,7 @@ def flatten_all(mat, default_size):
     old = stack_images(mat)
     with muted():
         mat.m3d_layers.clear()
-        base = add_layer(mat, 'PAINT', "Base")
+        base = add_layer(mat, 'PAINT', "Base", base=True)
         for ch in CHANNELS:
             e = entry_of(base, ch.id)
             e.use = ch.id in flat
@@ -2234,6 +2443,8 @@ class M3D_OT_mask_effect_remove(_ActiveLayerOp, Operator):
     bl_idname = "m3d.mask_effect_remove"
     bl_label = "Remove Mask Effect"
 
+    index: IntProperty(default=-1, options={'SKIP_SAVE', 'HIDDEN'}, description="Effect of the list (-1: the selected one)")
+
     @classmethod
     def poll(cls, context):
         return super().poll(context) and active_effect(active_layer(mesh_of(context).active_material)) is not None
@@ -2241,7 +2452,9 @@ class M3D_OT_mask_effect_remove(_ActiveLayerOp, Operator):
     def execute(self, context):
         mat = self.material(context)
         layer = active_layer(mat)
-        i = layer.mask_index
+        i = layer.mask_index if self.index < 0 else self.index
+        if not 0 <= i < len(layer.mask_stack):
+            return {'CANCELLED'}
         e = layer.mask_stack[i]
         images = [e.image] if e.kind in MK.OWNED and e.image is not None else []
         with muted():
@@ -2427,9 +2640,414 @@ class M3D_OT_layer_fill_reset(_ActiveLayerOp, Operator):
 
 
 # -----------------------------------------------------------------------------
+# Picking parts of a row, the clipboard, a mask from an image, the right-click commands
+
+class M3D_OT_layer_pick(_LayerOp, Operator):
+    """Select a layer of the list (its thumbnail); with `part` MASK its mask (Properties shows it), with EFFECT one of the
+    effects of its mask"""
+    bl_idname = "m3d.layer_pick"
+    bl_label = "Select"
+    bl_options = {'INTERNAL', 'UNDO'}
+
+    part: EnumProperty(items=(('LAYER', "Layer", ""), ('MASK', "Mask", ""), ('EFFECT', "Effect", "")), default='LAYER',
+                       options={'SKIP_SAVE'})
+    index: IntProperty(default=-1, options={'SKIP_SAVE', 'HIDDEN'}, description="Layer of the list (-1: the active one)")
+    effect: IntProperty(default=-1, options={'SKIP_SAVE', 'HIDDEN'}, description="Effect of the mask")
+    action: EnumProperty(items=(('PICK', "Select", ""), ('SHOW', "Show Mask", ""), ('TOGGLE', "Mask On / Off", "")),
+                         default='PICK', options={'SKIP_SAVE', 'HIDDEN'})
+
+    @classmethod
+    def description(cls, _context, props):
+        if props.part == 'MASK':
+            return ("Select the layer's mask: Properties shows it. Alt+click shows the mask on its own (Show Mask), "
+                    "Shift+click switches it off and on")
+        if props.part == 'EFFECT':
+            return "Select this effect of the mask: Properties shows it"
+        return "Select the layer: Properties shows its settings"
+
+    def invoke(self, context, event):
+        if self.part == 'MASK' and self.action == 'PICK' and (event.alt or event.shift):
+            self.action = 'SHOW' if event.alt else 'TOGGLE'
+        return self.execute(context)
+
+    def execute(self, context):
+        mat = self.material(context)
+        i = mat.m3d_layer_index if self.index < 0 else self.index
+        if not 0 <= i < len(mat.m3d_layers):
+            return {'CANCELLED'}
+        if i != mat.m3d_layer_index:
+            mat.m3d_layer_index = i
+        layer = mat.m3d_layers[i]
+        tex = context.scene.m3d_tex
+        if self.part == 'LAYER':
+            if tex.props_mode == 'MASK':
+                tex.props_mode = 'AUTO'
+        elif self.part == 'EFFECT':
+            if 0 <= self.effect < len(layer.mask_stack):
+                layer.mask_index = self.effect
+            tex.props_mode = 'MASK'
+        elif self.action == 'SHOW':
+            mat.m3d_show_mask = not mat.m3d_show_mask
+        elif self.action == 'TOGGLE':
+            if layer.mask_stack:
+                layer.use_mask = not layer.use_mask
+        else:
+            tex.props_mode = 'MASK'
+        return {'FINISHED'}
+
+
+_clip = {"mat": "", "uid": "", "cut": False}   # the layer Copy / Cut took: the name of its material and its uid
+
+
+def clip_layer():
+    """(material, layer) the clipboard holds, None when there is none (or it was deleted since)."""
+    mat = bpy.data.materials.get(_clip["mat"])
+    layer = layer_by_uid(mat, _clip["uid"]) if mat is not None and _clip["uid"] else None
+    return (mat, layer) if layer is not None else None
+
+
+class _ClipOp(_ActiveLayerOp):
+    """Copy and Cut: the active layer (a folder with its layers) goes to the layer clipboard."""
+    bl_options = {'INTERNAL'}
+    cut = False
+
+    def execute(self, context):
+        mat = self.material(context)
+        layer = active_layer(mat)
+        _clip.update(mat=mat.name, uid=layer.uid, cut=self.cut)
+        self.report({'INFO'}, "%s %s: Paste puts it above the active layer" % ("Cut" if self.cut else "Copied", layer.name))
+        return {'FINISHED'}
+
+
+class M3D_OT_layer_copy(_ClipOp, Operator):
+    """Copy the active layer (a folder with its layers) to the layer clipboard: Paste adds a copy above the active layer, also
+    in another material"""
+    bl_idname = "m3d.layer_copy"
+    bl_label = "Copy Layer"
+
+
+class M3D_OT_layer_cut(_ClipOp, Operator):
+    """Cut the active layer (a folder with its layers): Paste moves it above the active layer, also to another material"""
+    bl_idname = "m3d.layer_cut"
+    bl_label = "Cut Layer"
+    cut = True
+
+
+class M3D_OT_layer_paste(_LayerOp, Operator):
+    """Paste the copied layer (a folder with its layers) above the active layer: a copy with its own images, or after Cut
+    the layer itself"""
+    bl_idname = "m3d.layer_paste"
+    bl_label = "Paste Layer"
+
+    @classmethod
+    def poll(cls, context):
+        return super().poll(context) and clip_layer() is not None
+
+    def execute(self, context):
+        mat = self.material(context)
+        src_mat, src = clip_layer()
+        migrate(mat)
+        anchor, uid = anchor_of(mat), src.uid
+        if _clip["cut"] and src_mat == mat:   # a move
+            if anchor in {l.uid for l in subtree(src)}:
+                self.report({'WARNING'}, "Pick another layer to paste above")
+                return {'CANCELLED'}
+            place_above(mat, uid, anchor)
+        else:
+            uid = clone_layers(mat, uid, anchor, source=src_mat)
+            if _clip["cut"]:   # (another material: the original goes)
+                delete_layer(src_mat, index_of(src_mat, src.uid))
+        if _clip["cut"]:
+            _clip.update(mat="", uid="", cut=False)
+        activate(mat, uid)
+        return _done(context, mat)
+
+
+class M3D_OT_layer_mask_image(_ActiveLayerOp, Operator):
+    """Add a mask made from an image file: its brightness is the mask (white shows the layer, black hides it). It is a
+    Paint effect, so it can be painted"""
+    bl_idname = "m3d.layer_mask_image"
+    bl_label = "Add Image Mask"
+
+    filepath: StringProperty(subtype='FILE_PATH', options={'SKIP_SAVE'})
+    filter_image: BoolProperty(default=True, options={'HIDDEN', 'SKIP_SAVE'})
+    filter_folder: BoolProperty(default=True, options={'HIDDEN', 'SKIP_SAVE'})
+
+    def invoke(self, context, _event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        mat = self.material(context)
+        layer = active_layer(mat)
+        try:
+            src = bpy.data.images.load(self.filepath, check_existing=False)
+        except RuntimeError as err:
+            self.report({'ERROR'}, "Can't read the image: %s" % str(err).strip())
+            return {'CANCELLED'}
+        try:
+            w, h = src.size
+            if not w or not h:
+                self.report({'ERROR'}, "The image is empty")
+                return {'CANCELLED'}
+            px = np.empty(len(src.pixels), np.float32)
+            src.pixels.foreach_get(px)
+        finally:
+            bpy.data.images.remove(src)
+        image = bpy.data.images.new(image_name(mat, layer, "Mask"), w, h, alpha=False, is_data=True)
+        px = px.reshape(h, w, 4)
+        px[..., 3] = 1.0
+        write_pixels(image, px)
+        e = add_effect(layer, 'PAINT')
+        with muted():
+            e.image = image
+            layer.paint_mask = True
+            place_effect(layer)
+        return _done(context, mat)
+
+
+# What the right-click menu of the list runs on a layer: name -> (operator, its properties, invoke it: it asks first)
+LAYER_ACTIONS = {
+    'CUT': ("layer_cut", {}, False), 'COPY': ("layer_copy", {}, False), 'PASTE': ("layer_paste", {}, False),
+    'DUPLICATE': ("layer_duplicate", {}, False), 'DELETE': ("layer_remove", {}, False),
+    'GROUP': ("layer_folder_add", {"group": True}, False), 'MERGE_DOWN': ("layer_merge_down", {}, False),
+    'FLATTEN': ("layer_flatten", {}, False), 'FREEZE': ("layer_freeze", {}, False), 'UNFREEZE': ("layer_unfreeze", {}, False),
+    'SMART_MATERIAL': ("library_save", {"kind": 'MATERIAL'}, True), 'SMART_MASK': ("library_save", {"kind": 'MASK'}, True),
+    'MASK_WHITE': ("layer_mask_add", {"fill": 'WHITE'}, False), 'MASK_BLACK': ("layer_mask_add", {"fill": 'BLACK'}, False),
+    'MASK_IMAGE': ("layer_mask_image", {}, True), 'MASK_COLORID': ("mask_effect_add", {"kind": 'COLORID'}, False),
+    'EFFECT': ("mask_effect_add", {}, False),
+}
+
+
+def run_action(op, context, action, uid="", effect="", fill=""):
+    """Run LAYER_ACTIONS[action] on the layer `uid` (the active one without): that layer is selected first."""
+    mat = _LayerOp.material(context)
+    target = layer_by_uid(mat, uid) if uid else None
+    if target is not None and target != active_layer(mat):
+        mat.m3d_layer_index = index_of(mat, uid)
+    name, props, invoke = LAYER_ACTIONS[action]
+    props = dict(props)
+    if action == 'EFFECT':
+        props.update(kind=effect, fill=fill or 'WHITE')
+    fn = getattr(bpy.ops.m3d, name)
+    if not fn.poll():
+        op.report({'WARNING'}, "%s is not possible here" % action.replace("_", " ").title())
+        return {'CANCELLED'}
+    return fn('INVOKE_DEFAULT' if invoke else 'EXEC_DEFAULT', **props)
+
+
+class M3D_OT_layer_do(_LayerOp, Operator):
+    """Run a command of the layer menu on a layer of the list: that layer is selected first (the right-click can be on a
+    layer that is not the active one)"""
+    bl_idname = "m3d.layer_do"
+    bl_label = "Layer Command"
+    bl_options = {'INTERNAL', 'UNDO'}
+
+    action: EnumProperty(items=[(k, k.replace("_", " ").title(), "") for k in LAYER_ACTIONS], options={'SKIP_SAVE'})
+    uid: StringProperty(options={'SKIP_SAVE', 'HIDDEN'}, description="The layer (empty: the active one)")
+    effect: StringProperty(options={'SKIP_SAVE', 'HIDDEN'}, description="The kind of the effect to add (action EFFECT)")
+    fill: StringProperty(options={'SKIP_SAVE', 'HIDDEN'}, description="WHITE or BLACK: what a new Paint effect starts as")
+
+    def execute(self, context):
+        return run_action(self, context, self.action, self.uid, self.effect, self.fill)
+
+
+class M3D_OT_layer_key(_LayerOp, Operator):
+    """The keys over the layer list: Ctrl+C / X / V copy, cut and paste a layer, Ctrl+D duplicates, Ctrl+G groups, Delete
+    deletes (only in the Layers tab of the Texture workspace)"""
+    bl_idname = "m3d.layer_key"
+    bl_label = "Layer Key"
+    bl_options = {'INTERNAL', 'UNDO'}
+
+    action: EnumProperty(items=[(k, k.replace("_", " ").title(), "") for k in ('CUT', 'COPY', 'PASTE', 'DUPLICATE', 'DELETE', 'GROUP')],
+                         options={'SKIP_SAVE'})
+
+    @classmethod
+    def poll(cls, context):
+        import m3d_workspace as W
+        area = context.area
+        return (super().poll(context) and area is not None and area.type == 'PROPERTIES'
+                and W.current_kind(context) == 'TEXTURE' and W.active_page(context) == "tex_layers")
+
+    def execute(self, context):
+        return run_action(self, context, self.action)
+
+
+# -----------------------------------------------------------------------------
+# Thumbnails of the list rows: a preview icon per layer thumbnail (content, mask), small and made on a timer
+#
+# Drawing only asks for an icon: the first time a thumbnail is a flat placeholder and its pixels are queued. A timer then
+# reads the image (once, a few milliseconds each) and writes a THUMB x THUMB preview (2 x 2 samples per pixel, over a
+# checker for what is transparent). A thumbnail is made again when what it shows changes (another image, a fill color)
+# and when its image was painted: `refresh_thumbs` is told the names of the updated images (depsgraph_post, below).
+
+THUMB = 64            # pixels on a side of a thumbnail
+THUMB_TICK = 0.012    # seconds of thumbnail work per timer tick
+THUMB_LIMIT = 400     # more previews than that are dropped (and made again when drawn)
+_thumbs = {"coll": None, "made": {}, "todo": {}, "timer": False}   # made: key -> spec the pixels are of; todo: key -> spec
+
+
+def thumb_collection():
+    if _thumbs["coll"] is None:
+        _thumbs["coll"] = bpy.utils.previews.new()
+    return _thumbs["coll"]
+
+
+def content_spec(layer, ch_id):
+    """What the content thumbnail of a layer shows in a channel: ('IMAGE', image name, is a mask) the channel's image (a fill's
+    texture), ('COLOR', rgb) a fill's value, or None (a folder, or the layer has nothing in that channel)."""
+    if layer.kind == 'FOLDER':
+        return None
+    e = entry_of(layer, ch_id)
+    if not e.use:
+        return None
+    if layer.kind == 'PAINT':
+        return ('IMAGE', e.image.name, False) if e.image is not None else None
+    if e.texture is not None:
+        return ('IMAGE', e.texture.name, False)
+    ch = CHANNEL_BY_ID[ch_id]
+    rgb = np.asarray(fill_rgba(layer, ch_id)[:3], np.float32)
+    return ('COLOR', tuple(round(float(v), 3) for v in (to_srgb(rgb) if ch.srgb else rgb)))
+
+
+def mask_spec(layer):
+    """The mask thumbnail: the image of the mask's Paint effect, None without one (the row shows the effect's icon)."""
+    e = paint_effect(layer)
+    return ('IMAGE', e.image.name, True) if e is not None and e.image is not None else None
+
+
+def thumb_pixels(spec):
+    """(THUMB, THUMB, 4) display colors of a thumbnail spec (rows from the bottom, like every image of Blender)."""
+    n = THUMB
+    if spec[0] == 'COLOR':
+        out = np.ones((n, n, 4), np.float32)
+        out[..., :3] = np.asarray(spec[1], np.float32)
+        return out
+    image = bpy.data.images.get(spec[1])
+    if image is None:
+        return np.full((n, n, 4), 0.25, np.float32)
+    if image.source == 'GENERATED' and not image.has_data:   # (nothing painted: reading the pixels would make them)
+        small = np.broadcast_to(np.asarray(image.generated_color, np.float32), (n, n, 4))
+    else:
+        w, h = image.size
+        px = np.empty(len(image.pixels), np.float32)
+        image.pixels.foreach_get(px)
+        px = px.reshape(h, w, 4)
+        ys, xs = [((np.arange(2 * n) + 0.5) * side / (2 * n)).astype(int) for side in (h, w)]
+        small = px[np.ix_(ys, xs)].reshape(n, 2, n, 2, 4).mean(axis=(1, 3))
+        if image.is_float and not image.colorspace_settings.is_data:
+            small = np.concatenate((to_srgb(small[..., :3]), small[..., 3:]), axis=-1)
+    out = np.ones((n, n, 4), np.float32)
+    if spec[2]:   # a mask: black and white
+        out[..., :3] = small[..., :3]
+        return out
+    cell = (np.arange(n) // 8) % 2
+    checker = np.where(cell[:, None] != cell[None, :], 0.55, 0.35).astype(np.float32)[..., None]
+    a = small[..., 3:4]
+    out[..., :3] = small[..., :3] * a + checker * (1.0 - a)
+    return out
+
+
+def make_thumb(key, spec):
+    thumb = thumb_collection().get(key)
+    if thumb is None:
+        return
+    thumb.image_pixels_float.foreach_set(np.ascontiguousarray(thumb_pixels(spec), np.float32).ravel())
+    _thumbs["made"][key] = spec
+
+
+def redraw_lists():
+    wm = bpy.context.window_manager
+    for win in wm.windows if wm else ():
+        for area in win.screen.areas:
+            if area.type == 'PROPERTIES':
+                area.tag_redraw()
+
+
+def _thumb_tick():
+    """Timer: make the queued thumbnails, until THUMB_TICK is used up; the rest next time."""
+    start, todo = time.perf_counter(), _thumbs["todo"]
+    while todo and time.perf_counter() - start < THUMB_TICK:
+        key = next(iter(todo))
+        make_thumb(key, todo.pop(key))
+    redraw_lists()
+    if todo:
+        return 0.04
+    _thumbs["timer"] = False
+    if len(thumb_collection()) > THUMB_LIMIT:
+        thumbs_clear()
+    return None
+
+
+def queue_thumb(key, spec):
+    _thumbs["todo"][key] = spec
+    if not _thumbs["timer"] and not bpy.app.background:
+        _thumbs["timer"] = True
+        bpy.app.timers.register(_thumb_tick, first_interval=0.02)
+
+
+def thumb_icon(key, spec):
+    """Icon id of thumbnail `key` showing `spec` (a flat placeholder until the timer has made the pixels; 0 for spec None)."""
+    if spec is None:
+        return 0
+    coll = thumb_collection()
+    thumb = coll.get(key)
+    if thumb is None:
+        thumb = coll.new(key)
+        thumb.image_size = (THUMB, THUMB)
+        thumb.image_pixels_float.foreach_set(np.full(THUMB * THUMB * 4, 0.25, np.float32))
+        _thumbs["made"].pop(key, None)
+    if _thumbs["made"].get(key) != spec and _thumbs["todo"].get(key) != spec:
+        queue_thumb(key, spec)
+    return thumb.icon_id
+
+
+def content_thumb(mat, layer, ch_id):
+    """(spec, icon id) of the layer's content thumbnail in a channel."""
+    spec = content_spec(layer, ch_id)
+    return spec, thumb_icon("c:%s:%s:%s" % (mat.name, layer.uid, ch_id), spec)
+
+
+def mask_thumb(mat, layer):
+    """(spec, icon id) of the layer's mask thumbnail."""
+    spec = mask_spec(layer)
+    return spec, thumb_icon("m:%s:%s" % (mat.name, layer.uid), spec)
+
+
+def refresh_thumbs(names):
+    """Images were painted or changed: make the thumbnails that show them again."""
+    for key, spec in list(_thumbs["made"].items()):
+        if spec[0] == 'IMAGE' and spec[1] in names:
+            queue_thumb(key, spec)
+
+
+def drain_thumbs():
+    """Make every queued thumbnail now (what the timer does a few at a time)."""
+    todo = _thumbs["todo"]
+    while todo:
+        key = next(iter(todo))
+        make_thumb(key, todo.pop(key))
+
+
+def thumbs_clear():
+    """Forget every thumbnail (a new file; too many): the next draw makes the ones it needs."""
+    if _thumbs["coll"] is not None:
+        _thumbs["coll"].clear()
+    _thumbs["made"].clear()
+    _thumbs["todo"].clear()
+
+
+# -----------------------------------------------------------------------------
 # UI list of the stack (top layer first)
 
 KIND_ICONS = {'PAINT': 'IMAGE_DATA', 'FILL': 'COLOR', 'FOLDER': 'FILE_FOLDER'}
+ROW = 1.7   # height of a row in widget heights; the thumbnails are as wide (a preview is drawn at the size of its button from 1.5 up)
+
+
+def draw_look(layout, entry):
+    """Blend mode (abbreviated; a menu of all modes) over opacity, of one channel entry."""
+    layout.prop_menu_enum(entry, "blend", text=BLEND_SHORT[entry.blend])
+    layout.prop(entry, "opacity", text="", slider=True)
 
 
 class M3D_UL_layers(UIList):
@@ -2449,29 +3067,75 @@ class M3D_UL_layers(UIList):
         return [0 if hidden(l) else self.bitflag_filter_item for l in layers], []
 
     def draw_item(self, _context, layout, _data, item, _icon, _active_data, _active_propname, index):
-        row = layout.row(align=True)
-        row.enabled = not in_frozen(item)   # (a frozen folder's layers are kept, not editable)
+        """eye, folder arrow, content thumbnail, mask thumbnail, name; at the right the blend mode over the opacity of the
+        channel picked in the panel header. The active layer shows its mask's effects as rows under it."""
+        mat = item.id_data
+        ch_id = mat.m3d_row_channel
+        tex = getattr(bpy.context.scene, "m3d_tex", None)
+        on_mask = tex is not None and tex.props_mode == 'MASK'
+        active = index == mat.m3d_layer_index
+        editable = not in_frozen(item)   # (a frozen folder's layers are kept, not editable)
+        col = layout.column(align=True)
+        split = col.split(factor=0.68, align=True)   # (a split keeps the blend modes in one column, whatever the indent)
+        row = split.row(align=True)
+        row.enabled = editable
+        row.scale_y = ROW
         depth = depth_of(item)
         if depth:
             row.separator(factor=2.0 * depth)
         folder = item.kind == 'FOLDER'
+        row.prop(item, "visible", text="", icon='HIDE_OFF' if item.visible else 'HIDE_ON', emboss=False)
         if folder:
             row.prop(item, "expanded", text="", icon='TRIA_DOWN' if item.expanded else 'TRIA_RIGHT', emboss=False)
-        row.prop(item, "visible", text="", icon='HIDE_OFF' if item.visible else 'HIDE_ON', emboss=False)
-        row.label(text="", icon=KIND_ICONS[item.kind])
-        row.prop(item, "name", text="", emboss=False)
-        if item.mask_stack:
-            row.label(text="", icon='MOD_MASK')
         sub = row.row(align=True)
-        sub.scale_x = 0.9
-        sub.prop(item, "blend", text="")
-        row.prop(item, "opacity", text="", slider=True)
+        sub.scale_x = ROW
+        spec, icon = content_thumb(mat, item, ch_id)
+        shown = active and not on_mask
+        if folder:
+            op = sub.operator("m3d.layer_pick", text="", icon='FILE_FOLDER', emboss=shown)
+        elif spec is not None:
+            op = sub.operator("m3d.layer_pick", text="", icon_value=icon, emboss=shown)
+        else:   # (nothing in this channel)
+            sub.active = False
+            op = sub.operator("m3d.layer_pick", text="", icon=KIND_ICONS[item.kind], emboss=shown)
+        op.index = index
+        if item.mask_stack:
+            sub = row.row(align=True)
+            sub.scale_x = ROW
+            sub.active = item.use_mask
+            spec, icon = mask_thumb(mat, item)
+            shown = active and on_mask
+            if spec is not None:
+                op = sub.operator("m3d.layer_pick", text="", icon_value=icon, emboss=shown)
+            else:
+                op = sub.operator("m3d.layer_pick", text="", icon=MK.KIND_BY_ID[item.mask_stack[len(item.mask_stack) - 1].kind].icon,
+                                  emboss=shown)
+            op.part, op.index = 'MASK', index
+        row.prop(item, "name", text="", emboss=False)
         if folder:
             op = row.operator("m3d.layer_unfreeze" if item.frozen else "m3d.layer_freeze", text="", icon='FREEZE',
                               depress=item.frozen)
             op.index = index
-        else:
-            row.label(text="".join(ch.label[0] for ch in CHANNELS if has_content(item, ch.id)))
+        look = split.column(align=True)
+        look.enabled = editable
+        look.scale_y = ROW / 2
+        draw_look(look, entry_of(item, ch_id))
+        if active and item.mask_stack:
+            for i in reversed(range(len(item.mask_stack))):
+                effect = item.mask_stack[i]
+                sub = col.split(factor=0.68, align=True)
+                sub.enabled = editable
+                left = sub.row(align=True)
+                left.separator(factor=2.0 * depth + 4.0)
+                left.prop(effect, "visible", text="", icon='HIDE_OFF' if effect.visible else 'HIDE_ON', emboss=False)
+                left.label(text="", icon=MK.KIND_BY_ID[effect.kind].icon)
+                op = left.operator("m3d.layer_pick", text=effect.name, emboss=on_mask and i == item.mask_index, translate=False)
+                op.part, op.index, op.effect = 'EFFECT', index, i
+                right = sub.row(align=True)
+                if effect.kind not in MK.FILTERS:   # A filter changes what is below it: only how much is left to say.
+                    right.prop_menu_enum(effect, "blend", text=BLEND_SHORT[effect.blend])
+                right.prop(effect, "opacity", text="", slider=True)
+                right.operator("m3d.mask_effect_remove", text="", icon='X', emboss=False).index = i
 
 
 class M3D_UL_mask_effects(UIList):
@@ -2485,6 +3149,167 @@ class M3D_UL_mask_effects(UIList):
             sub.scale_x = 0.9
             sub.prop(item, "blend", text="")
         row.prop(item, "opacity", text="", slider=True)
+
+
+# -----------------------------------------------------------------------------
+# Menus of the Layers panel, and the right-click menu of the list (items of UI_MT_list_item_context_menu, for this list only)
+
+_menu_target = {"uid": ""}   # the layer the list menu in progress is for (set when it is drawn; "" is the active one)
+
+
+def effect_entry(layout, text, kind, uid, fill='WHITE'):
+    """One Add Effect item: the operator for the active layer (`uid` None), or the layer command for the layer `uid`."""
+    icon = MK.KIND_BY_ID[kind].icon
+    if uid is None:
+        op = layout.operator("m3d.mask_effect_add", text=text, icon=icon)
+        op.kind, op.fill = kind, fill
+    else:
+        op = layout.operator("m3d.layer_do", text=text, icon=icon)
+        op.action, op.uid, op.effect, op.fill = 'EFFECT', uid, kind, fill
+
+
+def draw_effect_items(layout, uid=None):
+    """Add Effect (to the layer's mask): Generator, Paint, Fill, Levels, Filter, Color ID."""
+    layout.label(text="Generator")
+    for kind in ('EDGES', 'CAVITY', 'TOPDOWN', 'THICKNESS', 'NOISE'):
+        effect_entry(layout, MK.KIND_BY_ID[kind].label, kind, uid)
+    layout.separator()
+    effect_entry(layout, "Paint (White)", 'PAINT', uid, 'WHITE')
+    effect_entry(layout, "Paint (Black)", 'PAINT', uid, 'BLACK')
+    effect_entry(layout, "Fill", 'FILL', uid)
+    effect_entry(layout, "Levels", 'LEVELS', uid)
+    layout.separator()
+    layout.label(text="Filter")
+    for kind in ('BLUR', 'INVERT', 'SHARPEN'):
+        effect_entry(layout, MK.KIND_BY_ID[kind].label, kind, uid)
+    layout.separator()
+    effect_entry(layout, "Color ID", 'COLORID', uid)
+
+
+def draw_mask_items(layout, uid=None):
+    """Add Mask: white, black, with color selection (Color ID), from an image."""
+    if uid is None:
+        layout.operator("m3d.layer_mask_add", text="White Mask", icon='ADD').fill = 'WHITE'
+        layout.operator("m3d.layer_mask_add", text="Black Mask", icon='ADD').fill = 'BLACK'
+        layout.operator("m3d.mask_effect_add", text="Mask with Color Selection", icon='COLOR').kind = 'COLORID'
+        layout.operator("m3d.layer_mask_image", text="Image Mask...", icon='IMAGE_DATA')
+        return
+    for text, action, icon in (("White Mask", 'MASK_WHITE', 'ADD'), ("Black Mask", 'MASK_BLACK', 'ADD'),
+                               ("Mask with Color Selection", 'MASK_COLORID', 'COLOR'), ("Image Mask...", 'MASK_IMAGE', 'IMAGE_DATA')):
+        op = layout.operator("m3d.layer_do", text=text, icon=icon)
+        op.action, op.uid = action, uid
+
+
+class M3D_MT_layer_effect_add(Menu):
+    bl_label = "Add Effect"
+
+    def draw(self, _context):
+        draw_effect_items(self.layout)
+
+
+class M3D_MT_layer_mask_add(Menu):
+    bl_label = "Add Mask"
+
+    def draw(self, _context):
+        draw_mask_items(self.layout)
+
+
+class M3D_MT_layer_ctx_effect_add(Menu):
+    bl_label = "Add Effect"
+
+    def draw(self, _context):
+        draw_effect_items(self.layout, _menu_target["uid"])
+
+
+class M3D_MT_layer_ctx_mask_add(Menu):
+    bl_label = "Add Mask"
+
+    def draw(self, _context):
+        draw_mask_items(self.layout, _menu_target["uid"])
+
+
+class M3D_MT_layer_more(Menu):
+    """The "..." menu of the Layers panel: what is not a button of its header."""
+    bl_label = "Layer Commands"
+
+    def draw(self, context):
+        layout = self.layout
+        ob = mesh_of(context)
+        mat = ob.active_material if ob is not None else None
+        layer = active_layer(mat) if mat is not None and principled_of(mat) is not None else None
+        layout.operator("m3d.layer_merge_down", icon='TRIA_DOWN_BAR')
+        layout.operator("m3d.layer_flatten", icon='IMAGE_DATA')
+        layout.separator()
+        layout.operator("m3d.layer_folder_add", text="Group", icon='FILE_FOLDER').group = True
+        layout.operator_menu_enum("m3d.layer_move_into", "folder", text="Move In", icon='TRIA_RIGHT')
+        layout.operator("m3d.layer_move_out", text="Move Out", icon='TRIA_LEFT')
+        layout.separator()
+        frozen = layer is not None and frozen_root(layer) is not None
+        layout.operator("m3d.layer_unfreeze" if frozen else "m3d.layer_freeze", icon='FREEZE')
+        layout.operator("m3d.layer_merge_folder", icon='TRIA_DOWN_BAR')
+        layout.operator("m3d.layer_convert", icon='IMAGE_DATA')
+        layout.separator()
+        layout.operator("m3d.layer_cut", text="Cut", icon='PASTEDOWN')
+        layout.operator("m3d.layer_copy", text="Copy", icon='COPYDOWN')
+        layout.operator("m3d.layer_paste", text="Paste", icon='PASTEFLIPDOWN')
+
+
+def hovered_layer(context, mat):
+    """uid of the layer a right-click was on (the button under the pointer belongs to it: a property of the layer, of one of its
+    channels or effects, or one of the row's own buttons). Empty: unknown (the active layer is meant)."""
+    ptr = getattr(context, "button_pointer", None)
+    path = ""
+    if ptr is not None:
+        try:
+            path = ptr.path_from_id()
+        except (ValueError, AttributeError, TypeError):
+            path = ""
+    match = re.search(r"m3d_layers\[(\d+)\]", path)
+    index = int(match.group(1)) if match else getattr(getattr(context, "button_operator", None), "index", -1)
+    return mat.m3d_layers[index].uid if isinstance(index, int) and 0 <= index < len(mat.m3d_layers) else ""
+
+
+def draw_list_menu(self, context):
+    """Cut / Copy / Paste, Duplicate, Delete, Group, Add Effect / Mask, Create Smart Material / Mask, Merge Down, Flatten, Freeze:
+    the commands of the layer the right-click was on (they select it first)."""
+    ui_list = getattr(context, "ui_list", None)
+    if ui_list is None or ui_list.bl_idname != "M3D_UL_layers":
+        return
+    ob = mesh_of(context)
+    mat = ob.active_material if ob is not None else None
+    if mat is None or not len(mat.m3d_layers):
+        return
+    layout, uid = self.layout, hovered_layer(context, mat)
+    layer = layer_by_uid(mat, uid) if uid else active_layer(mat)
+    if layer is None:
+        return
+    _menu_target["uid"] = uid
+
+    def item(text, action, icon='NONE'):
+        op = layout.operator("m3d.layer_do", text=text, icon=icon)
+        op.action, op.uid = action, uid
+
+    layout.separator()
+    item("Cut", 'CUT', 'PASTEDOWN')
+    item("Copy", 'COPY', 'COPYDOWN')
+    item("Paste", 'PASTE', 'PASTEFLIPDOWN')
+    layout.separator()
+    item("Duplicate", 'DUPLICATE', 'DUPLICATE')
+    item("Delete", 'DELETE', 'TRASH')
+    item("Group", 'GROUP', 'FILE_FOLDER')
+    layout.separator()
+    layout.menu("M3D_MT_layer_ctx_effect_add", icon='SHADERFX')
+    layout.menu("M3D_MT_layer_ctx_mask_add", icon='MOD_MASK')
+    layout.separator()
+    if layer.kind == 'FOLDER':
+        item("Create Smart Material", 'SMART_MATERIAL', 'NODE_MATERIAL')
+    if layer.mask_stack:
+        item("Create Smart Mask", 'SMART_MASK', 'MOD_MASK')
+    item("Merge Down", 'MERGE_DOWN', 'TRIA_DOWN_BAR')
+    item("Flatten", 'FLATTEN', 'IMAGE_DATA')
+    if layer.kind == 'FOLDER' or in_frozen(layer):
+        frozen = frozen_root(layer) is not None
+        item("Unfreeze" if frozen else "Freeze", 'UNFREEZE' if frozen else 'FREEZE', 'FREEZE')
 
 
 classes = (
@@ -2516,17 +3341,30 @@ classes = (
     M3D_OT_layer_flatten,
     M3D_OT_layer_convert,
     M3D_OT_layer_fill_reset,
+    M3D_OT_layer_pick,
+    M3D_OT_layer_copy,
+    M3D_OT_layer_cut,
+    M3D_OT_layer_paste,
+    M3D_OT_layer_mask_image,
+    M3D_OT_layer_do,
+    M3D_OT_layer_key,
     M3D_UL_layers,
     M3D_UL_mask_effects,
+    M3D_MT_layer_effect_add,
+    M3D_MT_layer_mask_add,
+    M3D_MT_layer_ctx_effect_add,
+    M3D_MT_layer_ctx_mask_add,
+    M3D_MT_layer_more,
 )
 
 
 @bpy.app.handlers.persistent
 def load_post(*_args):
-    """Files from before mask stacks: upgrade their masks right away, so the Mask panel and the nodes agree."""
+    """Files from before mask stacks and per-channel looks: upgrade their layers right away, so the panels and the nodes agree."""
     for mat in bpy.data.materials:
-        if mat.node_tree is not None and any(l.mask is not None for l in mat.m3d_layers):
+        if mat.node_tree is not None and any(l.mask is not None or not l.per_channel for l in mat.m3d_layers):
             rebuild_all(mat)
+    thumbs_clear()
     sync_list(bpy.context)
 
 
@@ -2537,11 +3375,17 @@ def undo_post(*_args):
 
 
 _pending = [False]
+_changed_images = set()   # names of the images the depsgraph reported updated since the timer last ran
 
 
 def _follow_strokes():
-    """Timer: bring the Blur caches up to date after something painted an image (a stroke ends with an image update)."""
+    """Timer: after something painted an image (a stroke ends with an image update): make the thumbnails of the images again,
+    bring the Blur caches up to date."""
     _pending[0] = False
+    names = set(_changed_images)
+    _changed_images.clear()
+    if names:
+        refresh_thumbs(names)
     for mat in bpy.data.materials:
         if mat.node_tree is not None and any(e.kind == 'BLUR' for l in mat.m3d_layers for e in l.mask_stack):
             for layer in live_layers(mat):
@@ -2550,9 +3394,11 @@ def _follow_strokes():
 
 @bpy.app.handlers.persistent
 def depsgraph_post(_scene, depsgraph):
-    if not _pending[0] and depsgraph.id_type_updated('IMAGE'):
-        _pending[0] = True
-        bpy.app.timers.register(_follow_strokes, first_interval=0.4)
+    if depsgraph.id_type_updated('IMAGE'):
+        _changed_images.update(u.id.name for u in depsgraph.updates if isinstance(u.id, bpy.types.Image))
+        if not _pending[0]:
+            _pending[0] = True
+            bpy.app.timers.register(_follow_strokes, first_interval=0.4)
 
 
 MK._hook[0] = _changed
@@ -2572,6 +3418,10 @@ def register():
                                      "(white shows the layer, black hides it)")
     mat.m3d_show_map = StringProperty(name="Show Map", default="", update=_show_mask_changed,
                                       description="Show a baked map (the name of its image) in the 3D view instead of the material")
+    mat.m3d_row_channel = EnumProperty(name="Channel", default='BASE_COLOR', items=CHANNEL_ITEMS,
+                                       description="The channel the rows of the layer list show: its thumbnails, blend modes "
+                                       "and opacities (what the layers do in the other channels is not changed)")
+    bpy.types.UI_MT_list_item_context_menu.append(draw_list_menu)
     bpy.app.handlers.load_post.append(load_post)
     bpy.app.handlers.undo_post.append(undo_post)
     bpy.app.handlers.redo_post.append(undo_post)
@@ -2583,7 +3433,12 @@ def unregister():
     bpy.app.handlers.redo_post.remove(undo_post)
     bpy.app.handlers.undo_post.remove(undo_post)
     bpy.app.handlers.load_post.remove(load_post)
-    del bpy.types.Material.m3d_show_map, bpy.types.Material.m3d_show_mask, bpy.types.Material.m3d_channel, bpy.types.Material.m3d_layer_index
+    bpy.types.UI_MT_list_item_context_menu.remove(draw_list_menu)
+    thumbs_clear()
+    if _thumbs["coll"] is not None:
+        bpy.utils.previews.remove(_thumbs["coll"])
+        _thumbs["coll"] = None
+    del bpy.types.Material.m3d_row_channel, bpy.types.Material.m3d_show_map, bpy.types.Material.m3d_show_mask, bpy.types.Material.m3d_channel, bpy.types.Material.m3d_layer_index
     del bpy.types.Material.m3d_layers
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
