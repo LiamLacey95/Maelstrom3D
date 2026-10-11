@@ -704,8 +704,8 @@ _tab_items = []
 
 def _move_items(self, context):
     """Tabs of this dock that a panel can move to."""
-    from m3d_workspace import current_kind, dock_tabs, side_of
-    _tab_items[:] = [(t.page, t.label, "") for t in dock_tabs(current_kind(context), side_of(context)) if t.page]
+    from m3d_workspace import dock_tabs, side_of, tabs_kind
+    _tab_items[:] = [(t.page, t.label, "") for t in dock_tabs(tabs_kind(context), side_of(context)) if t.page]
     return _tab_items
 
 

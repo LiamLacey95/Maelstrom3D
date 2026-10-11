@@ -1387,13 +1387,23 @@ import m3d_texture as T
 import numpy as np
 
 tex_ws = bpy.data.workspaces["Texture"]
+check(tex_ws.m3d_layout >= 1, "the factory Texture workspace has the new layout (Workspace.m3d_layout %d)" % tex_ws.m3d_layout)
+tex_ws.m3d_layout = 1   # (the tests below are about the new layout; the old one has its own checks further down)
 tex_tabs = W.DOCK_TABS['TEXTURE']
-check([t.label for t in tex_tabs['RIGHT']] == ["Layers", "Brush", "Library", "Bake", "Export", "Display"], "Texture dock tabs")
-check([t.label for t in tex_tabs['LEFT']] == ["Brushes"], "Texture left tray tab")
-for tab in (*tex_tabs['RIGHT'], *tex_tabs['LEFT']):
+check([t.label for t in tex_tabs['RIGHT'] if not t.hidden] == ["Layers", "Texture Set Settings"], "Texture dock tabs: Layers | Texture Set Settings")
+check([t.id for t in tex_tabs['RIGHT'] if t.hidden] == ["tex_bake"], "the Bake page is the dock's page behind Bake Mesh Maps, without a tab")
+check(set(tex_tabs) == {'RIGHT', 'LEFT', 'TOOLS', 'ASSETS', 'SETS', 'PROPS', 'DOCKBAR'} and not tex_tabs['LEFT'], "one table entry for each Texture editor")
+for tab in (t for side in tex_tabs.values() for t in side):
     check(tab.context == 'MODELING_TOOLKIT' and tab.page == tab.id and tab.id.startswith("tex_"), "Texture page tab " + tab.id)
 tex_pages = {t.page for side in tex_tabs.values() for t in side}
-check({c.page for c in (*T.classes, *m3d_library.classes) if hasattr(c, "page")} == tex_pages, "every Texture page has panels and the other way round")
+check(tex_pages == {"tex_layers", "tex_settings", "tex_bake", "tex_tools", "tex_assets", "tex_sets", "tex_props", "tex_dockbar"}, "Texture pages: %s" % sorted(tex_pages))
+check([t.id for t in W.DOCK_TABS['TEXTURE_OLD']['RIGHT']] == ["tex_layers", "tex_brush", "tex_library", "tex_bake", "tex_export", "tex_display"]
+      and [t.id for t in W.DOCK_TABS['TEXTURE_OLD']['LEFT']] == ["tex_brushes"], "the old Texture tabs are kept for files with the old layout")
+# Every page a panel is on is one an editor shows: a dock tab, or what the page sets add (Properties, the old tabs).
+shown_pages = {*tex_pages, *T.BRUSH_PAGES, "tex_layer", "tex_mask", *(p for pages in T.OLD_PAGES.values() for p in pages), "tex_export", "tex_display",
+               "tex_brush", "tex_brushes", "tex_library"}
+panel_pages = {c.page for c in (*T.classes, *m3d_library.classes) if hasattr(c, "page")}
+check(panel_pages <= shown_pages and tex_pages <= panel_pages, "every Texture panel is on a page an editor shows, and every page has panels: %s" % sorted(panel_pages ^ shown_pages))
 check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in T.classes
           if not issubclass(c, bpy.types.PropertyGroup)), "Texture classes registered")
 check(m3d_ui.shelves_for('TEXTURE') == ['TEXTURE_BRUSHES', 'TEXTURE_CHANNELS', 'TEXTURE_OUTPUT', 'CUSTOM']
@@ -1408,24 +1418,56 @@ with bpy.data.libraries.load(asset_file, assets_only=True) as (src, _dst):
     tex_asset_names = set(src.brushes)
 for label, name in (*T.BRUSHES, *T.MORE_BRUSHES):
     check(name in tex_asset_names, "texture brush asset %r" % name)
+check({n for n in T.TOOL_BRUSHES.values()} <= tex_asset_names, "the brush of every tool is an asset")
 
-# Keys: Image Paint keymap only, free in the keymaps around it.
+# Keys: the Image Paint keymap (3D view and 2D view), and each is free in the keymaps around it.
 bpy.utils.keyconfig_set(bpy.utils.preset_find("Maelstrom3D", "keyconfig"))
 kc = bpy.context.window_manager.keyconfigs["Maelstrom3D"]
-for idname, key, mods, props in (("paint.brush_colors_flip", 'X', dict(shift=True), {}),
-                                 ("m3d.tex_channel_cycle", 'C', dict(), {"delta": 1}),
-                                 ("m3d.tex_channel_cycle", 'C', dict(shift=True), {"delta": -1})):
+TEX_KEYS = (   # (operator, key, modifiers, properties)
+    *(("m3d.tex_tool", k, dict(), {"tool": tool}) for k, tool in (('ONE', 'PAINT'), ('TWO', 'ERASER'), ('THREE', 'PROJECTION'),
+                                                                ('FOUR', 'POLYFILL'), ('FIVE', 'SMUDGE'), ('SIX', 'CLONE'))),
+    ("paint.sample_color", 'P', dict(), {"merged": False}),
+    ("m3d.tex_view_mode", 'M', dict(), {"mode": 'MATERIAL'}),
+    ("m3d.tex_view_cycle", 'C', dict(), {"kind": 'CHANNEL', "delta": 1}),
+    ("m3d.tex_view_cycle", 'C', dict(shift=True), {"kind": 'CHANNEL', "delta": -1}),
+    ("m3d.tex_view_cycle", 'B', dict(), {"kind": 'MAP', "delta": 1}),
+    ("m3d.tex_view_cycle", 'B', dict(shift=True), {"kind": 'MAP', "delta": -1}),
+    ("m3d.tex_lazy", 'D', dict(), {}),
+    ("m3d.tex_symmetry", 'L', dict(), {}),
+    ("m3d.tex_stencil", 'S', dict(), {}),
+    ("paint.brush_colors_flip", 'X', dict(), {}),
+    ("m3d.tex_brush_drag", 'RIGHTMOUSE', dict(ctrl=True), {"mode": 'SIZE_HARDNESS'}),
+    ("m3d.tex_brush_drag", 'LEFTMOUSE', dict(ctrl=True), {"mode": 'FLOW_ANGLE'}),
+    ("m3d.tex_env_rotate", 'RIGHTMOUSE', dict(shift=True), {}),
+    ("m3d.tex_isolate", 'Q', dict(alt=True), {}),
+    ("m3d.tex_bake_mode", 'B', dict(ctrl=True, shift=True), {"on": True}),
+    ("wm.call_panel", 'E', dict(ctrl=True, shift=True), {"name": "M3D_PT_tex_export"}),
+    ("m3d.tex_frame", 'F', dict(), {}),
+    ("brush.scale_size", 'LEFT_BRACKET', dict(), {}),
+    ("brush.scale_size", 'RIGHT_BRACKET', dict(), {}),
+)
+for idname, key, mods, props in TEX_KEYS:
     want = {"shift": False, "ctrl": False, "alt": False, **mods}
     item = find("Image Paint", idname, key, **want)
-    check(item and all(getattr(item[0].properties, k) == v for k, v in props.items()), "Texture key %s %s" % (key, mods))
+    check(item and all(getattr(item[0].properties, k) == v for k, v in props.items()), "Texture key %s %s %s" % (idname, key, mods))
     others = [(km.name, k.idname) for km in kc.keymaps for k in km.keymap_items
-              if k.type == key and all(getattr(k, m) == v for m, v in want.items()) and not k.oskey
+              if k.type == key and k.value == 'PRESS' and "MOUSE" not in key and all(getattr(k, m) == v for m, v in want.items()) and not k.oskey
               and (km.name, k.idname) != ("Image Paint", idname)
-              and km.name in {"Window", "Screen", "Screen Editing", "Frames", "Property Editor", "Image Paint"}]
-    check(not others, "Texture key %s %s is free: %s" % (key, mods, others))
-check(not find("Image Paint", "paint.brush_colors_flip", 'X', shift=False), "plain X no longer swaps colors in Image Paint")
-check(find("Image Paint", "brush.scale_size", 'LEFT_BRACKET') and find("Image Paint", "brush.scale_size", 'RIGHT_BRACKET'),
-      "[ and ] change the brush size in Image Paint")
+              # the keymaps the 3D view and the Image Editor look at before and after Image Paint: only the ones before it can take a key
+              and km.name in {"Window", "Screen", "Screen Editing", "Property Editor", "Paint Face Mask (Weight, Vertex, Texture)", "Paint Curve"}]
+    check(not others, "Texture key %s %s is free before Image Paint: %s" % (key, mods, others))
+check(find("Image Paint", "m3d.tex_polyfill", 'LEFTMOUSE')
+      and kc.keymaps["Image Paint"].keymap_items[0].idname == "m3d.tex_polyfill"
+      and [k.idname for k in kc.keymaps["Image Paint"].keymap_items if k.type == 'LEFTMOUSE' and k.value == 'PRESS'
+           and not (k.shift or k.ctrl or k.alt)] == ["m3d.tex_polyfill", "paint.image_paint"], "Polygon Fill's click is the first item of Image Paint, before the stroke")
+check(not find("Image Paint", "m3d.tex_channel_cycle", 'C') and not find("Image Paint", "paint.brush_colors_flip", 'X', shift=True),
+      "the old channel and Shift+X keys are gone")
+# Where a key is also in a keymap that comes after Image Paint (the 3D view's, the Image Editor's), Image Paint wins in paint mode: say which.
+clashes = sorted({(km.name, k.idname, idname) for idname, key, mods, _p in TEX_KEYS for km in kc.keymaps for k in km.keymap_items
+                  if km.name in {"3D View", "3D View Generic", "Frames", "Object Non-modal", "Image", "Image Generic", "UV Editor"}
+                  and k.type == key and k.value == 'PRESS' and all(getattr(k, m) == v for m, v in {"shift": False, "ctrl": False, "alt": False, **mods}.items())
+                  and not k.oskey and k.idname != idname})
+print("Texture keys also bound after Image Paint (Image Paint wins in paint mode):", clashes)
 
 # Menus of the Texturing set have real entries.
 for mid in ("M3D_MT_paint", "M3D_MT_layers", "M3D_MT_bake", "M3D_MT_export"):
@@ -1439,53 +1481,74 @@ for ob in list(bpy.data.objects):
     bpy.data.objects.remove(ob)
 
 
+# The Texture layout's Properties editors as the panels see them: the area of each role in a 2000 px window, the dock strip at the
+# right edge, the tool strip at the left (m3d_workspace.texture_role).
+TEX_AREAS = {role: NS(type='PROPERTIES', x=x, y=y, width=w, height=h) for role, (x, y, w, h) in {
+    'TOOLS': (0, 0, 50, 900), 'ASSETS': (50, 0, 260, 900), 'SETS': (1560, 760, 390, 140), 'RIGHT': (1560, 330, 390, 430),
+    'PROPS': (1560, 0, 390, 330), 'DOCKBAR': (1950, 0, 50, 900)}.items()}
+TEX_SCREEN = NS(areas=list(TEX_AREAS.values()))
+ROLE_OF_PAGE = {"tex_tools": 'TOOLS', "tex_assets": 'ASSETS', "tex_sets": 'SETS', "tex_props": 'PROPS', "tex_dockbar": 'DOCKBAR',
+                "tex_brushes": 'LEFT', "tex_library": 'RIGHT'}   # (the others: the dock; tex_brushes is the old tray)
+
+
 class TCtx(SCtx):
-    """Context of a Texture dock: the real one with this workspace."""
-    def __init__(self, side='RIGHT'):
-        super().__init__(side)
+    """Context of a Texture editor: the real one with this workspace and the area of a role of the new layout ('LEFT': the old tray)."""
+    def __init__(self, role='RIGHT'):
+        super().__init__('RIGHT')
         self.workspace = tex_ws
+        if role == 'LEFT':
+            self.area = NS(x=0, width=500, type='PROPERTIES')
+            return
+        self.area, self.screen = TEX_AREAS[role], TEX_SCREEN
+        self.region = NS(type='WINDOW', width=TEX_AREAS[role].width)
 
 
 def tex_panels(page):
-    return [c for c in (*T.classes, *m3d_library.classes) if getattr(c, "page", None) == page and hasattr(c, "poll")]
+    return [c for c in (*T.classes, *m3d_library.classes) if hasattr(c, "poll") and hasattr(c, "page")]
 
 
 def tex_shown(page):
-    side = 'LEFT' if page == "tex_brushes" else 'RIGHT'
-    setattr(tex_ws, "m3d_page_" + side.lower(), page)
-    ctx = TCtx(side)
+    """Names of the panels the editor shows for `page`: the Properties editor for tex_props, the dock for its tabs (any other page)."""
+    role = ROLE_OF_PAGE.get(page, 'RIGHT')
+    if role == 'RIGHT':
+        tex_ws.m3d_page_right = page
+    elif role == 'LEFT':
+        tex_ws.m3d_page_left = page
+    ctx = TCtx(role)
     return [c.__name__ for c in tex_panels(page) if c.poll(ctx)]
 
 
 def tex_gated(page):
-    names = tex_shown(page)
+    names = [n for n in tex_shown(page) if not n.endswith("_bake_back")]   # (Back to Painting stays on the Bake page)
     return len(names) == 1 and names[0].endswith("_gate")
 
 
-for page in T.GATES:
+for page in ("layers", "settings", "props", "bake"):
     check(tex_gated("tex_" + page), "tex_%s without a mesh shows its message only: %s" % (page, tex_shown("tex_" + page)))
-check(not any(n.endswith("_gate") for n in tex_shown("tex_library") + tex_shown("tex_display")), "Library and Display need no mesh")
+check(not any(n.endswith("_gate") for n in tex_shown("tex_assets") + tex_shown("tex_tools") + tex_shown("tex_dockbar")),
+      "Assets, the tool strip and the dock strip need no mesh")
+check(tex_shown("tex_sets") == ["PROPERTIES_PT_m3d_tx_sets"], "the Texture Set List shows without a mesh (it says what to do)")
 check(T.missing(bpy.context) == ['MESH'], "missing without a mesh")
 bpy.ops.m3d.add_primitive(kind='CUBE')
 cube = bpy.context.active_object
 check(T.missing(bpy.context) == ['MATERIAL', 'MODE'], "a new cube has UVs, but no material, and is in Object Mode: %s" % T.missing(bpy.context))
-check(tex_gated("tex_layers") and not tex_gated("tex_bake") and tex_gated("tex_export"), "gates in Object Mode")
+check(tex_gated("tex_layers") and not tex_gated("tex_bake") and tex_gated("tex_props"), "gates in Object Mode")
 cube.data.uv_layers.remove(cube.data.uv_layers[0])
 check(T.missing(bpy.context) == ['UV', 'MATERIAL', 'MODE'] and tex_gated("tex_bake"),
-      "missing UVs gate the Bake tab: %s" % T.missing(bpy.context))
+      "missing UVs gate the Bake page: %s" % T.missing(bpy.context))
 check(bpy.ops.m3d.tex_unwrap() == {'FINISHED'} and len(cube.data.uv_layers) == 1 and cube.mode == 'OBJECT',
       "Auto Unwrap fix adds UVs and keeps the mode")
 bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
 check(T.missing(bpy.context) == ['MATERIAL'] and bpy.context.mode == 'PAINT_TEXTURE', "only the material is missing: %s" % T.missing(bpy.context))
-check(tex_gated("tex_layers") and tex_gated("tex_brushes") and tex_gated("tex_brush"), "no material gates the paint pages")
+check(tex_gated("tex_layers") and tex_gated("tex_props") and tex_gated("tex_settings"), "no material gates the paint pages")
 check(not bpy.ops.m3d.tex_channel.poll(), "no channel without a material")
 check(bpy.ops.m3d.tex_unwrap() == {'FINISHED'} and cube.mode == 'TEXTURE_PAINT', "Auto Unwrap from Texture Paint Mode keeps it")
 check(bpy.ops.m3d.tex_add_material() == {'FINISHED'} and cube.active_material is not None and T.missing(bpy.context) == [],
       "Add Material fix")
-for page in tex_pages:
+for page in sorted(tex_pages):
     names = tex_shown(page)
     check(names and not any(n.endswith("_gate") for n in names), "%s panels in Texture Paint Mode: %s" % (page, names))
-check([n for n in tex_shown("tex_brushes") if n.endswith("_canvas")], "tray offers Add Base Color without paint slots")
+check([n for n in tex_shown("tex_props") if n.endswith("_canvas")], "Properties offers Add Base Color without paint slots")
 
 # Channels: every channel adds its slot with the right color space; a second click only selects it.
 T_scene = bpy.context.scene
@@ -1527,44 +1590,396 @@ bpy.ops.m3d.uv_checker()
 check(not U.checker_on(bpy.context) and T.missing(bpy.context) == ['MODE'], "checker off: %s" % T.missing(bpy.context))
 bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
 
-# Every page panel draws (recorded calls name real operators, properties and icons).
-ctx = TCtx()
-for page in sorted(tex_pages):
-    setattr(tex_ws, "m3d_page_" + ("left" if page == "tex_brushes" else "right"), page)
-    for cls in tex_panels(page):
-        if cls.poll(TCtx('LEFT' if page == "tex_brushes" else 'RIGHT')):
+# Every page panel draws (recorded calls name real operators, properties and icons), in every role and every props context.
+def draw_page_panels(label):
+    drawn = 0
+    for page in sorted(tex_pages):
+        names = tex_shown(page)
+        ctx = TCtx(ROLE_OF_PAGE.get(page, 'RIGHT'))
+        for cls in tex_panels(page):
+            if cls.__name__ in names:
+                drawn += 1
+                try:
+                    check_calls("%s %s" % (label, cls.__name__), draw_stub(cls, ctx))
+                except Exception as err:
+                    check(False, "%s %s draw: %r" % (label, cls.__name__, err))
+    return drawn
+
+
+check(draw_page_panels("Texture") >= 14, "the Texture pages drew")
+# Properties: what it shows follows the active layer (the title says which); each context's panels draw
+tex_scene = bpy.context.scene
+for props_mode in ('AUTO', 'LAYER', 'MASK'):
+    tex_scene.m3d_tex.props_mode = props_mode
+    names = tex_shown("tex_props")
+    check(names, "Properties shows panels in mode %s: %s" % (props_mode, names))
+    ctx = TCtx('PROPS')
+    for cls in tex_panels("tex_props"):
+        if cls.__name__ in names:
             try:
-                check_calls(cls.__name__, draw_stub(cls, ctx))
+                check_calls("props %s %s" % (props_mode, cls.__name__), draw_stub(cls, ctx))
             except Exception as err:
-                check(False, "%s draw: %r" % (cls.__name__, err))
+                check(False, "props %s %s draw: %r" % (props_mode, cls.__name__, err))
+tex_scene.m3d_tex.props_mode = 'AUTO'
+check(T.props_context(TCtx('PROPS')) == 'PAINT' and "PROPERTIES_PT_m3d_tx_tuning" in tex_shown("tex_props"), "no layer: Properties - Paint with the brush")
 # ...also the gates and the panels that do not need paint mode, in Object Mode too.
 for mode in ('OBJECT', 'TEXTURE_PAINT'):
     bpy.ops.object.mode_set(mode=mode)
+    ctx = TCtx('RIGHT')
     for cls in (*T.PAGE_GATES, m3d_library.PROPERTIES_PT_m3d_lib_browse, m3d_library.PROPERTIES_PT_m3d_lib_assets,
-                T.PROPERTIES_PT_m3d_tx_channel_view, T.PROPERTIES_PT_m3d_tx_checker):
+                T.PROPERTIES_PT_m3d_tx_channel_view, T.PROPERTIES_PT_m3d_tx_checker, T.PROPERTIES_PT_m3d_tx_tools,
+                T.PROPERTIES_PT_m3d_tx_sets, T.PROPERTIES_PT_m3d_tx_dockbar, T.PROPERTIES_PT_m3d_tx_maps, T.PROPERTIES_PT_m3d_tx_bake_back):
         try:
-            check_calls(cls.__name__ + " " + mode, draw_stub(cls, ctx))
+            check_calls(cls.__name__ + " " + mode, draw_stub(cls, TCtx('ASSETS' if cls.__name__.endswith("browse") else 'TOOLS')))
+        except Exception as err:
+            check(False, "%s draw in %s: %r" % (cls.__name__, mode, err))
+    # the popovers of the dock strip
+    for cls in (T.M3D_PT_tex_display, T.M3D_PT_tex_shader, T.M3D_PT_tex_history, T.M3D_PT_tex_export):
+        try:
+            inst = type("Inst", (UnifiedPaintPanel,), {})()
+            inst.layout, inst.is_popover = Rec([]), True
+            if cls.poll(ctx) if hasattr(cls, "poll") else True:
+                cls.draw(inst, ctx)
         except Exception as err:
             check(False, "%s draw in %s: %r" % (cls.__name__, mode, err))
 log = []
-T.draw_status_line(Rec(log), ctx)
-check_calls("Texture status line", log)
+wide_ = TCtx('RIGHT')
+wide_.region = NS(type='HEADER', width=2560)
+T.draw_status_line(Rec(log), wide_)
+check_calls("Texture context toolbar", log)
 props_drawn = {r._args[1] for r in log if r._kind == "prop"}
-channels_drawn = [r.values().get("channel") for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_channel"]
-check({"use_mirror_x", "use_mirror_y", "use_mirror_z", "resolution"} <= props_drawn and channels_drawn == [c.id for c in T.CHANNELS],
-      "Texture status line controls: %s %s" % (props_drawn, channels_drawn))
-check(len([r for r in log if r._kind == "operator" and r._args[0] == "m3d.call"]) >= 5, "status line mode and display buttons")
+check({"use_mirror_x", "use_mirror_y", "use_mirror_z", "size", "strength", "use_pressure_size", "use_pressure_strength", "spacing",
+       "use_smooth_stroke", "smooth_stroke_radius"} <= props_drawn, "Texture context toolbar controls: %s" % sorted(props_drawn))
+ops_drawn = [r._args[0] for r in log if r._kind == "operator"]
+check(not any(r._args[0] == "m3d.tex_channel" for r in log if r._kind == "operator" and r._args), "the channel buttons are not in the toolbar any more")
+check(ops_drawn.count("m3d.tex_layout") == 3 and "m3d.tex_bake_mode" in ops_drawn and any(r._kind == "popover" and r._args[0] == "M3D_PT_tex_export" for r in log),
+      "the toolbar has the view layout, Bake Mesh Maps and Export Textures: %s" % ops_drawn)
+check(len([r for r in log if r._kind == "operator" and r._args[0] == "m3d.call"]) >= 3, "toolbar mode and perspective buttons")
 for key in m3d_ui.shelves_for('TEXTURE'):
     log = []
-    ctx.window_manager.m3d_shelf = key
-    m3d_ui.draw_shelf(Rec(log), ctx)
+    TCtx().window_manager.m3d_shelf = key
+    m3d_ui.draw_shelf(Rec(log), TCtx())
     check_calls("shelf " + key, log)
+tex_ctx_ = TCtx()
+log = []
+T.draw_view_mode(Rec(log), tex_ctx_)
+check(not log, "the display mode dropdown needs a 3D or 2D view (nothing without one)")
+log = []
+T.M3D_MT_tex_view_mode.draw(type("Inst", (), {"layout": Rec(log)})(), tex_ctx_)
+check_calls("display mode menu", log)
+check([r.values().get("mode") for r in log if r._kind == "operator"][:1] == ['MATERIAL']
+      and {"CHANNEL:" + c.id for c in T.CHANNELS} <= {r.values().get("mode") for r in log if r._kind == "operator"}
+      and "MASK" in {r.values().get("mode") for r in log if r._kind == "operator"}, "the display mode menu: Material, every channel, the maps, the mask")
 
 # Brushes activate; the tray knows which is active.
 bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
 for label, name in (*T.BRUSHES, *T.MORE_BRUSHES):
     bpy.ops.brush.asset_activate(**T.brush_props(name))
     check(S.active_brush_id(bpy.context) == T.BRUSH_ASSET + name, "texture brush %s active (is %r)" % (name, S.active_brush_id(bpy.context)))
+
+# --- Tool strip: each tool picks its brush and settings (Paint, Eraser, Projection, Polygon Fill, Smudge, Clone, Picker)
+import m3d_layers as LY
+S_alphas_tex = tempfile.mkdtemp(prefix="m3d_alpha_tex_")   # (the alpha library of Projection's starter texture: a folder of its own)
+S.alpha_dir = lambda create=False: S_alphas_tex
+check([t[0] for t in T.TOOLS] == ['PAINT', 'ERASER', 'PROJECTION', 'POLYFILL', 'SMUDGE', 'CLONE', 'PICKER']
+      and [t[2] for t in T.TOOLS] == ['1', '2', '3', '4', '5', '6', 'P'], "the tools of the strip and their keys")
+check(all(T.TOOL_BY_ID[t][2] in T.M3D_OT_tex_tool.description(None, NS(tool=t)) and T.TOOL_BY_ID[t][1] in T.M3D_OT_tex_tool.description(None, NS(tool=t))
+          and T.TOOL_BY_ID[t][3] in icons for t in T.TOOL_BY_ID), "each tool's tooltip names the tool and its key, and its icon exists")
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+tool_ob = bpy.context.active_object
+
+
+def new_tex_cube(name):
+    """A cube with a material (and its UVs), in Texture Paint Mode, active; for tests that add layers and sets."""
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.m3d.add_primitive(kind='CUBE')
+    ob = bpy.context.active_object
+    ob.name = name
+    bpy.ops.m3d.tex_add_material()
+    bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+    return ob
+
+
+def drop_tex_object(*obs):
+    """Remove test objects with their meshes, materials and images, and make `tool_ob` the paint object again."""
+    bpy.ops.object.mode_set(mode='OBJECT')
+    prefixes = []
+    for ob in obs:
+        mats = [s_.material for s_ in ob.material_slots if s_.material]
+        prefixes += [ob.name, *(m_.name for m_ in mats)]
+        mesh_ = ob.data
+        bpy.data.objects.remove(ob)
+        bpy.data.meshes.remove(mesh_)
+        for m_ in mats:
+            if m_.users == 0:
+                bpy.data.materials.remove(m_)
+    for img_ in [i_ for i_ in bpy.data.images if i_.name.startswith(tuple(prefixes))]:
+        bpy.data.images.remove(img_)
+    for ob in bpy.data.objects:
+        ob.select_set(ob == tool_ob)
+    bpy.context.view_layer.objects.active = tool_ob
+    bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+
+
+bpy.ops.brush.asset_activate(**T.brush_props("Airbrush"))
+check(T.tool_of(bpy.context) == 'PAINT', "a Draw brush is the Paint tool")
+for tool, name in (('ERASER', "Erase Hard"), ('PAINT', "Airbrush"), ('SMUDGE', "Smear"), ('CLONE', "Clone"), ('POLYFILL', "Fill"), ('PAINT', "Airbrush")):
+    check(bpy.ops.m3d.tex_tool(tool=tool) == {'FINISHED'}, "tool " + tool)
+    check(T.brush_name(bpy.context) == name and T.tool_of(bpy.context) == tool,
+          "%s picks %s and reads back as that tool (%s, %s)" % (tool, name, T.brush_name(bpy.context), T.tool_of(bpy.context)))
+check(not tool_ob.data.use_paint_mask, "leaving Polygon Fill puts Face Selection masking back")
+bpy.ops.m3d.tex_tool(tool='ERASER')
+check(T.image_brush(bpy.context).blend == 'ERASE_ALPHA', "the Eraser erases alpha")
+bpy.ops.m3d.tex_tool(tool='POLYFILL')
+check(tool_ob.data.use_paint_mask and T.tool_of(bpy.context) == 'POLYFILL', "Polygon Fill turns Face Selection masking on")
+bpy.ops.m3d.tex_tool(tool='PROJECTION')
+pbrush = T.image_brush(bpy.context)
+check(not tool_ob.data.use_paint_mask and pbrush.texture is not None and pbrush.texture_slot.map_mode == 'STENCIL'
+      and T.tool_of(bpy.context) == 'PROJECTION' and T.brush_name(bpy.context) == "Paint Hard", "Projection maps a texture as a Stencil on a Draw brush")
+bpy.ops.m3d.tex_tool(tool='PAINT')
+check(pbrush.texture_slot.map_mode != 'STENCIL' and T.tool_of(bpy.context) == 'PAINT', "Paint puts the mapping back (%s %s %s %s)" % (
+    pbrush.name, pbrush.texture_slot.map_mode, T.tool_of(bpy.context), T.brush_name(bpy.context)))
+check(bpy.ops.m3d.tex_tool(tool='PICKER') == {'CANCELLED'}, "the picker needs a 3D view (it is picked in the window: gui_test.py)")
+bpy.ops.object.mode_set(mode='OBJECT')
+check(bpy.ops.m3d.tex_tool(tool='PAINT') == {'FINISHED'} and bpy.context.mode == 'PAINT_TEXTURE', "a click on a tool in Object Mode enters Texture Paint Mode")
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_tools, TCtx('TOOLS'))
+buttons = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_tool"]
+check([r.values()["tool"] for r in buttons] == [t[0] for t in T.TOOLS] and all(r._kw.get("text") == "" and r._kw.get("icon") for r in buttons)
+      and [r.values()["tool"] for r in buttons if r._kw.get("depress")] == ['PAINT'], "the strip draws one icon button for each tool, the active one pressed")
+check(T.square_scale(TCtx('TOOLS')) > 1.5, "the strip's buttons are tall as the strip is wide")
+
+# Polygon Fill's click: the polygon, the UV island or the mesh under the cursor
+import bmesh
+pf_mesh = bpy.data.meshes.new("PolyFill")
+bm_ = bmesh.new()
+verts_ = [bm_.verts.new(c) for c in ((0, 0, 0), (1, 0, 0), (2, 0, 0), (0, 1, 0), (1, 1, 0), (2, 1, 0))]
+faces_ = [bm_.faces.new((verts_[0], verts_[1], verts_[4], verts_[3])), bm_.faces.new((verts_[1], verts_[2], verts_[5], verts_[4]))]
+uv_ = bm_.loops.layers.uv.new("UVMap")
+for f_, shift in zip(faces_, (0.0, 0.0)):
+    for loop_ in f_.loops:
+        loop_[uv_].uv = (loop_.vert.co.x * 0.4, loop_.vert.co.y * 0.4)   # (connected: the shared edge has the same UVs)
+bm_.to_mesh(pf_mesh)
+check(T.uv_island(pf_mesh, 0) == [0, 1], "two quads that share their UV edge are one island")
+for loop_ in faces_[1].loops:
+    loop_[uv_].uv = (loop_.vert.co.x * 0.4 + 0.5, loop_.vert.co.y * 0.4)   # (apart: the shared edge is cut in the UV map)
+bm_.to_mesh(pf_mesh)
+bm_.free()
+check(T.uv_island(pf_mesh, 0) == [0] and T.uv_island(pf_mesh, 1) == [1], "...and two when the UVs are cut apart")
+T.select_faces(pf_mesh, [1])
+check([p_.select for p_ in pf_mesh.polygons] == [False, True], "the fill selects the polygons it fills")
+bpy.data.meshes.remove(pf_mesh)
+check(not bpy.ops.m3d.tex_polyfill.poll(), "Polygon Fill's click only runs in the 3D view with that tool")
+
+# --- Texture sets: one for each material of the mesh, plus the other meshes' materials with layers
+sets_ob = new_tex_cube("SetsCube")
+sets_ob.data.materials.append(bpy.data.materials.new("Second"))
+check([(m.name, o.name) for m, o in T.texture_sets(bpy.context)] == [(sets_ob.data.materials[0].name, sets_ob.name), ("Second", sets_ob.name)],
+      "the Texture Set List: the materials of the active mesh")
+other_ob = new_tex_cube("Other")
+other_mat = other_ob.active_material
+check([(m.name, o.name) for m, o in T.texture_sets(bpy.context)] == [(other_mat.name, "Other")],
+      "meshes whose materials have no layers are not listed under another mesh: %s" % [(m.name, o.name) for m, o in T.texture_sets(bpy.context)])
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.context.view_layer.objects.active = sets_ob
+for o_ in bpy.data.objects:
+    o_.select_set(o_ == sets_ob)
+check(len(T.texture_sets(bpy.context)) == 2, "a mesh with a material without layers is not listed")
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+bpy.ops.m3d.layer_add(kind='FILL')   # (on the active mesh's material)
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.context.view_layer.objects.active = other_ob
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+bpy.ops.m3d.layer_add(kind='FILL')
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.context.view_layer.objects.active = sets_ob
+for o_ in bpy.data.objects:
+    o_.select_set(o_ == sets_ob)
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+check([(m.name, o.name) for m, o in T.texture_sets(bpy.context)][-1] == (other_mat.name, "Other"), "...then the materials with layers of the other meshes")
+second, first_mat = bpy.data.materials["Second"], sets_ob.data.materials[0]
+check(bpy.ops.m3d.tex_set(object=sets_ob.name, material="Second") == {'FINISHED'} and sets_ob.active_material == second, "a click makes the set's material the active one")
+check(bpy.ops.m3d.tex_set(object="Other", material=other_mat.name) == {'FINISHED'} and bpy.context.active_object == other_ob
+      and other_ob.mode == 'TEXTURE_PAINT' and sets_ob.mode == 'OBJECT' and other_ob.active_material == other_mat, "...also one of another mesh, and Texture Paint Mode goes with it")
+check(bpy.ops.m3d.tex_set(object=sets_ob.name, material="NoSuch") == {'CANCELLED'}, "a set that is not there is refused")
+bpy.ops.m3d.tex_set(object=sets_ob.name, material=first_mat.name)
+# faces of the second material
+for i_, poly_ in enumerate(sets_ob.data.polygons):
+    poly_.material_index = 1 if i_ % 2 else 0
+check(bpy.ops.m3d.tex_set_visible(object=sets_ob.name, material="Second") == {'FINISHED'}
+      and [p_.hide for p_ in sets_ob.data.polygons] == [bool(i_ % 2) for i_ in range(len(sets_ob.data.polygons))]
+      and T.hidden_sets(sets_ob) == {"Second"}, "the eye hides the polygons of a set")
+check(bpy.ops.m3d.tex_set_visible(object=sets_ob.name, material="Second") == {'FINISHED'} and not any(p_.hide for p_ in sets_ob.data.polygons)
+      and not T.hidden_sets(sets_ob), "...and shows them again")
+check(bpy.ops.m3d.tex_isolate() == {'FINISHED'} and all(p_.hide == bool(p_.material_index) for p_ in sets_ob.data.polygons)
+      and other_ob.hide_get() and tool_ob.hide_get() and set(bpy.context.scene["m3d_isolated"]) == {"Other", tool_ob.name},
+      "Isolate (Alt+Q) shows only the active set: its polygons, no other mesh")
+check(bpy.ops.m3d.tex_isolate() == {'FINISHED'} and not any(p_.hide for p_ in sets_ob.data.polygons) and not other_ob.hide_get()
+      and not tool_ob.hide_get() and bpy.context.scene.get("m3d_isolated") is None, "...and again shows everything")
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_sets, TCtx('SETS'))
+rows = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_set"]
+check([r.values()["material"] for r in rows] == [first_mat.name, "Second", other_mat.name] and len([r for r in log if r._args and r._args[0] == "m3d.tex_set_visible"]) == 3
+      and [r.values()["material"] for r in rows if r._kw.get("depress")] == [first_mat.name], "the Texture Set List draws an eye and a name for each set, the active one pressed")
+drop_tex_object(other_ob, sets_ob)
+
+# --- Display modes: material, channels, mesh maps, mask
+d_ob = new_tex_cube("ViewCube")
+d_mat = d_ob.active_material
+d_space = NS(shading=NS(type='MATERIAL', light='STUDIO', color_type='MATERIAL'), image=None, ui_mode='PAINT')
+
+
+class VCtx(SCtx):
+    """A context with a 3D view or 2D view as the area (the view's space is `space`)."""
+    def __init__(self, kind, space):
+        super().__init__('RIGHT')
+        self.workspace, self.area, self.screen = tex_ws, NS(type=kind, spaces=NS(active=space), x=0, width=100), None
+
+
+for ch_ in T.CHANNELS:
+    if ch_.id not in T.channel_slots(d_mat):
+        bpy.ops.m3d.tex_channel(channel=ch_.id)
+bpy.ops.m3d.tex_channel(channel='BASE_COLOR')
+check(T.view_mode_3d(VCtx('VIEW_3D', d_space), d_space) == 'MATERIAL', "the 3D view starts in Material")
+for mode_ in ("CHANNEL:ROUGHNESS", "CHANNEL:METALLIC"):
+    check(T.show_in_3d(VCtx('VIEW_3D', d_space), d_space, mode_) == "" and T.channel_view_on(d_space.shading) and T.active_channel(d_mat) == mode_.split(":")[1]
+          and T.view_mode_3d(VCtx('VIEW_3D', d_space), d_space) == mode_, "%s: the channel alone (flat, unlit) and the one that is painted" % mode_)
+check(T.show_in_3d(VCtx('VIEW_3D', d_space), d_space, 'MATERIAL') == "" and d_space.shading.type == 'MATERIAL' and not T.channel_view_on(d_space.shading)
+      and T.view_mode_3d(VCtx('VIEW_3D', d_space), d_space) == 'MATERIAL', "Material goes back to Material Preview")
+check(T.show_in_3d(VCtx('VIEW_3D', d_space), d_space, "MAP:AO").startswith("No Ambient Occlusion map yet"), "a map that is not baked says so")
+d_map = bpy.data.images.new(T.texture_set(d_ob)[0] + "_AO", 16, 16)
+d_map["m3d_bake"] = "AO"
+nodes_before_ = sorted(n.name for n in d_mat.node_tree.nodes)
+out_ = LY.output_node(d_mat.node_tree)
+shader_ = out_.inputs["Surface"].links[0].from_node.name
+check(T.show_in_3d(VCtx('VIEW_3D', d_space), d_space, "MAP:AO") == "" and d_mat.m3d_show_map == d_map.name and LY.MAPVIEW in d_mat.node_tree.nodes
+      and d_mat.node_tree.nodes[LY.MAPVIEW].image == d_map and out_.inputs["Surface"].links[0].from_node.name == LY.MASKVIEW
+      and T.view_mode_3d(VCtx('VIEW_3D', d_space), d_space) == "MAP:AO", "a baked map is shown by the material: an emission fed by the map")
+check(T.show_in_3d(VCtx('VIEW_3D', d_space), d_space, 'MATERIAL') == "" and not d_mat.m3d_show_map and LY.MAPVIEW not in d_mat.node_tree.nodes
+      and LY.MASKVIEW not in d_mat.node_tree.nodes and out_.inputs["Surface"].links[0].from_node.name == shader_
+      and sorted(n.name for n in d_mat.node_tree.nodes) == nodes_before_, "...and Material puts the shader back, the nodes as before")
+check(T.show_in_3d(VCtx('VIEW_3D', d_space), d_space, 'MASK').startswith("Pick a layer"), "a mask needs a layer")
+bpy.ops.m3d.layer_add(kind='FILL')
+bpy.ops.m3d.layer_mask_add(fill='WHITE')
+check(T.show_in_3d(VCtx('VIEW_3D', d_space), d_space, 'MASK') == "" and d_mat.m3d_show_mask and T.view_mode_3d(VCtx('VIEW_3D', d_space), d_space) == 'MASK'
+      and not d_mat.m3d_show_map, "Mask shows the mask of the active layer (Show Mask)")
+check(T.show_in_3d(VCtx('VIEW_3D', d_space), d_space, "MAP:AO") == "" and d_mat.m3d_show_map and not d_mat.m3d_show_mask, "a map replaces the mask view")
+check(T.show_in_3d(VCtx('VIEW_3D', d_space), d_space, 'MATERIAL') == "" and not d_mat.m3d_show_map and not d_mat.m3d_show_mask
+      and LY.MAPVIEW not in d_mat.node_tree.nodes, "...Material turns both off")
+# the 2D view shows the image of the channel, the map or the mask
+d2 = NS(shading=None, image=None, ui_mode='PAINT')
+c2 = VCtx('IMAGE_EDITOR', d2)
+paint_layer_ = LY.active_layer(d_mat)
+bpy.ops.m3d.layer_add(kind='PAINT')
+bpy.ops.m3d.tex_channel(channel='BASE_COLOR')
+bpy.ops.m3d.tex_channel(channel='ROUGHNESS')
+bpy.ops.m3d.layer_mask_add(fill='WHITE')
+p_layer = LY.active_layer(d_mat)
+p_layer.paint_mask = False
+check(T.show_in_2d(c2, d2, "CHANNEL:ROUGHNESS") == "" and d2.image == LY.entry_of(p_layer, 'ROUGHNESS').image and d2.ui_mode == 'PAINT'
+      and T.view_mode_2d(c2, d2) == "CHANNEL:ROUGHNESS", "the 2D view shows the layer's image of a channel")
+check(T.show_in_2d(c2, d2, 'MATERIAL') == "" and d2.image == LY.target_image(bpy.context, d_mat, False) and T.view_mode_2d(c2, d2) == 'MATERIAL', "Material is the image being painted")
+check(T.show_in_2d(c2, d2, 'MASK') == "" and d2.image == LY.paint_effect(p_layer).image and T.view_mode_2d(c2, d2) == 'MASK', "Mask is the mask's image")
+check(T.show_in_2d(c2, d2, "MAP:AO") == "" and d2.image == d_map and d2.ui_mode == 'PAINT' and T.view_mode_2d(c2, d2) == "MAP:AO", "a map is shown (in Paint mode: the painting keys only work there)")
+check(T.show_in_2d(c2, d2, "MAP:Normal").startswith("Nothing to show"), "a map that is not there is said (%r)" % T.show_in_2d(c2, d2, "MAP:Normal"))
+check(T.show_in_2d(c2, d2, 'MATERIAL') == "" and d2.ui_mode == 'PAINT', "Material puts Paint mode back")
+# cycling: the material, then the channels (C) or the maps (B), wrapping to the material
+check(T.modes_of(bpy.context, 'CHANNEL')[0] == 'MATERIAL' and T.modes_of(bpy.context, 'CHANNEL')[1:] == ["CHANNEL:" + c.id for c in T.CHANNELS if c.id in T.channel_slots(d_mat)]
+      and T.modes_of(bpy.context, 'MAP') == ['MATERIAL', "MAP:AO"], "the modes C and B cycle through: %s %s" % (T.modes_of(bpy.context, 'CHANNEL'), T.modes_of(bpy.context, 'MAP')))
+bpy.data.images.remove(d_map)
+check(T.mode_label('MATERIAL') == "Material" and T.mode_label("CHANNEL:BASE_COLOR") == "Base Color" and T.mode_label("MAP:WorldNormal") == "World Normal"
+      and T.mode_label('MASK') == "Mask" and all(T.mode_icon(m) in icons for m in ('MATERIAL', "CHANNEL:X", "MAP:X", 'MASK')), "the dropdown's labels and icons")
+check(T.M3D_OT_tex_view_mode.description(None, NS(mode="CHANNEL:HEIGHT")) == "Show: Height"
+      and "channel" in T.M3D_OT_tex_view_cycle.description(None, NS(kind='CHANNEL', delta=1)), "the display mode tooltips")
+
+# --- Painting keys that run: Lazy Mouse, Symmetry, Stencil, the brush by dragging, Bake Mesh Maps, Properties
+d_mat.m3d_layers.clear()
+LY.rebuild_all(d_mat)
+bpy.ops.m3d.tex_tool(tool='PAINT')
+brush_ = T.image_brush(bpy.context)
+lazy_ = brush_.use_smooth_stroke
+check(bpy.ops.m3d.tex_lazy() == {'FINISHED'} and brush_.use_smooth_stroke != lazy_, "D toggles Lazy Mouse")
+bpy.ops.m3d.tex_lazy()
+mirror_ = d_ob.data.use_mirror_x
+check(bpy.ops.m3d.tex_symmetry() == {'FINISHED'} and d_ob.data.use_mirror_x != mirror_, "L toggles Symmetry (X)")
+bpy.ops.m3d.tex_symmetry()
+check(bpy.ops.m3d.tex_stencil() == {'FINISHED'} and T.stencil_on(brush_) and T.tool_of(bpy.context) == 'PROJECTION', "S puts the brush texture on a stencil")
+check(bpy.ops.m3d.tex_stencil() == {'FINISHED'} and not T.stencil_on(brush_) and T.tool_of(bpy.context) == 'PAINT', "...and again takes it off")
+ups_ = bpy.context.tool_settings.image_paint.unified_paint_settings
+size_owner_ = ups_ if ups_.use_unified_size else brush_
+flow_owner_ = ups_ if ups_.use_unified_strength else brush_
+slot_ = NS(angle=0.0)
+size_owner_.size, brush_.hardness, flow_owner_.strength = 50, 0.5, 0.5
+start_ = (50, 0.5, 0.5, 0.0)
+text_ = T.drag_brush('SIZE_HARDNESS', size_owner_, flow_owner_, brush_, slot_, start_, 40, 60)
+check(size_owner_.size == 90 and abs(brush_.hardness - 0.7) < 1e-6 and flow_owner_.strength == 0.5 and text_.startswith("Size 90 px"),
+      "Ctrl+RMB drag: sideways the size, up and down the hardness (%s)" % text_)
+T.drag_brush('SIZE_HARDNESS', size_owner_, flow_owner_, brush_, slot_, start_, -100, -300)
+check(size_owner_.size == 1 and brush_.hardness == 0.0, "...both stay in range")
+text_ = T.drag_brush('FLOW_ANGLE', size_owner_, flow_owner_, brush_, slot_, start_, 60, 100)
+check(abs(flow_owner_.strength - 0.7) < 1e-6 and abs(slot_.angle - 1.0) < 1e-6 and text_.startswith("Flow 0.70"), "Ctrl+LMB drag: sideways the flow, up and down the angle (%s)" % text_)
+T.drag_brush('FLOW_ANGLE', size_owner_, flow_owner_, brush_, None, start_, 300, 0)
+check(flow_owner_.strength == 1.0, "...a brush without an alpha has no angle to turn")
+size_owner_.size, flow_owner_.strength = 50, 1.0
+with bpy.context.temp_override(workspace=tex_ws):
+    check(bpy.ops.m3d.tex_bake_mode(on=True) == {'FINISHED'} and tex_ws.m3d_page_right == "tex_bake", "Bake Mesh Maps shows the Bake page in the dock")
+    check("PROPERTIES_PT_m3d_tx_bake_back" in tex_shown("tex_bake"), "...with Back to Painting on it")
+    check(bpy.ops.m3d.tex_bake_mode(on=False) == {'FINISHED'} and tex_ws.m3d_page_right == "tex_layers", "Back to Painting shows the Layers")
+check(all(hasattr(bpy.ops.m3d, n) for n in ("tex_frame", "tex_layout", "tex_env_rotate", "tex_brush_drag")), "the other painting key operators exist")
+# the layer decides what Properties shows
+check(T.props_context(TCtx('PROPS')) == 'PAINT', "no layer: Properties - Paint")
+bpy.ops.m3d.layer_add(kind='FILL')
+check(T.props_context(TCtx('PROPS')) == 'FILL' and "PROPERTIES_PT_m3d_tx_layer" in tex_shown("tex_props")
+      and "PROPERTIES_PT_m3d_tx_tuning" not in tex_shown("tex_props"), "a fill layer: Properties - Fill with the layer's settings")
+bpy.ops.m3d.layer_folder_add()
+check(T.props_context(TCtx('PROPS')) == 'FOLDER', "a folder: Properties - Folder")
+bpy.ops.m3d.layer_add(kind='PAINT')
+check(T.props_context(TCtx('PROPS')) == 'PAINT' and "PROPERTIES_PT_m3d_tx_tuning" in tex_shown("tex_props")
+      and "PROPERTIES_PT_m3d_tx_layer" not in tex_shown("tex_props"), "a paint layer: Properties - Paint, the brush (the layer's own settings are one click away)")
+bpy.ops.m3d.layer_mask_add(fill='WHITE')
+LY.active_layer(d_mat).paint_mask = False
+bpy.context.scene.m3d_tex.props_mode = 'MASK'
+check(T.props_context(TCtx('PROPS')) == 'MASK' and "PROPERTIES_PT_m3d_tx_mask" in tex_shown("tex_props")
+      and "PROPERTIES_PT_m3d_tx_tuning" not in tex_shown("tex_props"), "asked for the mask: Properties - Mask")
+bpy.context.scene.m3d_tex.props_mode = 'AUTO'
+LY.active_layer(d_mat).paint_mask = True
+check(T.props_context(TCtx('PROPS')) == 'MASK' and {"PROPERTIES_PT_m3d_tx_mask", "PROPERTIES_PT_m3d_tx_tuning"} <= set(tex_shown("tex_props")),
+      "painting the mask: Properties - Mask with the brush too")
+LY.active_layer(d_mat).paint_mask = False
+bpy.context.scene.m3d_tex.props_mode = 'LAYER'
+check(T.props_context(TCtx('PROPS')) == 'LAYER' and "PROPERTIES_PT_m3d_tx_mask" not in tex_shown("tex_props"), "asked for the layer: its own settings")
+bpy.context.scene.m3d_tex.props_mode = 'AUTO'
+for ctx_kind_ in ('PAINT', 'FILL', 'MASK', 'FOLDER', 'LAYER'):
+    check(T.PROPS_TITLES[ctx_kind_], "Properties has a title for " + ctx_kind_)
+log = []
+T.draw_header_props(Rec(log), TCtx('PROPS'))
+check(any(r._kind == "label" and r._kw.get("text").startswith("Properties - ") for r in log) and any(r._kind == "prop" and r._args[1] == "props_mode" for r in log),
+      "the Properties header says what it shows and offers Layer / Mask")
+drop_tex_object(d_ob)
+
+# --- The old layout (a file saved before this one): its tray and six tabs show the same panels
+old_ob = new_tex_cube("OldCube")
+bpy.ops.m3d.layer_add(kind='FILL')
+tex_ws.m3d_layout = 0
+check(W.tabs_kind(TCtx()) == 'TEXTURE_OLD', "a Texture workspace with layout 0 uses the old tabs")
+old_panels = {}
+for page in [t.page for t in W.DOCK_TABS['TEXTURE_OLD']['RIGHT']] + ["tex_brushes"]:
+    side = 'LEFT' if page == "tex_brushes" else 'RIGHT'
+    tex_ws.m3d_page_left, tex_ws.m3d_page_right = ("tex_brushes", tex_ws.m3d_page_right) if side == 'LEFT' else (tex_ws.m3d_page_left, page)
+    names = [c.__name__ for c in tex_panels(page) if c.poll(TCtx(side))]
+    old_panels[page] = names
+    check(names and not any(n.endswith("_gate") for n in names), "old %s page shows panels: %s" % (page, names))
+    for cls in tex_panels(page):
+        if cls.__name__ in names:
+            try:
+                check_calls("old " + cls.__name__, draw_stub(cls, TCtx(side)))
+            except Exception as err:
+                check(False, "old %s draw: %r" % (cls.__name__, err))
+check({"PROPERTIES_PT_m3d_tx_stack", "PROPERTIES_PT_m3d_tx_layer", "PROPERTIES_PT_m3d_tx_channels"} <= set(old_panels["tex_layers"])
+      and "PROPERTIES_PT_m3d_tx_brush" in old_panels["tex_brushes"] and "PROPERTIES_PT_m3d_tx_grid" in old_panels["tex_brushes"]
+      and "PROPERTIES_PT_m3d_lib_browse" in old_panels["tex_library"] and "PROPERTIES_PT_m3d_tx_export_run" in old_panels["tex_export"]
+      and "PROPERTIES_PT_m3d_tx_environment" in old_panels["tex_display"], "...the Layers tab holds the stack, the layer and the channels again; the others as before: %s" % old_panels)
+tex_ws.m3d_layout = 1
+tex_ws.m3d_page_left = tex_ws.m3d_page_right = ""
+drop_tex_object(old_ob)
 
 # Images the user painted are kept with the file: packed when they have no file, written when they have one.
 base, rough, metal = (T.channel_slots(mat)[c][1] for c in ('BASE_COLOR', 'ROUGHNESS', 'METALLIC'))
@@ -2485,8 +2900,17 @@ bpy.ops.m3d.layer_mask_add(fill='WHITE')
 ctx = TCtx()
 tex_ws.m3d_page_right = "tex_layers"
 shown_names = [c.__name__ for c in tex_panels("tex_layers") if c.poll(ctx)]
-check({"PROPERTIES_PT_m3d_tx_stack", "PROPERTIES_PT_m3d_tx_layer", "PROPERTIES_PT_m3d_tx_mask", "PROPERTIES_PT_m3d_tx_channels"} <= set(shown_names),
-      "the Layers tab shows the stack, the layer, the mask and the channels: %s" % shown_names)
+check(shown_names == ["PROPERTIES_PT_m3d_tx_stack"], "the Layers tab shows the stack: %s" % shown_names)
+tex_scene_ = bpy.context.scene
+tex_scene_.m3d_tex.props_mode = 'LAYER'
+check({"PROPERTIES_PT_m3d_tx_layer"} <= set(tex_shown("tex_props")), "Properties shows the active layer's settings: %s %s %s" % (
+    tex_shown("tex_props"), T.props_context(TCtx('PROPS')), (bpy.context.mode, T.missing(bpy.context))))
+tex_scene_.m3d_tex.props_mode = 'MASK'
+check({"PROPERTIES_PT_m3d_tx_mask"} <= set(tex_shown("tex_props")), "...and its mask")
+tex_scene_.m3d_tex.props_mode = 'AUTO'
+tex_ws.m3d_page_right = "tex_settings"
+check({"PROPERTIES_PT_m3d_tx_channels", "PROPERTIES_PT_m3d_tx_maps"} <= set(tex_shown("tex_settings")), "Texture Set Settings shows the channels and the mesh maps")
+shown_names = ["PROPERTIES_PT_m3d_tx_stack", "PROPERTIES_PT_m3d_tx_layer", "PROPERTIES_PT_m3d_tx_mask", "PROPERTIES_PT_m3d_tx_channels"]
 for name in shown_names:
     cls = getattr(T, name)
     try:
@@ -2512,7 +2936,7 @@ LY.rebuild_all(mem_mat)
 check(not [n for n in mem_mat.node_tree.nodes if LY.TAG in n.keys()], "deleting every layer removes the chains")
 check(mem_mat.node_tree.nodes.get("%s.scratch" % LY.TAG) is None, "...and the scratch node (its image goes when no material uses it)")
 check(not tex_gated("tex_layers") and "PROPERTIES_PT_m3d_tx_stack" in tex_shown("tex_layers")
-      and "PROPERTIES_PT_m3d_tx_layer" not in tex_shown("tex_layers"), "no layers: the stack panel offers the add buttons only")
+      and "PROPERTIES_PT_m3d_tx_layer" not in tex_shown("tex_props"), "no layers: the stack panel offers the add buttons only")
 
 # ----------------------------------------------------------------------------------------------------
 # Phase 7a: mask stacks on layers (data, node chains, numpy == nodes, baked maps, Blur caches, Show Mask, migration,
@@ -2921,7 +3345,9 @@ bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
 setup([(k.id, {}) for k in MK.KINDS])
 mctx = TCtx()
 tex_ws.m3d_page_right = "tex_layers"
-check("PROPERTIES_PT_m3d_tx_mask" in tex_shown("tex_layers"), "the Mask panel is shown")
+bpy.context.scene.m3d_tex.props_mode = 'MASK'
+check("PROPERTIES_PT_m3d_tx_mask" in tex_shown("tex_props"), "the Mask panel is shown")
+bpy.context.scene.m3d_tex.props_mode = 'AUTO'
 shown_kinds = []
 for i, e in enumerate(mtop.mask_stack):
     mtop.mask_index = i
@@ -3649,8 +4075,14 @@ import m3d_library_data as LD
 check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in LIB.classes if not issubclass(c, bpy.types.PropertyGroup)),
       "Library classes registered")
 check(hasattr(bpy.types.Scene, "m3d_library") and {"category", "search", "mask_mode"} <= set(LIB.M3D_LibrarySettings.bl_rna.properties.keys())
-      and {i.identifier for i in LIB.M3D_LibrarySettings.bl_rna.properties["category"].enum_items} == {'MATERIALS', 'MASKS', 'BRUSHES', 'ALPHAS', 'MINE'},
-      "Scene library settings and the five categories")
+      and [i.identifier for i in LIB.M3D_LibrarySettings.bl_rna.properties["category"].enum_items]
+      == ['MATERIALS', 'SMART_MATERIALS', 'SMART_MASKS', 'BRUSHES', 'ALPHAS', 'ENVIRONMENTS', 'MINE'],
+      "Scene library settings and the seven categories")
+check({i.identifier: i.value for i in LIB.M3D_LibrarySettings.bl_rna.properties["category"].enum_items}
+      == {'MATERIALS': 0, 'SMART_MASKS': 1, 'BRUSHES': 2, 'ALPHAS': 3, 'MINE': 4, 'SMART_MATERIALS': 5, 'ENVIRONMENTS': 6},
+      "the numbers of the categories a file from before the smart ones saved are the same")
+check(all(i.icon != 'NONE' and i.description for i in LIB.M3D_LibrarySettings.bl_rna.properties["category"].enum_items),
+      "every category has an icon and a tooltip")
 check(LIB.library_dir().startswith(TEST_CONFIG) and LIB.library_dir().replace("\\", "/").endswith("datafiles/m3d_library"),
       "the library is in the user data folder: %s" % LIB.library_dir())
 check('UNDO' in LIB.M3D_OT_library_apply.bl_options, "applying an item is an undo step")
@@ -3659,15 +4091,20 @@ if bpy.app.timers.is_registered(LIB._tick):
     bpy.app.timers.unregister(LIB._tick)
 
 # --- The starter items are plain data: names, values and structure
-lb_mats = {e.item["name"]: e for e in LIB.STARTERS if e.item["type"] == 'MATERIAL'}
+lb_every = {e.item["name"]: e for e in LIB.STARTERS if e.item["type"] == 'MATERIAL'}
+lb_plain = {n: e for n, e in lb_every.items() if LIB.is_plain(e)}          # one fill layer each
+lb_mats = {n: e for n, e in lb_every.items() if not LIB.is_plain(e)}       # the smart materials: folders of fills with generator masks
 lb_masks = {e.item["name"]: e for e in LIB.STARTERS if e.item["type"] == 'MASK'}
-check({"Painted Metal", "Rusty Iron", "Brushed Steel", "Chrome", "Gold", "Copper", "Rubber", "Plastic", "Dirty Plastic", "Concrete", "Dusty",
-       "Snow Cover", "Mud"} <= set(lb_mats), "the starter materials: %s" % sorted(lb_mats))
+check({"Painted Metal", "Rusty Iron", "Brushed Steel", "Copper", "Dirty Plastic", "Concrete", "Dusty", "Snow Cover", "Mud"} <= set(lb_mats),
+      "the starter smart materials: %s" % sorted(lb_mats))
+check({"Iron", "Steel", "Aluminium", "Raw Copper", "Brass", "Gold", "Chrome", "Plastic", "White Plastic", "Black Plastic", "Rubber", "Wood",
+       "Dark Wood", "Ceramic", "Matte Black"} <= set(lb_plain) and len(lb_plain) >= 12, "the starter plain materials (base metals, plastics, wood, rubber): %s" % sorted(lb_plain))
+check(set(lb_plain).isdisjoint(lb_mats), "a material is plain or smart")
 check({"Edge Wear", "Dirt in Cavities", "Top-down Dust", "Noise Breakup", "Thickness Glow"} <= set(lb_masks) and len(lb_masks) >= 5,
       "the starter mask presets: %s" % sorted(lb_masks))
 check(len({e.ref for e in LIB.STARTERS}) == len(LIB.STARTERS) and all(e.directory is None for e in LIB.STARTERS), "starter ids are unique, they need no folder")
 check(all(json.loads(json.dumps(e.item)) == e.item and e.item["format"] == 1 and e.item.get("description") for e in LIB.STARTERS), "starter items are JSON with a description")
-banned = re.compile(r"substance|smart ?material|smart ?mask|adobe|painter|megascans|quixel", re.I)
+banned = re.compile(r"substance|adobe|painter|megascans|quixel", re.I)
 check(not banned.search(json.dumps([e.item for e in LIB.STARTERS])) and not banned.search(open(LIB.__file__).read() + open(LD.__file__).read()),
       "neutral names only")
 KIND_SET = {'PAINT', 'FILL', 'FOLDER'}
@@ -3695,11 +4132,14 @@ def lib_valid_layer(spec):
     return ok and all(lib_valid_layer(k) for k in spec.get("layers", ()))
 
 
-check(all(lib_valid_layer(e.item["layer"]) and e.item["layer"]["kind"] == 'FOLDER' for e in lb_mats.values()), "starter materials are folders of valid layers")
+check(all(lib_valid_layer(e.item["layer"]) and e.item["layer"]["kind"] == 'FOLDER' for e in lb_mats.values()), "starter smart materials are folders of valid layers")
+check(all(lib_valid_layer(e.item["layer"]) and e.item["layer"]["kind"] == 'FILL' and e.item["layer"]["name"] == n and not e.item["layer"].get("mask")
+          and set(e.item["layer"]["channels"]) == {'BASE_COLOR', 'ROUGHNESS', 'METALLIC'} for n, e in lb_plain.items()),
+      "starter plain materials are one valid fill layer with Base Color, Roughness and Metallic, no mask")
 check('"image' not in json.dumps([e.item for e in LIB.STARTERS]) and all(isinstance(v, (float, list)) or v is None for e in lb_mats.values()
       for k in e.item["layer"]["layers"] for v in k["channels"].values()), "...made of fills and mask generators, no image files")
 check(all(all(lib_valid_effect(x) for x in e.item["mask"]) and e.item["mask"] for e in lb_masks.values()), "starter mask presets hold valid effects")
-first = lambda name: lb_mats[name].item["layer"]["layers"][0]["channels"]
+first = lambda name: (lb_every[name].item["layer"] if LIB.is_plain(lb_every[name]) else lb_every[name].item["layer"]["layers"][0])["channels"]
 check(all(first(n)["METALLIC"] == 1.0 for n in ("Chrome", "Gold", "Copper", "Brushed Steel", "Aluminium"))
       and all(first(n)["METALLIC"] == 0.0 for n in ("Rubber", "Plastic", "Matte Black", "Ceramic", "Concrete"))
       and first("Chrome")["ROUGHNESS"] < 0.1 and first("Plastic")["ROUGHNESS"] < 0.25 and first("Rubber")["ROUGHNESS"] > 0.7
@@ -3776,6 +4216,20 @@ for entry in lb_mats.values():
     check(np.abs(LY.composite(lb_mat, 'BASE_COLOR', 64) - look_before).max() > 1e-3, "%s changes the look" % name)
     check(all(not MK.missing_maps(l) for l in lb_mat.m3d_layers), "%s: the generators have their maps" % name)
 check(max(lb_times) < 10.0, "applying is quick (%.2f s at most)" % max(lb_times))
+# --- Plain materials: one Fill layer, named after the item, on top of the stack; no folder, no maps, one rebuild
+for name, entry in lb_plain.items():
+    spec = entry.item["layer"]
+    n_before, look_before = len(lb_mat.m3d_layers), LY.composite(lb_mat, 'BASE_COLOR', 32).copy()
+    lb_counts.update(rebuild=0, bake=0)
+    res = bpy.ops.m3d.library_apply(item=entry.ref)
+    layer = LY.active_layer(lb_mat)
+    check(res == {'FINISHED'} and layer.name.startswith(name) and layer.kind == 'FILL' and layer.parent == "" and lb_mat.m3d_layers[-1].uid == layer.uid
+          and len(lb_mat.m3d_layers) == n_before + 1 and not layer.mask_stack, "%s: one fill layer on top of the stack" % name)
+    check(lib_values_ok(layer, spec) and well_formed(lb_mat), "%s: its Base Color, Roughness and Metallic are the item's" % name)
+    check(lb_counts["rebuild"] == 1 and lb_counts["bake"] == 0, "%s: one rebuild, no bake (%s)" % (name, lb_counts))
+check(LIB.M3D_OT_library_apply.description(None, NS(item="starter:steel")).endswith("Added as one Fill layer on top of the layers")
+      and LIB.M3D_OT_library_apply.description(None, NS(item="starter:rusty_iron")).endswith("Added as a new folder on top of the layers"),
+      "the tooltip says a plain material is one fill layer and a smart one a folder")
 print("library: %d starter materials applied, the first (bakes the maps) %.2f s, the others %.2f s at most" % (len(lb_times), lb_times[0], max(lb_times[1:])))
 lb_counts.update(rebuild=0, bake=0)
 check(bpy.ops.m3d.library_apply(item="starter:painted_metal") == {'FINISHED'} and LY.active_layer(lb_mat).name == "Painted Metal 2"
@@ -3785,7 +4239,7 @@ check(bpy.ops.m3d.library_apply(item="starter:chrome") == {'FINISHED'} and np.ab
 lb_ob2, lb_mat2 = fresh_cube("NoUV", '64')
 lb_ob2.data.uv_layers.remove(lb_ob2.data.uv_layers[0])
 check(bpy.ops.m3d.library_apply(item="starter:rusty_iron") == {'CANCELLED'} and not lb_mat2.m3d_layers, "a generator material on a mesh without UVs is refused and leaves the stack alone")
-check(bpy.ops.m3d.library_apply(item="starter:gold") == {'FINISHED'}, "a material without generators needs no UVs")
+check(bpy.ops.m3d.library_apply(item="starter:gold") == {'FINISHED'}, "a plain material needs no UVs")
 lb_ob, lb_mat = fresh_cube("Lib", '64')
 lb_ob.m3d_bake.resolution, lb_ob.m3d_bake.samples, lb_ob.m3d_bake.margin = '128', 4, 4
 for entry in lb_mats.values():
@@ -3825,19 +4279,19 @@ bpy.ops.m3d.layer_mask_remove()
 check(bpy.ops.m3d.library_apply(item="starter:noise_breakup", mode='ADD') == {'FINISHED'} and layer.mask_stack[0].blend == 'MIX' and len(layer.mask_stack) == 1,
       "Add on Top without a mask is the same as Replace")
 check(bpy.ops.m3d.library_apply(item="starter:noise_breakup", mode='REPLACE') == {'FINISHED'} and len(layer.mask_stack) == 1, "Replace with the same preset keeps one effect")
-LY.freeze_folder(lb_mat, LY.index_of(lb_mat, named(lb_mat, "Chrome").uid), 32)
-select(lb_mat, "Chrome")
+LY.freeze_folder(lb_mat, LY.index_of(lb_mat, named(lb_mat, "Copper").uid), 32)
+select(lb_mat, "Copper")
 check(LY.in_frozen(LY.active_layer(lb_mat)) is False and bpy.ops.m3d.library_apply(item="starter:speckle", mode='ADD') == {'FINISHED'}, "a frozen folder itself can be masked")
-lb_mat.m3d_layer_index = LY.index_of(lb_mat, LY.descendants(named(lb_mat, "Chrome"))[0].uid)
+lb_mat.m3d_layer_index = LY.index_of(lb_mat, LY.descendants(named(lb_mat, "Copper"))[0].uid)
 check(bpy.ops.m3d.library_apply(item="starter:speckle") == {'CANCELLED'}, "a layer inside a frozen folder is refused")
-LY.unfreeze_folder(lb_mat, LY.index_of(lb_mat, named(lb_mat, "Chrome").uid))
+LY.unfreeze_folder(lb_mat, LY.index_of(lb_mat, named(lb_mat, "Copper").uid))
 check(bpy.ops.m3d.library_apply(item="starter:nothing") == {'CANCELLED'} and bpy.ops.m3d.library_apply(item="user:nothing") == {'CANCELLED'}, "an item that is not there is refused")
 LY.rebuild_all, T.bake_maps = _rebuild_all, _bake_maps
 lb_ob2, lb_mat2 = fresh_cube("NoLayers", '64')
 check(bpy.ops.m3d.library_apply(item="starter:edge_wear") == {'CANCELLED'} and not lb_mat2.m3d_layers, "a mask preset needs a layer")
 lb_ob2.data.materials.clear()
 check(bpy.ops.m3d.library_apply(item="starter:gold") == {'FINISHED'} and lb_ob2.active_material is not None
-      and [l.name for l in lb_ob2.active_material.m3d_layers] == ["Surface", "Gold"], "a mesh without a material gets one")
+      and [l.name for l in lb_ob2.active_material.m3d_layers] == ["Gold"], "a mesh without a material gets one")
 
 # --- Save your own: a paint layer, fills, masks (paint, generators, filters) in nested folders; delete it, apply it back: the same pixels
 rt_ob, rt_mat = fresh_cube("RT", '64')
@@ -3990,20 +4444,20 @@ check(bpy.ops.m3d.library_apply(item="user:bad_layer") == {'CANCELLED'} and len(
 shutil.rmtree(os.path.join(LIB.library_dir(), "user", "bad_json"))
 
 # --- Thumbnails: made from the item on a preview sphere (a Cycles render), cached in the user folder, the scene put back
-LIB.STARTERS, lib_starters = (lb_mats["Chrome"], lb_masks["Edge Wear"]), LIB.STARTERS
+LIB.STARTERS, lib_starters = (lb_every["Chrome"], lb_masks["Edge Wear"]), LIB.STARTERS
 LIB._user["entries"] = None
 engine_before, scenes_before, objects_before = bpy.context.scene.render.engine, len(bpy.data.scenes), len(bpy.data.objects)
 lib_pending = LIB.pending()
 check(sorted(e.ref for e in lib_pending) == sorted(["starter:chrome", "starter:edge_wear", "user:bad_layer", "user:my_mask", "user:outer", "user:rock"]),
       "all of them wait for a thumbnail: %s" % [e.ref for e in lib_pending])
-check(isinstance(LIB.thumb_icon(lb_mats["Chrome"]), int) and "ph:starter:chrome" in LIB.icons() and "t:starter:chrome:0" not in LIB.icons(), "a placeholder tile meanwhile")
-check(LIB.thumb_path(lb_mats["Chrome"]).startswith(os.path.join(LIB.library_dir(), "thumbs")) and LIB.thumb_path(rt_entry) == os.path.join(rt_entry.directory, "thumb.png"),
+check(isinstance(LIB.thumb_icon(lb_every["Chrome"]), int) and "ph:starter:chrome" in LIB.icons() and "t:starter:chrome:0" not in LIB.icons(), "a placeholder tile meanwhile")
+check(LIB.thumb_path(lb_every["Chrome"]).startswith(os.path.join(LIB.library_dir(), "thumbs")) and LIB.thumb_path(rt_entry) == os.path.join(rt_entry.directory, "thumb.png"),
       "starter thumbnails are cached in thumbs, yours next to the item")
 t0 = time.time()
 made = LIB.generate_pending()
 print("thumbnails:", made, "made in %.1f s" % (time.time() - t0))
 check(made == 5 and LIB._gen["failed"] == {"user:bad_layer"}, "five thumbnails made, the damaged item has none (%s, %s)" % (made, LIB._gen["failed"]))
-for e in (lb_mats["Chrome"], lb_masks["Edge Wear"], rt_entry, rt_mask_entry):
+for e in (lb_every["Chrome"], lb_masks["Edge Wear"], rt_entry, rt_mask_entry):
     path = LIB.thumb_path(e)
     check(os.path.isfile(path), "thumbnail of %s" % e.ref)
     if os.path.isfile(path):
@@ -4019,10 +4473,10 @@ check(not [d.name for c in (bpy.data.scenes, bpy.data.objects, bpy.data.meshes, 
 lib_thumb_files = os.listdir(os.path.join(LIB.library_dir(), "thumbs"))
 check(len(lib_thumb_files) == 2 and not any("_tmp" in f for f in lib_thumb_files), "two starter thumbnails in the cache, no half-written files: %s" % lib_thumb_files)
 check(LIB.pending() == [] and LIB._gen["done"] and not LIB._gen["running"] and LIB.generate_pending() == 0, "cached: nothing is made twice")
-LIB.thumb_icon(lb_mats["Chrome"]), LIB.thumb_icon(lb_masks["Edge Wear"])
+LIB.thumb_icon(lb_every["Chrome"]), LIB.thumb_icon(lb_masks["Edge Wear"])
 check("t:starter:chrome:1" in LIB.icons() and "t:starter:edge_wear:1" in LIB.icons(), "the tiles show the thumbnails now")
 # the timer does the same a step at a time; saving takes the preview scene away
-for p in (LIB.thumb_path(lb_mats["Chrome"]), LIB.thumb_path(lb_masks["Edge Wear"])):
+for p in (LIB.thumb_path(lb_every["Chrome"]), LIB.thumb_path(lb_masks["Edge Wear"])):
     os.remove(p)
 LIB._gen["done"] = False
 LIB.start_thumbnails()
@@ -4075,11 +4529,11 @@ bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
 shutil.rmtree(S_alphas, ignore_errors=True)
 
 # --- The Library tab draws in every category, with and without the mode it needs; Save to Library buttons in the Layer and Mask panels
-lctx = TCtx()
+lctx = TCtx('ASSETS')
 lib_s = bpy.context.scene.m3d_library
 for mode in ('TEXTURE_PAINT', 'OBJECT'):
     bpy.ops.object.mode_set(mode=mode)
-    for cat in ('MATERIALS', 'MASKS', 'BRUSHES', 'ALPHAS', 'MINE'):
+    for cat in ('MATERIALS', 'SMART_MATERIALS', 'SMART_MASKS', 'BRUSHES', 'ALPHAS', 'ENVIRONMENTS', 'MINE'):
         lib_s.category = cat
         for search in ("", "gold", "zzzz"):
             lib_s.search = search
@@ -4095,18 +4549,27 @@ bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
 lib_s.category = 'MATERIALS'
 log = draw_stub(LIB.PROPERTIES_PT_m3d_lib_browse, lctx)
 tiles = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.library_apply"]
-check(len(tiles) == len(lb_mats) and {r.values()["item"] for r in tiles} == {e.ref for e in lb_mats.values()}
-      and all("icon_value" in r._kw for r in tiles) and all(r._kw.get("text") == "" for r in tiles), "the Materials grid: a tile with a thumbnail icon per material")
-check(sum(1 for r in log if r._kind == "label" and r._kw.get("text") in lb_mats) == len(lb_mats), "...with the name under each")
-check(any(r._kind == "prop" and r._args[1] == "category" for r in log) and any(r._kind == "prop" and r._args[1] == "search" for r in log), "...the categories and the search field")
+check(len(tiles) == len(lb_plain) and {r.values()["item"] for r in tiles} == {e.ref for e in lb_plain.values()}
+      and all("icon_value" in r._kw for r in tiles) and all(r._kw.get("text") == "" for r in tiles), "the Materials grid: a tile with a thumbnail icon per plain material")
+check(sum(1 for r in log if r._kind == "label" and r._kw.get("text") in lb_plain) == len(lb_plain), "...with the name under each")
+check(any(r._kind == "prop" and r._args[1] == "category" and r._kw.get("icon_only") for r in log) and any(r._kind == "prop" and r._args[1] == "search" for r in log),
+      "...the category icons and the search field")
+lib_s.category = 'SMART_MATERIALS'
+log = draw_stub(LIB.PROPERTIES_PT_m3d_lib_browse, lctx)
+check({r.values()["item"] for r in log if r._kind == "operator" and r._args[0] == "m3d.library_apply"} == {e.ref for e in lb_mats.values()},
+      "the Smart Materials grid: the folders of fills with generator masks")
+lib_s.category = 'ENVIRONMENTS'
+log = draw_stub(LIB.PROPERTIES_PT_m3d_lib_browse, lctx)
+check(any(r._kind == "operator" and r._args[0] == "m3d.env_pick" for r in log) or any(r._kind == "label" for r in log), "the Environments category draws")
+lib_s.category = 'MATERIALS'
 lib_s.search = "gold"
 log = draw_stub(LIB.PROPERTIES_PT_m3d_lib_browse, lctx)
 check([r.values()["item"] for r in log if r._kind == "operator" and r._args[0] == "m3d.library_apply"] == ["starter:gold"], "search filters the tiles")
 lib_s.search = ""
-lib_s.category = 'MASKS'
+lib_s.category = 'SMART_MASKS'
 log = draw_stub(LIB.PROPERTIES_PT_m3d_lib_browse, lctx)
 check(len([r for r in log if r._kind == "operator" and r._args[0] == "m3d.library_apply"]) == len(lb_masks) and any(r._kind == "prop" and r._args[1] == "mask_mode" for r in log),
-      "the Masks grid and the Replace / Add on Top choice")
+      "the Smart Masks grid and the Replace / Add on Top choice")
 lib_s.mask_mode = 'ADD'
 log = draw_stub(LIB.PROPERTIES_PT_m3d_lib_browse, lctx)
 check({r.values()["mode"] for r in log if r._kind == "operator" and r._args[0] == "m3d.library_apply"} == {'ADD'}, "...the tiles apply the chosen way")
@@ -4128,6 +4591,7 @@ check({r.values()["item"] for r in log if r._kind == "operator" and r._args[0] =
       "Your Items: rename and delete for each of your items, none for a starter")
 lib_s.category = 'MATERIALS'
 bpy.ops.m3d.library_apply(item="starter:chrome")
+bpy.ops.m3d.library_apply(item="starter:painted_metal")
 log = draw_stub(T.PROPERTIES_PT_m3d_tx_layer, lctx)
 check(any(r._kind == "operator" and r._args[0] == "m3d.library_save" and r.values()["kind"] == 'MATERIAL' for r in log), "the Layer panel has Save to Library (for a folder)")
 tx_mat.m3d_layer_index = 0
@@ -5874,7 +6338,8 @@ for kind_, (wname_, *_rest) in W.KINDS.items():
     check("m3d.workspace_reset" in names_ and "wm.save_homefile" in names_, "%s settings: reset and save as default" % kind_)
     check(any(o[0] == "screen.userpref_show" and o[1].get("section") == 'KEYMAP' for o in ops_), "%s settings: keyboard shortcuts" % kind_)
     shown_ = [o[1]["tab"] for o in ops_ if o[0] == "m3d.dock_tab_toggle"]
-    want_ = [t.id for t in W.DOCK_TABS[kind_]['RIGHT'] + W.DOCK_TABS[kind_]['LEFT']]
+    tabs_ = W.DOCK_TABS[W.tabs_kind(WsCtx(ws_))]   # (Texture: the table of its layout; a page without a tab has no toggle)
+    want_ = [t.id for t in tabs_['RIGHT'] + tabs_['LEFT'] if not t.hidden]
     check(shown_ == want_, "%s settings: a toggle per dock tab (%s)" % (kind_, shown_))
     log = []
     W.M3D_PT_workspace_settings.draw(type("Inst", (), {"layout": Rec(log)})(), WsCtx(ws_))
@@ -5897,9 +6362,9 @@ check(shading_ is not None and W.workspace_kind(shading_) is None, "Shading is a
 ops_ = ws_ops(ws_settings_log(shading_))
 check("m3d.workspace_reset" in [o[0] for o in ops_] and not any(o[0] == "m3d.dock_tab_toggle" for o in ops_), "extra workspace: reset, no dock tabs")
 
-# Show Shelf: on in every workspace of the factory startup but Sculpt (the top bar then has two rows).
+# Show Shelf: on in every workspace of the factory startup but Sculpt and Texture (the top bar then has two rows).
 for ws_ in bpy.data.workspaces:
-    want_ = W.workspace_kind(ws_) != 'SCULPT'
+    want_ = W.workspace_kind(ws_) not in {'SCULPT', 'TEXTURE'}
     check(ws_.m3d_show_shelf == want_, "%s: Show Shelf defaults to %s" % (ws_.name, want_))
 
 # Brush tiles: every brush of the tray grids has a thumbnail (icon ids are 0 without a GPU, so look at the previews

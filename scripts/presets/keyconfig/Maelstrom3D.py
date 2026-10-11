@@ -135,12 +135,35 @@ OVERRIDES = {
         _kmi("wm.context_toggle_enum", 'N', props={"data_path": "tool_settings.sculpt.brush.direction",
                                                     "value_1": 'ADD', "value_2": 'SUBTRACT'}),
     ],
-    # Texture paint (3D view and 2D view): colour swap moves to Shift+X (X is hold-to-snap here), C cycles the channel.
+    # Texture paint (3D view and 2D view), the keys of a dedicated painting app: 1-6 the tools of the tool strip (Paint, Eraser,
+    # Projection, Polygon Fill, Smudge, Clone), P the picker; M the material, C / Shift+C the next / previous channel and
+    # B / Shift+B the next / previous baked mesh map shown on their own (the view under the mouse); D Lazy Mouse, L Symmetry
+    # (X), S Stencil (the stencil keys are Blender's: RMB moves, Shift+RMB scales, Ctrl+RMB turns it), X swaps the colors
+    # (on a mask: black and white), [ ] the size; Ctrl+RMB drag size (sideways) and hardness (up and down), Ctrl+LMB drag
+    # flow and angle, Shift+RMB drag turns the environment; Alt+Q isolates the texture set, Ctrl+Shift+B Bake Mesh Maps,
+    # Ctrl+Shift+E Export Textures, F frames. Polygon Fill's click (m3d.tex_polyfill) goes first: it only runs with that tool.
     "Image Paint": [
-        ("REMOVE", {"type": 'X', "value": 'PRESS'}, None),
-        _kmi("paint.brush_colors_flip", 'X', shift=True),
-        _kmi("m3d.tex_channel_cycle", 'C', props={"delta": 1}),
-        _kmi("m3d.tex_channel_cycle", 'C', props={"delta": -1}, shift=True),
+        _kmi("m3d.tex_polyfill", 'LEFTMOUSE'),
+        *(_kmi("m3d.tex_tool", k, props={"tool": tool}) for k, tool in (
+            ('ONE', 'PAINT'), ('TWO', 'ERASER'), ('THREE', 'PROJECTION'), ('FOUR', 'POLYFILL'), ('FIVE', 'SMUDGE'),
+            ('SIX', 'CLONE'))),
+        _kmi("paint.sample_color", 'P', props={"merged": False}),
+        _kmi("m3d.tex_view_mode", 'M', props={"mode": 'MATERIAL'}),
+        _kmi("m3d.tex_view_cycle", 'C', props={"kind": 'CHANNEL', "delta": 1}),
+        _kmi("m3d.tex_view_cycle", 'C', props={"kind": 'CHANNEL', "delta": -1}, shift=True),
+        _kmi("m3d.tex_view_cycle", 'B', props={"kind": 'MAP', "delta": 1}),
+        _kmi("m3d.tex_view_cycle", 'B', props={"kind": 'MAP', "delta": -1}, shift=True),
+        _kmi("m3d.tex_lazy", 'D'),
+        _kmi("m3d.tex_symmetry", 'L'),
+        _kmi("m3d.tex_stencil", 'S'),
+        _kmi("paint.brush_colors_flip", 'X'),
+        _kmi("m3d.tex_brush_drag", 'RIGHTMOUSE', props={"mode": 'SIZE_HARDNESS'}, ctrl=True),
+        _kmi("m3d.tex_brush_drag", 'LEFTMOUSE', props={"mode": 'FLOW_ANGLE'}, ctrl=True),
+        _kmi("m3d.tex_env_rotate", 'RIGHTMOUSE', shift=True),
+        _kmi("m3d.tex_isolate", 'Q', alt=True),
+        _kmi("m3d.tex_bake_mode", 'B', props={"on": True}, ctrl=True, shift=True),
+        _kmi("wm.call_panel", 'E', props={"name": "M3D_PT_tex_export"}, ctrl=True, shift=True),
+        _kmi("m3d.tex_frame", 'F'),
     ],
     # Rigging: Ctrl+E extrudes a bone right away (Industry Compatible only switches tools); P parents and Shift+P
     # unparents bones in Edit Mode already; Shift+N is the naming marking menu in Edit and Pose Mode (Ctrl+N is New Scene).
@@ -301,14 +324,19 @@ def selection_modifiers(keyconfig_data):
     return keyconfig_data
 
 
+# Items that go before the keymap's own (a key does what the first item of the keymap that can run does).
+FIRST = {"m3d.tex_polyfill"}
+
+
 def apply_overrides(keyconfig_data, overrides):
     for km_name, _km_args, km_content in keyconfig_data:
         new_items = overrides.get(km_name)
         if not new_items:
             continue
-        taken = {_key(args) for _, args, _ in new_items}
+        taken = {_key(args) for idname, args, _ in new_items if idname not in FIRST}   # (a FIRST item sits on a key that stays)
         km_content["items"][:] = [it for it in km_content["items"] if _key(it[1]) not in taken]
-        km_content["items"].extend(it for it in new_items if it[0] != "REMOVE")
+        km_content["items"][:0] = [it for it in new_items if it[0] in FIRST]
+        km_content["items"].extend(it for it in new_items if it[0] != "REMOVE" and it[0] not in FIRST)
     return keyconfig_data
 
 

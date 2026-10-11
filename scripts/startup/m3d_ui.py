@@ -455,6 +455,8 @@ MENUS = {
         op("Texture Paint Mode", "object.mode_set", 'TPAINT_HLT', mode='TEXTURE_PAINT'),
         op("Object Mode", "object.mode_set", 'OBJECT_DATAMODE', mode='OBJECT'),
         SEP,
+        *(op("%s (%s)" % (label, key), "m3d.tex_tool", icon, tool=tool) for tool, label, key, icon, _what in m3d_texture.TOOLS),
+        SEP,
         *(op(label, "brush.asset_activate", modes={'PAINT_TEXTURE'}, **m3d_texture.brush_props(name))
           for label, name in m3d_texture.BRUSHES),
         SEP,
@@ -499,12 +501,14 @@ MENUS = {
         op("New Image", "image.new", 'FILE_NEW'),
     ]),
     "M3D_MT_bake": ("Bake", [
+        op("Bake Mesh Maps (Ctrl+Shift+B)", "m3d.tex_bake_mode", 'RENDER_STILL', on=True),
         op("Bake Maps", "m3d.tex_bake", 'RENDER_STILL'),
         op("Bake All Groups", "m3d.bg_bake_all", 'RENDER_ANIMATION'),
         op("Auto-Pair by Name", "m3d.hp_auto_pair", 'LINKED'),
         op("Use Selected as High Poly", "m3d.tex_bake_pick", 'EYEDROPPER'),
     ]),
     "M3D_MT_export": ("Export", [
+        op("Export Textures... (Ctrl+Shift+E)", "wm.call_panel", 'EXPORT', name="M3D_PT_tex_export"),
         op("Export Textures", "m3d.tex_export", 'EXPORT'),
         op("Save All Images", "m3d.tex_save_all", 'FILE_TICK'),
         sub("Export Scene", "TOPBAR_MT_file_export", 'EXPORT'),
@@ -901,8 +905,11 @@ def draw_file_buttons(layout):
     row.operator("wm.save_mainfile", text="", icon='FILE_TICK')
 
 
-def draw_workspace_picker(layout, context):
+def draw_workspace_picker(layout, context, extra=None):
+    """The workspace menu and Settings at the right end of a Status Line; `extra(layout)` draws more buttons first."""
     layout.separator_spacer()
+    if extra is not None:
+        extra(layout)
     layout.label(text="Workspace:")
     layout.template_ID(context.window, "workspace", new="workspace.add", unlink="workspace.delete")
     layout.popover("M3D_PT_workspace_settings", text="Settings", icon='PREFERENCES')

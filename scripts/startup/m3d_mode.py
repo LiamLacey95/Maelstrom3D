@@ -1246,9 +1246,11 @@ def m3d_startup_layout(*_args, screens=None):
     if bpy.app.background:
         return  # No UI to set up (changing regions without a window leaks).
     from m3d_workspace import dock_tabs, side_of_area, workspace_kind
+    # (the Texture workspace of the new layout has no tool header: the Status Line is its context toolbar)
     tool_header = {s.name for ws in bpy.data.workspaces if workspace_kind(ws) in {'SCULPT', 'TEXTURE'}
-                   for s in ws.screens}
+                   and not (workspace_kind(ws) == 'TEXTURE' and ws.m3d_layout >= 1) for s in ws.screens}
     kind_of = {s.name: workspace_kind(ws) or 'MODEL' for ws in bpy.data.workspaces for s in ws.screens}
+    new_texture = {s.name for ws in bpy.data.workspaces if workspace_kind(ws) == 'TEXTURE' and ws.m3d_layout >= 1 for s in ws.screens}
     for screen in screens or bpy.data.screens:
         for area in screen.areas:
             space = area.spaces.active
@@ -1272,6 +1274,8 @@ def m3d_startup_layout(*_args, screens=None):
                 space.language = 'mel'
             elif area.type == 'IMAGE_EDITOR' and kind_of.get(screen.name) == 'RENDER':
                 space.show_region_ui = False   # The Render View needs no sidebar.
+            elif area.type == 'IMAGE_EDITOR' and screen.name in new_texture:
+                space.show_region_tool_header = False   # (Blender's startup defaults show it: the Status Line is the toolbar)
     bpy.app.timers.register(_timeline_controls_below, first_interval=0.3)
 
 

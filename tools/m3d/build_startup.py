@@ -150,9 +150,90 @@ def phase2_uv():
     ws.m3d_page_right = "uv_unwrap"
 
 
+def move_edge(screen, at, delta):
+    """Move the area edge that is at `at` (x, y) by `delta` pixels (right or up when positive). Moving an edge needs the mouse
+    on it (no active region): put it there with a simulated event first. A generator: `yield from` it."""
+    window().event_simulate(type='MOUSEMOVE', value='NOTHING', x=int(at[0]), y=int(at[1]))
+    yield 0.3
+    if int(delta):
+        with bpy.context.temp_override(window=window(), screen=screen):
+            bpy.ops.screen.area_move(x=int(at[0]), y=int(at[1]), delta=int(delta))
+        yield 0.3
+
+
+def texture_old_layout(screen):
+    """From Blender's own Texture workspace (the paint view left of the 3D view, the Outliner over the Properties editor on the
+    right) to the layout of the files made before the redesign: a brush tray, the 3D view, the paint view and the wider dock."""
+    paint = areas(screen, 'IMAGE_EDITOR')[0]
+    run(bpy.ops.screen.area_split, paint, direction='VERTICAL', factor=0.3)
+    yield 0.3
+    tray, left = areas(screen, 'IMAGE_EDITOR')[:2]   # The new area is a copy of the paint view, left of it.
+    right = areas(screen, 'VIEW_3D')[0]
+    tray.ui_type = 'PROPERTIES'
+    left.ui_type = 'VIEW_3D'
+    right.ui_type = 'IMAGE_EDITOR'
+    yield 0.3
+    dock = areas(screen, 'PROPERTIES')[-1]
+    view = areas(screen, 'VIEW_3D')[0]
+    for edge, delta in (((dock.x - 1, dock.y + dock.height // 2), -DOCK_WIDER),
+                        ((view.x + view.width + 1, view.y + view.height // 2), TEXTURE_VIEW_WIDER)):
+        yield from move_edge(screen, edge, delta)
+
+
+def texture_new_layout(screen):
+    """The Texture workspace of the redesign, left to right: the tool strip, Assets, the 3D view, the 2D paint view, and a column of
+    the Texture Set List, the Layers | Texture Set Settings dock and Properties; the dock strip at the far right. Starts from the old
+    layout (a brush tray left, the Outliner over the dock on the right): the Outliner is closed, the right dock is cut into the
+    column and the strip, the column into three, the tray into the tool strip and Assets (the edges are placed afterwards, see
+    texture_place_edges)."""
+    run(bpy.ops.screen.area_close, areas(screen, 'OUTLINER')[0])   # the dock gets the whole height of the right edge
+    yield 0.3
+    dock = areas(screen, 'PROPERTIES')[-1]
+    run(bpy.ops.screen.area_split, dock, direction='VERTICAL', factor=0.88)
+    yield 0.3
+    column = sorted(areas(screen, 'PROPERTIES'), key=lambda a: a.x)[-2]   # the left part of the split: the column
+    run(bpy.ops.screen.area_split, column, direction='HORIZONTAL', factor=0.5)
+    yield 0.3
+    column = [a for a in areas(screen, 'PROPERTIES') if a.x == column.x]
+    run(bpy.ops.screen.area_split, max(column, key=lambda a: a.y), direction='HORIZONTAL', factor=0.5)
+    yield 0.3
+    run(bpy.ops.screen.area_split, areas(screen, 'PROPERTIES')[0], direction='VERTICAL', factor=0.2)
+    yield 0.3
+
+
+# Where the edges go, as shares of the window width: the end of the tool strip, of Assets, of the 3D view, of the 2D view, of the
+# right column. The right column's height is shared 15 : 48 : 37 between the Texture Set List, the dock and Properties.
+TEXTURE_FRACTIONS = {"tools": 0.022, "assets": 0.147, "view3d": 0.512, "view2d": 0.808, "column": 0.978}
+TEXTURE_COLUMN = (0.37, 0.145)   # the share of the column's height under the top of Properties, and the Texture Set List's share of it
+
+
+def texture_column(screen):
+    """The three Properties editors of the right column, bottom to top (Properties, the dock, the Texture Set List)."""
+    width = max(a.x + a.width for a in screen.areas)
+    return sorted((a for a in areas(screen, 'PROPERTIES') if a.width > 0.1 * width and a.x > 0.5 * width), key=lambda a: a.y)
+
+
+def texture_place_edges(screen):
+    """Move the edges of the new Texture layout to TEXTURE_FRACTIONS, one at a time from the left, then the column's two."""
+    width = max(a.x + a.width for a in screen.areas)
+    by_x = lambda: sorted(areas(screen, 'PROPERTIES'), key=lambda a: (a.x, a.y))
+    for find, share in ((lambda: by_x()[0], "tools"), (lambda: by_x()[1], "assets"), (lambda: areas(screen, 'VIEW_3D')[0], "view3d"),
+                        (lambda: areas(screen, 'IMAGE_EDITOR')[0], "view2d"), (lambda: texture_column(screen)[0], "column")):
+        area = find()
+        edge = area.x + area.width
+        yield from move_edge(screen, (edge + 1, area.y + area.height // 2), TEXTURE_FRACTIONS[share] * width - edge)
+    column = texture_column(screen)
+    bottom, top = column[0].y, column[-1].y + column[-1].height
+    for index, share in ((0, TEXTURE_COLUMN[0]), (1, 1.0 - TEXTURE_COLUMN[1])):
+        area = texture_column(screen)[index]
+        edge = area.y + area.height
+        yield from move_edge(screen, (area.x + area.width // 2, edge + 1), bottom + share * (top - bottom) - edge)
+
+
 def phase3_texture():
-    """Texture: the brush tray (a Properties editor), the 3D view in Material Preview, the 2D paint view and the wider
-    dock. The stock layout has the paint view left of the 3D view: the two swap places."""
+    """Texture: the tool strip, Assets, the 3D view in Material Preview, the 2D paint view, the Texture Set List, the Layers | Texture
+    Set Settings dock, Properties and the dock strip (see texture_new_layout). No shelf rows. Run on the old layout it makes the
+    new one; run on the new one it only sets the views and pages again."""
     ws = bpy.data.workspaces["Texture"]
     # The workspace enters Texture Paint Mode on the active mesh: the brush asset shelf below is hidden in that mode.
     layer = bpy.context.view_layer
@@ -165,42 +246,36 @@ def phase3_texture():
     show(ws)
     yield 0.6
     screen = window().screen
-    if len(areas(screen, 'PROPERTIES')) < 2:
-        paint = areas(screen, 'IMAGE_EDITOR')[0]
-        run(bpy.ops.screen.area_split, paint, direction='VERTICAL', factor=0.3)
-        yield 0.3
-        tray, left = areas(screen, 'IMAGE_EDITOR')[:2]   # The new area is a copy of the paint view, left of it.
-        right = areas(screen, 'VIEW_3D')[0]
-        tray.ui_type = 'PROPERTIES'
-        left.ui_type = 'VIEW_3D'
-        right.ui_type = 'IMAGE_EDITOR'
-        yield 0.3
-        dock = areas(screen, 'PROPERTIES')[-1]
-        for edge, delta in (((dock.x - 1, dock.y + dock.height // 2), -DOCK_WIDER),
-                            ((right.x - 1, right.y + right.height // 2), TEXTURE_VIEW_WIDER)):
-            # Moving an edge needs the mouse on it (no active region): put it there with a simulated event.
-            window().event_simulate(type='MOUSEMOVE', value='NOTHING', x=edge[0], y=edge[1])
-            yield 0.3
-            with bpy.context.temp_override(window=window(), screen=screen):
-                bpy.ops.screen.area_move(x=edge[0], y=edge[1], delta=delta)
-            yield 0.3
+    if len(areas(screen, 'PROPERTIES')) < 2:   # Blender's own layout: the old layout first
+        yield from texture_old_layout(screen)
+    if len(areas(screen, 'PROPERTIES')) < 6:
+        yield from texture_new_layout(screen)
+        yield from texture_place_edges(screen)
     view, image = areas(screen, 'VIEW_3D')[0], areas(screen, 'IMAGE_EDITOR')[0]
     yield 1.0   # The shelf region exists once the viewport has been drawn in Texture Paint Mode.
     assert bpy.context.mode == 'PAINT_TEXTURE', bpy.context.mode
-    if view.spaces.active.show_region_asset_shelf:   # The brush tray replaces it.
-        run(bpy.ops.screen.region_toggle, view, region_type='ASSET_SHELF')
-        yield 0.3
+    for area in (view, image):   # The Assets panel has the brushes, the tool strip the tools: no asset shelf, tool column or tool header.
+        if area.spaces.active.show_region_asset_shelf:
+            run(bpy.ops.screen.region_toggle, area, region_type='ASSET_SHELF')
+            yield 0.3
+        area.spaces.active.show_region_toolbar = False
+        area.spaces.active.show_region_tool_header = False
     view.spaces.active.shading.type = 'MATERIAL'
-    view.spaces.active.show_region_toolbar = image.spaces.active.show_region_toolbar = True   # The paint tools.
     image.spaces.active.ui_mode = 'PAINT'
     image.spaces.active.show_region_ui = False
     yield 0.3
-    if image.spaces.active.show_region_asset_shelf:
-        run(bpy.ops.screen.region_toggle, image, region_type='ASSET_SHELF')
-        yield 0.3
-    tray, dock = areas(screen, 'PROPERTIES')
-    tray.spaces.active.context = dock.spaces.active.context = 'MODELING_TOOLKIT'
-    ws.m3d_page_left, ws.m3d_page_right = "tex_brushes", "tex_layers"
+    props = sorted(areas(screen, 'PROPERTIES'), key=lambda a: (a.x, -a.y))
+    for area in props:
+        area.spaces.active.context = 'MODELING_TOOLKIT'
+        nav = next((r for r in area.regions if r.type == 'NAVIGATION_BAR'), None)
+        if nav is not None and nav.width > 1:   # (the tabs are in the headers: no column of stock tabs)
+            run(bpy.ops.screen.region_toggle, area, region_type='NAVIGATION_BAR')
+            yield 0.3
+    for area in (props[0], props[-1]):   # the tool strip and the dock strip are icons only
+        area.spaces.active.show_region_header = False
+    ws.m3d_page_left, ws.m3d_page_right = "", "tex_layers"
+    ws.m3d_show_shelf = False   # The context toolbar (Status Line) and the panels replace the shelf rows.
+    ws.m3d_layout = 1
     run(bpy.ops.object.mode_set, view, mode='OBJECT')
     layer.objects.active = active
     yield 0.3

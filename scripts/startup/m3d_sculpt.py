@@ -965,7 +965,7 @@ def store_alpha(name, image, thumb):
 def link_alpha(name):
     """The alpha `name` linked from the library (made first if it is one of the starter set)."""
     import os
-    path = os.path.join(alpha_dir(), name + ".blend")
+    path = os.path.join(alpha_dir(create=name in STARTER_ALPHAS), name + ".blend")
     if not os.path.isfile(path) and name in STARTER_ALPHAS:
         image = bpy.data.images.new(name, ALPHA_SIZE, ALPHA_SIZE)
         image.colorspace_settings.name = 'Non-Color'   # (before the pixels: it resets them)

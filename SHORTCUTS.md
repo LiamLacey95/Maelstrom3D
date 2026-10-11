@@ -99,10 +99,30 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 
 | Key | Before (Industry Compatible) | Now (Maelstrom3D) |
 |---|---|---|
-| X | Swap Colors | *(removed)* |
-| Shift+X | — | Swap Colors |
-| C | — | Cycle Paint Channel (delta=1) |
-| Shift+C | — | Cycle Paint Channel (delta=-1) |
+| LMB | Image Paint (mode='NORMAL') | Polygon Fill |
+| 1 | Toggle data use paint mask | Painting Tool (tool='PAINT') |
+| 2 | — | Painting Tool (tool='ERASER') |
+| 3 | — | Painting Tool (tool='PROJECTION') |
+| 4 | — | Painting Tool (tool='POLYFILL') |
+| 5 | — | Painting Tool (tool='SMUDGE') |
+| 6 | — | Painting Tool (tool='CLONE') |
+| P | — | Sample Color (merged=False) |
+| M | — | Display Mode (mode='MATERIAL') |
+| C | — | Cycle Display Mode (kind='CHANNEL', delta=1) |
+| Shift+C | — | Cycle Display Mode (kind='CHANNEL', delta=-1) |
+| B | Call Asset Shelf Popover (name='VIEW3D_AST_brush_texture_paint')<br>Call Asset Shelf Popover (name='IMAGE_AST_brush_paint') | Cycle Display Mode (kind='MAP', delta=1) |
+| Shift+B | — | Cycle Display Mode (kind='MAP', delta=-1) |
+| D | Tool: Annotate | Lazy Mouse |
+| L | Toggle brush use smooth stroke | Symmetry |
+| S | Radial Control (data_path_primary='tool_settings.image_paint.brush.size', data_path_secondary='tool_settings.image_paint.unified_paint_settings.size', use_secondary='tool_settings.image_paint.unified_paint_settings.use_unified_size', rotation_path='tool_settings.image_paint.brush.mask_texture_slot.angle', color_path='tool_settings.image_paint.brush.cursor_color_add', fill_color_path='tool_settings.image_paint.brush.color', fill_color_override_path='tool_settings.image_paint.unified_paint_settings.color', fill_color_override_test_path='tool_settings.image_paint.unified_paint_settings.use_unified_color', zoom_path='space_data.zoom', image_id='tool_settings.image_paint.brush', secondary_tex=True) | Stencil |
+| X | Swap Colors | Swap Colors |
+| Ctrl+RMB | Stencil Brush Control (mode='ROTATION') | Adjust Brush (mode='SIZE_HARDNESS') |
+| Ctrl+LMB | Image Paint (mode='INVERT') | Adjust Brush (mode='FLOW_ANGLE') |
+| Shift+RMB | Stencil Brush Control (mode='SCALE') | Rotate Environment |
+| Alt+Q | — | Isolate Texture Set |
+| Ctrl+Shift+B | — | Bake Mesh Maps (on=True) |
+| Ctrl+Shift+E | — | Call Panel (name='M3D_PT_tex_export') |
+| F | — | Frame |
 
 ## Armature
 

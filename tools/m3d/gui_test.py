@@ -3333,10 +3333,18 @@ import tempfile
 import m3d_texture
 
 
+def tex_roles():
+    """{role: area} of the Properties editors of the Texture screen: tools (the tool strip), assets, sets (the Texture Set List), dock
+    (Layers | Texture Set Settings), props (Properties) and dockbar (the dock strip): left to right, top to bottom."""
+    areas = sorted(props_areas(), key=lambda a: (a.x, -a.y))
+    return dict(zip(("tools", "assets", "sets", "dock", "props", "dockbar"), areas))
+
+
 def tex_areas():
-    """(left tray, dock) Properties editors of the Texture screen."""
-    areas = sorted(props_areas(), key=lambda a: a.x)
-    return areas[0], areas[-1]
+    """(Assets, Layers dock) Properties editors of the Texture screen: any of the editors can run a button's operator; Assets stands in
+    for the brush tray the old layout had."""
+    roles = tex_roles()
+    return roles["assets"], roles["dock"]
 
 
 def tex_view():
@@ -3395,21 +3403,41 @@ step(wait_until(lambda: [w.name for w in bpy.data.workspaces if w.name.startswit
 @step
 def tex_layout_check():
     screen = window().screen
-    check(len(props_areas()) == 2, "Texture has a tray and a dock")
-    tray, dock = tex_areas()
+    check(len(props_areas()) == 6, "Texture has six Properties editors: tool strip, Assets, Texture Sets, Layers dock, Properties, dock strip (%d)" % len(props_areas()))
+    check(not [a for a in screen.areas if a.type == 'OUTLINER'], "the Outliner is not in the Texture workspace")
+    roles = tex_roles()
     view, _region = tex_view()
     image = next(a for a in screen.areas if a.type == 'IMAGE_EDITOR')
-    check(tray.x < view.x < image.x < dock.x, "Texture layout: tray, 3D view, paint view, dock (%d %d %d %d)" % (tray.x, view.x, image.x, dock.x))
-    check(view.width > image.width, "the 3D view is wider than the paint view (%d vs %d)" % (view.width, image.width))
+    width = max(a.x + a.width for a in screen.areas)
+    check(window().workspace.m3d_layout == 1, "the Texture workspace has the new layout (Workspace.m3d_layout)")
+    check(roles["tools"].x < roles["assets"].x < view.x < image.x < roles["dock"].x < roles["dockbar"].x,
+          "Texture layout left to right: tool strip, Assets, 3D view, 2D view, the column, dock strip")
+    check(roles["tools"].width < 0.035 * width and roles["dockbar"].width < 0.035 * width, "the strips are narrow (%d and %d of %d px)" % (roles["tools"].width, roles["dockbar"].width, width))
+    check(0.10 * width < roles["assets"].width < 0.15 * width, "Assets is 10-15%% of the window (%d of %d px)" % (roles["assets"].width, width))
+    column_h = roles["sets"].height + roles["dock"].height + roles["props"].height
+    check(roles["sets"].y > roles["dock"].y > roles["props"].y and roles["sets"].x == roles["dock"].x == roles["props"].x,
+          "the right column: Texture Sets over the dock over Properties")
+    check(0.10 < roles["sets"].height / column_h < 0.20 and 0.42 < roles["dock"].height / column_h < 0.55 and 0.30 < roles["props"].height / column_h < 0.42,
+          "the column is split about 14 / 47 / 36 (%.2f %.2f %.2f)" % tuple(roles[r].height / column_h for r in ("sets", "dock", "props")))
+    check(0.14 < roles["dock"].width / width < 0.20, "the column is about 17%% of the window wide (%.3f)" % (roles["dock"].width / width))
+    check(view.width > 0.45 * (view.width + image.width) and image.width > 0.35 * (view.width + image.width),
+          "the 3D view and the 2D view share the middle about equally (%d, %d)" % (view.width, image.width))
     check(view.spaces.active.shading.type == 'MATERIAL', "3D view is in Material Preview")
     check(image.spaces.active.mode == 'PAINT' and not image.spaces.active.show_region_ui, "paint view is in Paint mode, sidebar closed")
-    check(not view.spaces.active.show_region_asset_shelf and view.spaces.active.show_region_tool_header, "asset shelf hidden, tool header shown")
-    check(tray.spaces.active.context == dock.spaces.active.context == 'MODELING_TOOLKIT', "docks open on pages")
-    with bpy.context.temp_override(window=window(), area=tray):
-        check(m3d_workspace.side_of(bpy.context) == 'LEFT' and m3d_workspace.active_page(bpy.context) == "tex_brushes", "tray shows the brush page")
-    with bpy.context.temp_override(window=window(), area=dock):
-        check(m3d_workspace.active_page(bpy.context) == "tex_layers", "dock opens on Layers")
-    check(m3d_ui.shelf_key(bpy.context.window_manager, 'TEXTURE') == 'TEXTURE_BRUSHES', "Paint shelf tab first")
+    for area in (view, image):
+        check(not area.spaces.active.show_region_toolbar and not area.spaces.active.show_region_tool_header and not area.spaces.active.show_region_asset_shelf,
+              "%s: Blender's tool column, tool header and asset shelf are hidden" % area.type)
+    check(all(a.spaces.active.context == 'MODELING_TOOLKIT' for a in props_areas()), "every editor shows pages")
+    check(not roles["tools"].spaces.active.show_region_header and not roles["dockbar"].spaces.active.show_region_header, "the strips have no header")
+    for role, area in roles.items():
+        nav = next(r for r in area.regions if r.type == 'NAVIGATION_BAR')
+        check(nav.width <= 1, "%s: no column of stock tabs" % role)
+    for role, want in (("tools", 'TOOLS'), ("assets", 'ASSETS'), ("sets", 'SETS'), ("dock", 'RIGHT'), ("props", 'PROPS'), ("dockbar", 'DOCKBAR')):
+        with bpy.context.temp_override(window=window(), area=roles[role]):
+            check(m3d_workspace.side_of(bpy.context) == want, "the %s editor knows its role (%s)" % (role, m3d_workspace.side_of(bpy.context)))
+    with bpy.context.temp_override(window=window(), area=roles["dock"]):
+        check(m3d_workspace.active_page(bpy.context) == "tex_layers", "the dock opens on Layers")
+    check(not window().workspace.m3d_show_shelf and topbar_px() < GIZMO["topbar_model"], "no shelf rows in the top bar (%d px, Modeling %d)" % (topbar_px(), GIZMO["topbar_model"]))
     check(m3d_texture.missing(bpy.context) == ['MATERIAL'], "gate: this cube needs a material (%s)" % m3d_texture.missing(bpy.context))
     check(not tracebacks(), "Python error drawing the Texture workspace")
     press_ok("m3d.tex_add_material", _area=tex_areas()[1])
@@ -3427,25 +3455,46 @@ def tex_channels():
           "Base Color and Roughness added (%s)" % sorted(found))
     check(found['ROUGHNESS'][1].colorspace_settings.name == 'Non-Color' and found['BASE_COLOR'][1].colorspace_settings.name == 'sRGB',
           "color spaces")
-    # Switch with the Status Line buttons (they are plain operator buttons in the top bar).
+    # The channel buttons of Texture Set Settings (plain operator buttons).
     with bpy.context.temp_override(window=window(), screen=window().screen):
-        check(bpy.ops.m3d.tex_channel('INVOKE_DEFAULT', channel='BASE_COLOR') == {'FINISHED'}, "Status Line channel button")
+        check(bpy.ops.m3d.tex_channel('INVOKE_DEFAULT', channel='BASE_COLOR') == {'FINISHED'}, "channel button")
     check(m3d_texture.active_channel(tex_mat()) == 'BASE_COLOR', "Base Color is active")
     event('MOUSEMOVE', xy=tex_xy())
     event('C', 'PRESS', tex_xy())
     event('C', 'RELEASE', tex_xy())
 
 
+def tex_mode3d():
+    return m3d_texture.view_mode_3d(bpy.context, tex_view()[0].spaces.active)
+
+
 @step
 def tex_c_key():
-    check(m3d_texture.active_channel(tex_mat()) == 'ROUGHNESS', "C did not switch to the next channel (%s)" % m3d_texture.active_channel(tex_mat()))
+    check(tex_mode3d() == "CHANNEL:BASE_COLOR" and m3d_texture.channel_view_on(tex_view()[0].spaces.active.shading),
+          "C did not show the first channel on its own (%s)" % tex_mode3d())
+    event('C', 'PRESS', tex_xy())
+    event('C', 'RELEASE', tex_xy())
+
+
+@step
+def tex_c_key2():
+    check(tex_mode3d() == "CHANNEL:ROUGHNESS" and m3d_texture.active_channel(tex_mat()) == 'ROUGHNESS',
+          "C did not show the next channel (%s, %s)" % (tex_mode3d(), m3d_texture.active_channel(tex_mat())))
     event('C', 'PRESS', tex_xy(), shift=True)
     event('C', 'RELEASE', tex_xy(), shift=True)
 
 
 @step
 def tex_shift_c_key():
-    check(m3d_texture.active_channel(tex_mat()) == 'BASE_COLOR', "Shift+C did not switch to the previous channel (%s)" % m3d_texture.active_channel(tex_mat()))
+    check(tex_mode3d() == "CHANNEL:BASE_COLOR", "Shift+C did not show the previous channel (%s)" % tex_mode3d())
+    event('C', 'PRESS', tex_xy(), shift=True)
+    event('C', 'RELEASE', tex_xy(), shift=True)
+
+
+@step
+def tex_shift_c_key2():
+    check(tex_mode3d() == 'MATERIAL' and not m3d_texture.channel_view_on(tex_view()[0].spaces.active.shading),
+          "Shift+C from the first channel did not go back to the material (%s)" % tex_mode3d())
 
 
 @step
@@ -3477,14 +3526,14 @@ def tex_size_keys():
 @step
 def tex_size_keys2():
     check(abs(tex_brush_size() - GIZMO["size"]) < GIZMO["size"] * 0.05, "[ did not shrink the brush back (%s -> %s)" % (GIZMO["size"], tex_brush_size()))
-    event('X', 'PRESS', tex_xy(), shift=True)
-    event('X', 'RELEASE', tex_xy(), shift=True)
+    event('X', 'PRESS', tex_xy())
+    event('X', 'RELEASE', tex_xy())
 
 
 @step
 def tex_swap_key():
     ups = bpy.context.tool_settings.image_paint.unified_paint_settings
-    check(tuple(round(c, 2) for c in ups.color) == (0.0, 0.0, 1.0), "Shift+X did not swap the colors (%s)" % (tuple(ups.color),))
+    check(tuple(round(c, 2) for c in ups.color) == (0.0, 0.0, 1.0), "X did not swap the colors (%s)" % (tuple(ups.color),))
     event('X', 'PRESS', tex_xy())
     event('X', 'RELEASE', tex_xy())
 
@@ -3492,7 +3541,7 @@ def tex_swap_key():
 @step
 def tex_plain_x():
     ups = bpy.context.tool_settings.image_paint.unified_paint_settings
-    check(tuple(round(c, 2) for c in ups.color) == (0.0, 0.0, 1.0), "plain X still swaps the colors (%s)" % (tuple(ups.color),))
+    check(tuple(round(c, 2) for c in ups.color) == (1.0, 0.0, 0.0), "X again swapped them back (%s)" % (tuple(ups.color),))
 
 
 @step
@@ -3556,27 +3605,43 @@ def tex_export_check():
 
 
 def _texture_tab_steps():
+    dock_pages = [t for t in m3d_workspace.DOCK_TABS['TEXTURE']['RIGHT']]
     for object_mode in (False, True):
-        for tab in (*m3d_workspace.DOCK_TABS['TEXTURE']['RIGHT'], *m3d_workspace.DOCK_TABS['TEXTURE']['LEFT']):
+        for tab in dock_pages:
             def show(tab=tab, object_mode=object_mode):
                 if object_mode and bpy.context.mode != 'OBJECT':
                     bpy.ops.object.mode_set(mode='OBJECT')
                 if not object_mode and bpy.context.mode != 'PAINT_TEXTURE':
                     bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
-                tray, dock = tex_areas()
-                area = tray if tab.page == "tex_brushes" else dock
-                area.spaces.active.context = 'MODELING_TOOLKIT'
-                press_ok("m3d.dock_page", _area=area, tab=tab.id)
+                dock = tex_areas()[1]
+                dock.spaces.active.context = 'MODELING_TOOLKIT'
+                press_ok("m3d.dock_page", _area=dock, tab=tab.id)
                 for a in window().screen.areas:
                     a.tag_redraw()
 
             def check_draw(tab=tab, object_mode=object_mode):
-                side = "left" if tab.page == "tex_brushes" else "right"
-                check(getattr(window().workspace, "m3d_page_" + side) == tab.page, "dock tab %s did not open its page" % tab.id)
+                check(window().workspace.m3d_page_right == tab.page, "dock tab %s did not open its page" % tab.id)
                 check(not tracebacks(), "Python error while drawing the Texture page %s%s" % (tab.page, " (Object Mode)" if object_mode else ""))
             show.__name__, check_draw.__name__ = "tex_show_%s%s" % (tab.page, object_mode), "tex_drawn_%s%s" % (tab.page, object_mode)
             yield show
             yield check_draw
+        def others(object_mode=object_mode):
+            # the other editors draw in this mode too (the tool strip, Assets in every category, the sets, Properties, the dock strip)
+            for category in ('MATERIALS', 'SMART_MATERIALS', 'SMART_MASKS', 'BRUSHES', 'ALPHAS', 'ENVIRONMENTS', 'MINE'):
+                bpy.context.scene.m3d_library.category = category
+                for a in window().screen.areas:
+                    a.tag_redraw()
+        def others_check(object_mode=object_mode):
+            check(not tracebacks(), "Python error while drawing the Texture editors%s" % (" (Object Mode)" if object_mode else ""))
+        others.__name__, others_check.__name__ = "tex_others_%s" % object_mode, "tex_others_drawn_%s" % object_mode
+        yield others
+        yield others_check
+    def restore():
+        window().workspace.m3d_page_right = "tex_layers"
+        bpy.context.scene.m3d_library.category = 'MATERIALS'
+        if bpy.context.mode != 'PAINT_TEXTURE':
+            bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+    yield restore
 
 
 for _fn in _texture_tab_steps():
@@ -4405,9 +4470,7 @@ def lb_dock():
 
 
 def lb_show(category):
-    dock = lb_dock()
-    dock.spaces.active.context = 'MODELING_TOOLKIT'
-    press_ok("m3d.dock_page", _area=dock, tab="tex_library")
+    """Open a category of the Assets panel (it is a column of its own: no tab to pick)."""
     bpy.context.scene.m3d_library.category = category
     for a in window().screen.areas:
         a.tag_redraw()
@@ -4486,7 +4549,8 @@ def lb_setup_mesh():
     ob.m3d_bake.resolution, ob.m3d_bake.samples, ob.m3d_bake.margin = '128', 4, 4
     bpy.context.scene.m3d_tex.resolution = '128'
     check(LIB.pending() and not os.listdir(GIZMO["lb_dir"]), "no thumbnail exists yet")
-    check("tex_library" in {t.id for t in m3d_workspace.DOCK_TABS['TEXTURE']['RIGHT']}, "the Texture dock has a Library tab")
+    check("tex_assets" in {t.page for t in m3d_workspace.DOCK_TABS['TEXTURE']['ASSETS']} and "tex_library" not in {t.id for t in m3d_workspace.DOCK_TABS['TEXTURE']['RIGHT']},
+          "the library is the Assets panel, not a tab of the dock")
     lb_show('MATERIALS')
 
 
@@ -4495,7 +4559,8 @@ step(wait_until(lambda: LIB._gen["running"], "the Library tab to start making th
 
 @step
 def lb_placeholders():
-    check(window().workspace.m3d_page_right == "tex_library", "the dock shows the Library tab")
+    with bpy.context.temp_override(window=window(), area=tex_roles()["assets"]):
+        check(m3d_workspace.pages_shown(bpy.context) == {"tex_assets"}, "Assets shows the library page")
     check(LIB.pending() or LIB._gen["stage"] is not None, "the thumbnails are still being made: the tiles show placeholders meanwhile")
     check(any(k.startswith("ph:") for k in LIB.icons().keys()), "placeholder icons were drawn")
     check(not tracebacks(), "Python error drawing the Library tab")
@@ -4511,7 +4576,7 @@ def lb_thumbs_check():
     check(all(os.path.isfile(LIB.thumb_path(e)) for e in LIB.entries()), "every starter item has its thumbnail in the user folder")
     check(len(times) >= 28 and max(times) < 3.0, "thumbnails come one small step at a time (%d steps, the longest %.2f s)" % (len(times), max(times)))
     check(bpy.data.scenes.get(LIB.RIG) is None and len(bpy.data.scenes) == 1, "the preview scene is gone")
-    check(len([k for k in LIB.icons().keys() if k.startswith("t:")]) >= len([e for e in LIB.STARTERS if e.item["type"] == 'MATERIAL']),
+    check(len([k for k in LIB.icons().keys() if k.startswith("t:")]) >= len([e for e in LIB.STARTERS if LIB.is_plain(e)]),
           "the Materials tiles use the thumbnails")
     print("library thumbnails: %d steps, %.1f s in all, longest step %.2f s" % (len(times), sum(times), max(times)))
     check(not tracebacks(), "Python error while the thumbnails were made")
@@ -4561,12 +4626,12 @@ def lb_undo_setup():
     GIZMO["lb_names"] = [l.name for l in lb_mat().m3d_layers]
     with bpy.context.temp_override(window=window(), screen=window().screen):
         bpy.ops.ed.undo_push(message="Before the tile")   # (the test's own operator calls push no steps: Undo needs one to go back to)
-        bpy.ops.m3d.library_apply('EXEC_DEFAULT', True, item="starter:gold")
+        bpy.ops.m3d.library_apply('EXEC_DEFAULT', True, item="starter:copper")
 
 
 @step
 def lb_undo():
-    check(lb_mat().m3d_layers[-1].name == "Gold" and len(lb_mat().m3d_layers) == len(GIZMO["lb_names"]) + 2, "a second tile: the Gold folder is on top")
+    check(lb_mat().m3d_layers[-1].name == "Copper" and len(lb_mat().m3d_layers) == len(GIZMO["lb_names"]) + 3, "a second tile: the Copper folder is on top")
     with bpy.context.temp_override(window=window(), screen=window().screen):
         bpy.ops.ed.undo()
 
@@ -4581,9 +4646,9 @@ def lb_undo_check():
 
 @step
 def lb_redo_check():
-    check(lb_mat().m3d_layers[-1].name == "Gold" and len(lb_mat().m3d_layers) == len(GIZMO["lb_names"]) + 2, "Redo brings it back")
+    check(lb_mat().m3d_layers[-1].name == "Copper" and len(lb_mat().m3d_layers) == len(GIZMO["lb_names"]) + 3, "Redo brings it back")
     bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
-    lb_select(lb_folder("Gold"))
+    lb_select(lb_folder("Copper"))
     press_ok("m3d.layer_remove", _area=lb_dock())
 
 
@@ -4592,7 +4657,7 @@ def lb_redo_check():
 def lb_mask_setup():
     press_ok("m3d.layer_add", _area=lb_dock(), kind='FILL')
     LY.active_layer(lb_mat()).name = "Target"
-    lb_show('MASKS')
+    lb_show('SMART_MASKS')
     res = press_ok("m3d.library_apply", _area=lb_dock(), item="starter:edge_wear", mode='REPLACE')
     check(res == {'FINISHED'}, "the Edge Wear tile applies")
 
@@ -4771,13 +4836,421 @@ def lb_shot_applied():
     e_screenshot("F:/AI/m3d_item7c_applied.png")
 
 
+# ----------------------------------------------------------------------------------------------------
+# Phase 3c: the redesigned Texture workspace: the tool strip and the keys 1-6, the Polygon Fill click, the display mode keys in the
+# 3D and 2D views, D / L / S / Alt+Q, Ctrl+RMB / Ctrl+LMB / Shift+RMB drags, an Assets tile, the Texture Set List, Bake Mesh Maps and
+# Back to Painting, the view layout buttons, the dock strip. (After the Library tests: it needs their temporary library folders.)
+
+def tex3_xy2d():
+    area = next(a for a in window().screen.areas if a.type == 'IMAGE_EDITOR')
+    region = next(r for r in area.regions if r.type == 'WINDOW')
+    return region.x + region.width // 2, region.y + region.height // 2
+
+
+def tex3_space2d():
+    return next(a for a in window().screen.areas if a.type == 'IMAGE_EDITOR').spaces.active
+
+
+def tex3_px(image):
+    a = np.empty(len(image.pixels), np.float32)
+    image.pixels.foreach_get(a)
+    return a.reshape(-1, 4)
+
+
+def tex3_key(key, xy=None, **mods):
+    xy = xy or tex_xy()
+    event('MOUSEMOVE', xy=xy)
+    event(key, 'PRESS', xy, **mods)
+    event(key, 'RELEASE', xy, **mods)
+
+
+@step
+def tex3_setup():
+    # A clean scene with a new cube in the Texture workspace (a material, a Base Color and a Roughness slot, two baked maps).
+    if window().workspace.name != "Texture":
+        bpy.ops.m3d.workspace(kind='TEXTURE')
+    if bpy.context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    for ob in list(bpy.data.objects):
+        bpy.data.objects.remove(ob)
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.m3d.add_primitive(kind='CUBE')
+    bpy.context.active_object.name = "Crate3"
+    bpy.ops.m3d.tex_add_material()
+    bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+    bpy.context.scene.m3d_tex.resolution = '128'
+    bpy.ops.m3d.tex_channel(channel='BASE_COLOR')
+    bpy.ops.m3d.tex_channel(channel='ROUGHNESS')
+    bpy.ops.m3d.tex_channel(channel='BASE_COLOR')
+    for label in ("Normal", "AO"):
+        image = bpy.data.images.new("Crate3_" + label, 16, 16)
+        image["m3d_bake"] = label
+    window().workspace.m3d_page_right = "tex_layers"
+    bpy.context.scene.m3d_library.category = 'MATERIALS'
+    tex_view()[0].spaces.active.shading.type = 'MATERIAL'
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+step(wait_until(lambda: window().workspace.name == "Texture" and bpy.context.mode == 'PAINT_TEXTURE', "the Texture workspace for the new tests", tries=20))
+
+
+@step
+def tex3_tools():
+    strip = tex_roles()["tools"]
+    check(not tracebacks(), "Python error drawing the tool strip")
+    for tool, brush in (('ERASER', "Erase Hard"), ('SMUDGE', "Smear"), ('CLONE', "Clone"), ('POLYFILL', "Fill"), ('PROJECTION', "Paint Hard"), ('PAINT', None)):
+        check(press_ok("m3d.tex_tool", _area=strip, tool=tool) == {'FINISHED'}, "a click on the %s button" % tool)
+        check(m3d_texture.tool_of(bpy.context) == tool and (brush is None or m3d_texture.brush_name(bpy.context) == brush),
+              "%s: the tool and its brush (%s, %s)" % (tool, m3d_texture.tool_of(bpy.context), m3d_texture.brush_name(bpy.context)))
+    check(not bpy.context.object.data.use_paint_mask and not m3d_texture.stencil_on(m3d_texture.image_brush(bpy.context)), "back on Paint: no face masking, no stencil")
+
+
+def _tool_key_steps():
+    for key, tool in (('TWO', 'ERASER'), ('THREE', 'PROJECTION'), ('FOUR', 'POLYFILL'), ('FIVE', 'SMUDGE'), ('SIX', 'CLONE'), ('ONE', 'PAINT')):
+        def press(key=key):
+            tex3_key(key)
+
+        def verify(key=key, tool=tool):
+            check(m3d_texture.tool_of(bpy.context) == tool, "%s did not pick the %s tool (%s)" % (key, tool, m3d_texture.tool_of(bpy.context)))
+            check(not tracebacks(), "Python error after %s" % key)
+        press.__name__, verify.__name__ = "tex3_press_" + key, "tex3_verify_" + key
+        yield press
+        yield verify
+
+
+for _fn in _tool_key_steps():
+    step(_fn)
+
+
+@step
+def tex3_keys_2d():
+    tex3_key('TWO', tex3_xy2d())   # the tool keys work over the 2D view too
+
+
+@step
+def tex3_keys_2d_check():
+    check(m3d_texture.tool_of(bpy.context) == 'ERASER', "2 over the 2D view picked the Eraser (%s)" % m3d_texture.tool_of(bpy.context))
+    tex3_key('ONE', tex3_xy2d())
+
+
+@step
+def tex3_keys_2d_check2():
+    check(m3d_texture.tool_of(bpy.context) == 'PAINT', "1 over the 2D view picked Paint (%s)" % m3d_texture.tool_of(bpy.context))
+    check(not tracebacks(), "Python error in the tool keys over the 2D view")
+
+
+@step
+def tex3_fill_setup():
+    ob = bpy.context.active_object
+    image = m3d_texture.channel_slots(ob.active_material)['BASE_COLOR'][1]
+    GIZMO["fill_image"] = image.name
+    ups = bpy.context.tool_settings.image_paint.unified_paint_settings
+    ups.color, ups.secondary_color = (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)
+    bpy.context.scene.m3d_tex.fill_mode = 'MESH'
+    check(m3d_texture.channel_slots(ob.active_material)['BASE_COLOR'][1] == image and m3d_texture.active_channel(ob.active_material) == 'BASE_COLOR', "Base Color is the paint target")
+    GIZMO["fill_before"] = int(((tex3_px(image)[:, 0] > 0.9) & (tex3_px(image)[:, 1] < 0.1)).sum())
+    tex3_key('FOUR')
+
+
+@step
+def tex3_fill_click():
+    check(m3d_texture.tool_of(bpy.context) == 'POLYFILL', "4 picked Polygon Fill")
+    event('MOUSEMOVE', xy=tex_xy())
+    event('LEFTMOUSE', 'PRESS', tex_xy())
+
+
+@step
+def tex3_fill_release():
+    event('LEFTMOUSE', 'RELEASE', tex_xy())
+
+
+@step
+def tex3_fill_check():
+    image = bpy.data.images[GIZMO["fill_image"]]
+    red = int(((tex3_px(image)[:, 0] > 0.9) & (tex3_px(image)[:, 1] < 0.1)).sum())
+    check(red > GIZMO["fill_before"] + 200, "a click with Polygon Fill (Mesh) filled the mesh's UV area with the brush color (%d red pixels, %d before)" % (red, GIZMO["fill_before"]))
+    check(not tracebacks(), "Python error in the Polygon Fill click")
+    tex3_key('ONE')
+
+
+@step
+def tex3_views_setup():
+    check(m3d_texture.tool_of(bpy.context) == 'PAINT', "1 is the Paint tool again")
+    tex3_key('B')
+
+
+@step
+def tex3_view_b():
+    check(tex_mode3d() == "MAP:Normal" and tex_mat().m3d_show_map == "Crate3_Normal", "B showed the first mesh map in the 3D view (%s)" % tex_mode3d())
+    tex3_key('B')
+
+
+@step
+def tex3_view_b2():
+    check(tex_mode3d() == "MAP:AO", "B showed the next mesh map (%s)" % tex_mode3d())
+    tex3_key('B', shift=True)
+
+
+@step
+def tex3_view_b3():
+    check(tex_mode3d() == "MAP:Normal", "Shift+B went back a map (%s)" % tex_mode3d())
+    tex3_key('M')
+
+
+@step
+def tex3_view_m():
+    check(tex_mode3d() == 'MATERIAL' and not tex_mat().m3d_show_map and not m3d_texture.channel_view_on(tex_view()[0].spaces.active.shading),
+          "M showed the material again (%s)" % tex_mode3d())
+    tex3_key('C', tex3_xy2d())   # in the 2D view
+
+
+@step
+def tex3_view_2d():
+    space = tex3_space2d()
+    check(m3d_texture.view_mode_2d(bpy.context, space) == "CHANNEL:BASE_COLOR" and space.image is not None
+          and space.image == m3d_texture.channel_slots(tex_mat())['BASE_COLOR'][1], "C in the 2D view showed the first channel (%s)" % m3d_texture.view_mode_2d(bpy.context, space))
+    tex3_key('B', tex3_xy2d())
+
+
+@step
+def tex3_view_2d_map():
+    space = tex3_space2d()
+    check(m3d_texture.view_mode_2d(bpy.context, space) == "MAP:Normal" and space.ui_mode == 'PAINT' and space.image.name == "Crate3_Normal",
+          "B in the 2D view showed a mesh map (%s, %s)" % (m3d_texture.view_mode_2d(bpy.context, space), space.ui_mode))
+    tex3_key('M', tex3_xy2d())
+
+
+@step
+def tex3_view_2d_m():
+    space = tex3_space2d()
+    check(space.ui_mode == 'PAINT' and m3d_texture.view_mode_2d(bpy.context, space) == 'MATERIAL', "M in the 2D view is the material again, in Paint mode (%s)" % space.ui_mode)
+    check(not tracebacks(), "Python error in the display mode keys")
+    brush = m3d_texture.image_brush(bpy.context)
+    GIZMO["lazy"], GIZMO["mirror"] = brush.use_smooth_stroke, bpy.context.active_object.data.use_mirror_x
+    tex3_key('D')
+
+
+@step
+def tex3_key_d():
+    brush = m3d_texture.image_brush(bpy.context)
+    check(brush.use_smooth_stroke != GIZMO["lazy"], "D toggled Lazy Mouse")
+    tex3_key('D')
+    tex3_key('L')
+
+
+@step
+def tex3_key_l():
+    check(bpy.context.active_object.data.use_mirror_x != GIZMO["mirror"], "L toggled Symmetry")
+    tex3_key('L')
+    tex3_key('S')
+
+
+@step
+def tex3_key_s():
+    brush = m3d_texture.image_brush(bpy.context)
+    check(m3d_texture.stencil_on(brush) and m3d_texture.tool_of(bpy.context) == 'PROJECTION', "S put the brush texture on a stencil")
+    tex3_key('S')
+
+
+@step
+def tex3_key_s2():
+    check(not m3d_texture.stencil_on(m3d_texture.image_brush(bpy.context)) and m3d_texture.tool_of(bpy.context) == 'PAINT', "S again took it off")
+    tex3_key('Q', alt=True)
+
+
+@step
+def tex3_key_altq():
+    check(bpy.context.scene.get("m3d_isolated") is not None, "Alt+Q isolated the texture set")
+    tex3_key('Q', alt=True)
+
+
+@step
+def tex3_key_altq2():
+    check(bpy.context.scene.get("m3d_isolated") is None, "Alt+Q again showed everything")
+    ups = bpy.context.tool_settings.image_paint.unified_paint_settings
+    brush = m3d_texture.image_brush(bpy.context)
+    GIZMO["size_owner"] = ups if ups.use_unified_size else brush
+    GIZMO["flow_owner"] = ups if ups.use_unified_strength else brush
+    GIZMO["size_owner"].size = 40
+    brush.hardness = 0.5
+    c = tex_xy()
+    event('MOUSEMOVE', xy=c)
+    event('RIGHTMOUSE', 'PRESS', c, ctrl=True)
+    event('MOUSEMOVE', xy=(c[0] + 60, c[1] + 30), ctrl=True)
+
+
+@step
+def tex3_drag_rmb_release():
+    c = tex_xy()
+    event('RIGHTMOUSE', 'RELEASE', (c[0] + 60, c[1] + 30), ctrl=True)
+
+
+@step
+def tex3_drag_rmb_check():
+    brush = m3d_texture.image_brush(bpy.context)
+    check(GIZMO["size_owner"].size > 55, "Ctrl+RMB drag to the right made the brush bigger (%s)" % GIZMO["size_owner"].size)
+    check(brush.hardness > 0.5, "...and dragging up made it harder (%.2f)" % brush.hardness)
+    GIZMO["flow_owner"].strength = 0.3
+    c = tex_xy()
+    event('MOUSEMOVE', xy=c)
+    event('LEFTMOUSE', 'PRESS', c, ctrl=True)
+    event('MOUSEMOVE', xy=(c[0] + 90, c[1]), ctrl=True)
+
+
+@step
+def tex3_drag_lmb_release():
+    c = tex_xy()
+    event('LEFTMOUSE', 'RELEASE', (c[0] + 90, c[1]), ctrl=True)
+
+
+@step
+def tex3_drag_lmb_check():
+    check(GIZMO["flow_owner"].strength > 0.45, "Ctrl+LMB drag to the right raised the flow (%.2f)" % GIZMO["flow_owner"].strength)
+    GIZMO["flow_owner"].strength = 1.0
+    shading = tex_view()[0].spaces.active.shading
+    GIZMO["env"] = shading.studiolight_rotate_z
+    c = tex_xy()
+    event('MOUSEMOVE', xy=c)
+    event('RIGHTMOUSE', 'PRESS', c, shift=True)
+    event('MOUSEMOVE', xy=(c[0] + 100, c[1]), shift=True)
+
+
+@step
+def tex3_env_release():
+    c = tex_xy()
+    event('RIGHTMOUSE', 'RELEASE', (c[0] + 100, c[1]), shift=True)
+
+
+@step
+def tex3_env_check():
+    shading = tex_view()[0].spaces.active.shading
+    check(abs(shading.studiolight_rotate_z - GIZMO["env"]) > 0.1, "Shift+RMB drag turned the environment (%.2f -> %.2f)" % (GIZMO["env"], shading.studiolight_rotate_z))
+    check(not tracebacks(), "Python error in the drag keys")
+    tex3_key('F')
+
+
+# --- Assets: a tile applies; Texture Sets; Bake Mesh Maps; layout buttons; the dock strip
+@step
+def tex3_assets_tile():
+    check(not tracebacks(), "Python error after the frame key")
+    assets, dock = tex_areas()
+    bpy.context.scene.m3d_library.category = 'MATERIALS'
+    res = press_ok("m3d.library_apply", _area=assets, item="starter:gold")
+    check(res == {'FINISHED'}, "the Gold tile in Assets applies")
+
+
+@step
+def tex3_assets_check():
+    mat = tex_mat()
+    layer = LY.active_layer(mat)
+    check(layer is not None and layer.name.startswith("Gold") and layer.kind == 'FILL' and layer.parent == "", "a Materials tile adds one fill layer: %s" % [l.name for l in mat.m3d_layers])
+    check(window().workspace.m3d_page_right == "tex_layers" and not tracebacks(), "the dock shows the Layers; no Python error")
+    roles = tex_roles()
+    with bpy.context.temp_override(window=window(), area=roles["props"]):
+        check("tex_layer" in m3d_workspace.pages_shown(bpy.context), "Properties - Fill shows the layer's settings (%s)" % sorted(m3d_workspace.pages_shown(bpy.context)))
+    check(m3d_texture.props_context(bpy.context) == 'FILL', "the title says Fill")
+    press_ok("m3d.tex_set", _area=roles["sets"], object="Crate3", material=tex_mat().name)
+    sets = m3d_texture.texture_sets(bpy.context)
+    check([(m.name, o.name) for m, o in sets] == [(tex_mat().name, "Crate3")], "the Texture Set List has the mesh's material")
+    for tab in ("tex_settings", "tex_layers"):
+        press_ok("m3d.dock_page", _area=roles["dock"], tab=tab)
+    press_ok("m3d.tex_bake_mode", _area=roles["dock"], on=True)
+
+
+@step
+def tex3_bake_mode():
+    check(window().workspace.m3d_page_right == "tex_bake", "Bake Mesh Maps switched the dock to the Bake page")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def tex3_bake_mode_check():
+    check(not tracebacks(), "Python error drawing the Bake page")
+    press_ok("m3d.tex_bake_mode", _area=tex_roles()["dock"], on=False)
+
+
+@step
+def tex3_back():
+    check(window().workspace.m3d_page_right == "tex_layers", "Back to Painting returned to the Layers")
+    tex3_key('B', ctrl=True, shift=True)
+
+
+@step
+def tex3_bake_key():
+    check(window().workspace.m3d_page_right == "tex_bake", "Ctrl+Shift+B opened the Bake page")
+    press_ok("m3d.tex_bake_mode", _area=tex_roles()["dock"], on=False)
+    tex3_key('E', ctrl=True, shift=True)
+
+
+@step
+def tex3_export_key():
+    check(not tracebacks(), "Python error opening Export Textures with Ctrl+Shift+E")
+    check(window().workspace.m3d_page_right == "tex_layers", "the dock is on Layers")
+    event('ESC', 'PRESS')   # (closes the Export popover)
+    event('ESC', 'RELEASE')
+
+
+@step
+def tex3_layout_buttons():
+    check(m3d_texture.layout_mode(bpy.context) == 'BOTH', "both views are shown")
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        check(bpy.ops.m3d.tex_layout('INVOKE_DEFAULT', mode='3D') == {'FINISHED'}, "3D Only")
+
+
+@step
+def tex3_layout_3d():
+    kinds = {a.type for a in window().screen.areas}
+    check('VIEW_3D' in kinds and 'IMAGE_EDITOR' not in kinds and m3d_texture.layout_mode(bpy.context) == '3D', "3D Only: the 2D view is gone (%s)" % sorted(kinds))
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        check(bpy.ops.m3d.tex_layout('INVOKE_DEFAULT', mode='2D') == {'FINISHED'}, "2D Only")
+
+
+@step
+def tex3_layout_2d():
+    kinds = {a.type for a in window().screen.areas}
+    check('IMAGE_EDITOR' in kinds and 'VIEW_3D' not in kinds and m3d_texture.layout_mode(bpy.context) == '2D', "2D Only: the 3D view is gone (%s)" % sorted(kinds))
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        check(bpy.ops.m3d.tex_layout('INVOKE_DEFAULT', mode='BOTH') == {'FINISHED'}, "3D | 2D")
+
+
+@step
+def tex3_layout_both():
+    check(m3d_texture.layout_mode(bpy.context) == 'BOTH' and len(props_areas()) == 6, "3D | 2D: both views and the six editors are back")
+    check(not tracebacks(), "Python error switching the view layout")
+
+
+@step
+def tex3_old_layout():
+    # A Texture workspace saved with the old layout (Workspace.m3d_layout 0) keeps drawing, with its old tabs.
+    ws = window().workspace
+    ws.m3d_layout = 0
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def tex3_old_layout_check():
+    check(not tracebacks(), "Python error with a Texture workspace of the old layout")
+    window().workspace.m3d_layout = 1
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def tex3_done():
+    check(not tracebacks(), "Python error in the redesigned Texture workspace tests")
+
+
 @step
 def lb_done():
     LIB.library_dir, LIB.step, m3d_sculpt.alpha_dir = GIZMO["lb_saved"]
     shutil.rmtree(GIZMO["lb_dir"], ignore_errors=True)
     shutil.rmtree(GIZMO["lb_alphas"], ignore_errors=True)
     LIB._user["entries"] = None
-    LIB._gen.update(running=False, done=False, stage=None, failed=set())
+    LIB._gen.update(running=False, done=True, stage=None, failed=set())   # (done: the Assets panel of the Texture workspace does not start the thumbnails again meanwhile)
     check(not tracebacks(), "Python error in the Library tests")
 
 

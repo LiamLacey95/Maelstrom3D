@@ -3,9 +3,10 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 """
-Starter items of the Library (Texture workspace, F4) for Maelstrom3D: plain data, no images. Materials are folders of
-fill layers (values for Base Color, Roughness and Metallic) whose masks use the generators (Edges, Cavity, Top-down,
-Noise) and filters of the mask stack; mask presets are mask stacks. The format is the one m3d_library.py reads and
+Starter items of the Library (Texture workspace, F4) for Maelstrom3D: plain data, no images. Plain materials are one fill
+layer (values for Base Color, Roughness and Metallic); smart materials are folders of fill layers whose masks use the
+generators (Edges, Cavity, Top-down, Noise) and filters of the mask stack, so they read the baked maps of the mesh; smart
+masks are mask stacks. The format is the one m3d_library.py reads and
 writes for the items you save (a JSON description of the layers, their channel values and their mask effects), so these
 dicts are the same as the files in the user library folder.
 
@@ -49,12 +50,36 @@ def material(name, description, *layers):
             "layer": {"name": name, "kind": 'FOLDER', "layers": list(layers)}}
 
 
+def plain(name, description, color, rough, metal):
+    """A plain material item: one Fill Layer, which is added as that layer (not as a folder)."""
+    return {"format": FORMAT, "type": 'MATERIAL', "name": name, "description": description, "plain": True,
+            "layer": fill(name, color, rough=rough, metal=metal)}
+
+
 def mask(name, description, *effects):
     return {"format": FORMAT, "type": 'MASK', "name": name, "description": description, "mask": list(effects)}
 
 
 # Plausible PBR values: metals are metallic 1 with a tinted base color, everything else is 0; the base colors are the
 # sRGB codes you see in the color picker.
+PLAIN = (
+    plain("Iron", "Dark cast iron", "#4a4745", 0.6, 1.0),
+    plain("Steel", "Steel", "#a9abae", 0.3, 1.0),
+    plain("Aluminium", "Brushed aluminium", "#d4d6d9", 0.4, 1.0),
+    plain("Raw Copper", "Bare copper", "#f0a284", 0.28, 1.0),
+    plain("Brass", "Polished brass", "#e0b45a", 0.25, 1.0),
+    plain("Gold", "Polished gold", "#ffc457", 0.2, 1.0),
+    plain("Chrome", "Polished chrome", "#e3e3e3", 0.02, 1.0),
+    plain("Plastic", "Glossy red plastic", "#d1281f", 0.12, 0.0),
+    plain("White Plastic", "Satin white plastic", "#ecebe6", 0.3, 0.0),
+    plain("Black Plastic", "Satin black plastic", "#1b1b1d", 0.3, 0.0),
+    plain("Rubber", "Matte black rubber", "#1c1c1c", 0.85, 0.0),
+    plain("Wood", "Light wood color (a plain color: no grain)", "#b27a43", 0.6, 0.0),
+    plain("Dark Wood", "Dark wood color (a plain color: no grain)", "#4b2e1b", 0.55, 0.0),
+    plain("Ceramic", "Glazed white ceramic", "#f1efe8", 0.08, 0.0),
+    plain("Matte Black", "Matte black metal", "#141414", 0.65, 0.0),
+)
+
 MATERIALS = (
     material(
         "Painted Metal", "Painted metal worn through to the bare metal at the edges, with dirt in the crevices",
@@ -78,16 +103,12 @@ MATERIALS = (
         "Brushed Steel", "Steel with fine variation in the roughness",
         fill("Steel", "#a9abae", rough=0.3, metal=1.0),
         fill("Fine Variation", rough=0.55, opacity=0.6, mask=[fx("NOISE", scale=70.0, detail=2.0, noise_contrast=4.0)])),
-    material("Chrome", "Polished chrome", fill("Surface", "#e3e3e3", rough=0.02, metal=1.0)),
-    material("Gold", "Polished gold", fill("Surface", "#ffc457", rough=0.2, metal=1.0)),
     material(
         "Copper", "Copper with green patina in the cavities",
         fill("Metal", "#f0a284", rough=0.28, metal=1.0),
         fill("Patina", "#3d9c86", rough=0.65, metal=0.0, mask=[
             fx("CAVITY", amount=0.7, contrast=0.4),
             fx("NOISE", "Breakup", scale=8.0, detail=5.0, noise_contrast=3.0, blend='MULTIPLY', opacity=0.65)])),
-    material("Rubber", "Matte black rubber", fill("Surface", "#1c1c1c", rough=0.85, metal=0.0)),
-    material("Plastic", "Glossy plastic", fill("Surface", "#d1281f", rough=0.12, metal=0.0)),
     material(
         "Dirty Plastic", "Plastic with grime in the crevices and scuffed edges",
         fill("Base", "#cfcabb", rough=0.4, metal=0.0),
@@ -123,9 +144,6 @@ MATERIALS = (
         fill("Wet Sheen", "#2a1a0e", rough=0.18, metal=0.0, opacity=0.7, mask=[
             fx("NOISE", scale=9.0, detail=4.0, noise_contrast=4.0),
             fx("LEVELS", black_in=0.45, white_in=0.7)])),
-    material("Aluminium", "Brushed aluminium", fill("Surface", "#d4d6d9", rough=0.4, metal=1.0)),
-    material("Matte Black", "Matte black metal", fill("Surface", "#141414", rough=0.65, metal=0.0)),
-    material("Ceramic", "Glazed white ceramic", fill("Glaze", "#f1efe8", rough=0.08, metal=0.0)),
 )
 
 MASKS = (

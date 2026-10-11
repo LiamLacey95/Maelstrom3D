@@ -1050,6 +1050,11 @@ class VIEW3D_HT_header(Header):
         layout.separator_spacer()
 
         if classic_header:
+            # Maelstrom3D: the Texture workspace's display mode (material, channel, mesh map, mask) at the top right.
+            from m3d_workspace import current_kind
+            if current_kind(context) == 'TEXTURE':
+                from m3d_texture import draw_view_mode
+                draw_view_mode(layout, context)
             # Viewport settings and shading options stay reachable as two compact popovers.
             row = layout.row(align=True)
             row.prop(overlay, "show_overlays", icon='OVERLAY', text="")

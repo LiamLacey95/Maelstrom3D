@@ -833,6 +833,7 @@ def rebuild_all(mat):
 # Show Mask: the material shows the active layer's mask instead of its shader
 
 MASKVIEW = "%s.maskview" % TAG
+MAPVIEW = "%s.mapview" % TAG   # the Image Texture node of Material.m3d_show_map (a baked map shown the same way)
 
 
 def output_node(nt):
@@ -844,8 +845,9 @@ def maskview_off(mat):
     """Back to the shader: our Emission node goes and the link it replaced (remembered on the material) returns."""
     nt = mat.node_tree
     emit, state, out = nt.nodes.get(MASKVIEW), mat.get("m3d_maskview"), output_node(nt)
-    if emit is not None:
-        nt.nodes.remove(emit)
+    for name in (MASKVIEW, MAPVIEW):
+        if nt.nodes.get(name) is not None:
+            nt.nodes.remove(nt.nodes[name])
     node = nt.nodes.get(state[0]) if state else None
     socket = next((s for s in node.outputs if s.identifier == state[1]), None) if node is not None else None
     if socket is not None and out is not None:
@@ -856,10 +858,12 @@ def maskview_off(mat):
 
 def sync_maskview(mat):
     """Make the material match Material.m3d_show_mask: on, the Material Output shows an Emission node fed by the
-    active layer's mask (white when it has none); the link it replaces is kept in the material's m3d_maskview."""
+    active layer's mask (white when it has none); the link it replaces is kept in the material's m3d_maskview. Material.m3d_show_map
+    (the name of a baked map's image) does the same with that image instead of the mask."""
     nt = mat.node_tree
     out = output_node(nt) if nt is not None else None
-    if nt is None or out is None or not mat.m3d_show_mask:
+    image = bpy.data.images.get(mat.m3d_show_map) if mat.m3d_show_map else None
+    if nt is None or out is None or not (mat.m3d_show_mask or image is not None):
         if nt is not None and (nt.nodes.get(MASKVIEW) is not None or "m3d_maskview" in mat.keys()):
             maskview_off(mat)
         return
@@ -873,9 +877,21 @@ def sync_maskview(mat):
         emit.name, emit.label, emit[TAG] = MASKVIEW, "Show Mask", "MASKVIEW"
         emit.location = (out.location.x - 250, out.location.y - 200)
     layer = active_layer(mat)
-    top = mask_top(nt, layer) if layer is not None else None
+    top = mask_top(nt, layer) if layer is not None and image is None else None
     color = emit.inputs["Color"]
-    if top is not None:
+    tex = nt.nodes.get(MAPVIEW)
+    if image is None and tex is not None:
+        nt.nodes.remove(tex)
+    if image is not None:
+        if tex is None:
+            tex = nt.nodes.new("ShaderNodeTexImage")
+            tex.name, tex.label, tex[TAG] = MAPVIEW, "Show Map", "MAPVIEW"
+            tex.location = (emit.location.x - 300, emit.location.y)
+        if tex.image != image:
+            tex.image = image
+        if not any(l.from_node == tex for l in color.links):
+            nt.links.new(tex.outputs["Color"], color)
+    elif top is not None:
         if not any(l.from_socket == top for l in color.links):
             nt.links.new(top, color)
     else:
@@ -888,6 +904,11 @@ def sync_maskview(mat):
 
 def _show_mask_changed(self, _context):
     sync_maskview(self)
+
+
+def show_view(mat, mask=False, map_name=""):
+    """What the material shows instead of its shader: the active layer's mask, a baked map (the name of its image), or nothing."""
+    mat.m3d_show_mask, mat.m3d_show_map = mask, map_name
 
 
 # -----------------------------------------------------------------------------
@@ -2325,6 +2346,8 @@ def register():
     mat.m3d_show_mask = BoolProperty(name="Show Mask", default=False, update=_show_mask_changed,
                                      description="Show the active layer's mask in the 3D view instead of the material "
                                      "(white shows the layer, black hides it)")
+    mat.m3d_show_map = StringProperty(name="Show Map", default="", update=_show_mask_changed,
+                                      description="Show a baked map (the name of its image) in the 3D view instead of the material")
     bpy.app.handlers.load_post.append(load_post)
     bpy.app.handlers.depsgraph_update_post.append(depsgraph_post)
 
@@ -2332,7 +2355,7 @@ def register():
 def unregister():
     bpy.app.handlers.depsgraph_update_post.remove(depsgraph_post)
     bpy.app.handlers.load_post.remove(load_post)
-    del bpy.types.Material.m3d_show_mask, bpy.types.Material.m3d_channel, bpy.types.Material.m3d_layer_index
+    del bpy.types.Material.m3d_show_map, bpy.types.Material.m3d_show_mask, bpy.types.Material.m3d_channel, bpy.types.Material.m3d_layer_index
     del bpy.types.Material.m3d_layers
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

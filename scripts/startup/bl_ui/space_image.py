@@ -928,6 +928,11 @@ class IMAGE_HT_header(Header):
 
         layout.separator_spacer()
 
+        # Maelstrom3D: the Texture workspace's display mode (material, channel, mesh map, mask) at the top right.
+        if sima.mode in {'PAINT', 'VIEW'} and current_kind(context) == 'TEXTURE':
+            from m3d_texture import draw_view_mode
+            draw_view_mode(layout, context)
+
         # Gizmo toggle & popover.
         row = layout.row(align=True)
         row.prop(sima, "show_gizmo", icon='GIZMO', text="")

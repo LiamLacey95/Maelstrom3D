@@ -17,7 +17,9 @@ camera, three lights, an HDRI and a 480 x 270 render), `+ipr` (the viewport rend
 `+hplp` (a low poly sword with its high poly, parked: hidden, the low poly active), `+hpwire` (Show Low Poly on), `+hpmouse` /
 `+hpmenu` (the High / Low Poly menu opens at the viewport; needs --enable-event-simulate), `+retopo` (a smooth Suzanne that is the live surface, with a
 low poly drawn over part of its face in Edit Mode: use it before `+angle`, `+frame` and the Modeling workspace), `+autolow` (Auto Low Poly on a smooth Suzanne, the low poly
-next to the high poly, drawn with its edges), `+angle` (a three-quarter view), `+bakegroups` (three bake groups: a
+next to the high poly, drawn with its edges), `+angle` (a three-quarter view), `+assets` / `+assetmat` / `+assetmask` / `+assetenv` / `+assetbrush` (open Smart Materials / Materials / Smart Masks / Environments / Brushes
+in the Texture workspace's Assets panel), `+apply` (the Painted Metal smart material on top of the layers; after `+layers`), `+thumbs` (make the thumbnails of the Assets now: use a BLENDER_USER_RESOURCES of your own, a minute
+of rendering), `+texpaint` (Texture workspace: the Eraser tool, Lazy Mouse on), `+bakegroups` (three bake groups: a
 sword with two floaters that is not baked, a shield that is baked and a pommel that is stale; use it before `TEXTURE/tex_bake`,
 `+frame` and `TEXTURE/tex_bake` again), `+bakeresult` (like `+bakegroups`, then Bake All, a normal-mapped material on each low poly and
 the sword's normal map in the paint view), `+bakeextras` (two groups that overlap, lined up by Explode, baked with the ID map, and the cage
@@ -664,7 +666,41 @@ def bake():
     bpy.ops.m3d.tex_bake()
 
 
+def assets(category):
+    def run():
+        bpy.context.scene.m3d_library.category = category
+    return run
+
+
+def apply_item(ref):
+    def run():
+        ob = bpy.context.active_object
+        ob.m3d_bake.resolution, ob.m3d_bake.samples, ob.m3d_bake.margin = '256', 8, 8   # (the generators bake their maps: small and quick)
+        bpy.ops.m3d.library_apply(item=ref)
+    return run
+
+
+def thumbs():
+    import m3d_library as LIB
+    LIB.generate_pending()
+
+
+def texpaint():
+    import m3d_texture as T
+    bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+    bpy.ops.m3d.tex_tool(tool='ERASER')
+    T.image_brush(bpy.context).use_smooth_stroke = True
+
+
 SETUP = {
+    "+assets": assets('SMART_MATERIALS'),
+    "+assetmat": assets('MATERIALS'),
+    "+assetmask": assets('SMART_MASKS'),
+    "+assetenv": assets('ENVIRONMENTS'),
+    "+assetbrush": assets('BRUSHES'),
+    "+thumbs": thumbs,
+    "+apply": apply_item("starter:painted_metal"),
+    "+texpaint": texpaint,
     "+paint": paint,
     "+bake": bake,
     "+bakegroups": bake_groups,

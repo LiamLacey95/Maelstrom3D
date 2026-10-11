@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 """
-Library of the Texture workspace (F4) for Maelstrom3D: materials (whole layer setups), mask presets, brushes and alphas
-in one tile browser, and your own items.
+Assets of the Texture workspace (F4) for Maelstrom3D: plain materials (one fill layer), smart materials (folders of layers),
+smart masks (mask presets), brushes, alphas and environments in one tile browser, and your own items.
 
 An item is a JSON description of layers, so applying one is making the layers again with m3d_layers / m3d_masks (no
 data is appended from a .blend):
@@ -16,14 +16,15 @@ data is appended from a .blend):
                "mask": [<effect>, ...]}
     effect    {"kind", "name", "visible", "opacity", "blend", the settings of its kind, "image": file name (Paint)}
 
-A material is a folder: applying it adds that folder on top of the layer stack, named after the item. A Fill Layer's
+A material is a folder: applying it adds that folder on top of the layer stack, named after the item (a plain material, one
+with "plain": true, is a single Fill Layer: it is added as that layer). A Fill Layer's
 channel is its value (linear color for Base Color / Emission, a number for Roughness / Metallic / Height, null for
 Normal), a Paint Layer's is the PNG next to the item (or null: no image yet). The starter items are plain data
 (m3d_library_data.py); yours are a folder each in the user library (<user datafiles>/m3d_library/user/<name>/item.json,
 its paint images as PNG and thumb.png). Thumbnails of the starter items are cached in m3d_library/thumbs.
 
 Thumbnails are small Cycles renders of a grooved sphere with the item applied (a mask preset is shown as the mask on
-the sphere). They are made one step at a time on a timer once the Library tab is first drawn: the preview scene is made,
+the sphere). They are made one step at a time on a timer once the Assets panel is first drawn: the preview scene is made,
 the maps the generators read are baked on its sphere once, then one item is rendered per step.
 """
 
@@ -65,7 +66,12 @@ def slug(name):
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "item"
 
 
-STARTERS = tuple(Entry("starter:" + slug(item["name"]), item, None) for item in (*DATA.MATERIALS, *DATA.MASKS))
+STARTERS = tuple(Entry("starter:" + slug(item["name"]), item, None) for item in (*DATA.PLAIN, *DATA.MATERIALS, *DATA.MASKS))
+
+
+def is_plain(entry):
+    """A plain material: one fill layer."""
+    return entry.item["type"] == 'MATERIAL' and bool(entry.item.get("plain"))
 
 
 def f32(value):
@@ -343,10 +349,23 @@ def bake_missing(context, ob, layers):
         T.ensure_maps(context, ob, keys)
 
 
+def build_plain(mat, item, directory):
+    """The plain material's fill layer on top of the stack, named after the item. -> (its uid, what was made)"""
+    made = SimpleNamespace(uids=[], images=[])
+    try:
+        with MK.muted():
+            uid = add_layer_spec(mat, item["layer"], "", directory, made, name=L.unique_name(mat, item["name"]))
+    except (KeyError, TypeError, ValueError, AttributeError, RuntimeError) as err:
+        discard(mat, made)
+        raise RuntimeError("The item %s is damaged (%s)" % (item.get("name", "?"), err))
+    return uid, made
+
+
 def apply_material(context, ob, mat, item, directory):
-    """Add the item as a folder on top of the stack and make it the active layer (the caller rebuilds). -> its name"""
+    """Add the item as a folder (a plain material: as its one layer) on top of the stack and make it the active layer (the
+    caller rebuilds). -> its name"""
     L.migrate(mat)
-    uid, made = build_material(mat, item, directory)
+    uid, made = (build_plain if item.get("plain") else build_material)(mat, item, directory)
     try:
         bake_missing(context, ob, [L.layer_by_uid(mat, u) for u in made.uids])
     except RuntimeError:
@@ -771,8 +790,9 @@ class M3D_OT_library_apply(Operator):
         if entry is None:
             return "Apply a library item"
         mask = entry.item["type"] == 'MASK'
-        return "%s: %s. %s" % (entry.item["name"], entry.item.get("description") or ("Mask preset" if mask else "Material"),
-                               "Goes to the active layer's mask" if mask else "Added as a new folder on top of the layers")
+        what = ("Goes to the active layer's mask" if mask else "Added as one Fill layer on top of the layers" if is_plain(entry)
+                else "Added as a new folder on top of the layers")
+        return "%s: %s. %s" % (entry.item["name"], entry.item.get("description") or ("Smart mask" if mask else "Material"), what)
 
     @classmethod
     def poll(cls, context):
@@ -787,7 +807,8 @@ class M3D_OT_library_apply(Operator):
         try:
             if entry.item["type"] == 'MATERIAL':
                 mat = usable_material(ob)
-                what = "the folder " + apply_material(context, ob, mat, entry.item, entry.directory)
+                what = ("the layer " if entry.item.get("plain") else "the folder ") + apply_material(
+                    context, ob, mat, entry.item, entry.directory)
             else:
                 mat = ob.active_material
                 layer = L.active_layer(mat) if mat is not None else None
@@ -935,11 +956,15 @@ class M3D_OT_library_refresh(Operator):
 # -----------------------------------------------------------------------------
 # The tab
 
-CATEGORIES = (('MATERIALS', "Materials", "Whole layer setups: added as a folder on top of the layers"),
-              ('MASKS', "Masks", "Mask presets for the active layer"),
-              ('BRUSHES', "Brushes", "The texture paint brushes"),
-              ('ALPHAS', "Alphas", "Stamp textures for the active brush"),
-              ('MINE', "Mine", "The items you saved"))
+# (id, name, tooltip, icon, number): the numbers keep what files from before the smart categories saved (Masks are the Smart Masks).
+CATEGORIES = (('MATERIALS', "Materials", "Plain materials: one Fill layer, added on top of the layers", 'MATERIAL', 0),
+              ('SMART_MATERIALS', "Smart Materials", "Folders of layers with generator masks (edge wear, dirt, dust) that read "
+               "the baked maps of the mesh: added as a folder on top of the layers", 'NODE_MATERIAL', 5),
+              ('SMART_MASKS', "Smart Masks", "Mask presets for the active layer", 'MOD_MASK', 1),
+              ('BRUSHES', "Brushes", "The texture paint brushes", 'BRUSH_DATA', 2),
+              ('ALPHAS', "Alphas", "Stamp textures for the active brush", 'IMAGE_ALPHA', 3),
+              ('ENVIRONMENTS', "Environments", "The environment that lights the Material Preview", 'WORLD', 6),
+              ('MINE', "Mine", "The items you saved", 'ASSET_MANAGER', 4))
 
 
 class M3D_LibrarySettings(PropertyGroup):
@@ -955,7 +980,7 @@ def matching(items, text, name=lambda x: x):
     return [x for x in items if text.lower() in name(x).lower()]
 
 
-def tile_rows(layout, context, cells, min_px=58):
+def tile_rows(layout, context, cells, min_px=84):
     """Square tiles with the name under each one. `cells` are (name, draw) pairs: draw(flow) adds the tile's button to
     the grid row (the buttons are children of the grid, which is what makes an icon-only button fill its cell). Row by
     row: a grid of tiles, a grid of names; the last row is padded so its tiles are as wide as the others."""
@@ -1001,16 +1026,24 @@ def draw_mask_mode(layout, context, s):
 def draw_materials(layout, context, s):
     if mesh_of(context) is None:
         reason(layout, "Select a mesh to apply a material")
-    item_tiles(layout, context, s, matching([e for e in STARTERS if e.item["type"] == 'MATERIAL'], s.search,
+    item_tiles(layout, context, s, matching([e for e in STARTERS if is_plain(e)], s.search, lambda e: e.item["name"]))
+    reason(layout, "A click adds one Fill layer")
+
+
+def draw_smart_materials(layout, context, s):
+    if mesh_of(context) is None:
+        reason(layout, "Select a mesh to apply a material")
+    item_tiles(layout, context, s, matching([e for e in STARTERS if e.item["type"] == 'MATERIAL' and not is_plain(e)], s.search,
                                             lambda e: e.item["name"]))
-    reason(layout, "A click adds the material as a folder on top of the layers")
+    reason(layout, "A click adds a folder of layers")
+    reason(layout, "It uses the baked mesh maps")
 
 
-def draw_masks(layout, context, s):
+def draw_smart_masks(layout, context, s):
     draw_mask_mode(layout, context, s)
     item_tiles(layout, context, s, matching([e for e in STARTERS if e.item["type"] == 'MASK'], s.search,
                                             lambda e: e.item["name"]))
-    reason(layout, "Generators bake their maps once (Rebake Maps in the Mask panel)")
+    reason(layout, "The generators bake maps once")
 
 
 def draw_brushes(layout, context, s):
@@ -1075,22 +1108,80 @@ def draw_mine(layout, context, s):
         reason(layout, "Nothing saved yet: Save Layer keeps the active layer or folder, Save Mask its mask")
 
 
-DRAW = {'MATERIALS': draw_materials, 'MASKS': draw_masks, 'BRUSHES': draw_brushes, 'ALPHAS': draw_alphas, 'MINE': draw_mine}
+def environment_name(name):
+    return (name.rpartition(".")[0] or name).replace("_", " ").title()
+
+
+def draw_environments(layout, context, s):
+    space = S.viewport(context)
+    if space is None:
+        reason(layout, "No 3D Viewport in this workspace")
+        return
+    shading = space.shading
+    if shading.type != 'MATERIAL':
+        layout.operator("m3d.env_pick", text="Material Preview", icon='SHADING_TEXTURE').name = ""
+        reason(layout, "Environments light the Material Preview")
+        return
+    lights = matching(S.studio_lights(context, 'WORLD'), s.search, lambda sl: environment_name(sl.name))
+
+    def cell(sl):
+        def draw(flow):
+            icon = layout.enum_item_icon(shading, "studio_light", sl.name)
+            o = flow.operator("m3d.env_pick", text="" if icon else environment_name(sl.name), icon_value=icon,
+                              depress=not shading.use_scene_world and shading.studio_light == sl.name)
+            o.name = sl.name
+        return environment_name(sl.name), draw
+    tile_rows(layout, context, [cell(sl) for sl in lights])
+    row = layout.row(align=True)
+    row.prop(shading, "use_scene_world", text="Scene World", toggle=True)
+    reason(layout, "A click lights the preview")
+    reason(layout, "Shift+RMB drag turns it")
+
+
+DRAW = {'MATERIALS': draw_materials, 'SMART_MATERIALS': draw_smart_materials, 'SMART_MASKS': draw_smart_masks,
+        'BRUSHES': draw_brushes, 'ALPHAS': draw_alphas, 'ENVIRONMENTS': draw_environments, 'MINE': draw_mine}
+
+
+class M3D_OT_env_pick(Operator):
+    """Light the Material Preview of the 3D view with this environment (empty name: just switch to Material Preview)"""
+    bl_idname = "m3d.env_pick"
+    bl_label = "Pick Environment"
+    bl_options = {'INTERNAL'}
+
+    name: StringProperty()   # a StudioLight name
+
+    @classmethod
+    def description(cls, _context, props):
+        return environment_name(props.name) if props.name else "Show the 3D view in Material Preview"
+
+    @classmethod
+    def poll(cls, context):
+        return S.viewport(context) is not None
+
+    def execute(self, context):
+        shading = S.viewport(context).shading
+        T.channel_view_set(shading, False)   # (back from a channel on its own)
+        shading.type = 'MATERIAL'
+        if self.name:
+            shading.use_scene_world = False
+            shading.studio_light = self.name
+        return {'FINISHED'}
 
 
 class _Lib(_PagePanel):
-    page = "tex_library"
+    page = "tex_assets"
 
 
 class PROPERTIES_PT_m3d_lib_browse(_Lib, Panel):
-    bl_label = "Library"
+    bl_label = "Assets"
     bl_options = {'HIDE_HEADER'}
 
     def draw(self, context):
         layout = self.layout
         s = context.scene.m3d_library
         start_thumbnails()
-        layout.row().prop(s, "category", expand=True)
+        layout.row(align=True).prop(s, "category", expand=True, icon_only=True)
+        layout.label(text=next(name for ident, name, *_rest in CATEGORIES if ident == s.category))
         layout.prop(s, "search", icon='VIEWZOOM', text="")
         DRAW[s.category](layout, context, s)
 
@@ -1157,6 +1248,7 @@ classes = (
     M3D_OT_library_rename,
     M3D_OT_library_delete,
     M3D_OT_library_refresh,
+    M3D_OT_env_pick,
     M3D_LibrarySettings,
     PROPERTIES_PT_m3d_lib_browse,
     PROPERTIES_PT_m3d_lib_manage,

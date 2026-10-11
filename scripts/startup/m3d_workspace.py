@@ -169,7 +169,8 @@ def _follow_workspace():
 
 # A dock tab shows a native Properties context, or a page: panels with bl_context "modeling_toolkit" whose
 # page id is the active one for that workspace and side. `short_label` is drawn when the dock is too narrow for the labels.
-Tab = namedtuple("Tab", "id label context page short_label", defaults=("",))
+# `hidden`: a page the dock can show without a tab of its own (Texture's Bake page: the Bake Mesh Maps button opens it).
+Tab = namedtuple("Tab", "id label context page short_label hidden", defaults=("", False))
 _CHANNEL_BOX = Tab("channel_box", "Channel Box / Layer Editor", 'CHANNEL_BOX', None, "Channel Box")
 _TOOLKIT = Tab("modeling_toolkit", "Modeling Toolkit", 'MODELING_TOOLKIT', "modeling_toolkit", "Toolkit")
 _TOOL = Tab("tool", "Tool Settings", 'TOOL', None, "Tool")
@@ -189,12 +190,25 @@ DOCK_TABS['UV'] = {
         ("unwrap", "Unwrap"), ("arrange", "Arrange"), ("check", "Check"), ("create", "Create"), ("udim", "UDIM"))),
     'LEFT': (),
 }
-# Texture: the brush tray on the left, task tabs on the right (pages: m3d_texture.py; the Library page: m3d_library.py).
+# Texture: one Properties editor for each part of the layout (TEXTURE_ROLES, side_of): the tool strip, the Assets panel, the
+# Texture Set List, the dock (Layers | Texture Set Settings, and the Bake page behind Bake Mesh Maps), Properties and the
+# dock strip. Only the dock has tabs (pages: m3d_texture.py; the Assets page: m3d_library.py).
+_TEX = lambda page, label, *rest: Tab("tex_" + page, label, 'MODELING_TOOLKIT', "tex_" + page, *rest)
 DOCK_TABS['TEXTURE'] = {
-    'RIGHT': tuple(Tab("tex_" + page, label, 'MODELING_TOOLKIT', "tex_" + page) for page, label in (
+    'RIGHT': (_TEX("layers", "Layers"), _TEX("settings", "Texture Set Settings", "Settings"), _TEX("bake", "Bake Mesh Maps", "Bake", True)),
+    'LEFT': (),
+    'TOOLS': (_TEX("tools", "Tools"),),
+    'ASSETS': (_TEX("assets", "Assets"),),
+    'SETS': (_TEX("sets", "Texture Sets"),),
+    'PROPS': (_TEX("props", "Properties"),),
+    'DOCKBAR': (_TEX("dockbar", "Dock"),),
+}
+# Files saved before that layout (a brush tray on the left, the dock with six tabs on the right) keep it until Reset Workspace.
+DOCK_TABS['TEXTURE_OLD'] = {
+    'RIGHT': tuple(_TEX(page, label) for page, label in (
         ("layers", "Layers"), ("brush", "Brush"), ("library", "Library"), ("bake", "Bake"), ("export", "Export"),
         ("display", "Display"))),
-    'LEFT': (Tab("tex_brushes", "Brushes", 'MODELING_TOOLKIT', "tex_brushes"),),
+    'LEFT': (_TEX("brushes", "Brushes"),),
 }
 # Rigging: task tabs on the right, bone collections under the Outliner on the left (pages: m3d_rig.py).
 DOCK_TABS['RIG'] = {
@@ -227,29 +241,82 @@ def side_of_area(area_x, area_width, window_width):
     return 'LEFT' if area_x + area_width / 2 < window_width / 2 else 'RIGHT'
 
 
+# The Properties editors of the Texture layout, left to right and top to bottom (see texture_role). The dock keeps the name
+# RIGHT: it is the one with tabs, and the page it shows is the workspace's m3d_page_right.
+TEXTURE_ROLES = ('TOOLS', 'ASSETS', 'SETS', 'RIGHT', 'PROPS', 'DOCKBAR')
+NARROW = 0.05   # an editor narrower than this share of the window is one of the strips (tool strip, dock strip)
+
+
+def tabs_kind(context):
+    """Key of DOCK_TABS for this workspace: the kind, except Texture in a file saved with the old layout (TEXTURE_OLD)."""
+    kind = current_kind(context)
+    if kind == 'TEXTURE' and getattr(context.workspace, "m3d_layout", 1) < 1:
+        return 'TEXTURE_OLD'
+    return kind
+
+
+def texture_role(context):
+    """Which Properties editor of the Texture layout the area is. Where it sits decides: the narrow ones at the window's edges
+    are the tool strip (left) and the dock strip (right), the wide one on the left is Assets, and the wide ones on the right,
+    from the top, are the Texture Set List, the dock and Properties (with fewer of them the top ones are missing)."""
+    area, win, screen = context.area, context.window, context.screen
+    width = max(win.width, 1)
+    left = side_of_area(area.x, area.width, win.width) == 'LEFT'
+    if area.width < NARROW * width:
+        return 'TOOLS' if left else 'DOCKBAR'
+    if left:
+        return 'ASSETS'
+    column = [area]
+    if screen is not None:
+        column = sorted((a for a in screen.areas if a.type == 'PROPERTIES' and a.width >= NARROW * width
+                         and side_of_area(a.x, a.width, win.width) == 'RIGHT'), key=lambda a: -a.y)
+    i = next((i for i, a in enumerate(column) if a == area), None)
+    if i is None:
+        return 'RIGHT'
+    names = (('RIGHT',), ('RIGHT', 'PROPS'), ('SETS', 'RIGHT', 'PROPS'))[min(len(column), 3) - 1]
+    return names[min(i, len(names) - 1)]
+
+
 def side_of(context):
-    """LEFT when the Properties editor sits in the left half of the window (the left tray), else RIGHT."""
+    """LEFT when the Properties editor sits in the left half of the window (the left tray), else RIGHT; in the Texture layout
+    the role of the editor (TEXTURE_ROLES)."""
     area, win = context.area, context.window
     if area is None or win is None:
         return 'RIGHT'
+    if tabs_kind(context) == 'TEXTURE':
+        return texture_role(context)
     return side_of_area(area.x, area.width, win.width)
+
+
+_BASE_KIND = {'TEXTURE_OLD': 'TEXTURE'}   # the kind whose user tabs and hidden tabs a tab table belongs to
 
 
 def dock_tabs(kind, side):
     """The tabs of a dock: the kind's own, then the ones the user made (m3d_user.user_tabs)."""
     from m3d_user import user_tabs
     tabs = DOCK_TABS.get(kind, DOCK_TABS['MODEL'])
-    return (*(tabs[side] or tabs['RIGHT']),
-            *(Tab(t["id"], t["label"], 'MODELING_TOOLKIT', t["id"]) for t in user_tabs(kind, side)))
+    return (*(tabs.get(side) or tabs['RIGHT']),
+            *(Tab(t["id"], t["label"], 'MODELING_TOOLKIT', t["id"]) for t in user_tabs(_BASE_KIND.get(kind, kind), side)))
 
 
 def active_page(context):
     """Page shown in the Properties editor under the mouse: the one stored on the workspace for its side
     when the kind has it, else the kind's first page, else the Modeling Toolkit."""
     side = side_of(context)
-    pages = [t.page for t in dock_tabs(current_kind(context), side) if t.page]
+    pages = [t.page for t in dock_tabs(tabs_kind(context), side) if t.page]
     stored = getattr(context.workspace, "m3d_page_" + side.lower(), "")
     return stored if stored in pages else pages[0] if pages else "modeling_toolkit"
+
+
+# Tab table key -> function(context, active page) giving the pages whose panels the editor draws. A kind that has none draws the
+# active page's panels (Texture: m3d_texture.py, where the Properties editor draws the pages of what is selected).
+PAGE_SETS = {}
+
+
+def pages_shown(context):
+    page = active_page(context)
+    spread = PAGE_SETS.get(tabs_kind(context))
+    return spread(context, page) if spread is not None else {page}
 
 
 class _PagePanel:
@@ -262,7 +329,7 @@ class _PagePanel:
     @classmethod
     def poll(cls, context):
         page, hidden = m3d_edit.panel_placement(context, cls)
-        return active_page(context) == page and (m3d_edit.editing() or not hidden) and cls.page_poll(context)
+        return page in pages_shown(context) and (m3d_edit.editing() or not hidden) and cls.page_poll(context)
 
     def draw_header_preset(self, context):
         if m3d_edit.editing():
@@ -316,9 +383,11 @@ def fit_tabs(tabs, active, avail, width, more):
 def split_dock_tabs(context):
     """(drawn tabs, overflow tabs, active tab id) of this dock's header: its width decides how many tabs fit."""
     from m3d_user import hidden_tabs
-    kind, side = current_kind(context), side_of(context)
-    space, hidden, page = context.area.spaces.active, hidden_tabs(kind), active_page(context)
-    tabs = [t for t in dock_tabs(kind, side) if t.id not in hidden] + [all_tab(kind)]
+    kind, side = tabs_kind(context), side_of(context)
+    space, hidden, page = context.area.spaces.active, hidden_tabs(current_kind(context)), active_page(context)
+    tabs = [t for t in dock_tabs(kind, side) if t.id not in hidden and not t.hidden]
+    if kind != 'TEXTURE':   # (the Texture dock has two tabs and no stock settings behind them)
+        tabs.append(all_tab(kind))
     active = next((t.id for t in tabs if space.context == t.context and t.page in {None, page}), None)
     scale = context.preferences.system.ui_scale
     header = next(r for r in context.area.regions if r.type == 'HEADER')
@@ -333,13 +402,13 @@ def tab_button(layout, tab, label, **props):
     op.tab = tab.id   # m3d.dock_tab: 'OBJECT' shows the Scene settings when nothing is active (no Object tab then)
 
 
-def draw_dock_tabs(layout, context):
-    """Dock header: the tabs of this workspace's kind (hidden ones left out) and All Settings, as many as fit
-    (the rest are in the "more" menu), then the tab menu. False when the dock shows one of the stock tabs instead."""
-    space = context.space_data
-    kind, side = current_kind(context), side_of(context)
-    if space.context not in {t.context for t in dock_tabs(kind, side)} | DOCK_CONTEXTS:
-        return False
+# (tabs key, side) -> function(layout, context) drawing a header of its own (Texture: the title or the buttons of an editor).
+HEADERS = {}
+
+
+def draw_tab_row(layout, context):
+    """The dock's tabs (hidden ones left out) and All Settings, as many as fit (the rest are in the "more" menu), then the
+    tab menu."""
     shown, more, active = split_dock_tabs(context)
     row = layout.row(align=True)
     for tab, label in shown:
@@ -350,6 +419,20 @@ def draw_dock_tabs(layout, context):
     if m3d_edit.editing():
         user = active.startswith("user_") if active else False
         m3d_edit.draw_tab_controls(layout, context, active, user)
+
+
+def draw_dock_tabs(layout, context):
+    """Dock header: the tabs of this workspace's kind (hidden ones left out) and All Settings, as many as fit
+    (the rest are in the "more" menu), then the tab menu. False when the dock shows one of the stock tabs instead."""
+    space = context.space_data
+    kind, side = tabs_kind(context), side_of(context)
+    if space.context not in {t.context for t in dock_tabs(kind, side)} | DOCK_CONTEXTS:
+        return False
+    drawer = HEADERS.get((kind, side))
+    if drawer is not None:
+        drawer(layout, context)
+    else:
+        draw_tab_row(layout, context)
     return True
 
 
@@ -368,7 +451,7 @@ class M3D_OT_dock_page(Operator):
     def execute(self, context):
         space = context.space_data
         side = side_of(context)
-        tab = next((t for t in dock_tabs(current_kind(context), side) if t.id == self.tab), None)
+        tab = next((t for t in dock_tabs(tabs_kind(context), side) if t.id == self.tab), None)
         if tab is None or space is None or space.type != 'PROPERTIES':
             return {'CANCELLED'}
         space.context = tab.context
@@ -420,7 +503,8 @@ class M3D_MT_dock_tabs(Menu):
 
     def draw(self, context):
         self.layout.label(text="Tabs")
-        draw_tab_toggles(self.layout, current_kind(context), dock_tabs(current_kind(context), side_of(context)))
+        draw_tab_toggles(self.layout, current_kind(context),
+                         [t for t in dock_tabs(tabs_kind(context), side_of(context)) if not t.hidden])
 
 
 class M3D_PT_workspace_settings(Panel):
@@ -438,9 +522,10 @@ class M3D_PT_workspace_settings(Panel):
         if kind is None:   # Shading, Compositing...: no task dock, so no tabs to choose.
             layout.label(text="Dock tabs: this workspace has none")
         else:
-            sides = DOCK_TABS[kind]
-            right = dock_tabs(kind, 'RIGHT')
-            left = dock_tabs(kind, 'LEFT') if sides['LEFT'] else ()
+            key = tabs_kind(context)
+            sides = DOCK_TABS[key]
+            right = [t for t in dock_tabs(key, 'RIGHT') if not t.hidden]
+            left = dock_tabs(key, 'LEFT') if sides['LEFT'] else ()
             layout.label(text="Right dock tabs" if left else "Dock tabs")
             draw_tab_toggles(layout, kind, right)
             if left:
@@ -548,6 +633,11 @@ def register():
     ws.m3d_kind = bpy.props.StringProperty(name="Kind", description="Maelstrom3D workspace kind (MODEL, SCULPT, ...)")
     ws.m3d_page_right = bpy.props.StringProperty(description="Active page of the right-hand dock")
     ws.m3d_page_left = bpy.props.StringProperty(description="Active page of the left tray")
+    ws.m3d_layout = bpy.props.IntProperty(
+        name="Layout", default=0, min=0, max=9,
+        description="Version of the workspace's layout (the Texture workspace: 0 is the brush tray with the six-tab dock, "
+                    "1 the tool strip, Assets, Texture Sets, Layers, Properties and the dock strip). Reset Workspace "
+                    "brings the newest")
     ws.m3d_show_shelf = bpy.props.BoolProperty(
         name="Show Shelf", default=True, update=_shelf_visibility_changed,
         description="Show the shelf tabs and the shelf under the Status Line (off: the viewport gets the space; "
@@ -563,6 +653,6 @@ def unregister():
     if bpy.app.timers.is_registered(_follow_workspace):
         bpy.app.timers.unregister(_follow_workspace)
     ws = bpy.types.WorkSpace
-    del ws.m3d_face_limit, ws.m3d_show_shelf, ws.m3d_page_left, ws.m3d_page_right, ws.m3d_kind
+    del ws.m3d_face_limit, ws.m3d_show_shelf, ws.m3d_layout, ws.m3d_page_left, ws.m3d_page_right, ws.m3d_kind
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
