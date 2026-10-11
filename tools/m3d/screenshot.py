@@ -20,7 +20,10 @@ low poly drawn over part of its face in Edit Mode: use it before `+angle`, `+fra
 next to the high poly, drawn with its edges), `+angle` (a three-quarter view), `+assets` / `+assetmat` / `+assetmask` / `+assetenv` / `+assetbrush` (open Smart Materials / Materials / Smart Masks / Environments / Brushes
 in the Texture workspace's Assets panel), `+apply` (the Painted Metal smart material on top of the layers; after `+layers`), `+thumbs` (make the thumbnails of the Assets now: use a BLENDER_USER_RESOURCES of your own, a minute
 of rendering), `+texpaint` (Texture workspace: the Eraser tool, Lazy Mouse on), `+multipaint` (a material, a paint layer, and one stroke that paints
-Base Color, Roughness and Height together; use it after `+monkey`, `+angle` and `+frame`; `+propsscroll` scrolls Properties down), `+bakegroups` (three bake groups: a
+Base Color, Roughness and Height together; use it after `+monkey`, `+angle` and `+frame`; `+propsscroll` scrolls Properties down), `+propspaint` (like
+`+multipaint`, then the Cells alpha: Properties - Paint), `+propsfill` (a fill layer with a brick texture on Base Color, Height and a Roughness value, tiled: Properties - Fill; after
+`+monkey`, `+angle` and `+frame`), `+propsmask` (after `+masks`: Properties - Mask with the Noise generator selected), `+snap` (the picture of the window, written to
+<png prefix>.png), `+bakegroups` (three bake groups: a
 sword with two floaters that is not baked, a shield that is baked and a pommel that is stale; use it before `TEXTURE/tex_bake`,
 `+frame` and `TEXTURE/tex_bake` again), `+bakeresult` (like `+bakegroups`, then Bake All, a normal-mapped material on each low poly and
 the sword's normal map in the paint view), `+bakeextras` (two groups that overlap, lined up by Explode, baked with the ID map, and the cage
@@ -723,6 +726,55 @@ def multipaint():
         bpy.ops.image.view_all(fit_view=True)
 
 
+def props_paint():
+    """Properties - Paint with a stroke made, the Cells alpha picked (its thumbnail shows) and Roughness, Height and Base Color on."""
+    multipaint()
+    bpy.ops.m3d.alpha_pick(name="Cells")
+
+
+def props_fill():
+    """Properties - Fill: a fill layer with a brick texture (tiled 3 x 3, turned a little) as its Base Color, the same bricks as a Height
+    map, and a Roughness value."""
+    import numpy as np
+    import m3d_layers as L
+    import m3d_sculpt as S
+    paint()
+    mat = bpy.context.active_object.active_material
+    bpy.ops.m3d.layer_add(kind='FILL')
+    fill = L.active_layer(mat)
+    fill.name = "Bricks"
+    v = S.alpha_pixels("Bricks", 256)[..., 0][..., None]
+    for name, srgb in (("Bricks Color", True), ("Bricks Height", False)):
+        image = bpy.data.images.new(name, 256, 256, alpha=False, is_data=not srgb)
+        px = np.ones((256, 256, 4), np.float32)
+        px[..., :3] = v * np.array((0.62, 0.22, 0.12), np.float32) + (1 - v) * np.array((0.72, 0.72, 0.68), np.float32) if srgb else v
+        L.write_pixels(image, px)
+        e = L.entry_of(fill, 'BASE_COLOR' if srgb else 'HEIGHT')
+        e.use, e.texture = True, image
+    rough = L.entry_of(fill, 'ROUGHNESS')
+    rough.use, rough.value = True, 0.35
+    fill.uv_tiling, fill.uv_rotation, fill.uv_offset = (3.0, 3.0), 0.2, (0.1, 0.0)
+
+
+def props_mask():
+    """Properties - Mask: the Noise generator of the rust layer's mask is the selected effect."""
+    import m3d_layers as L
+    mat = bpy.context.active_object.active_material
+    layer = L.active_layer(mat) or mat.m3d_layers[-1]
+    layer.mask_index = next(i for i, e in enumerate(layer.mask_stack) if e.kind == 'NOISE')
+    bpy.context.scene.m3d_tex.props_mode = 'MASK'
+
+
+def snap():
+    """The picture of the window, written to <png prefix>.png (a moment later, when what changed is drawn)."""
+    win = bpy.context.window_manager.windows[0]
+
+    def picture():
+        with bpy.context.temp_override(window=win, screen=win.screen, area=win.screen.areas[0]):
+            bpy.ops.screen.screenshot(filepath="%s.png" % PREFIX, check_existing=False)
+    bpy.app.timers.register(picture, first_interval=1.0)
+
+
 def propsscroll():
     """Scroll the Properties editor of the Texture workspace down to its last panels (the Material section)."""
     win = bpy.context.window_manager.windows[0]
@@ -737,6 +789,10 @@ def propsscroll():
 SETUP = {
     "+multipaint": multipaint,
     "+propsscroll": propsscroll,
+    "+propspaint": props_paint,
+    "+propsfill": props_fill,
+    "+propsmask": props_mask,
+    "+snap": snap,
     "+assets": assets('SMART_MATERIALS'),
     "+assetmat": assets('MATERIALS'),
     "+assetmask": assets('SMART_MASKS'),

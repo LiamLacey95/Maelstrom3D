@@ -161,6 +161,8 @@ def _follow_workspace():
         follow_render(wm)  # The Rendering workspace's Render View shows the Render Result.
         from m3d_pair import follow as follow_pair
         follow_pair(wm)    # A high poly is parked / shown when Sculpt is left / entered any other way.
+        from m3d_texture import follow as follow_texture
+        follow_texture(wm)  # The 2D view of the Texture workspace frames its image.
     return 0.25
 
 

@@ -13,7 +13,8 @@ data is appended from a .blend):
     mask      {"format": 1, "type": "MASK", "name": ..., "description": ..., "mask": [<effect>, ...]}
     layer     {"name", "kind": PAINT | FILL | FOLDER, "visible", "opacity", "blend", "use_alpha",
                "channels": {channel id: color list | value | file name | null}, "layers": [<layer>, ...] (folders),
-               "mask": [<effect>, ...]}
+               "textures": {channel id: file name} and "uv": {"tiling": [x, y], "rotation": radians, "offset": [x, y]}
+               (fill layers: the textures that replace the values, and how they sit on the UV map), "mask": [<effect>, ...]}
     effect    {"kind", "name", "visible", "opacity", "blend", the settings of its kind, "image": file name (Paint)}
 
 A material is a folder: applying it adds that folder on top of the layer stack, named after the item (a plain material, one
@@ -171,6 +172,12 @@ def describe_layer(layer, files):
             else:
                 channels[ch.id] = None if ch.id == 'NORMAL' else [f32(x) for x in e.color]
         out["channels"] = channels
+        textures = {ch.id: files.add(L.entry_of(layer, ch.id).texture, ch.srgb) for ch in L.CHANNELS
+                    if L.entry_of(layer, ch.id).use and L.has_texture(layer, ch.id)}
+        if textures:
+            out["textures"] = textures
+            out["uv"] = {"tiling": [f32(x) for x in layer.uv_tiling], "rotation": f32(layer.uv_rotation),
+                         "offset": [f32(x) for x in layer.uv_offset]}
     if layer.mask_stack:
         out["mask"] = [describe_effect(e, files) for e in layer.mask_stack]
     return out
@@ -307,6 +314,15 @@ def add_layer_spec(mat, spec, parent, directory, made, name=None):
             e.image = load_image(directory, value, L.image_name(mat, layer, ch.label), ch.srgb)
             e.image["m3d_channel"] = ch.id   # (not set_channel_space: choosing the color space again blanks a generated image)
             made.images.append(e.image)
+    for ch_id, filename in spec.get("textures", {}).items() if kind == 'FILL' else ():
+        ch = L.CHANNEL_BY_ID[ch_id]
+        e = L.entry_of(layer, ch_id)
+        e.texture = load_image(directory, filename, L.image_name(mat, layer, ch.label + " Texture"), ch.srgb)
+        e.texture[L.FILL_TEXTURE] = ch_id
+        made.images.append(e.texture)
+    uv = spec.get("uv", {})
+    if uv:
+        layer.uv_tiling, layer.uv_rotation, layer.uv_offset = uv["tiling"], uv["rotation"], uv["offset"]
     add_effects(layer, spec.get("mask", ()), directory, 'MIX', made)
     return uid
 

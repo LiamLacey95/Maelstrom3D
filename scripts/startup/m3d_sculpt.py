@@ -138,13 +138,14 @@ class M3D_OT_brush_pick(Operator):
         return bpy.ops.brush.asset_activate(asset_library_type='ESSENTIALS', relative_asset_identifier=self.identifier)
 
 
-def tile_grid(layout, context, units_x=0, min_px=46):
+def tile_grid(layout, context, units_x=0, min_px=46, columns=0):
     """Grid for square tiles (icon-only buttons this tall draw their thumbnail at the button size). The columns and
-    the tile height follow the width of the region (or of a popover, `units_x` wide) so the tiles stay square."""
+    the tile height follow the width of the region (or of a popover, `units_x` wide) so the tiles stay square; `columns`
+    asks for that many instead."""
     ui_scale = context.preferences.system.ui_scale or 1.0   # 0 without a window
     width = units_x * 20 * ui_scale if units_x else context.region.width if context.region else 300
     avail = width - 24 * ui_scale
-    columns = min(max(int(avail // (min_px * ui_scale)), 3), 8)
+    columns = columns or min(max(int(avail // (min_px * ui_scale)), 3), 8)
     flow = layout.grid_flow(row_major=True, columns=columns, even_columns=True, even_rows=True, align=True)
     flow.scale_y = avail / columns / (20 * ui_scale)
     return flow
@@ -979,6 +980,15 @@ def link_alpha(name):
     return dst.textures[0] if dst.textures else None
 
 
+def give_alpha(brush, texture, context, stencil):
+    """Give `texture` (or none) to the brush: as its alpha, or (`stencil`, Texture Paint Mode) as its stencil."""
+    if stencil:
+        import m3d_texture
+        m3d_texture.set_stencil_texture(brush, texture)
+    else:
+        set_alpha(brush, texture, context.mode == 'PAINT_TEXTURE')
+
+
 class M3D_OT_alpha_pick(Operator):
     """Use an alpha from the library as the brush texture (none: no alpha)"""
     bl_idname = "m3d.alpha_pick"
@@ -986,10 +996,11 @@ class M3D_OT_alpha_pick(Operator):
     bl_options = {'INTERNAL'}
 
     name: bpy.props.StringProperty()   # an alpha_names() name, or empty for none
+    stencil: bpy.props.BoolProperty(default=False, description="Use it as the stencil of the brush (Texture Paint Mode)")
 
     @classmethod
     def description(cls, _context, props):
-        return props.name or "No alpha"
+        return (props.name or "No alpha") + (" as the stencil" if props.stencil and props.name else "")
 
     @classmethod
     def poll(cls, context):
@@ -1000,7 +1011,7 @@ class M3D_OT_alpha_pick(Operator):
         if self.name and tex is None:
             self.report({'WARNING'}, "Can't read the alpha %s from %s" % (self.name, alpha_dir()))
             return {'CANCELLED'}
-        set_alpha(alpha_brush(context), tex, context.mode == 'PAINT_TEXTURE')
+        give_alpha(alpha_brush(context), tex, context, self.stencil)
         return {'FINISHED'}
 
 
@@ -1011,6 +1022,8 @@ class M3D_OT_alpha_load(Operator):
     bl_options = {'INTERNAL'}
 
     filepath: bpy.props.StringProperty(subtype='FILE_PATH')
+    stencil: bpy.props.BoolProperty(default=False, options={'SKIP_SAVE'},
+                                    description="Use it as the stencil of the brush (Texture Paint Mode)")
     filter_image: bpy.props.BoolProperty(default=True, options={'HIDDEN', 'SKIP_SAVE'})
     filter_folder: bpy.props.BoolProperty(default=True, options={'HIDDEN', 'SKIP_SAVE'})
 
@@ -1041,7 +1054,7 @@ class M3D_OT_alpha_load(Operator):
         if not store_alpha(name, image, thumb):
             self.report({'WARNING'}, "Can't write to the alpha library %s" % alpha_dir())
             return {'CANCELLED'}
-        set_alpha(alpha_brush(context), link_alpha(name), context.mode == 'PAINT_TEXTURE')
+        give_alpha(alpha_brush(context), link_alpha(name), context, self.stencil)
         return {'FINISHED'}
 
 

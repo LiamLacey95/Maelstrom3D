@@ -1400,7 +1400,7 @@ check(tex_pages == {"tex_layers", "tex_settings", "tex_bake", "tex_tools", "tex_
 check([t.id for t in W.DOCK_TABS['TEXTURE_OLD']['RIGHT']] == ["tex_layers", "tex_brush", "tex_library", "tex_bake", "tex_export", "tex_display"]
       and [t.id for t in W.DOCK_TABS['TEXTURE_OLD']['LEFT']] == ["tex_brushes"], "the old Texture tabs are kept for files with the old layout")
 # Every page a panel is on is one an editor shows: a dock tab, or what the page sets add (Properties, the old tabs).
-shown_pages = {*tex_pages, *T.BRUSH_PAGES, "tex_layer", "tex_mask", *(p for pages in T.OLD_PAGES.values() for p in pages), "tex_export", "tex_display",
+shown_pages = {*tex_pages, T.PAINT_PAGE, T.FILL_PAGE, T.FOLDER_PAGE, T.MASK_PAGE, "tex_layer", "tex_mask", *(p for pages in T.OLD_PAGES.values() for p in pages), "tex_export", "tex_display",
                "tex_brush", "tex_brushes", "tex_library"}
 panel_pages = {c.page for c in (*T.classes, *m3d_library.classes) if hasattr(c, "page")}
 check(panel_pages <= shown_pages and tex_pages <= panel_pages, "every Texture panel is on a page an editor shows, and every page has panels: %s" % sorted(panel_pages ^ shown_pages))
@@ -1621,7 +1621,7 @@ for props_mode in ('AUTO', 'LAYER', 'MASK'):
             except Exception as err:
                 check(False, "props %s %s draw: %r" % (props_mode, cls.__name__, err))
 tex_scene.m3d_tex.props_mode = 'AUTO'
-check(T.props_context(TCtx('PROPS')) == 'PAINT' and "PROPERTIES_PT_m3d_tx_tuning" in tex_shown("tex_props"), "no layer: Properties - Paint with the brush")
+check(T.props_context(TCtx('PROPS')) == 'PAINT' and "PROPERTIES_PT_m3d_tx_pp_brush" in tex_shown("tex_props"), "no layer: Properties - Paint with the brush")
 # ...also the gates and the panels that do not need paint mode, in Object Mode too.
 for mode in ('OBJECT', 'TEXTURE_PAINT'):
     bpy.ops.object.mode_set(mode=mode)
@@ -1927,25 +1927,25 @@ check(all(hasattr(bpy.ops.m3d, n) for n in ("tex_frame", "tex_layout", "tex_env_
 # the layer decides what Properties shows
 check(T.props_context(TCtx('PROPS')) == 'PAINT', "no layer: Properties - Paint")
 bpy.ops.m3d.layer_add(kind='FILL')
-check(T.props_context(TCtx('PROPS')) == 'FILL' and "PROPERTIES_PT_m3d_tx_layer" in tex_shown("tex_props")
-      and "PROPERTIES_PT_m3d_tx_tuning" not in tex_shown("tex_props"), "a fill layer: Properties - Fill with the layer's settings")
+check(T.props_context(TCtx('PROPS')) == 'FILL' and {"PROPERTIES_PT_m3d_tx_fl_fill", "PROPERTIES_PT_m3d_tx_fl_material"} <= set(tex_shown("tex_props"))
+      and "PROPERTIES_PT_m3d_tx_pp_brush" not in tex_shown("tex_props"), "a fill layer: Properties - Fill with the fill and its material")
 bpy.ops.m3d.layer_folder_add()
 check(T.props_context(TCtx('PROPS')) == 'FOLDER', "a folder: Properties - Folder")
 bpy.ops.m3d.layer_add(kind='PAINT')
-check(T.props_context(TCtx('PROPS')) == 'PAINT' and "PROPERTIES_PT_m3d_tx_tuning" in tex_shown("tex_props")
+check(T.props_context(TCtx('PROPS')) == 'PAINT' and "PROPERTIES_PT_m3d_tx_pp_brush" in tex_shown("tex_props")
       and "PROPERTIES_PT_m3d_tx_layer" not in tex_shown("tex_props"), "a paint layer: Properties - Paint, the brush (the layer's own settings are one click away)")
 bpy.ops.m3d.layer_mask_add(fill='WHITE')
 LY.active_layer(d_mat).paint_mask = False
 bpy.context.scene.m3d_tex.props_mode = 'MASK'
-check(T.props_context(TCtx('PROPS')) == 'MASK' and "PROPERTIES_PT_m3d_tx_mask" in tex_shown("tex_props")
-      and "PROPERTIES_PT_m3d_tx_tuning" not in tex_shown("tex_props"), "asked for the mask: Properties - Mask")
+check(T.props_context(TCtx('PROPS')) == 'MASK' and "PROPERTIES_PT_m3d_tx_mk_stack" in tex_shown("tex_props")
+      and "PROPERTIES_PT_m3d_tx_pp_brush" not in tex_shown("tex_props"), "asked for the mask: Properties - Mask")
 bpy.context.scene.m3d_tex.props_mode = 'AUTO'
 LY.active_layer(d_mat).paint_mask = True
-check(T.props_context(TCtx('PROPS')) == 'MASK' and {"PROPERTIES_PT_m3d_tx_mask", "PROPERTIES_PT_m3d_tx_tuning"} <= set(tex_shown("tex_props")),
+check(T.props_context(TCtx('PROPS')) == 'MASK' and {"PROPERTIES_PT_m3d_tx_mk_stack", "PROPERTIES_PT_m3d_tx_pp_brush"} <= set(tex_shown("tex_props")),
       "painting the mask: Properties - Mask with the brush too")
 LY.active_layer(d_mat).paint_mask = False
 bpy.context.scene.m3d_tex.props_mode = 'LAYER'
-check(T.props_context(TCtx('PROPS')) == 'LAYER' and "PROPERTIES_PT_m3d_tx_mask" not in tex_shown("tex_props"), "asked for the layer: its own settings")
+check(T.props_context(TCtx('PROPS')) == 'LAYER' and "PROPERTIES_PT_m3d_tx_mk_stack" not in tex_shown("tex_props"), "asked for the layer: its own settings")
 bpy.context.scene.m3d_tex.props_mode = 'AUTO'
 for ctx_kind_ in ('PAINT', 'FILL', 'MASK', 'FOLDER', 'LAYER'):
     check(T.PROPS_TITLES[ctx_kind_], "Properties has a title for " + ctx_kind_)
@@ -2908,7 +2908,7 @@ tex_scene_.m3d_tex.props_mode = 'LAYER'
 check({"PROPERTIES_PT_m3d_tx_layer"} <= set(tex_shown("tex_props")), "Properties shows the active layer's settings: %s %s %s" % (
     tex_shown("tex_props"), T.props_context(TCtx('PROPS')), (bpy.context.mode, T.missing(bpy.context))))
 tex_scene_.m3d_tex.props_mode = 'MASK'
-check({"PROPERTIES_PT_m3d_tx_mask"} <= set(tex_shown("tex_props")), "...and its mask")
+check({"PROPERTIES_PT_m3d_tx_mk_stack"} <= set(tex_shown("tex_props")), "...and its mask")
 tex_scene_.m3d_tex.props_mode = 'AUTO'
 tex_ws.m3d_page_right = "tex_settings"
 check({"PROPERTIES_PT_m3d_tx_channels", "PROPERTIES_PT_m3d_tx_maps"} <= set(tex_shown("tex_settings")), "Texture Set Settings shows the channels and the mesh maps")
@@ -3348,7 +3348,7 @@ setup([(k.id, {}) for k in MK.KINDS])
 mctx = TCtx()
 tex_ws.m3d_page_right = "tex_layers"
 bpy.context.scene.m3d_tex.props_mode = 'MASK'
-check("PROPERTIES_PT_m3d_tx_mask" in tex_shown("tex_props"), "the Mask panel is shown")
+check("PROPERTIES_PT_m3d_tx_mk_stack" in tex_shown("tex_props"), "the Mask panel is shown")
 bpy.context.scene.m3d_tex.props_mode = 'AUTO'
 shown_kinds = []
 for i, e in enumerate(mtop.mask_stack):
@@ -9485,13 +9485,13 @@ mc_reset()
 o, m = fresh_cube("MultiUI", '64')
 bpy.context.scene.m3d_tex.props_mode = 'AUTO'
 mc_ctx = TCtx('PROPS')
-check("PROPERTIES_PT_m3d_tx_material" in tex_shown("tex_props"), "Properties - Paint has a Material section (no layer: it says what to do)")
-log = draw_stub(T.PROPERTIES_PT_m3d_tx_material, mc_ctx)
+check("PROPERTIES_PT_m3d_tx_pp_material" in tex_shown("tex_props"), "Properties - Paint has a Material section (no layer: it says what to do)")
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_pp_material, mc_ctx)
 check_calls("Material section, no layer", log)
 check(not [r for r in log if r._kind == "prop"] and any(r._kind == "label" for r in log), "...with no layer: a message, no buttons")
 bpy.ops.m3d.layer_add(kind='PAINT')
 mc_brush.use_roughness = mc_brush.use_emission = True
-log = draw_stub(T.PROPERTIES_PT_m3d_tx_material, mc_ctx)
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_pp_material, mc_ctx)
 check_calls("Material section", log)
 drawn_ = [r._args[1] for r in log if r._kind == "prop"]
 check(drawn_[:5] == ["use_base_color", "use_height", "use_roughness", "use_metallic", "use_emission"]
@@ -9501,7 +9501,8 @@ check([r._kw.get("text") for r in log if r._kind == "prop"][:5] == ["color", "he
       "...with the labels of the buttons")
 bpy.ops.m3d.layer_mask_add(fill='WHITE')
 m.m3d_layers[0].paint_mask = True
-check("PROPERTIES_PT_m3d_tx_material" not in tex_shown("tex_props"), "Properties - Mask (painting the mask) has no Material section")
+check("PROPERTIES_PT_m3d_tx_pp_material" not in tex_shown("tex_props") and "PROPERTIES_PT_m3d_tx_pp_gray" in tex_shown("tex_props"),
+      "Properties - Mask (painting the mask) has no Material section: it has the grays")
 m.m3d_layers[0].paint_mask = False
 bpy.ops.m3d.tex_tool(tool='PAINT')
 log = []
@@ -9530,6 +9531,602 @@ check("use_roughness" not in [r._args[1] for r in log if r._kind == "prop"], "a 
 mc_reset()
 bpy.ops.object.mode_set(mode='OBJECT')
 clean_scene()
+
+# ----------------------------------------------------------------------------------------------------
+# Properties (phase 2): the sections of Paint, Fill, Mask and Folder, what each control is a property of, the alpha and stencil
+# pickers, a fill layer's texture and UV transform (nodes, numpy, Cycles, Merge Down, Flatten, Export, Convert, the library), the
+# context toolbar of each tool, the 2D view's frame. (The real window: gui_test.py.)
+pp_alphas = tempfile.mkdtemp(prefix="m3d_alpha_props_")
+S.alpha_dir = lambda create=False: pp_alphas
+tex_ws.m3d_layout = 1
+pp_scene = bpy.context.scene
+pp_scene.m3d_tex.props_mode = 'AUTO'
+pp_ctx = TCtx('PROPS')
+pp_wide = TCtx('RIGHT')   # (a wide window: the toolbar with all its labels; the workspace is the current one)
+pp_wide.region = NS(type='HEADER', width=2560)
+PP = "PROPERTIES_PT_m3d_tx_"
+
+
+def pp_sections():
+    """The Properties sections drawn now, as the last part of the class names."""
+    return {n[len(PP):] for n in tex_shown("tex_props")}
+
+
+def pp_draw(name, label=None):
+    """Draw one section with the recording layout; the calls are checked. -> the log"""
+    log = draw_stub(getattr(T, PP + name), pp_ctx)
+    check_calls(label or "Properties " + name, log)
+    return log
+
+
+def pp_props(log):
+    return [(r._args[1], r._args[0]) for r in log if r._kind == "prop"]
+
+
+o, m = fresh_cube("PropsCube", '64')
+mc_reset()
+check(bpy.ops.m3d.layer_add(kind='PAINT') == {'FINISHED'}, "(a paint layer for the Properties tests)")
+ipaint = bpy.context.tool_settings.image_paint
+ups = ipaint.unified_paint_settings
+bpy.ops.m3d.tex_tool(tool='PAINT')
+T.image_brush(bpy.context).mask_texture = None   # (the brush asset keeps what earlier tests gave it)
+T.image_brush(bpy.context).texture = None
+
+# --- Properties - Paint: the sections of each tool
+PAINT_TOOL_SECTIONS = {
+    'PAINT': {"pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_material", "pp_advanced", "pp_cursor"},
+    'ERASER': {"pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_material", "pp_advanced", "pp_cursor"},
+    'PROJECTION': {"pp_preview", "pp_projection", "pp_brush", "pp_material", "pp_advanced", "pp_cursor"},
+    'POLYFILL': {"pp_preview", "pp_polyfill", "pp_material"},
+    'SMUDGE': {"pp_preview", "pp_brush", "pp_advanced", "pp_cursor"},
+    'CLONE': {"pp_preview", "pp_brush", "pp_clone", "pp_advanced", "pp_cursor"},
+}
+for tool, want in PAINT_TOOL_SECTIONS.items():
+    check(bpy.ops.m3d.tex_tool(tool=tool) == {'FINISHED'}, "(tool %s)" % tool)
+    got = pp_sections()
+    check(T.props_context(pp_ctx) == 'PAINT' and got == want, "Properties - Paint, %s: its sections %s (want %s)" % (tool, sorted(got), sorted(want)))
+    for name in sorted(got):
+        try:
+            pp_draw(name, "Properties - Paint, %s, %s" % (tool, name))
+        except Exception as err:
+            check(False, "Properties - Paint, %s, %s draws: %r" % (tool, name, err))
+bpy.ops.m3d.tex_tool(tool='PAINT')
+check(T.PAINT_PAGE in T.props_pages(pp_ctx) and len(T.props_pages(pp_ctx)) == 1, "Paint draws the paint page only")
+order = sorted((c for c in T.classes if getattr(c, "page", "") == T.PAINT_PAGE), key=lambda c: c.bl_order)
+check([c.__name__[len(PP):] for c in order if c.__name__[len(PP):] in PAINT_TOOL_SECTIONS['PAINT']] ==
+      ["pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_material", "pp_advanced", "pp_cursor"],
+      "the sections come in the order: previews, Brush, Alpha, Stencil, Material, then Advanced and Cursor")
+closed = {c.__name__[len(PP):] for c in T.classes if getattr(c, "page", "") == T.PAINT_PAGE and 'DEFAULT_CLOSED' in getattr(c, "bl_options", ())}
+check(closed == {"pp_brush", "pp_stencil", "pp_advanced", "pp_cursor", "pp_clone"}, "Brush, Stencil, Advanced and Cursor start closed (Alpha and Material open): %s" % sorted(closed))
+pp_orders = {c.__name__[len(PP):]: c.bl_order for c in order}
+check(pp_orders["pp_projection"] < pp_orders["pp_brush"] and pp_orders["pp_polyfill"] < pp_orders["pp_material"], "the Projection tool's stencil and Polygon Fill's mode come before the rest")
+
+# --- Previews: the brush and the material swatches
+mc_brush.use_roughness = mc_brush.use_emission = True
+mc_brush.roughness, mc_brush.height = 0.25, 0.75
+log = pp_draw("pp_preview")
+check([n for n, _o in pp_props(log)] == ["color", "swatch_height", "swatch_roughness", "swatch_metallic", "emission"],
+      "the swatches: color, the grey of Height, Roughness and Metallic, emission: %s" % [n for n, _o in pp_props(log)])
+check([r.values().get("active") for r in log if r._kind == "row" and "active" in r.values()] == [True, False, True, False, True],
+      "...the channels that are off are dimmed")
+check(all(abs(a - 0.25) < 1e-6 for a in mc_brush.swatch_roughness) and all(abs(a - 0.75) < 1e-6 for a in mc_brush.swatch_height)
+      and all(mc_brush.bl_rna.properties["swatch_" + c].is_readonly for c in ("height", "roughness", "metallic")), "a swatch is the value as a grey, read only")
+check((any(r._kind == "template_icon" and r._kw.get("icon_value") for r in log) or any(r._kind == "label" and r._kw.get("icon") == 'BRUSH_DATA' for r in log))
+      and any(r._kind == "label" and r._kw.get("text") == T.brush_name(bpy.context) for r in log),
+      "the brush is shown with its thumbnail (a brush icon without one, as here in the background) and name")
+bpy.ops.m3d.tex_tool(tool='SMUDGE')
+check(not [r for r in pp_draw("pp_preview") if r._kind == "prop"], "Smudge paints one channel: no swatches")
+bpy.ops.m3d.tex_tool(tool='PAINT')
+mc_reset()
+
+# --- Brush: each control is a property of the brush, the unified settings, the alpha slot or the Project Paint settings
+brush = T.image_brush(bpy.context)
+ups.use_unified_size = ups.use_unified_strength = True
+log = pp_draw("pp_brush")
+drawn = {n: owner for n, owner in reversed(pp_props(log))}
+texts = {r._args[1]: r._kw.get("text") for r in log if r._kind == "prop"}
+check(drawn["size"] == ups and drawn["strength"] == ups and texts["size"] == "Size" and texts["strength"] == "Flow",
+      "Size and Flow (the brush strength) are the unified settings when those are on")
+for name, owner in (("use_pressure_size", brush), ("use_pressure_strength", brush), ("hardness", brush), ("spacing", brush),
+                    ("use_pressure_spacing", brush), ("use_locked_size", ups), ("jitter", brush), ("use_pressure_jitter", brush),
+                    ("use_occlude", ipaint), ("use_backface_culling", ipaint), ("use_normal_falloff", ipaint), ("normal_angle", ipaint)):
+    check(name in drawn and drawn[name] == owner, "Brush draws %s on the right owner" % name)
+check(texts["jitter"] == "Position Jitter" and texts["use_backface_culling"] == "Backface Culling" and texts["use_locked_size"] == "Size Space",
+      "...with the names of the reference")
+if brush.image_paint_capabilities.has_accumulate:
+    check(drawn.get("use_accumulate") == brush, "Accumulate: whether a stroke may go past its Flow (Blender's Stroke Opacity)")
+check(not {"angle", "use_rake", "use_random"} & set(drawn), "no alpha: no Angle, Follow Path or Angle Jitter (%s)" % sorted(drawn))
+check(not [n for n in drawn if "flow" in n or ("jitter" in n and n not in {"jitter", "use_pressure_jitter"})], "Size, Flow and Angle jitter that Blender has no property for are not faked")
+ups.use_unified_size = ups.use_unified_strength = False
+drawn = {n: owner for n, owner in reversed(pp_props(pp_draw("pp_brush")))}
+check(drawn["size"] == brush and drawn["strength"] == brush, "...the brush's own when they are off")
+ups.use_unified_size = ups.use_unified_strength = True
+ups.use_locked_size = 'SCENE'
+drawn = {n: owner for n, owner in reversed(pp_props(pp_draw("pp_brush")))}
+check("unprojected_size" in drawn and "size" not in drawn, "Size Space Scene: the size in scene units")
+ups.use_locked_size = 'VIEW'
+
+# --- Alpha: the library, the brush's Texture Mask, its mapping
+check(bpy.ops.m3d.alpha_pick(name="Dots") == {'FINISHED'} and brush.mask_texture is not None and brush.mask_texture.name == "Dots"
+      and brush.mask_texture_slot.mask_map_mode == 'VIEW_PLANE', "a tile of the Alpha section gives the brush that alpha (its Texture Mask, Camera mapping)")
+log = pp_draw("pp_alpha")
+picks = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.alpha_pick"]
+names = ["", *S.alpha_names()]
+check([r.values()["name"] for r in picks][-len(names):] == names and not any(r.values()["stencil"] for r in picks)
+      and [r.values()["name"] for r in picks if r._kw.get("depress")] == ["Dots"], "the grid: None and every alpha of the library, the alpha in use pressed")
+check([r._args[2] for r in log if r._kind == "prop_enum"] == ['VIEW_PLANE', 'TILED', 'RANDOM', 'STENCIL']
+      and all(r._args[0] == brush.mask_texture_slot and r._args[1] == "mask_map_mode" for r in log if r._kind == "prop_enum")
+      and [r._kw["text"] for r in log if r._kind == "prop_enum"][0] == "Camera", "Alignment: Camera (View Plane), Tiled, Random, Stencil on the alpha's slot")
+check(any(r._kind == "operator" and r._args[0] == "m3d.alpha_load" and not r.values()["stencil"] for r in log), "Load Alpha... is there")
+slot = brush.mask_texture_slot
+check(slot.has_texture_angle, "(an alpha in View Plane mapping has an angle)")
+drawn = {n: owner for n, owner in reversed(pp_props(pp_draw("pp_brush")))}
+check(drawn.get("angle") == slot and drawn.get("use_rake") == slot, "with an alpha the Brush section has its Angle and Follow Path (Rake)")
+if slot.has_texture_angle_source and brush.brush_capabilities.has_random_texture_angle:
+    check(drawn.get("use_random") == slot, "...and Angle Jitter (Random)")
+check(bpy.ops.m3d.alpha_pick(name="") == {'FINISHED'} and brush.mask_texture is None, "None takes the alpha off")
+check(not [r for r in pp_draw("pp_alpha") if r._kind == "prop_enum"], "no alpha: no Alignment")
+
+# --- Stencil: the brush's Texture mapped in screen space
+log = pp_draw("pp_stencil")
+ops = [r._args[0] for r in log if r._kind == "operator"]
+check(ops[:3] == ["m3d.tex_stencil", "brush.stencil_reset_transform", "brush.stencil_fit_image_aspect"] and "m3d.alpha_load" in ops
+      and "texture_overlay_alpha" in [n for n, _o in pp_props(log)], "the Stencil section: the S button, Reset, Fit, the opacity, the library, Load Stencil")
+check(all(r.values()["stencil"] for r in log if r._kind == "operator" and r._args[0] in {"m3d.alpha_pick", "m3d.alpha_load"}), "...its tiles and Load Stencil make a stencil, not an alpha")
+check(bpy.ops.m3d.alpha_pick(name="Clouds", stencil=True) == {'FINISHED'} and brush.texture.name == "Clouds" and brush.texture_slot.map_mode == 'STENCIL'
+      and brush.mask_texture is None and T.tool_of(bpy.context) == 'PROJECTION', "a stencil tile maps the texture as a Stencil: the Projection tool")
+check([r.values()["name"] for r in pp_draw("pp_stencil") if r._kind == "operator" and r._args[0] == "m3d.alpha_pick" and r._kw.get("depress")] == ["Clouds"],
+      "...the tile in use is pressed")
+check(bpy.ops.m3d.alpha_pick(name="Stripes", stencil=True) == {'FINISHED'} and brush.texture.name == "Stripes" and T.stencil_on(brush), "another one replaces it")
+check(bpy.ops.m3d.alpha_pick(name="", stencil=True) == {'FINISHED'} and not T.stencil_on(brush) and brush.texture is None and T.tool_of(bpy.context) == 'PAINT',
+      "None takes the stencil off (and the texture it brought)")
+pp_png = bpy.data.images.new("ppStencilFile", 8, 8)
+pp_png.filepath_raw, pp_png.file_format = os.path.join(pp_alphas, "ppStencilFile.png"), 'PNG'
+pp_png.save()
+check(bpy.ops.m3d.alpha_load(filepath=pp_png.filepath_raw, stencil=True) == {'FINISHED'} and brush.texture is not None and brush.texture.name == "ppStencilFile"
+      and T.stencil_on(brush), "Load Stencil adds the file to the library and makes it the stencil")
+bpy.ops.m3d.tex_tool(tool='PAINT')
+check(not T.stencil_on(brush) and brush.texture is None, "another tool takes the stencil off")
+bpy.ops.m3d.tex_tool(tool='PROJECTION')
+log = pp_draw("pp_projection")
+check([r._args[0] for r in log if r._kind == "operator"][:1] == ["m3d.tex_stencil"], "the Projection tool shows the stencil section")
+bpy.ops.m3d.tex_tool(tool='PAINT')
+
+# --- Material: the toggles (the Eraser: only those), Polygon Fill's mode, the grays of a mask
+mc_brush.use_roughness = True
+TOGGLES = ["use_base_color", "use_height", "use_roughness", "use_metallic", "use_emission"]
+bpy.ops.m3d.tex_tool(tool='ERASER')
+check([n for n, _o in pp_props(pp_draw("pp_material"))] == TOGGLES, "the Eraser's Material has the toggles only")
+bpy.ops.m3d.tex_tool(tool='PAINT')
+check([n for n, _o in pp_props(pp_draw("pp_material"))] == TOGGLES + ["color", "roughness"], "Paint's Material has the toggles and a value for each channel that is on")
+bpy.ops.m3d.tex_tool(tool='POLYFILL')
+check(("fill_mode", pp_scene.m3d_tex) in pp_props(pp_draw("pp_polyfill")), "Polygon Fill has its mode (polygon, UV island, mesh)")
+check({"fill_mode"} == {n for n, _o in pp_props(pp_draw("pp_polyfill"))}, "...and Triangle is not offered: a mask can only select whole polygons")
+bpy.ops.m3d.tex_tool(tool='CLONE')
+check(any(r._kind == "template_list" and r._args[0] == "TEXTURE_UL_texpaintslots" for r in pp_draw("pp_clone")), "Clone has its source section: the slot to clone from")
+bpy.ops.m3d.tex_tool(tool='PAINT')
+mc_reset()
+
+# --- Properties - Fill
+check(bpy.ops.m3d.layer_add(kind='FILL') == {'FINISHED'}, "(a fill layer)")
+fill = LY.active_layer(m)
+check(T.props_context(pp_ctx) == 'FILL' and pp_sections() == {"fl_fill", "fl_material"} and T.props_pages(pp_ctx) == {T.FILL_PAGE},
+      "Properties - Fill: Fill and Material (%s)" % sorted(pp_sections()))
+log = pp_draw("fl_fill")
+check([(n, o == fill) for n, o in pp_props(log)] == [("uv_tiling", True), ("uv_rotation", True), ("uv_offset", True)]
+      and [r._args[0] for r in log if r._kind == "operator"] == ["m3d.layer_fill_reset"], "Fill: the UV transform of the layer (Tiling, Rotation, Offset) and Reset")
+log = pp_draw("fl_material")
+uses = [(r._args[1], r._kw.get("text")) for r in log if r._kind == "prop" and r._args[1] == "use"]
+check(uses == [("use", t) for t in ("color", "height", "rough", "metal", "emit", "nrm")]
+      and [r._args[0] for r in log if r._kind == "prop" and r._args[1] == "use"] == [LY.entry_of(fill, c) for c in ("BASE_COLOR", "HEIGHT", "ROUGHNESS", "METALLIC", "EMISSION", "NORMAL")],
+      "Material: a button for each channel of a fill layer (color height rough metal emit nrm)")
+check([(r._args[1], r._args[0] == LY.entry_of(fill, 'BASE_COLOR')) for r in log if r._kind == "prop" and r._args[1] != "use"] == [("color", True)]
+      and [(r._args[1], r._args[0] == LY.entry_of(fill, 'BASE_COLOR')) for r in log if r._kind == "template_ID"] == [("texture", True)],
+      "...a color and a texture slot for each channel that is on")
+for cid in ('ROUGHNESS', 'NORMAL'):
+    LY.entry_of(fill, cid).use = True
+log = pp_draw("fl_material")
+check([r._args[1] for r in log if r._kind == "prop" and r._args[1] != "use"] == ["color", "value"] and len([r for r in log if r._kind == "template_ID"]) == 3,
+      "...a number for Roughness, nothing but the texture for Normal (a flat Normal has no value)")
+
+# --- A fill layer's texture and UV transform: the node chain
+tex_a = bpy.data.images.new("ppTexA", 4, 4, alpha=True, is_data=True)   # distinct grays, a ramp of 16 steps
+ramp_px = np.zeros((4, 4, 4), np.float32)
+ramp_px[..., :3] = (np.arange(16, dtype=np.float32).reshape(4, 4) / 15.0)[..., None]
+ramp_px[..., 3] = 1.0
+LY.write_pixels(tex_a, ramp_px)
+pp_rough = LY.entry_of(fill, 'ROUGHNESS')
+nodes_before = {n.name for n in m.node_tree.nodes}
+pp_rough.texture = tex_a
+nodes_after = {n.name for n in m.node_tree.nodes}
+tex_name, map_name, coord_name = (LY.part('ROUGHNESS', fill.uid, k) for k in ("tex", "map", "coord"))
+check(nodes_after - nodes_before == {tex_name, map_name, coord_name}, "a fill's texture adds an Image Texture, a Mapping and a Texture Coordinate node: %s" % sorted(nodes_after ^ nodes_before))
+tex_node, map_node, coord_node = (m.node_tree.nodes[n] for n in (tex_name, map_name, coord_name))
+check(tex_node.image == tex_a and any(l.from_node == coord_node and l.from_socket.name == "UV" for l in map_node.inputs["Vector"].links)
+      and any(l.from_node == map_node for l in tex_node.inputs["Vector"].links), "UV -> Mapping -> the texture")
+check(any(l.from_node == tex_node for l in m.node_tree.nodes[LY.part('ROUGHNESS', fill.uid, "mix")].inputs[7].links)
+      and not m.node_tree.nodes.get(LY.part('ROUGHNESS', fill.uid, "fill")), "...and the texture feeds the layer's Mix instead of the value")
+check(abs(m.node_tree.nodes[LY.part('ROUGHNESS', fill.uid, "opv")].inputs[0].default_value - 1.0) < 1e-6 and not m.node_tree.nodes[LY.part('ROUGHNESS', fill.uid, "opv")].inputs[0].links,
+      "the texture's alpha is not used: the fill covers everything")
+check(tuple(map_node.inputs["Scale"].default_value) == (1.0, 1.0, 1.0) and tuple(map_node.inputs["Rotation"].default_value) == (0.0, 0.0, 0.0)
+      and all(abs(a) < 1e-6 for a in map_node.inputs["Location"].default_value), "the start transform is the identity")
+fill.uv_tiling, fill.uv_rotation, fill.uv_offset = (2.0, 3.0), 0.5, (0.1, -0.2)
+want_loc, want_rot, want_scale = LY.fill_mapping(fill)
+check(tuple(round(v, 5) for v in map_node.inputs["Scale"].default_value) == (2.0, 3.0, 1.0) and abs(map_node.inputs["Rotation"].default_value[2] - 0.5) < 1e-6
+      and all(abs(a - b) < 1e-5 for a, b in zip(map_node.inputs["Location"].default_value, want_loc))
+      and {n.name for n in m.node_tree.nodes} == nodes_after, "Tiling, Rotation and Offset set the Mapping node's values (no node is made again)")
+check(all(abs(a - b) < 1e-6 for a, b in zip(want_loc, (0.5 - (2 * 0.5 * np.cos(0.5) - 3 * 0.5 * np.sin(0.5)) + 0.1, 0.5 - (2 * 0.5 * np.sin(0.5) + 3 * 0.5 * np.cos(0.5)) - 0.2, 0.0))),
+      "(the tiling and the rotation turn around the middle of the UV map: the location is worked out by hand)")
+check(bpy.ops.m3d.layer_fill_reset() == {'FINISHED'} and tuple(fill.uv_tiling) == (1.0, 1.0) and fill.uv_rotation == 0.0 and tuple(fill.uv_offset) == (0.0, 0.0),
+      "Reset puts the transform back")
+check(tex_node.name in m.node_tree.nodes and m.node_tree.nodes[tex_name].image == tex_a, "...the texture stays")
+pp_rough.texture = None
+check(not {n for n in (tex_name, map_name, coord_name) if n in m.node_tree.nodes} and not m.node_tree.nodes[LY.part('ROUGHNESS', fill.uid, "mix")].inputs[7].links,
+      "no texture: the three nodes go and the value is back")
+check(abs(m.node_tree.nodes[LY.part('ROUGHNESS', fill.uid, "mix")].inputs[7].default_value[0] - pp_rough.value) < 1e-6, "...as the Mix node's color")
+for cid in ('ROUGHNESS', 'NORMAL'):
+    LY.entry_of(fill, cid).use = False
+
+# --- ...in a folder (a fill is then a color node or a texture), and the color space a picked file takes
+bpy.ops.m3d.layer_folder_add(group=True)
+pp_rough.use = True
+pp_rough.texture = tex_a
+check(m.node_tree.nodes.get(LY.part('ROUGHNESS', fill.uid, "tex")) is not None and m.node_tree.nodes.get(LY.part('ROUGHNESS', fill.uid, "map")) is not None
+      and m.node_tree.nodes.get(LY.part('ROUGHNESS', fill.uid, "fill")) is None, "a fill layer in a folder has the texture nodes too")
+pp_rough.texture = None
+check(m.node_tree.nodes.get(LY.part('ROUGHNESS', fill.uid, "fill")) is not None and m.node_tree.nodes.get(LY.part('ROUGHNESS', fill.uid, "tex")) is None,
+      "...and the color node when the texture goes")
+pp_rough.use = False
+LY.activate(m, fill.uid)
+pp_file = bpy.data.images.new("ppColorFile", 4, 4)
+pp_file.filepath_raw, pp_file.file_format = os.path.join(pp_alphas, "ppColorFile.png"), 'PNG'
+pp_file.save()
+pp_loaded = bpy.data.images.load(pp_file.filepath_raw)
+pp_loaded.colorspace_settings.name = 'sRGB'
+LY.entry_of(fill, 'ROUGHNESS').use = True
+LY.entry_of(fill, 'ROUGHNESS').texture = pp_loaded
+check(pp_loaded.colorspace_settings.name == 'Non-Color' and pp_loaded.get(LY.FILL_TEXTURE) == 'ROUGHNESS', "a file picked for Roughness is Non-Color")
+LY.entry_of(fill, 'BASE_COLOR').texture = pp_loaded
+check(pp_loaded.colorspace_settings.name == 'Non-Color', "...the first channel an image is used for decides")
+LY.entry_of(fill, 'BASE_COLOR').texture = None
+LY.entry_of(fill, 'ROUGHNESS').texture = None
+LY.entry_of(fill, 'ROUGHNESS').use = False
+pp_file2 = bpy.data.images.new("ppGenerated", 4, 4)
+LY.entry_of(fill, 'BASE_COLOR').texture = pp_file2
+check(pp_file2.colorspace_settings.name != 'Non-Color' and LY.FILL_TEXTURE not in pp_file2.keys(), "a generated image keeps its color space (choosing it again would blank the pixels)")
+LY.entry_of(fill, 'BASE_COLOR').texture = None
+
+# --- ...numpy: Flatten, Merge Down and Export see the texture as the nodes do (UV: nearest and linear, tiling, rotation, offset)
+pp_cube, pp_mat = fresh_cube("PropsFlat", '64')
+bpy.ops.m3d.layer_add(kind='PAINT')
+pp_base = LY.active_layer(pp_mat)
+pp_auto = LY.entry_of(pp_base, 'BASE_COLOR')   # (a new paint layer gets the Base Color image the brush aims at: this stack is 8 px, Roughness only)
+pp_auto_image = pp_auto.image
+with LY.muted():
+    pp_auto.image, pp_auto.use = None, False
+bpy.data.images.remove(pp_auto_image)
+bpy.ops.m3d.layer_add(kind='FILL')
+pp_fill = LY.active_layer(pp_mat)
+tex_b = bpy.data.images.new("ppTexB", 4, 4, alpha=False, is_data=True)
+LY.write_pixels(tex_b, ramp_px)
+with LY.muted():
+    LY.entry_of(pp_base, 'ROUGHNESS').use = True
+    LY.entry_of(pp_base, 'ROUGHNESS').image = LY.make_channel_image(pp_mat, pp_base, LY.CHANNEL_BY_ID['ROUGHNESS'], 8, opaque=True)
+    pp_fill.blend, pp_fill.opacity = 'MIX', 1.0
+    LY.entry_of(pp_fill, 'ROUGHNESS').use = True
+    LY.entry_of(pp_fill, 'ROUGHNESS').texture = tex_b
+LY.rebuild_all(pp_mat)
+flat = LY.flatten_channel(pp_mat, 'ROUGHNESS', 4)[..., 0]
+check(np.abs(flat - ramp_px[..., 0]).max() < 1e-5, "Tiling 1, Rotation 0, Offset 0: the flattened channel is the texture itself (%.1e)" % np.abs(flat - ramp_px[..., 0]).max())
+pp_fill.uv_tiling = (2.0, 2.0)
+tex_node = pp_mat.node_tree.nodes[LY.part('ROUGHNESS', pp_fill.uid, "tex")]
+tex_node.interpolation = 'Closest'
+flat = LY.flatten_channel(pp_mat, 'ROUGHNESS', 8)[..., 0]
+# worked out by hand: Tiling 2 grows from the middle of the UV map, texel (x, y) of the 8 x 8 result reads texel (x - 2, y - 2) of the 4 x 4 texture, repeating
+want = np.array([[ramp_px[(y - 2) % 4, (x - 2) % 4, 0] for x in range(8)] for y in range(8)])
+check(np.abs(flat - want).max() < 1e-5, "Tiling 2 (nearest): the texture repeats twice around the middle (%.1e)" % np.abs(flat - want).max())
+pp_fill.uv_tiling, pp_fill.uv_offset = (1.0, 1.0), (0.25, 0.0)
+flat = LY.flatten_channel(pp_mat, 'ROUGHNESS', 4)[..., 0]
+want = np.array([[ramp_px[y, (x + 1) % 4, 0] for x in range(4)] for y in range(4)])   # (Offset 0.25: the texture is read one texel to the right)
+check(np.abs(flat - want).max() < 1e-5, "Offset 0.25 (nearest): read one texel further (%.1e)" % np.abs(flat - want).max())
+pp_fill.uv_offset = (0.0, 0.0)
+pp_fill.uv_rotation = np.pi / 2
+flat = LY.flatten_channel(pp_mat, 'ROUGHNESS', 4)[..., 0]
+want = np.array([[ramp_px[x, 3 - y, 0] for x in range(4)] for y in range(4)])   # (a quarter turn about the middle: (u, v) is read at (1 - v, u))
+check(np.abs(flat - want).max() < 1e-5, "Rotation 90 degrees (nearest): a quarter turn about the middle (%.1e)" % np.abs(flat - want).max())
+pp_fill.uv_rotation = 0.0
+tex_node.interpolation = 'Linear'
+pp_fill.uv_offset = (0.125, 0.0)
+flat = LY.flatten_channel(pp_mat, 'ROUGHNESS', 4)[..., 0]
+want = np.array([[0.5 * ramp_px[y, x, 0] + 0.5 * ramp_px[y, (x + 1) % 4, 0] for x in range(4)] for y in range(4)])   # (half a texel: halfway between two neighbours)
+check(np.abs(flat - want).max() < 1e-5, "Offset 0.125 (linear): halfway between two texels, wrapping (%.1e)" % np.abs(flat - want).max())
+pp_fill.uv_offset = (0.0, 0.0)
+
+# the same through Merge Down, Flatten and Export
+pp_fill.uv_tiling, pp_fill.uv_rotation, pp_fill.uv_offset, pp_fill.opacity = (1.5, 2.0), 0.7, (0.1, -0.2), 0.6
+LY.rebuild_all(pp_mat)
+tex_node.interpolation = 'Closest'
+base_img = LY.entry_of(pp_base, 'ROUGHNESS').image
+LY.write_pixels(base_img, np.full((8, 8, 4), (0.3, 0.3, 0.3, 1.0), np.float32))
+want = LY.flatten_channel(pp_mat, 'ROUGHNESS', 8)[..., 0].copy()
+direct = LY.fill_planes(pp_fill, LY.CHANNEL_BY_ID['ROUGHNESS'], 8)[..., 0]
+pp_stored = LY.pixels_of(base_img, 8)[..., 0]   # (8 bit: 0.3 is stored as 77 / 255)
+check(np.abs(want - (pp_stored + 0.6 * (direct - pp_stored))).max() < 1e-5, "(the flattened channel is the texture over the base at the layer's opacity)")
+pp_mat.m3d_layer_index = LY.index_of(pp_mat, pp_fill.uid)
+check(bpy.ops.m3d.layer_merge_down() == {'FINISHED'} and len(pp_mat.m3d_layers) == 1, "Merge Down of a textured fill runs")
+got = read(LY.entry_of(pp_mat.m3d_layers[0], 'ROUGHNESS').image).reshape(8, 8, 4)[..., 0]
+check(np.abs(got - want).max() <= 1.5 / 255, "...and the merged layer is the flattened result (%.4f)" % np.abs(got - want).max())
+
+pp_cube2, pp_mat2 = fresh_cube("PropsExport", '64')
+bpy.ops.m3d.layer_add(kind='PAINT')
+pp_base2 = LY.active_layer(pp_mat2)
+with LY.muted():
+    LY.entry_of(pp_base2, 'BASE_COLOR').use = True
+    LY.entry_of(pp_base2, 'BASE_COLOR').image = LY.make_channel_image(pp_mat2, pp_base2, LY.CHANNEL_BY_ID['BASE_COLOR'], 8, opaque=True)
+bpy.ops.m3d.layer_add(kind='FILL')
+pp_fill2 = LY.active_layer(pp_mat2)
+tex_c = bpy.data.images.new("ppTexC", 4, 4, alpha=False)
+col_px = np.zeros((4, 4, 4), np.float32)
+col_px[..., 0] = np.linspace(0.1, 0.9, 4)[None, :]
+col_px[..., 1] = np.linspace(0.2, 0.7, 4)[:, None]
+col_px[..., 2], col_px[..., 3] = 0.4, 1.0
+LY.set_channel_space(tex_c, LY.CHANNEL_BY_ID['BASE_COLOR'])
+LY.write_pixels(tex_c, col_px)
+with LY.muted():
+    LY.entry_of(pp_fill2, 'BASE_COLOR').texture = tex_c
+    pp_fill2.blend, pp_fill2.opacity, pp_fill2.uv_tiling = 'MULTIPLY', 0.5, (2.0, 2.0)
+LY.rebuild_all(pp_mat2)
+LY.write_pixels(LY.entry_of(pp_base2, 'BASE_COLOR').image, np.full((8, 8, 4), (0.6, 0.5, 0.4, 1.0), np.float32))
+pp_mat2.node_tree.nodes[LY.part('BASE_COLOR', pp_fill2.uid, "tex")].interpolation = 'Closest'
+pp_dir = tempfile.mkdtemp(prefix="m3d_export_props_")
+pp_tx = bpy.context.scene.m3d_tex
+pp_tx.export_folder, pp_tx.export_size, pp_tx.export_preset = pp_dir, 'SAME', 'UNREAL'
+pp_state = sorted(n.name for n in pp_mat2.node_tree.nodes)
+check(bpy.ops.m3d.tex_export() == {'FINISHED'}, "Unreal export of a stack with a textured fill runs")
+bc, _img = load_png(pp_dir, "T_PropsExport_BC.png")
+want_bc = LY.flatten_channel(pp_mat2, 'BASE_COLOR', 8).reshape(-1, 4)
+check(np.abs(bc[:, :3] - want_bc[:, :3]).max() < 2.5 / 255 and sorted(n.name for n in pp_mat2.node_tree.nodes) == pp_state,
+      "the exported base color is the flattened stack, texture and all (%.4f); the nodes are untouched" % np.abs(bc[:, :3] - want_bc[:, :3]).max())
+check(np.abs(want_bc[:, :3] - bc[:, :3]).max() < 2.5 / 255 and bc[:, 0].std() > 0.01, "...it is not flat")
+
+# --- Convert to Paint, Duplicate and the library keep the texture
+pp_conv = LY.active_layer(pp_mat2)
+bpy.ops.m3d.layer_duplicate()
+pp_dup = LY.active_layer(pp_mat2)
+check(LY.entry_of(pp_dup, 'BASE_COLOR').texture == tex_c and tuple(pp_dup.uv_tiling) == (2.0, 2.0) and pp_dup.uid != pp_conv.uid,
+      "Duplicate copies the texture (the same image) and the transform")
+want_conv = LY.fill_planes(pp_dup, LY.CHANNEL_BY_ID['BASE_COLOR'], 64)
+check(bpy.ops.m3d.layer_convert() == {'FINISHED'} and pp_dup.kind == 'PAINT' and LY.entry_of(pp_dup, 'BASE_COLOR').texture is None
+      and np.abs(LY.pixels_of(LY.entry_of(pp_dup, 'BASE_COLOR').image, 64)[..., :3] - LY.to_srgb(want_conv)).max() < 1.5 / 255,
+      "Convert to Paint Layer paints the texture (as it looks) into the layer")
+pp_lib_root, pp_lib_saved = tempfile.mkdtemp(prefix="m3d_lib_props_"), LIB.library_dir
+LIB.library_dir = lambda create=False: pp_lib_root
+LIB._user["entries"] = None
+pp_mat2.m3d_layer_index = LY.index_of(pp_mat2, pp_fill2.uid)
+pp_files = LIB.Files()
+pp_spec = LIB.describe_layer(pp_fill2, pp_files)
+check(pp_spec.get("textures") == {"BASE_COLOR": "image1.png"} and pp_spec["uv"]["tiling"] == [2.0, 2.0] and list(pp_files) == ["image1.png"],
+      "Save to Library keeps a fill's textures and its UV transform: %s" % {k: pp_spec.get(k) for k in ("textures", "uv")})
+pp_ref = LIB.save_user_item(LIB.describe_material("Textured Fill", pp_fill2, pp_files), pp_files)
+before_layers = len(pp_mat2.m3d_layers)
+check(bpy.ops.m3d.library_apply(item=pp_ref) == {'FINISHED'} and len(pp_mat2.m3d_layers) == before_layers + 2, "the saved item applies")
+pp_applied = next(l for l in pp_mat2.m3d_layers if l.kind == 'FILL' and l.uid != pp_fill2.uid and LY.has_texture(l, 'BASE_COLOR'))
+check(tuple(pp_applied.uv_tiling) == (2.0, 2.0) and LY.entry_of(pp_applied, 'BASE_COLOR').texture is not None
+      and np.abs(read(LY.entry_of(pp_applied, 'BASE_COLOR').texture).reshape(4, 4, 4)[..., :3] - col_px[..., :3]).max() < 1.5 / 255,
+      "...with its texture (the pixels came back) and its transform")
+LIB.library_dir = pp_lib_saved
+LIB._user["entries"] = None
+shutil.rmtree(pp_lib_root, ignore_errors=True)
+
+# --- Cycles: the numpy result is what the node chain computes (a Texture Coordinate -> Mapping -> Image Texture chain, nearest)
+clean_scene()
+bpy.ops.mesh.primitive_plane_add()
+nplane = bpy.context.active_object
+nplane.name = "NodeFill"
+bpy.ops.m3d.tex_add_material()
+nmat = nplane.active_material
+bpy.ops.m3d.layer_add(kind='FILL')
+nfill = LY.active_layer(nmat)
+nimg = bpy.data.images.new("ppNodeTex", 4, 4, alpha=False, is_data=False)
+LY.set_channel_space(nimg, LY.CHANNEL_BY_ID['BASE_COLOR'])
+npx = np.random.default_rng(3).random((4, 4, 4)).astype(np.float32)
+npx[..., 3] = 1.0
+LY.write_pixels(nimg, npx)
+with LY.muted():
+    LY.entry_of(nfill, 'BASE_COLOR').texture = nimg
+    nfill.uv_tiling, nfill.uv_rotation, nfill.uv_offset = (1.3, 1.1), 0.4, (0.07, -0.13)
+LY.rebuild_all(nmat)
+nmat.node_tree.nodes[LY.part('BASE_COLOR', nfill.uid, "tex")].interpolation = 'Closest'
+nodes_lin = bake_chain(nplane, nmat, 'BASE_COLOR')
+mine = LY.composite(nmat, 'BASE_COLOR', N)
+err = np.abs(nodes_lin - mine)
+print("fill texture vs Cycles bake: worst error %.5f, %.2f%% of the texels differ by more than 0.01" % (err.max(), 100.0 * (err.max(axis=-1) > 0.01).mean()))
+check((err.max(axis=-1) > 0.01).mean() < 0.05, "numpy matches the Mapping node's UV transform (nearest; %.1f%% of the texels differ)" % (100.0 * (err.max(axis=-1) > 0.01).mean()))
+nmat.node_tree.nodes[LY.part('BASE_COLOR', nfill.uid, "tex")].interpolation = 'Closest'
+with LY.muted():
+    nfill.uv_tiling, nfill.uv_rotation, nfill.uv_offset = (1.0, 1.0), 0.0, (0.0, 0.0)
+LY.rebuild_all(nmat)
+nodes_lin = bake_chain(nplane, nmat, 'BASE_COLOR')
+check(np.abs(nodes_lin - LY.composite(nmat, 'BASE_COLOR', N)).max() < 0.02, "...and with no transform at all (a texture stretched over the UV map, 4 texels into 8)")
+bpy.data.objects.remove(nplane)
+
+# --- Properties - Folder and Mask
+o, m = fresh_cube("PropsFolder", '64')
+bpy.ops.m3d.layer_add(kind='PAINT')
+bpy.ops.m3d.layer_folder_add()
+fold = LY.active_layer(m)
+check(T.props_context(pp_ctx) == 'FOLDER' and pp_sections() == {"fd_folder", "mk_stack"} and T.props_pages(pp_ctx) == {T.FOLDER_PAGE, T.MASK_PAGE},
+      "Properties - Folder: the folder and its mask (%s)" % sorted(pp_sections()))
+log = pp_draw("fd_folder")
+check({"name", "blend", "opacity"} <= {n for n, _o in pp_props(log)} and any(r._kind == "operator" and r._args[0] == "m3d.layer_freeze" for r in log),
+      "Folder: blend, opacity, Freeze")
+check(bpy.ops.m3d.layer_mask_add(fill='WHITE') == {'FINISHED'} and fold.mask_stack and fold.paint_mask and T.props_context(pp_ctx) == 'MASK',
+      "a mask on a folder is painted at once: Properties - Mask")
+fold.paint_mask = False
+check(T.props_context(pp_ctx) == 'FOLDER' and pp_sections() == {"fd_folder", "mk_stack", "mk_effect"},
+      "...not painted: the folder's properties show its effect too (%s)" % sorted(pp_sections()))
+bpy.ops.m3d.layer_add(kind='PAINT')
+paint_layer = LY.active_layer(m)
+bpy.ops.m3d.layer_mask_add(fill='WHITE')
+paint_layer.paint_mask = False
+pp_scene.m3d_tex.props_mode = 'MASK'
+check(T.props_context(pp_ctx) == 'MASK' and pp_sections() == {"mk_stack", "mk_effect"} and T.props_pages(pp_ctx) == {T.MASK_PAGE},
+      "Properties - Mask: the stack and the selected effect (%s)" % sorted(pp_sections()))
+pp_scene.m3d_tex.props_mode = 'AUTO'
+paint_layer.paint_mask = True
+check(T.props_context(pp_ctx) == 'MASK' and pp_sections() == {"mk_stack", "mk_effect", "pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_gray", "pp_advanced", "pp_cursor"},
+      "Properties - Mask while the mask is painted: the Paint sections follow, with the grays instead of the Material (%s)" % sorted(pp_sections()))
+log = pp_draw("pp_gray")
+check([n for n, _o in pp_props(log)] == ["color", "secondary_color"] and any(r._kind == "operator" and r._args[0] == "paint.brush_colors_flip" for r in log), "Grayscale: the two brush colors and X")
+paint_layer.paint_mask = False
+LY.sync_target(bpy.context, m, True)
+# every kind of effect: its name and type at the top, then its settings
+mask_layer = paint_layer
+for kind in MK.KINDS:
+    if kind.id in {'PAINT', 'FILL'}:
+        continue
+    with LY.muted():
+        e = LY.add_effect(mask_layer, kind.id)
+        mask_layer.mask_index = len(mask_layer.mask_stack) - 1
+    pp_scene.m3d_tex.props_mode = 'MASK'
+    log = pp_draw("mk_effect", "Properties - Mask, effect " + kind.id)
+    first = [r for r in log if r._kind == "prop"][0]
+    labels = [r._kw.get("text") for r in log if r._kind == "label"]
+    check(first._args[1] == "name" and first._args[0] == e and first._kw.get("icon") == kind.icon, "the Effect section starts with the name of the %s effect and its icon" % kind.id)
+    check(T.EFFECT_TYPES[kind.id] in (labels[0] or "") and (kind.label in labels[0]), "...then its type and kind: %r" % labels[:1])
+    check([n for n, o in pp_props(log) if o == e][1:] == [p for p, _l in MK.PARAM_UI.get(kind.id, ())], "...then its settings: %s" % [n for n, o in pp_props(log) if o == e][1:])
+check(set(T.EFFECT_TYPES.values()) == {"Paint", "Fill", "Generator", "Levels", "Filter"} and set(T.EFFECT_TYPES) == {k.id for k in MK.KINDS}, "every effect kind has a type: Paint, Fill, Generator, Levels, Filter")
+pp_scene.m3d_tex.props_mode = 'AUTO'
+
+# --- The context toolbar of each tool
+bpy.ops.m3d.layer_add(kind='PAINT')
+pp_layer = LY.active_layer(m)
+
+
+def toolbar():
+    log = []
+    T.draw_status_line(Rec(log), pp_wide)
+    check_calls("Texture context toolbar", log)
+    return log, {n for n, _o in pp_props(log)}, [r._args[0] for r in log if r._kind == "operator"]
+
+
+COMMON = {"size", "strength", "use_pressure_size", "use_pressure_strength", "spacing", "use_smooth_stroke", "smooth_stroke_radius"}
+for tool in ('PAINT', 'ERASER', 'SMUDGE', 'CLONE'):
+    bpy.ops.m3d.tex_tool(tool=tool)
+    _log, names, _ops = toolbar()
+    check(COMMON <= names and {"use_mirror_x", "use_mirror_y", "use_mirror_z"} <= names and "texture_overlay_alpha" not in names and "fill_mode" not in names,
+          "%s: Size, Flow (+ pressure), Spacing, Lazy Mouse and its distance, Symmetry and its axes" % tool)
+    check(("use_roughness" in names) == (tool in {'PAINT', 'ERASER'}), "...and the channel toggles only for Paint and the Eraser")
+bpy.ops.m3d.tex_tool(tool='POLYFILL')
+_log, names, _ops = toolbar()
+check({"fill_mode", "use_roughness"} <= names and "size" not in names and "strength" not in names, "Polygon Fill: its mode and the channels")
+bpy.ops.m3d.tex_tool(tool='PROJECTION')
+_log, names, ops = toolbar()
+check({"texture_overlay_alpha", "strength", "size"} <= names and "brush.stencil_reset_transform" in ops and "brush.stencil_fit_image_aspect" in ops and "use_roughness" in names,
+      "Projection: the stencil controls with the brush's, and the channels")
+bpy.ops.m3d.tex_tool(tool='PAINT')
+bpy.ops.m3d.layer_add(kind='FILL')
+pp_fill3 = LY.active_layer(m)
+log, names, ops = toolbar()
+check({"uv_tiling", "uv_rotation", "uv_offset"} <= names and "m3d.layer_fill_reset" in ops and "strength" not in names and "use_roughness" not in names
+      and all(o == pp_fill3 for n, o in pp_props(log) if n.startswith("uv_")) and {"use_mirror_x"} <= names,
+      "a fill layer selected: the UV transform (Tiling, Rotation, Offset) and Reset instead of the brush")
+narrow_ = TCtx('RIGHT')
+narrow_.region = NS(type='HEADER', width=1500)
+log = []
+T.draw_status_line(Rec(log), narrow_)
+check_calls("Texture context toolbar (narrow, fill)", log)
+check({"uv_tiling", "uv_rotation", "uv_offset"} <= {n for n, _o in pp_props(log)}, "...also on a narrow window")
+pp_scene.m3d_tex.props_mode = 'LAYER'
+_log, names, _ops = toolbar()
+check("uv_tiling" in names, "(the toolbar follows the selected layer)")
+pp_scene.m3d_tex.props_mode = 'AUTO'
+bpy.ops.m3d.layer_remove()
+check(T.props_context(pp_ctx) == 'PAINT', "(back on a paint layer)")
+bpy.ops.object.mode_set(mode='OBJECT')
+log = []
+T.draw_status_line(Rec(log), pp_wide)
+check_calls("Texture context toolbar in Object Mode", log)
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+
+# --- The old layout draws what it drew (the tray, the Layers tab with its Mask panel) with the same data
+tex_ws.m3d_layout = 0
+check(W.tabs_kind(TCtx()) == 'TEXTURE_OLD', "(the old layout)")
+bpy.ops.m3d.layer_add(kind='FILL')
+LY.entry_of(LY.active_layer(m), 'BASE_COLOR').texture = tex_a
+bpy.ops.m3d.layer_mask_add(fill='WHITE')
+for page, side in (("tex_layers", 'RIGHT'), ("tex_brushes", 'LEFT'), ("tex_brush", 'RIGHT')):
+    tex_ws.m3d_page_left, tex_ws.m3d_page_right = ("tex_brushes", tex_ws.m3d_page_right) if side == 'LEFT' else (tex_ws.m3d_page_left, page)
+    for cls in tex_panels(page):
+        if cls.poll(TCtx(side)):
+            try:
+                check_calls("old layout " + cls.__name__, draw_stub(cls, TCtx(side)))
+            except Exception as err:
+                check(False, "old layout %s draws: %r" % (cls.__name__, err))
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_layer, TCtx('RIGHT'))
+check_calls("old layout Layer panel", log)
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_mask, TCtx('RIGHT'))
+check_calls("old layout Mask panel", log)
+check(any(r._kind == "template_list" for r in log) and any(r._kind == "operator" and r._args[0] == "m3d.mask_rebake" for r in log), "the old Mask panel still lists the effects")
+log = []
+T.draw_status_line(Rec(log), pp_wide)
+check_calls("old layout toolbar", log)
+tex_ws.m3d_page_left = tex_ws.m3d_page_right = ""
+tex_ws.m3d_layout = 1
+
+# --- The 2D view frames its image: when the workspace opens, and when the image it shows has another size
+fits, fit_orig = [], T.fit_view
+T.fit_view = lambda win, area, region, space: fits.append(space.image.name if space.image else None)
+fit_a = bpy.data.images.new("fitA", 64, 64)
+fit_b = bpy.data.images.new("fitB", 64, 64)
+fit_c = bpy.data.images.new("fitC", 128, 64)
+fit_space = NS(image=None, as_pointer=lambda: 4242)
+fit_region = NS(type='WINDOW', width=800, height=600)
+fit_area = NS(type='IMAGE_EDITOR', regions=[fit_region], spaces=NS(active=fit_space))
+fit_win = NS(workspace=tex_ws, screen=NS(areas=[NS(type='VIEW_3D'), fit_area]))
+fit_wm = NS(windows=[fit_win])
+T._fit.update(workspace=None, seen={})
+T.follow(fit_wm)
+check(fits == [None], "F4: the 2D view frames itself, with no image too (%s)" % fits)
+T.follow(fit_wm)
+T.follow(fit_wm)
+check(fits == [None], "...once")
+fit_space.image = fit_a
+T.follow(fit_wm)
+check(fits == [None, "fitA"], "an image appears: the view frames it (%s)" % fits)
+fit_space.image = fit_b
+T.follow(fit_wm)
+check(fits == [None, "fitA", "fitB"], "another image is framed too, even of the same size (Blender shows a new image 1:1): %s" % fits)
+fit_space.image = fit_a
+T.follow(fit_wm)
+check(fits == [None, "fitA", "fitB"], "an image that was framed before comes back with the view it had (%s)" % fits)
+fit_space.image = fit_c
+T.follow(fit_wm)
+check(fits == [None, "fitA", "fitB", "fitC"], "an image of another size is framed (%s)" % fits)
+fit_region.width = 50
+fit_space.image = None
+T.follow(fit_wm)
+check(len(fits) == 4, "a view that is not drawn yet is left alone (%s)" % fits)
+fit_region.width = 800
+fit_space.image = fit_c
+T._fit["seen"].clear()   # (what View Layout does: the view has another size)
+T.follow(fit_wm)
+check(fits == [None, "fitA", "fitB", "fitC", "fitC"], "a layout change frames the view again (%s)" % fits)
+fit_win.workspace = next(w for w in bpy.data.workspaces if W.workspace_kind(w) != 'TEXTURE')
+T.follow(fit_wm)
+check(len(fits) == 5 and T._fit["workspace"] is None, "other workspaces are not touched")
+fit_win.workspace = tex_ws
+T.follow(fit_wm)
+check(len(fits) == 6, "...F4 again frames it again (%s)" % fits)
+T.follow(NS(windows=[]))   # (no window: nothing happens)
+T.fit_view = fit_orig
+check("follow_texture" in open(W.__file__).read() and "image.view_all" in open(T.__file__).read(), "the workspace timer calls the 2D fit")
+check("whole image in the 2D view" in T.M3D_OT_tex_frame.__doc__ and "view_all" in open(T.__file__).read(), "F frames the image in the 2D view")
+bpy.ops.object.mode_set(mode='OBJECT')
+clean_scene()
+for image in [i for i in bpy.data.images if i.name.startswith(("pp", "fit"))]:
+    bpy.data.images.remove(image)
+shutil.rmtree(pp_alphas, ignore_errors=True)
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

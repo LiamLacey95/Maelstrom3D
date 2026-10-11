@@ -260,9 +260,9 @@ painted: the panels say what is missing and have a button to fix it (Auto Unwrap
 | 3D view and 2D view | The 3D view in Material Preview and the 2D paint view (the Image Editor in Paint mode). Each has a **display mode** dropdown at the top right: Material, each channel on its own, the baked mesh maps, the mask of the active layer |
 | Texture Set List (right, top) | One row for each material of the active mesh, then the materials with layers of the other meshes. The eye shows or hides the set, a click on the name makes it the active material (the Layers follow). The button in the header isolates the active set (Alt+Q) |
 | Layers \| Texture Set Settings (right, middle) | Two tabs. **Layers** is the layer stack (see Layers below). **Texture Set Settings** has the channels (add one, size of new slots, Save All Images), the list of baked **Mesh Maps** with a big **Bake Mesh Maps** button, and All Paint Slots. **Bake Mesh Maps** replaces the tabs by the Bake page, with **Back to Painting** on top |
-| Properties (right, bottom) | Titled by what is selected: **Properties - Paint** (the brush: picker, size, strength, color, blend mode, the **Material** section, stencil and projection, stroke and stabilize, falloff, texture and alpha, clone, options, cursor, palette), **Properties - Fill** (the fill layer's settings: name, blend, opacity, channels and their values), **Properties - Mask** (the mask effects of the layer, and the brush while the mask is painted) and **Properties - Folder**. The buttons **Auto \| Layer \| Mask** in its header pick the layer's settings or its mask when the title is not the one you want |
+| Properties (right, bottom) | Titled by what is selected: **Properties - Paint** (previews, then the sections of the tool: Brush, Alpha, Stencil, Material ...), **Properties - Fill** (the fill's UV transform and its Material), **Properties - Mask** (the effects of the layer's mask and the selected effect; the Paint sections follow while the mask is painted) and **Properties - Folder** (the folder and its mask). The buttons **Auto \| Layer \| Mask** in its header pick the layer's own settings or its mask when the title is not the one you want. See Properties below |
 | Dock strip (far right) | Icons that open a popover: **Display Settings** (shading, environment rotation and intensity, Channel View, UV checker), **Shader Settings** (the Principled shader of the active material and its displacement), **History** (the undo steps, a click goes back to that step), **Export Textures** (the presets, folder and size; Ctrl+Shift+E), and **Log** (the Info window with the reports) |
-| Toolbar (top bar) | Left: the controls of the active tool, **Size** and **Flow** (the brush strength) with their pen pressure buttons, **Spacing**, **Lazy Mouse** with its distance, the channel buttons of the brush material (**color height rough metal emit**, shorter on a narrower window; for the tools that paint them), **Symmetry** X Y Z; Polygon Fill shows its fill mode instead. Right: the view layout (3D \| 2D, 3D only, 2D only: the last two maximize one view), perspective / orthographic, **Bake Mesh Maps**, **Export Textures**, the workspace picker. There are no shelf rows in this workspace (Show Shelf in Workspace Settings brings them back) |
+| Toolbar (top bar) | Left: the controls of the active tool, **Size** and **Flow** (the brush strength) with their pen pressure buttons, **Spacing**, **Lazy Mouse** with its distance, the channel buttons of the brush material (**color height rough metal emit**, shorter on a narrower window; for the tools that paint them), **Symmetry** X Y Z. Polygon Fill shows its fill mode instead of the brush controls; Projection adds the stencil's opacity, **Reset** and **Fit**; when a fill layer is selected the toolbar shows its UV transform (**Tiling**, **Rotation**, **Offset**, **Reset**) instead of the brush. Right: the view layout (3D \| 2D, 3D only, 2D only: the last two maximize one view), perspective / orthographic, **Bake Mesh Maps**, **Export Textures**, the workspace picker. There are no shelf rows in this workspace (Show Shelf in Workspace Settings brings them back) |
 
 **Tools.** Blender has one brush tool for texture painting, and the brush decides what a stroke does, so each tool of the strip picks a brush and a few settings in one click:
 
@@ -279,6 +279,53 @@ painted: the panels say what is missing and have a button to fix it (Auto Unwrap
 Leaving Projection puts the brush texture mapping back, and leaving Polygon Fill puts Face Selection masking back.
 The other brushes (Blur, Mask, Airbrush, Paint Soft and the rest) are in Assets > Brushes: picking one makes the strip show
 the tool it belongs to.
+
+**Properties.** What the editor at the bottom right shows follows the selection, and every control is a property of Blender's
+brush or of the layer. For a Paint Layer (or without a layer) it is **Properties - Paint**, with the sections of the tool:
+
+| Tool | Sections |
+|---|---|
+| Paint | Previews, Brush, Alpha, Stencil, Material, Advanced, Cursor |
+| Eraser | The same; its Material has only the channel buttons, it erases every channel that is on |
+| Projection | Previews, **Projection** (the stencil, first), Brush, Material, Advanced, Cursor |
+| Polygon Fill | Previews, **Polygon Fill** (Polygon, UV Island or Mesh) and Material |
+| Smudge | Previews, Brush, Advanced, Cursor |
+| Clone | Previews, Brush, **Clone** (the source to paint from), Advanced, Cursor |
+
+The **previews** are the brush's picture and name, and a swatch for each channel of the brush material (the color, the grey
+of Height, Roughness and Metallic, the Emission color; a channel that is off is dimmed). **Brush** starts closed, because the
+toolbar has what you use all the time: Size (with the Unified Settings button and pen pressure), Hardness, Flow (the brush
+strength, with pen pressure), **Accumulate**, Spacing, **Size Space** (View or Scene units), then, when the brush has an alpha,
+**Angle** and **Follow Path** (the alpha turns with the stroke), **Position Jitter** and **Angle Jitter**, and the projection
+options **Occlude**, **Backface Culling** and **Normal Falloff** with its angle. Blender has no separate Stroke Opacity: Flow
+is the strength of a dab, and with Accumulate off a stroke never goes past it (what a stroke opacity does), while with it on
+the dabs add up. Size and Flow jitter, and placing the alpha along the surface (tangent, UV), do not exist in Blender's texture
+painting either, so they are not offered: an alpha is always laid over the screen.
+
+**Alpha** is the brush's alpha (its Texture Mask) with its picture, a grid of the alpha library (the same alphas as the Assets
+category, None clears it), **Load Alpha...** and **Alignment**: Camera (the alpha stays upright on the screen), Tiled, Random or
+Stencil. **Stencil** (closed at first) is the S key as a button, with **Reset** and **Fit** for its place and size, the opacity it is
+drawn with, the same library grid (a click makes that alpha the stencil) and **Load Stencil...**; S shows it, RMB moves it,
+Shift+RMB scales it and Ctrl+RMB turns it. A stencil is one picture on the screen, so it has no tiling. **Material** is the row
+of channel buttons and the value of each channel that is on (see Painting several channels at once). **Advanced** (closed) has the
+stroke method, the stabilizer, the falloff, input samples, seam bleed, dither and the cavity mask, and what the Blur and Mask
+brushes have of their own. **Cursor** (closed) is Blender's brush cursor display. While a mask is painted (**Properties - Mask**) the
+Material is replaced by the two **Grayscale** colors: white shows the layer, black hides it, X swaps them.
+
+For a Fill Layer it is **Properties - Fill**. **Fill** has the UV transform of the layer's textures, **Tiling**, **Rotation**
+and **Offset**, with **Reset** (tiling and rotation turn around the middle of the UV map); the projection is the UV map. **Material**
+is a row of buttons for the channels the fill has (**color height rough metal emit nrm**), and below it, for each one that is on, its
+value and a texture slot: an image picked there (Open loads a file) replaces the value, follows the UV map through the layer's UV
+transform and does not use the image's alpha. A file picked for a channel takes that channel's color space (sRGB for Base Color and
+Emission, Non-Color for the rest); a Normal channel with a texture is a normal map. For a **Folder** it is **Properties - Folder**:
+name, blend mode, opacity, **Freeze**, **Merge Folder**, and the folder's mask. **Properties - Mask** has the **Mask** section
+(the effect list and its buttons: see Masks) and the **Effect** section: the selected effect's name, its type (Paint, Fill,
+Generator, Levels or Filter) and its settings.
+
+The **2D view** frames the whole image (the same as F over it) when the workspace opens, the first time it shows an image
+(Blender shows a new image 1:1, a small square in a big empty area), when the image has another size, and when the view
+layout changes. An image you framed before comes back with the view you gave it, so the next channel with C does not undo
+your zoom after the first time.
 
 **Keys in Texture Paint Mode** (3D view and 2D view):
 
@@ -325,7 +372,7 @@ keys work there), so a baked map shown in it changes if you paint on it: Undo ta
 | Smart Materials | Adds a **folder** of Fill layers whose masks use the Edges, Cavity, Top-down and Noise generators, so it fits the mesh (it reads the baked mesh maps; they are baked the first time when the mesh has none) |
 | Smart Masks | Gives the **active layer** (or folder) the preset's mask effects. **Replace** swaps them for the layer's mask, **Add on Top** puts them above it, combined with it |
 | Brushes | Picks the texture paint brush (all of them, also the pressure and pixel art ones), with the brush library popover on top |
-| Alphas | The Sculpt alphas: the same starter set and **Load Alpha...**, in the same user folder. In Texture Paint Mode the alpha is the active brush's **Texture Mask** (it follows the cursor), None clears it |
+| Alphas | The Sculpt alphas: the same starter set and **Load Alpha...**, in the same user folder. In Texture Paint Mode the alpha is the active brush's **Texture Mask** (it follows the cursor), None clears it. The Alpha and Stencil sections of Properties - Paint pick from the same library |
 | Environments | The environments (HDRIs) of Blender's studio lights: a click lights the Material Preview with it, **Scene World** turns the scene's own world back on. Shift+RMB drag turns it |
 | Mine | Your own items, and **Save Layer** / **Save Mask** |
 
@@ -433,7 +480,7 @@ metallic) and `_E`; **Unity** `Name_Albedo`, `_Normal`, `_MetallicSmoothness` (m
 "Base" (nothing painted is lost; the new image nodes keep the old ones' interpolation, extension, Mapping link and
 the Normal Map / Bump settings, and the Base layer ignores image alpha so the look does not change). A Paint Layer is transparent and holds one image per channel; the image of a channel
 is only made (at the "new slot" size) when that layer and channel are first picked for painting, so unused channels cost
-no memory. A Fill Layer is a value or color over the whole mesh; limit it with a **Mask** (next paragraphs).
+no memory. A Fill Layer is a value or color over the whole mesh, or a texture (Properties - Fill); limit it with a **Mask** (next paragraphs).
 **Paint Mask** sends strokes to the mask's Paint effect instead of the channel (on a Fill Layer strokes always go to
 it; a Fill Layer without a Paint effect can be turned into a Paint Layer with Convert, and until then the brush is
 aimed at a tiny hidden scratch image so no layer is painted by mistake).
@@ -506,7 +553,7 @@ above its folder. Folders can hold folders, to any depth. Duplicate copies a fol
 images, Delete removes the folder, its layers and their images (images used elsewhere stay), **Merge Down** merges a
 layer or folder into the layer below it in the same folder (not into a folder: merge that first), and **Merge Folder**
 turns a folder into one Paint Layer holding what its layers made together, with the folder's name, blend mode, opacity,
-eye and mask (the look does not change). The folder's Mask panel is the layer Mask panel; a folder itself cannot be
+eye and mask (the look does not change). The folder's mask is shown in Properties - Folder, like a layer's in Properties - Mask; a folder itself cannot be
 painted, pick a layer inside it.
 
 **Freezing.** A folder of many layers costs one Image Texture, Mix and several helper nodes per layer and channel while
@@ -548,8 +595,8 @@ in it (nested folders, fills, paint layers with their pixels, blend modes, opaci
 panel it saves the layer's mask stack as a mask preset. You are asked for a name. Under Mine, each item has a rename and
 a delete button (Your Items); the starter items have neither. An item is a folder in the user data folder
 `datafiles/m3d_library/user/<name>/` (inside the portable folder in a portable install): `item.json` describes the
-layers (kind, name, visible, opacity, blend, per channel the fill color or value or the PNG of a paint layer, the mask
-effects with all their settings) and any paint images are saved beside it as PNG, so applying an item makes the layers
+layers (kind, name, visible, opacity, blend, per channel the fill color or value or the PNG of a paint layer, the textures
+of a fill layer and its UV transform, the mask effects with all their settings) and any paint and texture images are saved beside it as PNG, so applying an item makes the layers
 again with the same pixels and values (a saved folder applied back gives the same composite exactly). Applying one
 checks nothing is half done: a damaged item is refused and leaves the stack as it was.
 

@@ -26,6 +26,7 @@ alpha is the coverage), after which the folder is a leaf of the chains: one Imag
 The Layers page (panels) is in m3d_texture.py.
 """
 
+import math
 import uuid
 from collections import namedtuple
 from contextlib import contextmanager
@@ -67,6 +68,7 @@ BLENDS = (   # Mix node blend types. All of them are exact in the numpy flatteni
     ('DARKEN', "Darken"), ('LIGHTEN', "Lighten"),
 )
 TAG = "m3d_layer"   # Custom property (value: channel id) and name prefix of every node the stack creates.
+FILL_TEXTURE = "m3d_fill_texture"   # Custom property of an image file picked as a fill's texture (value: the channel it was first picked for).
 MEMORY_WARN = 12    # Warn from this many 4K images (8 bit RGBA) on.
 
 
@@ -167,12 +169,26 @@ def _changed(self, context):
         refresh(context, self.id_data)
 
 
+def _texture_changed(self, context):
+    """A fill's texture was picked: a file the stack has not seen takes the color space of the channel (the first channel an
+    image is used for decides it; a generated image keeps its own: choosing the color space again blanks it)."""
+    image, ch = self.texture, CHANNEL_BY_ID.get(self.channel)
+    if image is not None and ch is not None and image.source == 'FILE' and FILL_TEXTURE not in image.keys():
+        image.colorspace_settings.name = 'sRGB' if ch.srgb else 'Non-Color'
+        image[FILL_TEXTURE] = ch.id
+    _changed(self, context)
+
+
 class M3D_LayerChannel(PropertyGroup):
-    """What a layer holds for one channel: an image (paint layers, made when it is first painted) or a fill value."""
+    """What a layer holds for one channel: an image (paint layers, made when it is first painted), a fill value, or (fill
+    layers) a texture that is the fill instead of the value."""
     channel: StringProperty()
     use: BoolProperty(name="Enabled", default=False, update=_changed,
                       description="The layer has this channel (paint layers make the image when it is first painted)")
     image: PointerProperty(type=bpy.types.Image, update=_changed)
+    texture: PointerProperty(type=bpy.types.Image, name="Texture", update=_texture_changed,
+                             description="Fill the channel with this image instead of the value: it follows the UV map, "
+                             "moved by the layer's Tiling, Rotation and Offset")
     color: FloatVectorProperty(name="Color", size=4, subtype='COLOR', min=0.0, max=1.0, default=(0.8, 0.8, 0.8, 1.0),
                                update=_changed)
     value: FloatProperty(name="Value", min=0.0, max=1.0, default=0.5, update=_changed)
@@ -215,6 +231,13 @@ class M3D_Layer(PropertyGroup):
     mask_index: IntProperty(name="Active Effect", default=0, min=0, update=_changed)
     paint_mask: BoolProperty(name="Paint Mask", default=False, update=_changed,
                              description="Brush strokes go to the mask's Paint effect instead of the layer's channel")
+    # The UV transform of a fill layer's textures (the Mapping node in front of them): see fill_mapping.
+    uv_tiling: FloatVectorProperty(name="Tiling", size=2, default=(1.0, 1.0), min=0.01, soft_max=32.0, update=_changed,
+                                   description="How many times the texture repeats over the UV map, across and up")
+    uv_rotation: FloatProperty(name="Rotation", subtype='ANGLE', default=0.0, update=_changed,
+                               description="Turn the texture around the middle of the UV map")
+    uv_offset: FloatVectorProperty(name="Offset", size=2, default=(0.0, 0.0), soft_min=-1.0, soft_max=1.0, update=_changed,
+                                   description="Slide the texture across the UV map (1 is the width of the UV map)")
     # Before mask stacks a layer had one mask image (and Invert Mask): upgrade() turns them into effects.
     mask: PointerProperty(type=bpy.types.Image, update=_changed)
     mask_invert: BoolProperty(name="Invert Mask", default=False, update=_changed)
@@ -341,6 +364,28 @@ def fill_rgba(layer, ch_id):
     return tuple(e.color)
 
 
+def has_texture(layer, ch_id):
+    """Is the channel of a fill layer filled with a texture (instead of its value)?"""
+    return layer.kind == 'FILL' and entry_of(layer, ch_id).texture is not None
+
+
+def fill_matrix(layer):
+    """(2 x 2 matrix, offset) of a fill layer's UV transform: the texture is read at m @ uv + offset for the point uv of the UV
+    map. Tiling scales and Rotation turns around the middle of the UV map; Offset slides on top of that. The Mapping node of
+    the chain computes the same (Point: location + rotation x (scale x vector))."""
+    tx, ty = layer.uv_tiling
+    c, s = math.cos(layer.uv_rotation), math.sin(layer.uv_rotation)
+    m = np.array([[c * tx, -s * ty], [s * tx, c * ty]])
+    middle = np.array([0.5, 0.5])
+    return m, middle - m @ middle + np.array(layer.uv_offset)
+
+
+def fill_mapping(layer):
+    """(location, rotation, scale) of the Mapping node in front of a fill layer's textures (see fill_matrix)."""
+    _m, loc = fill_matrix(layer)
+    return (float(loc[0]), float(loc[1]), 0.0), (0.0, 0.0, layer.uv_rotation), (layer.uv_tiling[0], layer.uv_tiling[1], 1.0)
+
+
 def layer_images(layer):
     return [e.image for e in layer.channels if e.image] + MK.owned_images(layer) + ([layer.mask] if layer.mask else [])
 
@@ -372,7 +417,7 @@ def image_in_use(image):
         return True
     for mat in bpy.data.materials:
         for layer in mat.m3d_layers:
-            if layer.mask == image or any(e.image == image for e in layer.channels) or any(
+            if layer.mask == image or any(image in {e.image, e.texture} for e in layer.channels) or any(
                     e.image == image or e.image2 == image for e in layer.mask_stack):
                 return True
         if mat.node_tree and any(n.type in {'TEX_IMAGE', 'TEX_ENVIRONMENT'} and n.image == image and TAG not in n.keys()
@@ -439,7 +484,8 @@ def walk(tree):
 def signature(tree, ch_id):
     """What decides the chain's nodes and links; anything else (opacity, blend, fill, names) is only a value."""
     return repr([(l.uid, l.kind, entry_of(l, ch_id).image.name if uses_image(l) else "", bool(l.mask_stack), l.use_alpha,
-                  *((signature(inside, ch_id),) if inside else ())) for l, inside in tree])
+                  *((signature(inside, ch_id),) if inside else ()),
+                  *(("texture", entry_of(l, ch_id).texture.name) if has_texture(l, ch_id) else ())) for l, inside in tree])
 
 
 def set_values(nt, layer, ch_id):
@@ -454,10 +500,14 @@ def set_values(nt, layer, ch_id):
     blend = 'MIX' if ch_id == 'NORMAL' else layer.blend
     if mix is not None and mix.blend_type != blend:
         mix.blend_type = blend
-    if layer.kind == 'FILL':   # (inside a folder a fill is a color node: both its Mix nodes read it)
+    if layer.kind == 'FILL' and not has_texture(layer, ch_id):   # (inside a folder a fill is a color node: both its Mix nodes read it)
         target = fill.outputs[0] if fill is not None else mix.inputs[7] if mix is not None else None
         if target is not None:
             _set(target, fill_rgba(layer, ch_id))
+    mapping = nt.nodes.get(part(ch_id, layer.uid, "map"))   # (the UV transform of a fill's texture)
+    if mapping is not None:
+        for name, value in zip(("Location", "Rotation", "Scale"), fill_mapping(layer)):
+            _set(mapping.inputs[name], value)
     for key in ("mix", "tex", "fill"):
         node = nt.nodes.get(part(ch_id, layer.uid, key))
         if node is not None and node.label != layer.name:
@@ -662,6 +712,14 @@ def build_channel(mat, ch, tree, sig):
                 opv.inputs[0].default_value = 1.0
         else:
             opv.inputs[0].default_value = 1.0
+            if has_texture(layer, ch.id):   # a fill's texture: UV map -> Mapping (the layer's UV transform) -> image; opaque
+                coord = new("ShaderNodeTexCoord", part(ch.id, uid, "coord"), x - 400, y_ + 250)
+                mapping = new("ShaderNodeMapping", part(ch.id, uid, "map"), x - 200, y_ + 250)
+                tex = new("ShaderNodeTexImage", part(ch.id, uid, "tex"), x, y_)
+                tex.image = entry_of(layer, ch.id).texture
+                links.new(coord.outputs["UV"], mapping.inputs["Vector"])
+                links.new(mapping.outputs["Vector"], tex.inputs["Vector"])
+                color = tex.outputs["Color"]
         factor = opv.outputs[0]
         if layer.mask_stack:
             mul = new("ShaderNodeMath", part(ch.id, uid, "maskmul"), x + 500, y_ - 200)   # x the layer's mask
@@ -1214,6 +1272,43 @@ def stack_slots(mat):
 # -----------------------------------------------------------------------------
 # Compositing (numpy): what the node chain computes, for Merge Down, Flatten and Export
 
+def texture_planes(layer, ch, size):
+    """Linear rgb of a fill's texture for a size x size image: the texture read at the center of each texel of the UV map
+    through the layer's UV transform (fill_matrix), repeating, filtered as the chain's Image Texture node is (Closest, else
+    Linear), the alpha not used. As the nodes show it, except that the Cubic and Smart filters are read as Linear."""
+    image = entry_of(layer, ch.id).texture
+    px = np.empty(len(image.pixels), np.float32)
+    image.pixels.foreach_get(px)
+    w, h = image.size
+    if not w or not h:   # (a file that is not there: the value stands in)
+        return np.broadcast_to(np.array(fill_rgba(layer, ch.id)[:3], np.float32), (size, size, 3))
+    px = px.reshape(h, w, 4)[..., :3]
+    if ch.srgb:
+        px = to_linear(px)
+    ys, xs = np.mgrid[0:size, 0:size]
+    m, loc = fill_matrix(layer)
+    uv = np.stack(((xs + 0.5) / size, (ys + 0.5) / size), -1) @ m.T + loc
+    fx, fy = uv[..., 0] * w, uv[..., 1] * h   # (texel i is centered at i + 0.5)
+    node = layer.id_data.node_tree.nodes.get(part(ch.id, layer.uid, "tex")) if layer.id_data.node_tree else None
+    if node is not None and node.interpolation == 'Closest':
+        return px[np.floor(fy).astype(int) % h, np.floor(fx).astype(int) % w]
+    fx, fy = fx - 0.5, fy - 0.5
+    x0, y0 = np.floor(fx), np.floor(fy)
+    ax, ay = (fx - x0)[..., None], (fy - y0)[..., None]
+    x0, y0 = x0.astype(int), y0.astype(int)
+
+    def at(y, x):
+        return px[y % h, x % w]
+    return ((at(y0, x0) * (1 - ax) + at(y0, x0 + 1) * ax) * (1 - ay) + (at(y0 + 1, x0) * (1 - ax) + at(y0 + 1, x0 + 1) * ax) * ay)
+
+
+def fill_planes(layer, ch, size):
+    """Linear rgb of a fill layer's channel for a size x size image: its value, or its texture."""
+    if has_texture(layer, ch.id):
+        return texture_planes(layer, ch, size).astype(np.float32)
+    return np.broadcast_to(np.array(fill_rgba(layer, ch.id)[:3], np.float32), (size, size, 3))
+
+
 def layer_planes(layer, ch, size):
     """(linear rgb, coverage) of a layer's channel: the image alpha x opacity x mask (0 when hidden) is the coverage. A
     folder is what its layers make together over nothing (or its frozen image: the same, within what the image stores)."""
@@ -1221,7 +1316,7 @@ def layer_planes(layer, ch, size):
     if layer.kind == 'FOLDER' and not layer.frozen:
         rgb, alpha = stack_planes(children(layer), ch, size)
     elif layer.kind == 'FILL':
-        rgb = np.broadcast_to(np.array(fill_rgba(layer, ch.id)[:3], np.float32), (size, size, 3))
+        rgb = fill_planes(layer, ch, size)
         alpha = np.ones((size, size), np.float32)
     else:
         px = pixels_of(e.image, size)
@@ -1541,9 +1636,10 @@ def copy_layer(mat, uid):
         new.name = unique_name(mat, src.name + " Copy")
         new.visible, new.opacity, new.blend, new.use_alpha = src.visible, src.opacity, src.blend, src.use_alpha
         new.paint_mask, new.expanded, new.frozen = src.paint_mask, src.expanded, src.frozen
+        new.uv_tiling, new.uv_rotation, new.uv_offset = src.uv_tiling, src.uv_rotation, src.uv_offset
         for ch in CHANNELS:
             a, b = entry_of(src, ch.id), entry_of(new, ch.id)
-            b.use, b.color, b.value = a.use, a.color, a.value
+            b.use, b.color, b.value, b.texture = a.use, a.color, a.value, a.texture
             if a.image is not None:
                 b.image = copy_image(a.image, image_name(mat, new, ch.label))
         for e in src.mask_stack:   # Paint images are copied; the blur caches are made again; baked maps are shared.
@@ -1721,9 +1817,10 @@ def convert_layer(mat, index, size):
         for ch in CHANNELS:
             e = entry_of(layer, ch.id)
             if e.use:
-                rgb = np.broadcast_to(np.array(fill_rgba(layer, ch.id)[:3], np.float32), (size, size, 3))
+                rgb = fill_planes(layer, ch, size)
                 e.image = make_channel_image(mat, layer, ch, size, opaque=True)
                 write_pixels(e.image, encode(ch, rgb))
+                e.texture = None
         layer.kind = 'PAINT'
     rebuild_all(mat)
 
@@ -2312,6 +2409,23 @@ class M3D_OT_layer_convert(_ActiveLayerOp, Operator):
         return _done(context, mat)
 
 
+class M3D_OT_layer_fill_reset(_ActiveLayerOp, Operator):
+    """Put the Tiling, Rotation and Offset of the active fill layer's textures back to their start"""
+    bl_idname = "m3d.layer_fill_reset"
+    bl_label = "Reset UV Transform"
+
+    @classmethod
+    def poll(cls, context):
+        return super().poll(context) and active_layer(mesh_of(context).active_material).kind == 'FILL'
+
+    def execute(self, context):
+        mat = self.material(context)
+        layer = active_layer(mat)
+        with muted():
+            layer.uv_tiling, layer.uv_rotation, layer.uv_offset = (1.0, 1.0), 0.0, (0.0, 0.0)
+        return _done(context, mat)
+
+
 # -----------------------------------------------------------------------------
 # UI list of the stack (top layer first)
 
@@ -2401,6 +2515,7 @@ classes = (
     M3D_OT_layer_merge_down,
     M3D_OT_layer_flatten,
     M3D_OT_layer_convert,
+    M3D_OT_layer_fill_reset,
     M3D_UL_layers,
     M3D_UL_mask_effects,
 )

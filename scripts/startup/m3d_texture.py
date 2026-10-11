@@ -279,6 +279,13 @@ class M3D_BrushMaterial(PropertyGroup):
                             description="Value painted into Metallic")
     emission: FloatVectorProperty(name="Emission", size=3, subtype='COLOR', min=0.0, max=1.0, default=(0.0, 0.0, 0.0),
                                   update=_brush_value_changed, description="Color painted into Emission")
+    # What the previews of Properties show: a scalar channel's value as a grey (read only).
+    swatch_height: FloatVectorProperty(name="Height", size=3, subtype='COLOR', get=lambda self: (self.height,) * 3,
+                                       description="Value painted into Height (0.5 is flat)")
+    swatch_roughness: FloatVectorProperty(name="Roughness", size=3, subtype='COLOR', get=lambda self: (self.roughness,) * 3,
+                                          description="Value painted into Roughness")
+    swatch_metallic: FloatVectorProperty(name="Metallic", size=3, subtype='COLOR', get=lambda self: (self.metallic,) * 3,
+                                         description="Value painted into Metallic")
 
 
 class M3D_TexSettings(PropertyGroup):
@@ -649,6 +656,19 @@ def stencil_toggle(brush):
     _tool_state["mapping"] = (brush.name, brush.texture_slot.map_mode, added)
     brush.texture_slot.map_mode = 'STENCIL'
     return True
+
+
+def set_stencil_texture(brush, texture):
+    """Make `texture` the stencil of the brush: its Texture, mapped as a Stencil (the mapping before is remembered, as
+    stencil_toggle does). None takes the stencil off."""
+    if texture is None:
+        if stencil_on(brush):
+            release_stencil(brush)
+        return
+    if not stencil_on(brush):
+        _tool_state["mapping"] = (brush.name, brush.texture_slot.map_mode, brush.texture is None)
+        brush.texture_slot.map_mode = 'STENCIL'
+    brush.texture = texture
 
 
 def release_stencil(brush):
@@ -2100,6 +2120,45 @@ class M3D_OT_tex_frame(Operator):
         return bpy.ops.view3d.view_selected() if ob is not None and ob.select_get() else bpy.ops.view3d.view_all(center=False)
 
 
+_fit = {"workspace": None, "seen": {}}   # the Texture workspace the 2D views were framed in; 2D view (pointer) -> {(image, size)} it framed
+
+
+def fit_view(win, area, region, space):
+    """Frame the whole image in a 2D view (image.view_all, fit)."""
+    try:
+        with bpy.context.temp_override(window=win, screen=win.screen, area=area, region=region, space_data=space):
+            bpy.ops.image.view_all(fit_view=True)
+    except RuntimeError:
+        pass   # (a timer that raises is removed: the view is framed with F instead)
+
+
+def follow(wm):
+    """Timer (m3d_workspace._follow_workspace): the 2D view of the Texture workspace frames its image (image.view_all, fit) when
+    the workspace opens, when a view is new, and the first time it shows an image (or one of another size, or none): Blender keeps
+    the view of each image (a new one is shown 1:1, a small square in a big empty area), so an image framed once keeps the
+    view you gave it when it comes back."""
+    win = wm.windows[0] if wm.windows else None
+    if win is None:
+        return
+    ws = win.workspace
+    if W.workspace_kind(ws) != 'TEXTURE':
+        _fit["workspace"] = None
+        return
+    if _fit["workspace"] != ws.name:
+        _fit["workspace"], _fit["seen"] = ws.name, {}
+    for area in win.screen.areas:
+        region = next((r for r in area.regions if r.type == 'WINDOW'), None) if area.type == 'IMAGE_EDITOR' else None
+        if region is None or region.width < 100 or region.height < 100:   # (no 2D view, or not drawn yet)
+            continue
+        space = area.spaces.active
+        image = space.image
+        token = (image.session_uid, L.image_size(image)) if image is not None else (0, (0, 0))
+        seen = _fit["seen"].setdefault(space.as_pointer(), set())
+        if token not in seen:
+            seen.add(token)
+            fit_view(win, area, region, space)
+
+
 class M3D_OT_tex_layout(Operator):
     """View layout: the 3D view and the 2D view side by side, or one of them on the whole window (the other panels are hidden
     while it is maximized)"""
@@ -2131,6 +2190,7 @@ class M3D_OT_tex_layout(Operator):
                 region = next(r for r in area.regions if r.type == 'WINDOW')
                 with context.temp_override(window=window, screen=window.screen, area=area, region=region):
                     bpy.ops.screen.screen_full_area(use_hide_panels=False)
+        _fit["seen"].clear()   # (the 2D view has another size now: it frames its image again)
         return {'FINISHED'}
 
 
@@ -2267,21 +2327,15 @@ def draw_material_toggles(layout, context, short=False):
     return row
 
 
-class PROPERTIES_PT_m3d_tx_material(_Page, Panel):
-    page = "tex_brushes"
-    bl_label = "Material"
-
-    @classmethod
-    def page_poll(cls, context):
-        return ready(context, 'PAINT') and props_context(context) == 'PAINT'
-
-    def draw(self, context):
-        layout = self.layout
-        if paint_layer_active(context) is None:
-            reason(layout, "Add a Paint Layer to paint several channels with one stroke")
-            return
-        brush = context.scene.m3d_tex.brush
-        draw_material_toggles(layout, context)
+def draw_material(layout, context, values=True):
+    """The brush material: the channel buttons and (`values`) a value for each channel that is on; or what to do first."""
+    if paint_layer_active(context) is None:
+        reason(layout, "Add a Paint Layer to paint several channels with one stroke")
+        return
+    brush = context.scene.m3d_tex.brush
+    row = draw_material_toggles(layout, context)
+    row.scale_y = 1.2
+    if values:
         col = layout.column(align=True)
         split_props(col)
         ibrush = image_brush(context)
@@ -2296,10 +2350,22 @@ class PROPERTIES_PT_m3d_tx_material(_Page, Panel):
                 col.prop(brush, cid.lower(), text=label, slider=True)
             else:
                 col.prop(brush, cid.lower(), text=label)
-        if not L.brush_channels(context):
-            reason(layout, "None on: the channel shown (C) is painted alone")
-        else:
-            reason(layout, "One stroke paints every channel that is on; the Eraser erases them all")
+    if not L.brush_channels(context):
+        reason(layout, "None on: the channel shown (C) is painted alone")
+    else:
+        reason(layout, "One stroke paints every channel that is on; the Eraser erases them all")
+
+
+class PROPERTIES_PT_m3d_tx_material(_Page, Panel):
+    page = "tex_brushes"
+    bl_label = "Material"
+
+    @classmethod
+    def page_poll(cls, context):
+        return ready(context, 'PAINT') and props_context(context) == 'PAINT'
+
+    def draw(self, context):
+        draw_material(self.layout, context)
 
 
 class PROPERTIES_PT_m3d_tx_projection(_Page, Panel):
@@ -2339,6 +2405,335 @@ class PROPERTIES_PT_m3d_tx_advanced(_BrushPage, Panel):
         split_props(self.layout)
         settings = paint_settings(context)
         brush_settings_advanced(self.layout.column(), context, settings, settings.brush, self.is_popover)
+
+
+# --- Properties - Paint: the sections for the tool (page tex_paint_props). Each control is a property of Blender's brush, of its
+# alpha (Texture Mask) or stencil (Texture) slot, or of the Project Paint settings; what Blender has no counterpart for is left out
+# (Stroke Opacity: Flow is the brush strength, and Accumulate says whether a stroke may go past it; Size and Flow jitter; the
+# alpha's Tangent and UV alignments: a stamp is always placed in screen space).
+
+PAINT_PAGE = "tex_paint_props"
+ALL_TOOLS = {'PAINT', 'ERASER', 'PROJECTION', 'POLYFILL', 'SMUDGE', 'CLONE', 'OTHER'}
+BRUSH_TOOLS_SET = ALL_TOOLS - {'POLYFILL'}   # the tools that have a brush section ('OTHER': a brush the strip has no tool for)
+
+
+def paint_tool(context):
+    """The tool the Paint sections follow: the tool of the strip, 'OTHER' for a brush that has none (Blur, Mask), None without a
+    texture brush."""
+    brush = image_brush(context)
+    return None if brush is None else tool_of(context) or 'OTHER'
+
+
+def unified(context, brush, flag):
+    """Where a brush setting lives: in the Unified Paint Settings when `flag` ("use_unified_size") is on, else in the brush."""
+    ups = paint_settings(context).unified_paint_settings
+    return ups if getattr(ups, flag) else brush
+
+
+class _PaintPage(_Page):
+    """A section of Properties - Paint (also of Properties - Mask while the mask is painted), drawn for the tools in `tools`."""
+    page = PAINT_PAGE
+    tools = ALL_TOOLS
+
+    @classmethod
+    def page_poll(cls, context):
+        return ready(context, 'PAINT') and paint_tool(context) in cls.tools
+
+
+class _PaintStock(_BrushPage):
+    """The same for a section made of one of Blender's brush panels (Clone, Cursor): its own poll comes with it."""
+    page = PAINT_PAGE
+    tools = BRUSH_TOOLS_SET
+
+    @classmethod
+    def page_poll(cls, context):
+        return super().page_poll(context) and paint_tool(context) in cls.tools
+
+
+def draw_swatches(layout, context):
+    """One swatch for each channel of the brush material: the brush color, the value of each scalar channel as a grey, the
+    emission color; the channels that are off are dimmed."""
+    brush, ibrush = context.scene.m3d_tex.brush, image_brush(context)
+    row = layout.row(align=True)
+    for cid, _text, _initial in MATERIAL_BUTTONS:
+        sub = row.row(align=True)
+        sub.active = getattr(brush, "use_" + cid.lower())
+        if cid == 'BASE_COLOR':
+            sub.prop(unified(context, ibrush, "use_unified_color"), "color", text="")
+        else:
+            sub.prop(brush, "swatch_" + cid.lower() if cid in L.SCALARS else cid.lower(), text="")
+
+
+def draw_previews(layout, context):
+    """The brush (its thumbnail from the brush library) with the name of the tool, and the material swatches."""
+    tool, name = paint_tool(context), brush_name(context)
+    icon = S.brush_icons(BRUSH_ASSET, [name]).get(name, 0) if name else 0
+    split = layout.split(factor=0.3)
+    if icon:
+        split.template_icon(icon_value=icon, scale=3.0)
+    else:
+        split.label(text="", icon='BRUSH_DATA')
+    col = split.column(align=True)
+    col.label(text=TOOL_BY_ID[tool][1] if tool in TOOL_BY_ID else name)
+    col.label(text=name)
+    if paint_layer_active(context) is not None and tool not in {'SMUDGE', 'CLONE'}:
+        draw_swatches(col, context)
+
+
+def draw_brush(layout, context):
+    """Size, Hardness, Flow (Accumulate), Spacing, Size Space; Angle, Follow Path and the jitters; the Project Paint options."""
+    split_props(layout)
+    brush, ipaint = image_brush(context), paint_settings(context)
+    ups = ipaint.unified_paint_settings
+    col = layout.column()
+    size_owner = unified(context, brush, "use_unified_size")
+    UnifiedPaintPanel.prop_unified(col, context, brush, "unprojected_size" if size_owner.use_locked_size == 'SCENE' else "size",
+                                   unified_paint_settings_override=ups, unified_name="use_unified_size",
+                                   pressure_name="use_pressure_size", text="Size", slider=True)
+    col.prop(brush, "hardness", slider=True)
+    UnifiedPaintPanel.prop_unified(col, context, brush, "strength", unified_paint_settings_override=ups,
+                                   unified_name="use_unified_strength", pressure_name="use_pressure_strength", text="Flow",
+                                   slider=True)
+    if brush.image_paint_capabilities.has_accumulate:
+        col.prop(brush, "use_accumulate", text="Accumulate")
+    row = col.row(align=True)
+    row.prop(brush, "spacing", slider=True)
+    row.prop(brush, "use_pressure_spacing", text="")
+    col.row().prop(size_owner, "use_locked_size", text="Size Space", expand=True)
+    slot = brush.mask_texture_slot if brush.mask_texture is not None else None
+    if slot is not None and slot.has_texture_angle:
+        col.prop(slot, "angle", text="Angle")
+        if slot.has_texture_angle_source:
+            col.prop(slot, "use_rake", text="Follow Path")
+    col.separator()
+    row = col.row(align=True)
+    row.prop(brush, "jitter" if brush.jitter_unit == 'BRUSH' else "jitter_absolute", text="Position Jitter", slider=True)
+    row.prop(brush, "use_pressure_jitter", text="")
+    if slot is not None and slot.has_texture_angle_source and brush.brush_capabilities.has_random_texture_angle:
+        col.prop(slot, "use_random", text="Angle Jitter")
+        if slot.use_random:
+            col.prop(slot, "random_angle", text="Amount")
+    col.separator()
+    col = layout.column(heading="Projection")
+    col.prop(ipaint, "use_occlude", text="Occlude")
+    col.prop(ipaint, "use_backface_culling", text="Backface Culling")
+    col.prop(ipaint, "use_normal_falloff", text="Normal Falloff")
+    sub = col.column()
+    sub.active = ipaint.use_normal_falloff
+    sub.prop(ipaint, "normal_angle", text="Falloff Angle")
+
+
+def draw_alpha_grid(layout, context, brush, stencil):
+    """The alpha library as small tiles: None, then every alpha. They give the brush its alpha (its Texture Mask), or with
+    `stencil` its stencil (its Texture, mapped as a Stencil)."""
+    names = S.alpha_names()
+    icons = S.alpha_icons(names)
+    texture = (brush.texture if stencil_on(brush) else None) if stencil else brush.mask_texture
+    active = texture.name if texture is not None else ""
+    flow = S.tile_grid(layout, context, columns=9)   # (None and the eight starter alphas in one row)
+    o = flow.operator("m3d.alpha_pick", text="None", depress=not active)
+    o.name, o.stencil = "", stencil
+    for name in names:
+        o = flow.operator("m3d.alpha_pick", text="" if name in icons else name, icon_value=icons.get(name, 0), depress=active == name)
+        o.name, o.stencil = name, stencil
+
+
+def draw_alpha(layout, context):
+    """The alpha of the brush (its Texture Mask): thumbnail, name, Load Alpha, how it is placed, and the library to pick from."""
+    brush = image_brush(context)
+    texture = brush.mask_texture
+    icon = S.alpha_icons([texture.name]).get(texture.name, 0) if texture is not None else 0
+    row = layout.row(align=True)
+    if icon:
+        row.template_icon(icon_value=icon, scale=3.0)
+    col = row.column(align=True)
+    col.label(text=texture.name if texture is not None else "No alpha: a soft round dab")
+    sub = col.row(align=True)
+    sub.operator("m3d.alpha_load", text="Load Alpha...", icon='FILE_FOLDER').stencil = False
+    if texture is not None:
+        o = sub.operator("m3d.alpha_pick", text="", icon='X')
+        o.name, o.stencil = "", False
+        sub = col.row(align=True)   # Camera: the stamp is laid over the screen (Blender's View Plane mapping)
+        for mode, text in (('VIEW_PLANE', "Camera"), ('TILED', "Tiled"), ('RANDOM', "Random"), ('STENCIL', "Stencil")):
+            sub.prop_enum(brush.mask_texture_slot, "mask_map_mode", mode, text=text)
+    draw_alpha_grid(layout, context, brush, False)
+
+
+def draw_stencil(layout, context):
+    """The stencil: the brush's Texture mapped in screen space. S shows it, RMB moves, Shift+RMB scales, Ctrl+RMB turns it."""
+    brush = image_brush(context)
+    on = stencil_on(brush)
+    row = layout.row(align=True)
+    row.operator("m3d.tex_stencil", text="Stencil", icon='IMAGE_PLANE', depress=on)
+    sub = row.row(align=True)
+    sub.enabled = on
+    sub.operator("brush.stencil_reset_transform", text="Reset").mask = False
+    sub.operator("brush.stencil_fit_image_aspect", text="Fit").mask = False
+    col = layout.column()
+    split_props(col)
+    col.prop(brush, "texture_overlay_alpha", text="Opacity", slider=True)
+    draw_alpha_grid(layout, context, brush, True)
+    layout.operator("m3d.alpha_load", text="Load Stencil...", icon='FILE_FOLDER').stencil = True
+    reason(layout, "S: show it. RMB moves, Shift+RMB scales, Ctrl+RMB turns it")
+
+
+def draw_advanced(layout, context):
+    """What a stroke is made of (method, falloff, stabilizer, input samples), the seams and dithering, and the settings of the
+    brushes that have their own (Blur, Mask)."""
+    split_props(layout)
+    brush, ipaint = image_brush(context), paint_settings(context)
+    col = layout.column()
+    col.prop(brush, "stroke_method")
+    if brush.stroke_method == 'AIRBRUSH':
+        col.prop(brush, "rate", slider=True)
+    if brush.image_paint_capabilities.has_space_attenuation:
+        col.prop(brush, "use_space_attenuation")
+    if brush.brush_capabilities.has_smooth_stroke:
+        col.prop(brush, "smooth_stroke_factor", text="Stabilizer", slider=True)
+    col.prop(brush, "curve_distance_falloff_preset", text="Falloff")
+    if brush.curve_distance_falloff_preset == 'CUSTOM':
+        layout.template_curve_mapping(brush, "curve_distance_falloff", brush=True, use_negative_slope=True, show_presets=True)
+    UnifiedPaintPanel.prop_unified(col, context, brush, "input_samples", unified_paint_settings_override=ipaint.unified_paint_settings,
+                                   unified_name="use_unified_input_samples", slider=True)
+    col.prop(ipaint, "seam_bleed")
+    col.prop(ipaint, "dither", slider=True)
+    col.prop(ipaint, "use_cavity", text="Cavity Mask")
+    if ipaint.use_cavity:
+        layout.template_curve_mapping(ipaint, "cavity_curve", brush=True)
+    if brush.image_brush_type == 'SOFTEN':
+        col.row().prop(brush, "direction", expand=True)
+        col.prop(brush, "sharp_threshold")
+        col.prop(brush, "blur_mode")
+    elif brush.image_brush_type == 'MASK':
+        col.prop(brush, "weight", text="Mask Value", slider=True)
+
+
+class PROPERTIES_PT_m3d_tx_pp_canvas(_Page, Panel):
+    page = PAINT_PAGE
+    bl_label = "Canvas"
+    bl_order = 19
+
+    @classmethod
+    def page_poll(cls, context):
+        mat = mesh_of(context).active_material if ready(context, 'PAINT') else None
+        return mat is not None and not paint_slots(mat) and not len(mat.m3d_layers)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="No paint slots yet")
+        layout.prop(context.scene.m3d_tex, "resolution")
+        layout.operator("m3d.tex_channel", text="Add Base Color", icon='ADD').channel = 'BASE_COLOR'
+
+
+class PROPERTIES_PT_m3d_tx_pp_preview(_PaintPage, Panel):
+    bl_label = "Preview"
+    bl_options = {'HIDE_HEADER'}
+    bl_order = 20
+
+    def draw(self, context):
+        draw_previews(self.layout, context)
+
+
+class PROPERTIES_PT_m3d_tx_pp_projection(_PaintPage, Panel):
+    """The Projection tool is a stencil: its section comes first."""
+    bl_label = "Projection"
+    bl_order = 21
+    tools = {'PROJECTION'}
+
+    def draw(self, context):
+        draw_stencil(self.layout, context)
+
+
+class PROPERTIES_PT_m3d_tx_pp_polyfill(_PaintPage, Panel):
+    bl_label = "Polygon Fill"
+    bl_order = 21
+    tools = {'POLYFILL'}
+
+    def draw(self, context):
+        layout = self.layout
+        layout.row().prop(context.scene.m3d_tex, "fill_mode", expand=True)
+        reason(layout, "Click the model: the polygon, UV island or mesh is filled with the material")
+
+
+class PROPERTIES_PT_m3d_tx_pp_brush(_PaintPage, Panel):
+    bl_label = "Brush"
+    bl_options = {'DEFAULT_CLOSED'}   # (the toolbar has the controls used all the time)
+    bl_order = 22
+    tools = BRUSH_TOOLS_SET
+
+    def draw(self, context):
+        draw_brush(self.layout, context)
+
+
+class PROPERTIES_PT_m3d_tx_pp_alpha(_PaintPage, Panel):
+    bl_label = "Alpha"
+    bl_order = 23
+    tools = {'PAINT', 'ERASER', 'OTHER'}
+
+    def draw(self, context):
+        draw_alpha(self.layout, context)
+
+
+class PROPERTIES_PT_m3d_tx_pp_stencil(_PaintPage, Panel):
+    bl_label = "Stencil"
+    bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 24
+    tools = {'PAINT', 'ERASER', 'OTHER'}
+
+    def draw(self, context):
+        draw_stencil(self.layout, context)
+
+
+class PROPERTIES_PT_m3d_tx_pp_clone(_PaintStock, ClonePanel, Panel):
+    bl_order = 25
+
+
+class PROPERTIES_PT_m3d_tx_pp_material(_PaintPage, Panel):
+    bl_label = "Material"
+    bl_order = 26
+    tools = {'PAINT', 'ERASER', 'PROJECTION', 'POLYFILL'}
+
+    @classmethod
+    def page_poll(cls, context):
+        return super().page_poll(context) and props_context(context) == 'PAINT'
+
+    def draw(self, context):
+        draw_material(self.layout, context, values=paint_tool(context) != 'ERASER')
+
+
+class PROPERTIES_PT_m3d_tx_pp_gray(_PaintPage, Panel):
+    """What painting a mask paints: its grays, the brush colors (X swaps them)."""
+    bl_label = "Grayscale"
+    bl_order = 26
+    tools = {'PAINT', 'ERASER', 'PROJECTION', 'POLYFILL'}
+
+    @classmethod
+    def page_poll(cls, context):
+        return super().page_poll(context) and props_context(context) == 'MASK'
+
+    def draw(self, context):
+        layout = self.layout
+        brush = image_brush(context)
+        row = layout.row(align=True)
+        row.prop(unified(context, brush, "use_unified_color"), "color", text="")
+        row.prop(unified(context, brush, "use_unified_color"), "secondary_color", text="")
+        row.operator("paint.brush_colors_flip", icon='ARROW_LEFTRIGHT', text="")
+        reason(layout, "White shows the layer, black hides it")
+
+
+class PROPERTIES_PT_m3d_tx_pp_advanced(_PaintPage, Panel):
+    bl_label = "Advanced"
+    bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 27
+    tools = BRUSH_TOOLS_SET
+
+    def draw(self, context):
+        draw_advanced(self.layout, context)
+
+
+class PROPERTIES_PT_m3d_tx_pp_cursor(_PaintStock, DisplayPanel, Panel):
+    bl_label = "Cursor"
+    bl_order = 28
 
 
 # --- Layers: the stack, the active layer, its mask; the channels
@@ -2521,6 +2916,67 @@ class M3D_MT_mask_add(Menu):
             add(kind)
 
 
+def draw_mask_stack(layout, context, mat, layer, explain=True):
+    """The mask of a layer: how it works (`explain`; always while it has no effects), its effects (list, order, add, remove, save),
+    Paint Mask, Show Mask, Rebake Maps, Invert. False when it has no effects yet (the buttons to make one are drawn)."""
+    if explain or not layer.mask_stack:
+        first, _dot, second = MASK_HELP.partition(". ")   # (two lines: the dock can be narrow)
+        reason(layout, first + ".")
+        layout.label(text=second)
+    if not layer.mask_stack:
+        row = layout.row(align=True)
+        row.operator("m3d.layer_mask_add", text="White (Show All)", icon='ADD').fill = 'WHITE'
+        row.operator("m3d.layer_mask_add", text="Black (Hide All)", icon='ADD').fill = 'BLACK'
+        layout.menu("M3D_MT_mask_add", icon='ADD')
+        reason(layout, "No mask: the layer shows everywhere")
+        return False
+    row = layout.row()
+    row.template_list("M3D_UL_mask_effects", "", layer, "mask_stack", layer, "mask_index", rows=4,
+                      sort_reverse=True, sort_lock=True)
+    col = row.column(align=True)
+    col.operator("m3d.mask_effect_move", text="", icon='TRIA_UP').delta = 1
+    col.operator("m3d.mask_effect_move", text="", icon='TRIA_DOWN').delta = -1
+    col.separator()
+    col.operator("m3d.mask_effect_duplicate", text="", icon='DUPLICATE')
+    col.operator("m3d.mask_effect_remove", text="", icon='TRASH')
+    row = layout.row(align=True)
+    row.menu("M3D_MT_mask_add", icon='ADD')
+    row.operator("m3d.library_save", text="", icon='ASSET_MANAGER').kind = 'MASK'
+    row = layout.row(align=True)
+    row.operator("m3d.layer_paint_mask", text="Paint Mask", icon='BRUSH_DATA', depress=layer.paint_mask)
+    row.prop(mat, "m3d_show_mask", text="Show Mask", toggle=True, icon='HIDE_OFF')
+    row = layout.row(align=True)
+    row.operator("m3d.mask_rebake", icon='FILE_REFRESH')
+    row.operator("m3d.layer_mask_invert", icon='ARROW_LEFTRIGHT',
+                 depress=layer.mask_stack[len(layer.mask_stack) - 1].kind == 'INVERT')
+    row.operator("m3d.layer_mask_remove", text="", icon='X')
+    for e, key in MK.missing_maps(layer):
+        reason(layout, "%s needs the %s map: Rebake maps" % (e.name, MK.MAP_LABELS[key]))
+    return True
+
+
+def draw_effect(layout, effect):
+    """The settings of a mask effect (its kind decides which: MK.PARAM_UI), and a note on what it does."""
+    col = layout.column()
+    split_props(col)
+    if effect.kind in {'PAINT', 'BLUR'} and effect.image is not None:
+        w, h = L.image_size(effect.image)
+        col.label(text="%s  %d x %d" % (effect.image.name, w, h), icon='IMAGE_DATA')
+    for prop, label in MK.PARAM_UI.get(effect.kind, ()):
+        col.prop(effect, prop, text=label, slider=prop not in {"direction", "space", "invert", "seed", "color"})
+    if effect.kind == 'PAINT':
+        reason(col, "Turn on Paint Mask to paint it")
+    elif effect.kind == 'BLUR':
+        reason(col, "Blurs the stack below; it follows brush strokes after a moment")
+    elif effect.kind == 'INVERT':
+        reason(col, "Opacity sets how much is swapped")
+    elif effect.kind == 'COLORID':
+        ids = MK.id_colors(effect.image)
+        for name in list(ids)[:12]:
+            col.operator("m3d.mask_id_pick", text=name, icon='COLOR').name = name
+        reason(col, "Pick a colour, or the one of the ID map in the picker" if ids else "Bake the ID map first (Rebake Maps)")
+
+
 class PROPERTIES_PT_m3d_tx_mask(_Page, Panel):
     page = "tex_mask"
     bl_label = "Mask"
@@ -2531,65 +2987,138 @@ class PROPERTIES_PT_m3d_tx_mask(_Page, Panel):
         return ready(context, 'PAINT') and has_active_layer(mesh_of(context).active_material)
 
     def draw(self, context):
-        layout = self.layout
         mat = mesh_of(context).active_material
         layer = active_layer(mat)
-        layout = frozen_banner(layout, mat, layer)
-        first, _dot, second = MASK_HELP.partition(". ")   # (two lines: the dock can be narrow)
-        reason(layout, first + ".")
-        layout.label(text=second)
-        if not layer.mask_stack:
-            row = layout.row(align=True)
-            row.operator("m3d.layer_mask_add", text="White (Show All)", icon='ADD').fill = 'WHITE'
-            row.operator("m3d.layer_mask_add", text="Black (Hide All)", icon='ADD').fill = 'BLACK'
-            layout.menu("M3D_MT_mask_add", icon='ADD')
-            reason(layout, "No mask: the layer shows everywhere")
+        layout = frozen_banner(self.layout, mat, layer)
+        if not draw_mask_stack(layout, context, mat, layer):
             return
-        row = layout.row()
-        row.template_list("M3D_UL_mask_effects", "", layer, "mask_stack", layer, "mask_index", rows=4,
-                          sort_reverse=True, sort_lock=True)
-        col = row.column(align=True)
-        col.operator("m3d.mask_effect_move", text="", icon='TRIA_UP').delta = 1
-        col.operator("m3d.mask_effect_move", text="", icon='TRIA_DOWN').delta = -1
-        col.separator()
-        col.operator("m3d.mask_effect_duplicate", text="", icon='DUPLICATE')
-        col.operator("m3d.mask_effect_remove", text="", icon='TRASH')
-        layout.menu("M3D_MT_mask_add", icon='ADD')
-        layout.operator("m3d.library_save", text="Save to Library", icon='ASSET_MANAGER').kind = 'MASK'
-        row = layout.row(align=True)
-        row.operator("m3d.layer_paint_mask", text="Paint Mask", icon='BRUSH_DATA', depress=layer.paint_mask)
-        row.prop(mat, "m3d_show_mask", text="Show Mask", toggle=True, icon='HIDE_OFF')
-        row = layout.row(align=True)
-        row.operator("m3d.mask_rebake", icon='FILE_REFRESH')
-        row.operator("m3d.layer_mask_invert", icon='ARROW_LEFTRIGHT',
-                     depress=layer.mask_stack[len(layer.mask_stack) - 1].kind == 'INVERT')
-        row.operator("m3d.layer_mask_remove", text="", icon='X')
-        for e, key in MK.missing_maps(layer):
-            reason(layout, "%s needs the %s map: Rebake maps" % (e.name, MK.MAP_LABELS[key]))
         effect = L.active_effect(layer)
         if effect is None:
             return
         box = layout.box()
+        box.label(text=effect.name, icon=MK.KIND_BY_ID[effect.kind].icon)
+        draw_effect(box, effect)
+
+
+# --- Properties - Fill, Folder and Mask: the layer's own sections (pages tex_fill_props, tex_folder_props, tex_mask_props)
+
+FILL_PAGE, FOLDER_PAGE, MASK_PAGE = "tex_fill_props", "tex_folder_props", "tex_mask_props"
+FILL_BUTTONS = (*MATERIAL_BUTTONS, ('NORMAL', "nrm", "N"))   # the channels a fill layer can have: the brush material's, and Normal
+EFFECT_TYPES = {'PAINT': "Paint", 'FILL': "Fill", 'EDGES': "Generator", 'CAVITY': "Generator", 'TOPDOWN': "Generator",
+                'THICKNESS': "Generator", 'NOISE': "Generator", 'COLORID': "Generator", 'LEVELS': "Levels", 'BLUR': "Filter",
+                'INVERT': "Filter", 'SHARPEN': "Filter"}
+
+
+class _LayerPage(_Page):
+    """A section for the active layer."""
+    @classmethod
+    def page_poll(cls, context):
+        return ready(context, 'PAINT') and has_active_layer(mesh_of(context).active_material)
+
+
+def draw_fill(layout, layer):
+    """Fill: the projection (UV: a texture follows the UV map) and the UV transform of the layer's textures."""
+    col = layout.column(align=True)
+    col.active = any(L.has_texture(layer, ch.id) for ch in CHANNELS)
+    for prop, text in (("uv_tiling", "Tiling"), ("uv_rotation", "Rotation"), ("uv_offset", "Offset")):
+        split = col.split(factor=0.3, align=True)
+        split.label(text=text)
+        split.row(align=True).prop(layer, prop, text="")   # (the two numbers of Tiling and Offset side by side)
+    layout.operator("m3d.layer_fill_reset", icon='LOOP_BACK')
+    reason(layout, "UV projection: textures follow the UV map")
+
+
+def draw_fill_material(layout, layer):
+    """Material of a fill layer: a button for each channel it can have, then for each channel it has the value, or the texture
+    that replaces it."""
+    row = layout.row(align=True)
+    row.scale_y = 1.2
+    for cid, text, _initial in FILL_BUTTONS:
+        row.prop(entry_of(layer, cid), "use", text=text, toggle=True)
+    for cid, _text, _initial in FILL_BUTTONS:
+        e = entry_of(layer, cid)
+        if not e.use:
+            continue
+        ch = CHANNEL_BY_ID[cid]
+        layout.separator(factor=0.5)
+        col = layout.column(align=True)
+        sub = col.column(align=True)
+        sub.active = e.texture is None
+        if cid == 'NORMAL':
+            sub.label(text="Normal: flat")
+        elif cid in L.SCALARS:
+            sub.prop(e, "value", text=ch.label, slider=True)
+        else:
+            sub.prop(e, "color", text=ch.label)
+        col.template_ID(e, "texture", open="image.open")
+    reason(layout, "A texture replaces the value of its channel")
+
+
+class PROPERTIES_PT_m3d_tx_fl_fill(_LayerPage, Panel):
+    page = FILL_PAGE
+    bl_label = "Fill"
+    bl_order = 20
+
+    def draw(self, context):
+        mat = mesh_of(context).active_material
+        draw_fill(frozen_banner(self.layout, mat, active_layer(mat)), active_layer(mat))
+
+
+class PROPERTIES_PT_m3d_tx_fl_material(_LayerPage, Panel):
+    page = FILL_PAGE
+    bl_label = "Material"
+    bl_order = 21
+
+    def draw(self, context):
+        mat = mesh_of(context).active_material
+        draw_fill_material(frozen_banner(self.layout, mat, active_layer(mat)), active_layer(mat))
+
+
+class PROPERTIES_PT_m3d_tx_fd_folder(_LayerPage, Panel):
+    page = FOLDER_PAGE
+    bl_label = "Folder"
+    bl_order = 10
+
+    def draw(self, context):
+        mat = mesh_of(context).active_material
+        layer = active_layer(mat)
+        layout = frozen_banner(self.layout, mat, layer)
+        split_props(layout)
+        draw_folder(layout, layer)
+
+
+class PROPERTIES_PT_m3d_tx_mk_stack(_LayerPage, Panel):
+    page = MASK_PAGE
+    bl_label = "Mask"
+    bl_order = 11
+
+    def draw(self, context):
+        mat = mesh_of(context).active_material
+        layer = active_layer(mat)
+        draw_mask_stack(frozen_banner(self.layout, mat, layer), context, mat, layer, explain=False)
+
+
+class PROPERTIES_PT_m3d_tx_mk_effect(_LayerPage, Panel):
+    """The selected effect: its name and type, then its settings."""
+    page = MASK_PAGE
+    bl_label = "Effect"
+    bl_order = 12
+
+    @classmethod
+    def page_poll(cls, context):
+        return super().page_poll(context) and L.active_effect(active_layer(mesh_of(context).active_material)) is not None
+
+    def draw(self, context):
+        mat = mesh_of(context).active_material
+        layer = active_layer(mat)
+        layout = frozen_banner(self.layout, mat, layer)
+        effect = L.active_effect(layer)
         kind = MK.KIND_BY_ID[effect.kind]
-        box.label(text=effect.name, icon=kind.icon)
-        col = box.column()
-        split_props(col)
-        if effect.kind in {'PAINT', 'BLUR'} and effect.image is not None:
-            w, h = L.image_size(effect.image)
-            col.label(text="%s  %d x %d" % (effect.image.name, w, h), icon='IMAGE_DATA')
-        for prop, label in MK.PARAM_UI.get(effect.kind, ()):
-            col.prop(effect, prop, text=label, slider=prop not in {"direction", "space", "invert", "seed", "color"})
-        if effect.kind == 'PAINT':
-            reason(col, "Turn on Paint Mask to paint it")
-        elif effect.kind == 'BLUR':
-            reason(col, "Blurs the stack below; it follows brush strokes after a moment")
-        elif effect.kind == 'INVERT':
-            reason(col, "Opacity sets how much is swapped")
-        elif effect.kind == 'COLORID':
-            ids = MK.id_colors(effect.image)
-            for name in list(ids)[:12]:
-                col.operator("m3d.mask_id_pick", text=name, icon='COLOR').name = name
-            reason(col, "Pick a colour, or the one of the ID map in the picker" if ids else "Bake the ID map first (Rebake Maps)")
+        split_props(layout)
+        layout.prop(effect, "name", text="", icon=kind.icon)
+        kind_text = EFFECT_TYPES[effect.kind]
+        layout.label(text=kind_text if kind_text == kind.label else "%s: %s" % (kind_text, kind.label))
+        draw_effect(layout, effect)
 
 
 class PROPERTIES_PT_m3d_tx_channels(_Page, Panel):
@@ -3157,7 +3686,6 @@ PAGE_NEEDS = {"tex_brushes": 'PAINT', "tex_layers": 'PAINT', "tex_brush": 'PAINT
 # The old layout's pages: the tray, and the Layers tab with the panels the new layout spreads over its editors.
 OLD_PAGES = {"tex_layers": {"tex_layers", "tex_layer", "tex_mask", "tex_settings"},
              "tex_brushes": {"tex_brushes", "tex_brush_grid"}, "tex_library": {"tex_library", "tex_assets"}}
-BRUSH_PAGES = {"tex_props", "tex_brushes", "tex_brush"}
 PROPS_TITLES = {'PAINT': "Paint", 'FILL': "Fill", 'MASK': "Mask", 'FOLDER': "Folder", 'LAYER': "Layer"}
 
 
@@ -3179,13 +3707,15 @@ def props_context(context):
 
 
 def props_pages(context):
+    """The pages Properties draws for what is selected: Paint (the tool's sections), Fill, Folder (with its mask), Mask (with the
+    Paint sections while the mask is painted), or the layer's own settings."""
     kind = props_context(context)
     if kind == 'PAINT':
-        return set(BRUSH_PAGES)
+        return {PAINT_PAGE}
     if kind == 'MASK':
         layer = active_layer(mesh_of(context).active_material)
-        return {"tex_mask", *(BRUSH_PAGES if layer.paint_mask else ())}
-    return {"tex_layer"}
+        return {MASK_PAGE, *({PAINT_PAGE} if layer.paint_mask else ())}
+    return {'FILL': {FILL_PAGE}, 'FOLDER': {FOLDER_PAGE, MASK_PAGE}}.get(kind, {"tex_layer"})
 
 
 def pages_new(context, active):
@@ -3284,10 +3814,39 @@ def draw_brush_controls(layout, context, brush, tier):
     sub.prop(brush, "smooth_stroke_radius", text="Distance" if tier == 2 else "", slider=True)
 
 
+def draw_stencil_controls(layout, brush, tier):
+    """Projection: the display opacity of the stencil, Reset and Fit (S shows it; RMB, Shift+RMB and Ctrl+RMB place it)."""
+    row = layout.row(align=True)
+    if tier:
+        sub = row.row(align=True)
+        sub.ui_units_x = 6.5
+        sub.prop(brush, "texture_overlay_alpha", text="Stencil", slider=True)
+    row.operator("brush.stencil_reset_transform", text="Reset" if tier == 2 else "", icon='LOOP_BACK').mask = False
+    row.operator("brush.stencil_fit_image_aspect", text="Fit" if tier == 2 else "", icon='FULLSCREEN_ENTER').mask = False
+
+
+def draw_fill_controls(layout, layer, tier):
+    """A fill layer is selected: the UV transform of its textures (Tiling, Rotation, Offset) and Reset."""
+    for prop, text, units in (("uv_tiling", "Tiling", 9), ("uv_rotation", "Rotation", 7), ("uv_offset", "Offset", 9)):
+        row = layout.row(align=True)
+        row.ui_units_x = units if tier else units - 3
+        row.prop(layer, prop, text=text if tier == 2 else "")
+    layout.operator("m3d.layer_fill_reset", text="Reset" if tier == 2 else "", icon='LOOP_BACK')
+
+
+def fill_selected(context):
+    """Is a fill layer the active layer, with no painting of its mask? Its UV transform is then the toolbar's (the brush has no
+    canvas on it)."""
+    ob = mesh_of(context)
+    mat = ob.active_material if ob is not None else None
+    layer = active_layer(mat) if mat is not None and principled_of(mat) is not None else None
+    return layer is not None and layer.kind == 'FILL' and not layer.paint_mask and ready(context, 'PAINT')
+
+
 def draw_status_line(layout, context):
     """Texture context toolbar: file buttons, modes, the controls of the active tool (Size, Flow, Spacing, Lazy Mouse; the Fill
-    mode for Polygon Fill), Symmetry; on the right the view layout, perspective / orthographic, Bake Mesh Maps, Export Textures,
-    the workspace picker."""
+    mode for Polygon Fill, the stencil for Projection; the UV transform when a fill layer is selected), Symmetry; on the right the
+    view layout, perspective / orthographic, Bake Mesh Maps, Export Textures, the workspace picker."""
     from m3d_ui import _call, draw_file_buttons, draw_workspace_picker
     draw_file_buttons(layout)
     row = layout.row(align=True)
@@ -3300,17 +3859,23 @@ def draw_status_line(layout, context):
     ob = mesh_of(context)
     tier = header_tier(context)
     brush = image_brush(context) if ob is not None and context.mode == 'PAINT_TEXTURE' else None
-    if brush is not None:
+    if ob is not None and fill_selected(context):
+        layout.label(text="Fill Layer" if tier == 2 else "", icon='COLOR')
+        draw_fill_controls(layout, active_layer(ob.active_material), tier)
+    elif brush is not None:
         tool = tool_of(context)
         layout.label(text=TOOL_BY_ID[tool][1] if tool else brush_name(context), icon=TOOL_BY_ID[tool][3] if tool else 'BRUSH_DATA')
         if tool == 'POLYFILL':
             layout.row(align=True).prop(context.scene.m3d_tex, "fill_mode", expand=True)
         elif tool != 'PICKER':
             draw_brush_controls(layout, context, brush, tier)
+        if tool == 'PROJECTION':
+            draw_stencil_controls(layout, brush, tier)
         if tool in {'PAINT', 'ERASER', 'PROJECTION', 'POLYFILL'} and paint_layer_active(context) is not None:
             draw_material_toggles(layout, context, short=tier < 2)   # (Smudge and Clone work on one channel)
     if ob is not None:
         row = layout.row(align=True)
+        row.label(text="Symmetry" if tier == 2 else "", icon='MOD_MIRROR')
         for axis in "xyz":
             row.prop(ob.data, "use_mirror_" + axis, text=axis.upper(), toggle=True)
 
@@ -3399,10 +3964,27 @@ classes = (
     PROPERTIES_PT_m3d_tx_projection,
     PROPERTIES_PT_m3d_tx_more,
     PROPERTIES_PT_m3d_tx_advanced,
+    PROPERTIES_PT_m3d_tx_pp_canvas,
+    PROPERTIES_PT_m3d_tx_pp_preview,
+    PROPERTIES_PT_m3d_tx_pp_projection,
+    PROPERTIES_PT_m3d_tx_pp_polyfill,
+    PROPERTIES_PT_m3d_tx_pp_brush,
+    PROPERTIES_PT_m3d_tx_pp_alpha,
+    PROPERTIES_PT_m3d_tx_pp_stencil,
+    PROPERTIES_PT_m3d_tx_pp_clone,
+    PROPERTIES_PT_m3d_tx_pp_material,
+    PROPERTIES_PT_m3d_tx_pp_gray,
+    PROPERTIES_PT_m3d_tx_pp_advanced,
+    PROPERTIES_PT_m3d_tx_pp_cursor,
     PROPERTIES_PT_m3d_tx_stack,
     PROPERTIES_PT_m3d_tx_layer,
     M3D_MT_mask_add,
     PROPERTIES_PT_m3d_tx_mask,
+    PROPERTIES_PT_m3d_tx_fl_fill,
+    PROPERTIES_PT_m3d_tx_fl_material,
+    PROPERTIES_PT_m3d_tx_fd_folder,
+    PROPERTIES_PT_m3d_tx_mk_stack,
+    PROPERTIES_PT_m3d_tx_mk_effect,
     PROPERTIES_PT_m3d_tx_channels,
     PROPERTIES_PT_m3d_tx_maps,
     PROPERTIES_PT_m3d_tx_slots,

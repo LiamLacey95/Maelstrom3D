@@ -5873,7 +5873,7 @@ def tex3_assets_check():
     check(window().workspace.m3d_page_right == "tex_layers" and not tracebacks(), "the dock shows the Layers; no Python error")
     roles = tex_roles()
     with bpy.context.temp_override(window=window(), area=roles["props"]):
-        check("tex_layer" in m3d_workspace.pages_shown(bpy.context), "Properties - Fill shows the layer's settings (%s)" % sorted(m3d_workspace.pages_shown(bpy.context)))
+        check(m3d_texture.FILL_PAGE in m3d_workspace.pages_shown(bpy.context), "Properties - Fill shows the fill page (%s)" % sorted(m3d_workspace.pages_shown(bpy.context)))
     check(m3d_texture.props_context(bpy.context) == 'FILL', "the title says Fill")
     press_ok("m3d.tex_set", _area=roles["sets"], object="Crate3", material=tex_mat().name)
     sets = m3d_texture.texture_sets(bpy.context)
@@ -5961,6 +5961,424 @@ def tex3_old_layout_check():
     window().workspace.m3d_layout = 1
     for a in window().screen.areas:
         a.tag_redraw()
+
+
+# ----------------------------------------------------------------------------------------------------
+# Phase 3d: Properties in the real window: the sections of each context and tool, an alpha picked in the Alpha section that changes a
+# stroke, a fill layer's UV transform that changes the 3D view, the 2D view framing its image (F4, F, another size).
+
+TEX4 = {}
+TEX4_PP = "PROPERTIES_PT_m3d_tx_"
+
+
+def tex4_redraw():
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+def tex4_sections():
+    """The sections the Properties editor draws now: each panel's poll, asked in that editor."""
+    area = tex_roles()["props"]
+    region = next(r for r in area.regions if r.type == 'WINDOW')
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=area, region=region, space_data=area.spaces.active):
+        return {c.__name__[len(TEX4_PP):] for c in m3d_texture.classes if hasattr(c, "page") and hasattr(c, "poll") and c.poll(bpy.context)}
+
+
+def tex4_dock():
+    return tex_roles()["dock"]
+
+
+def tex4_2d():
+    area = next(a for a in window().screen.areas if a.type == 'IMAGE_EDITOR')
+    return area, next(r for r in area.regions if r.type == 'WINDOW'), area.spaces.active
+
+
+def tex4_fit():
+    """How much of its 2D view the image fills (the larger of the two ratios): near 1 when it is framed."""
+    _area, region, space = tex4_2d()
+    if space.image is None or region.width < 100:
+        return 0.0
+    x0, y0 = region.view2d.view_to_region(0.0, 0.0, clip=False)   # (the image is 0..1 in the view)
+    x1, y1 = region.view2d.view_to_region(1.0, 1.0, clip=False)
+    return max(abs(x1 - x0) / region.width, abs(y1 - y0) / region.height)
+
+
+def tex4_view_pixels():
+    """The 3D view as drawn: its pixels (rgb, one row after the other)."""
+    view, region = tex_view()
+    path = os.path.join(tempfile.gettempdir(), "m3d_tex4_view.png")
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=view, region=region):
+        bpy.ops.screen.screenshot_area(filepath=path)
+    image = bpy.data.images.load(path)
+    px = np.empty(len(image.pixels), np.float32)
+    image.pixels.foreach_get(px)
+    size = tuple(image.size)
+    bpy.data.images.remove(image)
+    if os.environ.get("M3D_GUI_DUMP"):   # (looking at what the test sees)
+        TEX4["dumps"] = TEX4.get("dumps", 0) + 1
+        import shutil
+        shutil.copy(path, os.path.join(os.environ["M3D_GUI_DUMP"], "view_%02d.png" % TEX4["dumps"]))
+    return px.reshape(-1, 4)[:, :3].copy()
+
+
+def tex4_changed(a, b):
+    """The share of the pixels that differ visibly between two looks of the 3D view."""
+    return float((np.abs(a - b).max(axis=1) > 0.04).mean())
+
+
+def tex4_settled(base):
+    """True when the 3D view differs from `base` and has stopped changing (two looks in a row are the same)."""
+    now = tex4_view_pixels()
+    before, TEX4["look"] = TEX4.get("look"), now
+    return before is not None and before.shape == now.shape and tex4_changed(now, base) > 0.02 and tex4_changed(now, before) < 0.0005
+
+
+@step
+def tex4_enter():
+    lb_sandbox()   # (alphas and thumbnails of this run in temporary folders: a no-op when the Library tests made them)
+    if window().workspace.name != "Texture":
+        bpy.ops.m3d.workspace(kind='TEXTURE')
+
+
+step(wait_until(lambda: window().workspace.name == "Texture" and len([a for a in window().screen.areas if a.type == 'IMAGE_EDITOR']) == 1, "the Texture workspace for the Properties tests", tries=20))
+
+
+@step
+def tex4_setup():
+    # A clean scene: a cube with a material and a Paint Layer, the Paint tool, Properties on Auto.
+    if bpy.context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    for ob in list(bpy.data.objects):
+        bpy.data.objects.remove(ob)
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.m3d.add_primitive(kind='CUBE')
+    bpy.context.active_object.name = "Props4"
+    view, region = tex_view()
+    with bpy.context.temp_override(window=win, area=view, region=region):
+        bpy.ops.view3d.view_all(center=True)   # (the cube fills the view: a change of the texture is a large change of the picture)
+    bpy.ops.m3d.tex_add_material()
+    bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+    bpy.context.scene.m3d_tex.resolution = '128'
+    bpy.context.scene.m3d_tex.props_mode = 'AUTO'
+    window().workspace.m3d_page_right = "tex_layers"
+    press_ok("m3d.layer_add", _area=tex4_dock(), kind='PAINT')
+    press_ok("m3d.tex_tool", _area=tex_roles()["tools"], tool='PAINT')
+    tex4_redraw()
+
+
+step(wait_until(lambda: bpy.context.mode == 'PAINT_TEXTURE' and tex4_2d()[2].image is not None, "the paint view to show the layer's image", tries=20))
+
+
+@step
+def tex4_ctx_paint():
+    check(m3d_texture.props_context(bpy.context) == 'PAINT' and window().workspace.m3d_layout == 1, "a Paint Layer: Properties - Paint")
+    check(tex4_sections() == {"pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_material", "pp_advanced", "pp_cursor"},
+          "Properties - Paint with the Paint tool shows previews, Brush, Alpha, Stencil, Material, Advanced, Cursor: %s" % sorted(tex4_sections()))
+    check(not tracebacks(), "Python error drawing Properties - Paint")
+
+
+def _tex4_tool_steps():
+    sections = {
+        'ERASER': {"pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_material", "pp_advanced", "pp_cursor"},
+        'PROJECTION': {"pp_preview", "pp_projection", "pp_brush", "pp_material", "pp_advanced", "pp_cursor"},
+        'POLYFILL': {"pp_preview", "pp_polyfill", "pp_material"},
+        'SMUDGE': {"pp_preview", "pp_brush", "pp_advanced", "pp_cursor"},
+        'CLONE': {"pp_preview", "pp_brush", "pp_clone", "pp_advanced", "pp_cursor"},
+        'PAINT': {"pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_material", "pp_advanced", "pp_cursor"},
+    }
+    for tool, want in sections.items():
+        def pick(tool=tool):
+            press_ok("m3d.tex_tool", _area=tex_roles()["tools"], tool=tool)
+            tex4_redraw()
+
+        def verify(tool=tool, want=want):
+            check(m3d_texture.tool_of(bpy.context) == tool and tex4_sections() == want,
+                  "Properties - Paint, %s tool: %s (want %s)" % (tool, sorted(tex4_sections()), sorted(want)))
+            check(not tracebacks(), "Python error drawing Properties - Paint with the %s tool and its toolbar" % tool)
+        pick.__name__, verify.__name__ = "tex4_tool_" + tool.lower(), "tex4_tool_check_" + tool.lower()
+        yield pick
+        yield verify
+
+
+for _fn in _tex4_tool_steps():
+    step(_fn)
+
+
+# --- An alpha picked in the Alpha section changes a stroke
+def tex4_coverage():
+    image = LY.entry_of(LY.active_layer(tex_mat()), 'BASE_COLOR').image
+    return int((tex3_px(image)[:, 3] > 0.5).sum())
+
+
+@step
+def tex4_stroke_plain_setup():
+    ups = bpy.context.tool_settings.image_paint.unified_paint_settings
+    ups.use_unified_size = ups.use_unified_strength = True
+    ups.size, ups.strength, ups.color = 70, 1.0, (0.9, 0.2, 0.1)
+    brush = m3d_texture.image_brush(bpy.context)
+    brush.hardness = 1.0
+    brush.mask_texture = None
+    TEX4["points"] = mc_points(-70, 70, n=24)
+    event('MOUSEMOVE', xy=TEX4["points"][0])
+    mc_press(TEX4["points"])
+
+
+@step
+def tex4_stroke_plain_release():
+    mc_release(TEX4["points"])
+
+
+@step
+def tex4_stroke_plain_check():
+    TEX4["plain"] = tex4_coverage()
+    check(TEX4["plain"] > 300, "a plain stroke paints a good many texels (%d)" % TEX4["plain"])
+    press_ok("m3d.layer_add", _area=tex4_dock(), kind='PAINT')
+    brush = m3d_texture.image_brush(bpy.context)
+    props = tex_roles()["props"]
+    check(press_ok("m3d.alpha_pick", _area=props, name="Dots") == {'FINISHED'} and brush.mask_texture is not None and brush.mask_texture.name == "Dots",
+          "a tile of the Alpha section (run in the Properties editor) gives the brush the Dots alpha")
+    tex4_redraw()
+
+
+@step
+def tex4_stroke_alpha_press():
+    event('MOUSEMOVE', xy=TEX4["points"][0])
+    mc_press(TEX4["points"])
+
+
+@step
+def tex4_stroke_alpha_release():
+    mc_release(TEX4["points"])
+
+
+@step
+def tex4_stroke_alpha_check():
+    dots = tex4_coverage()
+    check(0 < dots < 0.8 * TEX4["plain"], "the same stroke with the Dots alpha paints fewer texels, in its pattern (%d, plain %d)" % (dots, TEX4["plain"]))
+    check(press_ok("m3d.alpha_pick", _area=tex_roles()["props"], name="") == {'FINISHED'} and m3d_texture.image_brush(bpy.context).mask_texture is None, "None takes the alpha off")
+    check(not tracebacks(), "Python error in the alpha stroke")
+
+
+# --- Properties - Fill, Folder and Mask in the window
+@step
+def tex4_fill_add():
+    press_ok("m3d.layer_add", _area=tex4_dock(), kind='FILL')
+    tex4_redraw()
+
+
+@step
+def tex4_ctx_fill():
+    check(m3d_texture.props_context(bpy.context) == 'FILL' and tex4_sections() == {"fl_fill", "fl_material"},
+          "a Fill Layer: Properties - Fill with Fill and Material (%s)" % sorted(tex4_sections()))
+    check(not tracebacks(), "Python error drawing Properties - Fill and its toolbar")
+    # the toolbar follows: the UV transform instead of the brush (the operators it draws run too)
+    layer = LY.active_layer(tex_mat())
+    layer.uv_tiling = (3.0, 2.0)
+    check(press_ok("m3d.layer_fill_reset", _area=tex_roles()["props"]) == {'FINISHED'} and tuple(layer.uv_tiling) == (1.0, 1.0), "Reset in Properties - Fill puts the transform back")
+    # a texture with strong structure, for the 3D view
+    image = bpy.data.images.new("Tex4Checker", 64, 64, alpha=False)
+    ys, xs = np.mgrid[0:64, 0:64]
+    px4 = np.ones((64, 64, 4), np.float32)
+    px4[..., :3] = (((xs // 8 + ys // 8) % 2)[..., None] * np.array((0.9, 0.9, 0.2), np.float32)) + 0.05
+    LY.write_pixels(image, px4)
+    TEX4["base"] = tex4_view_pixels()
+    TEX4["look"] = None
+    LY.entry_of(layer, 'BASE_COLOR').texture = image   # (what picking it in the texture slot of Material does)
+    tex4_redraw()
+
+
+step(wait_until(lambda: tex4_settled(TEX4["base"]), "the 3D view to show the texture of the fill layer", tries=25))
+
+
+@step
+def tex4_fill_transform():
+    layer = LY.active_layer(tex_mat())
+    check(tex_mat().node_tree.nodes.get(LY.part('BASE_COLOR', layer.uid, "map")) is not None, "the fill's texture has its Mapping node in the material")
+    TEX4["view0"] = TEX4["look"].copy()
+    TEX4["look"] = None
+    layer.uv_tiling = (6.0, 6.0)   # (the Tiling field of Properties - Fill)
+    layer.uv_rotation = 0.6
+    tex4_redraw()
+
+
+step(wait_until(lambda: tex4_settled(TEX4["view0"]), "the 3D view to show the new tiling and rotation", tries=25))
+
+
+@step
+def tex4_fill_transform_check():
+    check(tex4_changed(TEX4["look"], TEX4["view0"]) > 0.02, "Tiling and Rotation of the fill change what the 3D view shows (%.4f of the pixels)" % tex4_changed(TEX4["look"], TEX4["view0"]))
+    check(not tracebacks(), "Python error changing the fill's UV transform")
+    layer = LY.active_layer(tex_mat())
+    layer.uv_tiling, layer.uv_rotation = (1.0, 1.0), 0.0
+
+
+@step
+def tex4_folder_add():
+    press_ok("m3d.layer_folder_add", _area=tex4_dock())
+    tex4_redraw()
+
+
+@step
+def tex4_ctx_folder():
+    check(m3d_texture.props_context(bpy.context) == 'FOLDER' and tex4_sections() == {"fd_folder", "mk_stack"},
+          "a Folder: Properties - Folder with the folder and its mask (%s)" % sorted(tex4_sections()))
+    check(not tracebacks(), "Python error drawing Properties - Folder")
+    press_ok("m3d.layer_mask_add", _area=tex_roles()["props"], fill='WHITE')
+    check(m3d_texture.props_context(bpy.context) == 'MASK', "(a mask is painted when it is made: Properties - Mask)")
+    LY.active_layer(tex_mat()).paint_mask = False
+    tex4_redraw()
+
+
+@step
+def tex4_ctx_folder_mask():
+    check(tex4_sections() == {"fd_folder", "mk_stack", "mk_effect"}, "...the folder's mask adds its effect: %s" % sorted(tex4_sections()))
+    check(not tracebacks(), "Python error drawing the folder's mask")
+    press_ok("m3d.layer_add", _area=tex4_dock(), kind='PAINT')
+    press_ok("m3d.layer_mask_add", _area=tex_roles()["props"], fill='WHITE')
+    for kind in ('NOISE', 'LEVELS'):
+        press_ok("m3d.mask_effect_add", _area=tex_roles()["props"], kind=kind)
+    bpy.context.scene.m3d_tex.props_mode = 'MASK'
+    LY.active_layer(tex_mat()).paint_mask = False
+    tex4_redraw()
+
+
+@step
+def tex4_ctx_mask():
+    layer = LY.active_layer(tex_mat())
+    check(m3d_texture.props_context(bpy.context) == 'MASK' and tex4_sections() == {"mk_stack", "mk_effect"} and layer.mask_stack[layer.mask_index].kind == 'LEVELS',
+          "the Mask button: Properties - Mask with the stack and the selected effect (%s)" % sorted(tex4_sections()))
+    check(not tracebacks(), "Python error drawing Properties - Mask")
+    layer.mask_index = next(i for i, e in enumerate(layer.mask_stack) if e.kind == 'NOISE')
+    tex4_redraw()
+
+
+@step
+def tex4_ctx_generator():
+    check(not tracebacks(), "Python error drawing a generator's properties")
+    layer = LY.active_layer(tex_mat())
+    layer.paint_mask = True
+    tex4_redraw()
+
+
+@step
+def tex4_ctx_mask_paint():
+    check(tex4_sections() == {"mk_stack", "mk_effect", "pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_gray", "pp_advanced", "pp_cursor"},
+          "painting the mask: the Paint sections follow the mask's, with the grays (%s)" % sorted(tex4_sections()))
+    check(not tracebacks(), "Python error drawing Properties - Mask while the mask is painted")
+    LY.active_layer(tex_mat()).paint_mask = False
+    bpy.context.scene.m3d_tex.props_mode = 'AUTO'
+    tex4_redraw()
+
+
+# --- The 2D view frames its image: F4, F, another size, another layout (a view takes a redraw to show its new zoom: each check waits)
+def tex4_framed():
+    return 0.8 < tex4_fit() < 1.02
+
+
+def tex4_zoom_out():
+    area, region, _space = tex4_2d()
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=area, region=region, space_data=area.spaces.active):
+        bpy.ops.image.view_zoom_ratio(ratio=0.1)   # (zoomed far out: a small square in a big empty area)
+
+
+step(wait_until(lambda: tex4_framed(), "the 2D view to frame the image of the layer", tries=20))
+
+
+@step
+def tex4_fit_zoom_out():
+    check(not tracebacks(), "Python error framing the image")
+    tex4_zoom_out()
+
+
+step(wait_until(lambda: tex4_fit() < 0.3, "the 2D view to zoom out", tries=15))
+
+
+@step
+def tex4_fit_leave():
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
+step(wait_until(lambda: window().workspace.name == "Modeling", "the Modeling workspace", tries=15))
+
+
+@step
+def tex4_fit_wait():
+    pass   # (the timer notices that the Texture workspace was left)
+
+
+@step
+def tex4_fit_f4():
+    bpy.ops.m3d.workspace(kind='TEXTURE')
+
+
+step(wait_until(lambda: window().workspace.name == "Texture" and bpy.context.mode == 'PAINT_TEXTURE' and tex4_framed(), "F4 to frame the image in the 2D view", tries=25))
+
+
+@step
+def tex4_fit_f4_check():
+    check(tex4_framed(), "opening the Texture workspace (F4) frames the image in the 2D view (%.2f)" % tex4_fit())
+    tex4_zoom_out()
+
+
+step(wait_until(lambda: tex4_fit() < 0.3, "the 2D view to zoom out again", tries=15))
+
+
+@step
+def tex4_fit_key():
+    tex3_key('F', tex3_xy2d())   # F over the 2D view
+
+
+step(wait_until(lambda: tex4_framed(), "F over the 2D view to frame the whole image", tries=15))
+
+
+@step
+def tex4_fit_key_check():
+    check(not tracebacks(), "Python error in the 2D fit")
+    TEX4["size"] = tuple(tex4_2d()[2].image.size)
+    bpy.context.scene.m3d_tex.resolution = '256'
+    press_ok("m3d.layer_add", _area=tex4_dock(), kind='PAINT')
+    tex4_redraw()
+
+
+step(wait_until(lambda: tex4_2d()[2].image is not None and tuple(tex4_2d()[2].image.size) == (256, 256) and tex4_framed(),
+                "the 2D view to show the 256 px image, framed", tries=25))
+
+
+@step
+def tex4_fit_size():
+    check(TEX4["size"] == (128, 128), "(the image was 128 px, now 256: the view framed it, %.2f)" % tex4_fit())
+    bpy.context.scene.m3d_tex.resolution = '128'
+    tex4_zoom_out()
+
+
+step(wait_until(lambda: tex4_fit() < 0.3, "the 2D view to zoom out before the layout change", tries=15))
+
+
+@step
+def tex4_layout_2d():
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        check(bpy.ops.m3d.tex_layout('INVOKE_DEFAULT', mode='2D') == {'FINISHED'}, "2D Only")
+
+
+step(wait_until(lambda: m3d_texture.layout_mode(bpy.context) == '2D' and tex4_framed(), "2D Only to frame the image in the bigger view", tries=25))
+
+
+@step
+def tex4_layout_back():
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        check(bpy.ops.m3d.tex_layout('INVOKE_DEFAULT', mode='BOTH') == {'FINISHED'}, "3D | 2D")
+
+
+step(wait_until(lambda: m3d_texture.layout_mode(bpy.context) == 'BOTH' and tex4_framed(), "3D | 2D to frame the image again", tries=25))
+
+
+@step
+def tex4_done():
+    check(not tracebacks(), "Python error in the Properties tests")
+    check(window().workspace.m3d_layout == 1, "the Texture workspace is still the new layout")
+    for image in [i for i in bpy.data.images if i.name.startswith("Tex4")]:
+        bpy.data.images.remove(image)
 
 
 @step
