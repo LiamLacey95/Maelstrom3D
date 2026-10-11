@@ -91,6 +91,7 @@
 #  include "DNA_world_types.h"
 
 #  include "ED_node.hh"
+#  include "ED_render.hh"
 #  include "ED_scene.hh"
 
 #  include "NOD_defaults.hh"
@@ -144,6 +145,11 @@ static void rna_Main_ID_remove(Main *bmain,
       }
     }
   }
+
+  /* A preview render job works on a copy of a material (or texture, light, world, object) that points
+   * to its images, node groups, ... without counting them as users. Stop the jobs before data goes
+   * away, as the operators that change data do, else the copy keeps dangling pointers. */
+  ED_preview_kill_jobs(static_cast<wmWindowManager *>(bmain->wm.first), bmain);
 
   if (do_unlink) {
     BKE_id_delete(bmain, id);
