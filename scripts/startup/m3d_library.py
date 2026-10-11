@@ -25,7 +25,8 @@ with "plain": true, is a single Fill Layer: it is added as that layer). A Fill L
 channel is its value (linear color for Base Color / Emission, a number for Roughness / Metallic / Height, null for
 Normal), a Paint Layer's is the PNG next to the item (or null: no image yet). The starter items are plain data
 (m3d_library_data.py); yours are a folder each in the user library (<user datafiles>/m3d_library/user/<name>/item.json,
-its paint images as PNG and thumb.png). Thumbnails of the starter items are cached in m3d_library/thumbs.
+its paint images as PNG and thumb.png). Thumbnails of the starter items come with the program (datafiles/m3d_library_thumbs,
+made by tools/m3d/library_thumbs.py); one that is not there (a changed item or preview look) is made and cached in m3d_library/thumbs.
 
 Thumbnails are small Cycles renders of a grooved sphere with the item applied (a mask preset is shown as the mask on
 the sphere). They are made one step at a time on a timer once the Assets panel is first drawn: the preview scene is made,
@@ -444,26 +445,48 @@ def apply_mask(context, ob, mat, item, directory, replace):
 # Thumbnails: small Cycles renders of a grooved sphere with the item applied, made one step at a time
 
 RIG = "m3dLibraryPreview"   # name of the preview scene, its sphere, material, world and baked maps
-RIG_VERSION = "1"           # part of a starter thumbnail's file name: change it to have them made again
+RIG_VERSION = "1"           # part of a starter thumbnail's file name: change it to have them made again (and make the shipped ones again)
 THUMB, MAP_SIZE = 128, 256
+SHIPPED = "m3d_library_thumbs"   # the datafiles folder of the starter thumbnails that come with the program
 
-_gen = {"running": False, "done": False, "stage": None, "jobs": [], "maps": [], "failed": set(), "made": 0, "time": 0.0}
+_gen = {"running": False, "done": False, "stage": None, "jobs": [], "maps": [], "failed": set(), "made": 0, "time": 0.0,
+        "shipped": True}   # shipped: use the thumbnails that come with the program (not after Refresh Previews)
 _version = {}   # ref -> how often its thumbnail was made (a new preview icon each time)
 
 
+def shipped_dir():
+    """The folder of the thumbnails that come with the program (empty when this build has none)."""
+    return bpy.utils.system_resource('DATAFILES', path=SHIPPED) if _gen["shipped"] else ""
+
+
+def thumb_name(entry):
+    """File name of a starter's thumbnail, <item>_<digest>.png: the digest is of the item and RIG_VERSION, so a changed item
+    or preview look has a name of its own (the old file is simply not found)."""
+    digest = hashlib.md5((RIG_VERSION + json.dumps(entry.item, sort_keys=True)).encode()).hexdigest()[:8]
+    return "%s_%s.png" % (entry.ref.partition(":")[2], digest)
+
+
 def thumb_path(entry):
+    """Where the thumbnail of an item is made: in its folder (yours), or the user's cache (the starters)."""
     if entry.directory:
         return os.path.join(entry.directory, "thumb.png")
     base = library_dir()
-    if not base:
-        return ""
-    digest = hashlib.md5((RIG_VERSION + json.dumps(entry.item, sort_keys=True)).encode()).hexdigest()[:8]
-    return os.path.join(base, "thumbs", "%s_%s.png" % (entry.ref.partition(":")[2], digest))
+    return os.path.join(base, "thumbs", thumb_name(entry)) if base else ""
+
+
+def thumb_file(entry):
+    """The thumbnail file an item has, empty when it has none: the one that comes with the program first, then the made one."""
+    path = thumb_path(entry)
+    shipped = shipped_dir()
+    for found in ([os.path.join(shipped, thumb_name(entry))] if shipped and not entry.directory else []) + [path]:
+        if found and os.path.isfile(found):
+            return found
+    return ""
 
 
 def pending():
     """The items that have no thumbnail yet (and did not fail to get one)."""
-    return [e for e in entries() if thumb_path(e) and e.ref not in _gen["failed"] and not os.path.isfile(thumb_path(e))]
+    return [e for e in entries() if thumb_path(e) and e.ref not in _gen["failed"] and not thumb_file(e)]
 
 
 def effect_specs(item):
@@ -517,6 +540,7 @@ def make_rig():
     r.resolution_x = r.resolution_y = THUMB
     r.resolution_percentage, r.film_transparent = 100, True
     r.image_settings.file_format, r.image_settings.color_mode, r.image_settings.color_depth = 'PNG', 'RGBA', '8'
+    r.image_settings.compression = 100   # (the thumbnails come with the program: as small as a PNG gets)
     ob = bpy.data.objects.new(RIG + "Sphere", make_sphere())
     ob.rotation_euler = (math.radians(30), 0.0, math.radians(15))
     mat = bpy.data.materials.new(RIG)
@@ -766,9 +790,9 @@ def placeholder_icon(entry):
 def thumb_icon(entry):
     """Icon id of the item's thumbnail; the placeholder while it is not made. (The pixels are copied into the preview:
     a preview loaded from a file is only read when it is first drawn, which leaves its first draw empty.)"""
-    coll, path = icons(), thumb_path(entry)
+    coll, path = icons(), thumb_file(entry)
     key = "t:%s:%d" % (entry.ref, _version.get(entry.ref, 0))
-    if key not in coll and path and os.path.isfile(path):
+    if key not in coll and path:
         try:
             image = bpy.data.images.load(path, check_existing=False)
         except RuntimeError:
@@ -970,6 +994,7 @@ class M3D_OT_library_refresh(Operator):
     def execute(self, _context):
         _user["entries"] = None
         _gen["failed"].clear()
+        _gen["shipped"] = False   # (every preview is made again, the ones that came with the program too)
         for e in entries():
             path = thumb_path(e)
             if path and os.path.isfile(path):

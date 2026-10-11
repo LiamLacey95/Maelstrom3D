@@ -121,7 +121,7 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 | Shift+RMB | Stencil Brush Control (mode='SCALE') | Rotate Environment |
 | Alt+Q | — | Isolate Texture Set |
 | Ctrl+Shift+B | — | Bake Mesh Maps (on=True) |
-| Ctrl+Shift+E | — | Call Panel (name='M3D_PT_tex_export') |
+| Ctrl+Shift+E | — | Export Textures |
 | F | — | Frame |
 
 ## Armature

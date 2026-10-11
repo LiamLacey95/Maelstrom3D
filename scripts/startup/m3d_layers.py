@@ -476,10 +476,27 @@ def uses_image(layer):
     return layer.kind == 'PAINT' or (layer.kind == 'FOLDER' and layer.frozen)
 
 
+def channel_off(mat, ch_id):
+    """Is the channel removed from the material's texture set? Its layer images are kept, but the stack builds, paints and
+    exports nothing for it until it is added again."""
+    return ch_id in mat.m3d_off.split("|")
+
+
+def set_channels(mat):
+    """The channels of the material's texture set, in the order of CHANNELS."""
+    off = mat.m3d_off.split("|")
+    return [ch for ch in CHANNELS if ch.id not in off]
+
+
+def channel_depth(mat, ch_id):
+    """Bits of the images the stack makes for a channel: 16 (half float) or 8."""
+    return 16 if ch_id in mat.m3d_depth.split("|") else 8
+
+
 def has_content(layer, ch_id):
     """Does the layer change this channel: a fill value, a painted (or frozen) image, or (a folder that is not frozen)
-    anything inside it. Not when its blend mode is Passthrough."""
-    if passes(layer, ch_id):
+    anything inside it. Not when its blend mode is Passthrough, or the channel is removed from the texture set."""
+    if passes(layer, ch_id) or channel_off(layer.id_data, ch_id):
         return False
     if layer.kind == 'FOLDER' and not layer.frozen:
         return any(has_content(kid, ch_id) for kid in children(layer))
@@ -564,11 +581,20 @@ def image_in_use(image):
     return False
 
 
+def remove_image(image):
+    """Remove an image. A material that had it in an Image Texture node lists it as a paint slot, and Blender does not list the slots
+    again when the image goes: the slot would point at the freed image (a crash later), so they are refreshed."""
+    mats = [m for m in bpy.data.materials if m.node_tree and any(n.type == 'TEX_IMAGE' and n.image == image for n in m.node_tree.nodes)]
+    bpy.data.images.remove(image)
+    for mat in mats:
+        refresh_slots(mat)
+
+
 def release(images):
     """Remove images nothing uses any more (call after the layers and nodes using them are gone)."""
     for image in {i.name: i for i in images if i is not None}.values():
         if not image_in_use(image):
-            bpy.data.images.remove(image)
+            remove_image(image)
 
 
 # -----------------------------------------------------------------------------
@@ -1252,7 +1278,10 @@ def make_channel_image(mat, layer, ch, size, opaque):
     only painted pixels show."""
     alpha = ch.id == 'BASE_COLOR' or not opaque
     width, height = (size, size) if isinstance(size, int) else size
-    image = bpy.data.images.new(image_name(mat, layer, ch.label), width, height, alpha=alpha, is_data=not ch.srgb)
+    half = channel_depth(mat, ch.id) == 16
+    image = bpy.data.images.new(image_name(mat, layer, ch.label), width, height, alpha=alpha, float_buffer=half, is_data=not ch.srgb)
+    if half:
+        image.use_half_precision = True   # (only for the float ones: setting it reloads the image)
     image.generated_color = (*ch.color[:3], 1.0 if opaque else 0.0)
     set_channel_space(image, ch)
     return image
@@ -1265,10 +1294,14 @@ def make_mask_image(mat, layer, size, white):
     return image
 
 
-def copy_image(image, name):
+def copy_image(image, name, half=None):
+    """A copy of an image; `half` True / False makes it a 16 bit float / 8 bit one (None: the same kind)."""
     w, h = image.size
-    new = bpy.data.images.new(name[:60], w, h, alpha=image.depth in {32, 128}, float_buffer=image.is_float,
+    float_buffer = image.is_float if half is None else half
+    new = bpy.data.images.new(name[:60], w, h, alpha=image.depth in {32, 64, 128}, float_buffer=float_buffer,
                               is_data=image.colorspace_settings.is_data)
+    if float_buffer:
+        new.use_half_precision = half is not False and (half or image.use_half_precision)
     new.colorspace_settings.name = image.colorspace_settings.name
     if "m3d_channel" in image.keys():
         new["m3d_channel"] = image["m3d_channel"]
@@ -1276,8 +1309,92 @@ def copy_image(image, name):
     return new
 
 
-def new_size(context):
-    return int(context.scene.m3d_tex.resolution)
+def new_size(context, mat=None):
+    """Side of a new image: the size chosen for the material's texture set, else the new slot size of the Texture settings."""
+    return mat.m3d_size if mat is not None and mat.m3d_size else int(context.scene.m3d_tex.resolution)
+
+
+SIZES = (64, 128, 256, 512, 1024, 2048, 4096)   # the sides a texture set can have (always square: the layer math works on squares)
+DEPTH_CHANNELS = {ch.id for ch in CHANNELS if not ch.srgb}   # the channels that can be 16 bit float (the colors stay 8 bit sRGB:
+# a float image stores linear light, which the layer math of the color channels does not read)
+
+
+def set_size(context, mat):
+    """Side of the material's texture set: its largest image, else the size chosen for it, else the new slot size."""
+    return stack_size(mat) or new_size(context, mat)
+
+
+def set_channel_off(context, mat, ch_id, off):
+    """Remove a channel from the material's texture set (`off`) or add it again. The layers keep their images: the channel's
+    chain is taken away (and painting, the views and Export leave it out) until it is added back, which builds it as it was."""
+    names = [c for c in mat.m3d_off.split("|") if c and c != ch_id]
+    if off:
+        names.append(ch_id)
+    mat.m3d_off = "|".join(c for c in (ch.id for ch in CHANNELS) if c in names)
+    if off and mat.m3d_channel == ch_id:
+        with muted():
+            mat.m3d_channel = next((c.id for c in set_channels(mat)), 'BASE_COLOR')
+    if off and mat.m3d_row_channel == ch_id:
+        mat.m3d_row_channel = mat.m3d_channel
+    refresh(context, mat)
+
+
+def channel_images(mat, ch_id):
+    """The images the layers of the stack hold for a channel (a frozen folder's too), each once."""
+    return list(dict.fromkeys(e.image for l in mat.m3d_layers for e in [entry_of(l, ch_id)] if e.image is not None))
+
+
+def set_depth(context, mat, ch_id, bits):
+    """Store a channel's images as 8 bit or 16 bit float: every image of the channel in the stack is copied into the other kind
+    (the pixels are the same, to what the kind keeps) and takes the old one's place and name; new images follow the setting.
+    Returns how many images were converted."""
+    half = bits == 16 and ch_id in DEPTH_CHANNELS
+    names = [c for c in mat.m3d_depth.split("|") if c and c != ch_id]
+    if half:
+        names.append(ch_id)
+    mat.m3d_depth = "|".join(names)
+    done = {}
+    for old in channel_images(mat, ch_id):
+        if old.is_float == half and old.use_half_precision == half:
+            continue
+        done[old] = copy_image(old, old.name + "~", half)
+    with muted():
+        for layer in mat.m3d_layers:
+            e = entry_of(layer, ch_id)
+            if e.image in done:
+                e.image = done[e.image]
+    for node in mat.node_tree.nodes if mat.node_tree else ():   # (the chains' Image Texture nodes show the copies: the names stay the same)
+        if node.type == 'TEX_IMAGE' and node.image in done:
+            node.image = done[node.image]
+    if mat.node_tree is not None and done:
+        refresh_slots(mat)   # (the paint slots point at the copies, not at the images that go)
+    for old, new in done.items():
+        name = old.name
+        release([old])
+        leftover = bpy.data.images.get(name)
+        if leftover is not None:
+            leftover.name = name + " (old)"   # (something outside the stack still uses it: it stays)
+        new.name = name
+    refresh(context, mat)
+    return len(done)
+
+
+def resize_set(context, mat, size):
+    """Scale every image of the texture set to size x size: the channel images, the masks' paint images, frozen folders'. A
+    generated image that was never painted is only told its new size. Returns how many images changed."""
+    count = 0
+    caches = {e.image for l in mat.m3d_layers for e in l.mask_stack if e.kind == 'BLUR'}   # (the blur caches follow their masks)
+    for image in dict.fromkeys(img for l in mat.m3d_layers for img in layer_images(l) if img not in caches):
+        if image_size(image) == (size, size):
+            continue
+        if image.source == 'GENERATED' and not image.has_data:
+            image.generated_width = image.generated_height = size
+        else:
+            image.scale(size, size)
+        count += 1
+    mat.m3d_size = size
+    refresh(context, mat)
+    return count
 
 
 # The brush material: the channels one stroke paints at once (Scene.m3d_tex.brush, see m3d_texture.py). The paint code reads
@@ -1323,13 +1440,13 @@ def layer_size(context, layer):
         image = entry_of(layer, ch.id).image
         if image is not None:
             return image_size(image)
-    return (new_size(context),) * 2
+    return (new_size(context, layer.id_data),) * 2
 
 
 def stroke_targets(context, mat, layer, create):
     """[(channel, image)] a stroke on a paint layer paints: the channels of the brush material that are on and that the
     layer has, Base Color first (the canvas). The images they lack are made when `create` (with the others' size)."""
-    wanted = [ch for ch in brush_channels(context) if entry_of(layer, ch.id).use]
+    wanted = [ch for ch in brush_channels(context) if entry_of(layer, ch.id).use and not channel_off(mat, ch.id)]
     if create and any(entry_of(layer, ch.id).image is None for ch in wanted):
         size = layer_size(context, layer)
         with muted():
@@ -1424,6 +1541,8 @@ def paint_channel(context, ob, ch):
     layer = active_layer(mat)
     if layer is None:
         return None
+    if channel_off(mat, ch.id):
+        raise RuntimeError("%s is not in this texture set: add it in Texture Set Settings" % ch.label)
     with muted():
         mat.m3d_channel = ch.id
         if in_frozen(layer):
@@ -1445,7 +1564,7 @@ def stack_slots(mat):
     found = {}
     active = mat.m3d_layer_index
     order = [active] + [i for i in reversed(range(len(mat.m3d_layers))) if i != active]
-    for ch in CHANNELS:
+    for ch in set_channels(mat):
         for i in order:
             if not 0 <= i < len(mat.m3d_layers):
                 continue
@@ -2251,7 +2370,7 @@ class M3D_OT_layer_freeze(_LayerOp, Operator):
             self.report({'WARNING'}, "Select a folder (or a layer in one) that is not frozen")
             return {'CANCELLED'}
         prepare(context, mat)
-        freeze_folder(mat, i, new_size(context))
+        freeze_folder(mat, i, new_size(context, mat))
         folder = mat.m3d_layers[i]
         images = [e.image for e in folder.channels if e.image]
         self.report({'INFO'}, "Froze %s: %d images of %d px" % (folder.name, len(images),
@@ -2289,7 +2408,7 @@ class M3D_OT_layer_merge_folder(_ActiveLayerOp, Operator):
     def execute(self, context):
         mat = self.material(context)
         prepare(context, mat)
-        merge_folder(mat, mat.m3d_layer_index, new_size(context))
+        merge_folder(mat, mat.m3d_layer_index, new_size(context, mat))
         return _done(context, mat)
 
 
@@ -2324,7 +2443,7 @@ class M3D_OT_layer_mask_add(_ActiveLayerOp, Operator):
         white = self.fill == 'WHITE'
         e = add_effect(layer, 'PAINT', white=white)
         with muted():
-            e.image = make_mask_image(mat, layer, new_size(context), white)
+            e.image = make_mask_image(mat, layer, new_size(context, mat), white)
             layer.mask_index, layer.paint_mask = 0, True
         return _done(context, mat)
 
@@ -2385,7 +2504,7 @@ class M3D_OT_layer_paint_mask(_ActiveLayerOp, Operator):
         if not layer.paint_mask and paint_effect(layer) is None:
             e = add_effect(layer, 'PAINT')
             with muted():
-                e.image = make_mask_image(mat, layer, new_size(context), True)
+                e.image = make_mask_image(mat, layer, new_size(context, mat), True)
                 place_effect(layer)
         layer.paint_mask = not layer.paint_mask
         return _done(context, mat)
@@ -2428,7 +2547,7 @@ class M3D_OT_mask_effect_add(_ActiveLayerOp, Operator):
         e = add_effect(layer, self.kind, white=white)
         with muted():
             if self.kind == 'PAINT':
-                e.image = make_mask_image(mat, layer, new_size(context), white)
+                e.image = make_mask_image(mat, layer, new_size(context, mat), white)
                 layer.paint_mask = True
             for key, image in images.items():
                 assign_map(e, key, image)
@@ -2587,7 +2706,7 @@ class M3D_OT_layer_merge_down(_ActiveLayerOp, Operator):
     def execute(self, context):
         mat = self.material(context)
         prepare(context, mat)
-        merge_down(mat, mat.m3d_layer_index, new_size(context))
+        merge_down(mat, mat.m3d_layer_index, new_size(context, mat))
         return _done(context, mat)
 
 
@@ -2603,7 +2722,7 @@ class M3D_OT_layer_flatten(_ActiveLayerOp, Operator):
     def execute(self, context):
         mat = self.material(context)
         prepare(context, mat)
-        flatten_all(mat, new_size(context))
+        flatten_all(mat, new_size(context, mat))
         return _done(context, mat)
 
 
@@ -2618,7 +2737,7 @@ class M3D_OT_layer_convert(_ActiveLayerOp, Operator):
 
     def execute(self, context):
         mat = self.material(context)
-        convert_layer(mat, mat.m3d_layer_index, new_size(context))
+        convert_layer(mat, mat.m3d_layer_index, new_size(context, mat))
         return _done(context, mat)
 
 
@@ -3421,6 +3540,10 @@ def register():
     mat.m3d_row_channel = EnumProperty(name="Channel", default='BASE_COLOR', items=CHANNEL_ITEMS,
                                        description="The channel the rows of the layer list show: its thumbnails, blend modes "
                                        "and opacities (what the layers do in the other channels is not changed)")
+    mat.m3d_off = StringProperty(description="Channels removed from the texture set, separated by | (their layer images are kept)")
+    mat.m3d_depth = StringProperty(description="Channels whose images are 16 bit float, separated by | (the others are 8 bit)")
+    mat.m3d_size = IntProperty(name="Size", default=0, min=0, description="Side of the texture set's images (0: not chosen: new images "
+                               "take the size of the Texture settings)")
     bpy.types.UI_MT_list_item_context_menu.append(draw_list_menu)
     bpy.app.handlers.load_post.append(load_post)
     bpy.app.handlers.undo_post.append(undo_post)
@@ -3434,6 +3557,7 @@ def unregister():
     bpy.app.handlers.undo_post.remove(undo_post)
     bpy.app.handlers.load_post.remove(load_post)
     bpy.types.UI_MT_list_item_context_menu.remove(draw_list_menu)
+    del bpy.types.Material.m3d_size, bpy.types.Material.m3d_depth, bpy.types.Material.m3d_off
     thumbs_clear()
     if _thumbs["coll"] is not None:
         bpy.utils.previews.remove(_thumbs["coll"])

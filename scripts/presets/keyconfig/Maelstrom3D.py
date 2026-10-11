@@ -162,7 +162,7 @@ OVERRIDES = {
         _kmi("m3d.tex_env_rotate", 'RIGHTMOUSE', shift=True),
         _kmi("m3d.tex_isolate", 'Q', alt=True),
         _kmi("m3d.tex_bake_mode", 'B', props={"on": True}, ctrl=True, shift=True),
-        _kmi("wm.call_panel", 'E', props={"name": "M3D_PT_tex_export"}, ctrl=True, shift=True),
+        _kmi("m3d.tex_export_dialog", 'E', ctrl=True, shift=True),
         _kmi("m3d.tex_frame", 'F'),
     ],
     # Texture, over the layer list (the Layers tab; m3d.layer_key checks that): Ctrl+C / X / V copy, cut and paste a layer, Ctrl+D

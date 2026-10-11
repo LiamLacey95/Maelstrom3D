@@ -584,6 +584,13 @@ install(
   DESTINATION ${TARGETDIR_VER}/datafiles
   RENAME m3d_factory_layout.blend
 )
+# Maelstrom3D: the thumbnails of the Library's starter items (tools/m3d/library_thumbs.py), looked for by `m3d_library.py` first.
+if(EXISTS ${CMAKE_SOURCE_DIR}/release/datafiles/m3d_library_thumbs)
+  install(
+    DIRECTORY ${CMAKE_SOURCE_DIR}/release/datafiles/m3d_library_thumbs
+    DESTINATION ${TARGETDIR_VER}/datafiles
+  )
+endif()
 if(WIN32)
   if(EXISTS ${LIBDIR}/osl/lib/python${PYTHON_VERSION}/site-packages/oslquery) # 4.4+
     install(

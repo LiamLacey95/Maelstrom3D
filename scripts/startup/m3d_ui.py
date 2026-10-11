@@ -127,6 +127,8 @@ def draw_entries(layout, context, entries):
     for e in entries:
         if e["modes"] and context.mode not in e["modes"]:
             continue
+        if e.get("sets") and context.window_manager.m3d_menu_set not in e["sets"]:
+            continue
         kind = e["kind"]
         if kind == 'SEP':
             layout.separator()
@@ -172,6 +174,7 @@ MENUS = {
     # Common menus.
     "M3D_MT_file": ("File", [
         op("New Scene", "wm.read_homefile", 'FILE_NEW', app_template=""),
+        {**op("New Texture Project...", "m3d.tex_project", 'FILE_NEW'), "sets": {'TEXTURING'}},   # (only in the Texturing menu set)
         op("Open Scene...", "wm.open_mainfile", 'FILE_FOLDER'),
         sub("Recent Files", "TOPBAR_MT_file_open_recent"),
         SEP,
@@ -508,8 +511,8 @@ MENUS = {
         op("Use Selected as High Poly", "m3d.tex_bake_pick", 'EYEDROPPER'),
     ]),
     "M3D_MT_export": ("Export", [
-        op("Export Textures... (Ctrl+Shift+E)", "wm.call_panel", 'EXPORT', name="M3D_PT_tex_export"),
-        op("Export Textures", "m3d.tex_export", 'EXPORT'),
+        op("Export Textures... (Ctrl+Shift+E)", "m3d.tex_export_dialog", 'EXPORT'),
+        op("Export Active Set", "m3d.tex_export", 'EXPORT'),
         op("Save All Images", "m3d.tex_save_all", 'FILE_TICK'),
         sub("Export Scene", "TOPBAR_MT_file_export", 'EXPORT'),
     ]),

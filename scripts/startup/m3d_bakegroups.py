@@ -493,6 +493,39 @@ class M3D_OT_bg_select(Operator):
         return {'FINISHED'}
 
 
+class Refused(RuntimeError):
+    """Nothing to bake (no low poly, no map ticked): a warning, not an error."""
+
+
+def bake_group(context, group):
+    """Bake the ticked maps of every low poly of `group` from the high polys of the group, into the maps of the texture sets the
+    low polys are in (the low polys that share a material bake into the same images). Returns the maps and the size of the last
+    set. Raises Refused, or RuntimeError for a bake that failed."""
+    groups = m3d_pair.all_groups(context)
+    lows = groups.get(group, ([], []))[0]
+    if not lows:
+        raise Refused("%s has no low poly to bake onto" % (group or "No group"))
+    sets = {}
+    for low in lows:
+        sets.setdefault(T.texture_set(low)[0], []).append(low)
+    wm = context.window_manager
+    wm.progress_begin(0, len(lows))
+    step, shown = stepper(wm), []
+    try:
+        for name, set_lows in sets.items():
+            s = T.bake_owner(set_lows[0]).m3d_bake
+            maps = ticked(s)
+            if not maps:
+                raise Refused("Tick at least one map")
+            bake_set(context, set_lows, maps, progress=step)
+            record_baked(s, name, maps)
+            shown = maps
+    finally:
+        wm.progress_end()
+    bake_groups_done(context, groups, [group])
+    return shown, T.bake_owner(lows[0]).m3d_bake.resolution
+
+
 class M3D_OT_bg_bake(Operator):
     """Bake the maps ticked in the Bake tab for every low poly of a group, from the high poly meshes of that group (only
     they are baked from, and nothing else shadows them). Low polys that share a material bake into the same images"""
@@ -510,35 +543,16 @@ class M3D_OT_bg_bake(Operator):
     def execute(self, context):
         ob = mesh_of(context)
         group = self.group or (ob.m3d_pair.group if m3d_pair.grouped(ob) else "")
-        groups = m3d_pair.all_groups(context)
-        lows = groups.get(group, ([], []))[0]
-        if not lows:
-            self.report({'WARNING'}, "%s has no low poly to bake onto" % (group or "No group"))
-            return {'CANCELLED'}
-        sets = {}
-        for low in lows:
-            sets.setdefault(T.texture_set(low)[0], []).append(low)
-        wm = context.window_manager
-        wm.progress_begin(0, len(lows))
-        step, t0, shown = stepper(wm), time.perf_counter(), []
+        t0 = time.perf_counter()
         try:
-            for name, set_lows in sets.items():
-                s = T.bake_owner(set_lows[0]).m3d_bake
-                maps = ticked(s)
-                if not maps:
-                    self.report({'WARNING'}, "Tick at least one map")
-                    return {'CANCELLED'}
-                bake_set(context, set_lows, maps, progress=step)
-                record_baked(s, name, maps)
-                shown = maps
+            maps, size = bake_group(context, group)
+        except Refused as err:
+            self.report({'WARNING'}, str(err))
+            return {'CANCELLED'}
         except RuntimeError as err:
             self.report({'ERROR'}, str(err).strip())
             return {'CANCELLED'}
-        finally:
-            wm.progress_end()
-        bake_groups_done(context, groups, [group])
-        self.report({'INFO'}, "Baked %s: %s at %s px in %.1f s" % (
-            group, ", ".join(m[1] for m in shown), T.bake_owner(lows[0]).m3d_bake.resolution, time.perf_counter() - t0))
+        self.report({'INFO'}, "Baked %s: %s at %s px in %.1f s" % (group, ", ".join(m[1] for m in maps), size, time.perf_counter() - t0))
         return {'FINISHED'}
 
 
@@ -593,6 +607,7 @@ class M3D_OT_bg_bake_all(Operator):
 class PROPERTIES_PT_m3d_tx_bake_groups(_PagePanel, Panel):
     bl_label = "Bake Groups"
     page = "tex_bake"
+    bl_order = 21   # (after the High Poly Meshes of the Bake page)
 
     def draw(self, context):
         layout = self.layout
@@ -642,6 +657,7 @@ def names_line(label, obs, limit=3):
 class PROPERTIES_PT_m3d_tx_bake_group(_PagePanel, Panel):
     bl_label = "Group Settings"
     page = "tex_bake"
+    bl_order = 22
 
     @classmethod
     def page_poll(cls, context):

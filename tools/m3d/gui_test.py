@@ -3613,6 +3613,7 @@ def tex_bake_check():
     GIZMO["out"] = tempfile.mkdtemp(prefix="m3d_gui_export_")
     tx = bpy.context.scene.m3d_tex
     tx.export_folder, tx.export_preset, tx.export_size = GIZMO["out"], 'UNREAL', 'SAME'
+    tx.export_padding = 'NONE'   # (the files are compared with the painted pixels: the padding has its own tests)
     press_ok("m3d.tex_export", _area=tex_areas()[1])
 
 
@@ -3858,6 +3859,7 @@ def lay_merge_check():
     GIZMO["out2"] = tempfile.mkdtemp(prefix="m3d_gui_layers_")
     tx = bpy.context.scene.m3d_tex
     tx.export_folder, tx.export_preset, tx.export_size = GIZMO["out2"], 'UNREAL', 'SAME'
+    tx.export_padding = 'NONE'
     press_ok("m3d.tex_export", _area=tex_areas()[1])
 
 
@@ -5265,7 +5267,7 @@ def lb_sandbox():
             GIZMO["lb_times"].append(time.time() - t0)
     LIB.step = timed_step
     LIB._user["entries"] = None
-    LIB._gen.update(running=False, done=True, stage=None, failed=set())
+    LIB._gen.update(running=False, done=True, stage=None, failed=set(), shipped=False)   # (shipped: the thumbnails that come with the program are not used here: this run makes its own)
 
 
 @step
@@ -5274,7 +5276,7 @@ def lb_setup():
     m3d_sculpt.alpha_dir = lambda create=False: GIZMO["lb_alphas"]   # (the Sculpt phase put a folder of its own there)
     if bpy.app.timers.is_registered(LIB._tick):
         bpy.app.timers.unregister(LIB._tick)
-    LIB._gen.update(running=False, done=False, stage=None, failed=set())
+    LIB._gen.update(running=False, done=False, stage=None, failed=set(), shipped=False)
     if bpy.context.active_object is None or bpy.context.active_object.type != 'MESH':
         win, area, region = view3d()
         with bpy.context.temp_override(window=win, area=area, region=region):
@@ -5295,6 +5297,8 @@ def lb_setup_mesh():
         bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
     ob.m3d_bake.resolution, ob.m3d_bake.samples, ob.m3d_bake.margin = '128', 4, 4
     bpy.context.scene.m3d_tex.resolution = '128'
+    LIB._gen["shipped"] = False   # (these steps make the thumbnails: the ones that come with the program are put back in lb_done)
+    LIB.icons().clear()
     check(LIB.pending() and not os.listdir(GIZMO["lb_dir"]), "no thumbnail exists yet")
     check("tex_assets" in {t.page for t in m3d_workspace.DOCK_TABS['TEXTURE']['ASSETS']} and "tex_library" not in {t.id for t in m3d_workspace.DOCK_TABS['TEXTURE']['RIGHT']},
           "the library is the Assets panel, not a tab of the dock")
@@ -6895,6 +6899,7 @@ def tex3_done():
 @step
 def lb_done():
     LIB.library_dir, LIB.step, m3d_sculpt.alpha_dir = GIZMO["lb_saved"]
+    LIB._gen["shipped"] = True
     shutil.rmtree(GIZMO["lb_dir"], ignore_errors=True)
     shutil.rmtree(GIZMO["lb_alphas"], ignore_errors=True)
     LIB._user["entries"] = None
@@ -10139,6 +10144,293 @@ def eb_check():
     for ob in list(bpy.data.objects):
         bpy.data.objects.remove(ob)
     check(not tracebacks(), "Python error in the edges between test")
+
+
+# ----------------------------------------------------------------------------------------------------
+# Phase 4 in the real window: the New Texture Project dialog, the Texture Set List and Texture Set Settings (channels, formats, size, mesh map
+# slots), Bake Mesh Maps (Bake, Back to Painting), the Export Textures dialog (Ctrl+Shift+E, then its summary). Pictures: F:/AI/m3d_new_project.png,
+# m3d_texset_settings.png, m3d_bake_mode.png, m3d_export_dialog.png.
+import shutil
+
+import m3d_texset
+
+
+def t4_key(key, **mods):
+    xy = tex_xy()
+    event('MOUSEMOVE', xy=xy)
+    event(key, 'PRESS', xy, **mods)
+    event(key, 'RELEASE', xy, **mods)
+
+
+def t4_redraw():
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+def t4_files(folder):
+    return sorted(os.listdir(folder)) if os.path.isdir(folder) else []
+
+
+@step
+def t4_setup():
+    lb_sandbox()
+    LIB._gen.update(shipped=True, done=False)   # (the Library uses the thumbnails that come with the program: none is made while these steps run)
+    check(not LIB.pending(), "the starter items have their thumbnails already: the first Texture workspace makes none")
+    bpy.ops.m3d.workspace(kind='MODEL')
+    for ob in list(bpy.data.objects):
+        if ob.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.data.objects.remove(ob)
+    for mat in [m for m in bpy.data.materials if m.name.startswith(("T4", "Crate4", "Barrel4"))]:
+        bpy.data.materials.remove(mat)
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.m3d.add_primitive(kind='CUBE')
+        bpy.context.active_object.name = "Crate4"
+    GIZMO["t4_dir"] = tempfile.mkdtemp(prefix="m3d_t4_")
+    event('MOUSEMOVE', xy=(region.x + region.width // 2, region.y + region.height // 2))
+    event('F4', 'PRESS', (region.x + region.width // 2, region.y + region.height // 2))
+    event('F4', 'RELEASE', (region.x + region.width // 2, region.y + region.height // 2))
+
+
+step(wait_until(lambda: window().workspace.name == "Texture" and bpy.context.mode == 'PAINT_TEXTURE', "F4 for the texture sets tests"))
+
+
+@step
+def t4_no_project():
+    ob = bpy.context.active_object
+    check(window().workspace.m3d_layout == 1 and ob.name == "Crate4" and not ob.material_slots, "(a cube without a material in the Texture workspace)")
+    check(not m3d_texture.texture_sets(bpy.context), "there is no texture set yet")
+    window().workspace.m3d_page_right = "tex_layers"
+    t4_redraw()
+
+
+@step
+def t4_project_open():
+    check(not tracebacks(), "Python error drawing the Texture workspace without a project")
+    GIZMO["t4_defaults"] = (bpy.context.scene.m3d_tex.resolution, bpy.context.scene.m3d_tex.normal_format)
+    roles = tex_roles()
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=roles["sets"], region=next(r for r in roles["sets"].regions if r.type == 'WINDOW')):
+        check(bpy.ops.m3d.tex_project.poll(), "New Texture Project is there for the selected mesh")
+        bpy.ops.m3d.tex_project('INVOKE_DEFAULT')
+
+
+@step
+def t4_project_shot():
+    t4_redraw()
+
+
+@step
+def t4_project_shot2():
+    check(not tracebacks(), "Python error drawing the New Texture Project dialog")
+    e_screenshot("F:/AI/m3d_new_project.png")
+
+
+@step
+def t4_project_ok():
+    t4_key('RET')   # (the dialog's OK: the defaults, 1024 px, the default channels)
+
+
+step(wait_until(lambda: bpy.context.active_object.active_material is not None and len(bpy.context.active_object.active_material.m3d_layers) == 1, "the New Texture Project dialog to make the project"))
+
+
+@step
+def t4_project_check():
+    ob = bpy.context.active_object
+    mat = ob.active_material
+    check(mat is not None and len(mat.m3d_layers) == 1 and mat.m3d_layers[0].name == "Base" and mat.m3d_size == 1024 and LY.stack_size(mat) == 1024
+          and [c.id for c in LY.set_channels(mat)] == ['BASE_COLOR', 'ROUGHNESS', 'METALLIC', 'NORMAL', 'HEIGHT'],
+          "OK in the New Texture Project dialog made a texture set with a Base layer of 1024 px and the default channels")
+    check(window().workspace.m3d_page_right == "tex_bake" and window().workspace.name == "Texture", "...and opened Bake Mesh Maps")
+    check(not tracebacks(), "Python error making the project")
+    # small images keep the rest of the tests quick
+    bpy.context.scene.m3d_tex.set_size = '128'
+    s = ob.m3d_bake
+    s.resolution, s.margin, s.samples = '64', 4, 2
+    s.use_normal, s.use_ao, s.use_curvature, s.use_position, s.use_thickness, s.use_id, s.use_worldnormal = True, True, False, False, False, False, False
+    check(LY.stack_size(mat) == 128, "(the set is 128 px from now on: %s)" % LY.stack_size(mat))
+    t4_redraw()
+
+
+# --- Bake Mesh Maps: the page, the Bake button, Back to Painting
+@step
+def t4_bake_page():
+    roles = tex_roles()
+    check(window().workspace.m3d_page_right == "tex_bake", "the dock shows the Bake page")
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=roles["dock"], region=next(r for r in roles["dock"].regions if r.type == 'WINDOW'),
+                                   space_data=roles["dock"].spaces.active):
+        shown = [c.__name__ for c in (*m3d_texture.classes, *LIB.classes) if hasattr(c, "poll") and getattr(c, "page", "") == "tex_bake" and c.poll(bpy.context)]
+    check({"PROPERTIES_PT_m3d_tx_bake_back", "PROPERTIES_PT_m3d_tx_bake_maps", "PROPERTIES_PT_m3d_tx_bake_settings", "PROPERTIES_PT_m3d_tx_bake_map"} <= set(shown),
+          "Bake Mesh Maps shows the Bake button, the bakers, the common settings and the map settings: %s" % shown)
+    bpy.context.scene.m3d_tex.bake_map = 'AO'
+    t4_redraw()
+
+
+@step
+def t4_bake_shot():
+    check(not tracebacks(), "Python error drawing Bake Mesh Maps")
+    e_screenshot("F:/AI/m3d_bake_mode.png")
+
+
+@step
+def t4_bake_press():
+    check(m3d_texture.bake_count(bpy.context) == (2, 1), "the Bake button counts 2 maps x 1 set: %s" % (m3d_texture.bake_count(bpy.context),))
+    press_ok("m3d.tex_bake_sets", _area=tex_roles()["dock"])
+
+
+@step
+def t4_bake_check():
+    ob = bpy.context.active_object
+    check({"Crate4_Normal", "Crate4_AO"} <= set(bpy.data.images.keys()) and ob.m3d_bake.baked == "Crate4_Normal|Crate4_AO", "Bake in the window baked the ticked maps: %s" % ob.m3d_bake.baked)
+    check(tuple(bpy.data.images["Crate4_AO"].size) == (64, 64), "...at the size of the settings")
+    check(window().workspace.m3d_page_right == "tex_bake" and not tracebacks(), "...and the page stays; no Python error")
+    t4_redraw()
+
+
+@step
+def t4_back():
+    press_ok("m3d.tex_bake_mode", _area=tex_roles()["dock"], on=False)
+
+
+@step
+def t4_back_check():
+    check(window().workspace.m3d_page_right == "tex_layers", "Back to Painting shows the Layers again")
+    t4_redraw()
+
+
+# --- The Texture Set List and Texture Set Settings
+@step
+def t4_sets():
+    roles = tex_roles()
+    sets = m3d_texture.texture_sets(bpy.context)
+    check([(m.name, o.name) for m, o in sets] == [("Crate4_Material", "Crate4")], "the Texture Set List has the set: %s" % [(m.name, o.name) for m, o in sets])
+    rows = [r.name for r in bpy.context.scene.m3d_tex.sets]
+    check(rows == ["Crate4_Material"] and bpy.context.scene.m3d_tex.set_index == 0, "...it is a row of the list (made by the panel's request) and the active one: %s" % rows)
+    res = press_ok("m3d.tex_set_rename", _run='EXEC_DEFAULT', _area=roles["sets"], material="Crate4_Material", name="Crate4 Wood")
+    check(bpy.data.materials.get("Crate4 Wood") is not None and bpy.context.active_object.active_material.name == "Crate4 Wood", "Rename renames the set in the window")
+    check(all(m.preview is None for m, _o in sets), "the Texture Set List asks for no material preview (a preview job copies the material: an image removed meanwhile is a dangling pointer in the copy)")
+    window().workspace.m3d_page_right = "tex_settings"
+    t4_redraw()
+
+
+@step
+def t4_settings():
+    check(not tracebacks(), "Python error drawing Texture Set Settings")
+    roles = tex_roles()
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=roles["dock"], region=next(r for r in roles["dock"].regions if r.type == 'WINDOW'),
+                                   space_data=roles["dock"].spaces.active):
+        shown = [c.__name__ for c in (*m3d_texture.classes, *m3d_texset.classes) if hasattr(c, "poll") and getattr(c, "page", "") == "tex_settings" and c.poll(bpy.context)]
+    check({"PROPERTIES_PT_m3d_tx_set_general", "PROPERTIES_PT_m3d_tx_set_channels", "PROPERTIES_PT_m3d_tx_set_maps"} <= set(shown), "the settings tab shows General, Channels and Mesh Maps: %s" % shown)
+    mat = bpy.context.active_object.active_material
+    press_ok("m3d.tex_channel_remove", _area=roles["dock"], channel='HEIGHT')
+
+
+@step
+def t4_channel_removed():
+    mat = bpy.context.active_object.active_material
+    check(mat.m3d_off == "HEIGHT|EMISSION" and "m3d_layer.HEIGHT" not in mat.node_tree.nodes and LY.entry_of(mat.m3d_layers[0], 'HEIGHT').image is not None,
+          "the x of a channel removes it from the set and keeps its image")
+    press_ok("m3d.tex_channel_add", _area=tex_roles()["dock"], channel='HEIGHT')
+
+
+@step
+def t4_channel_added():
+    mat = bpy.context.active_object.active_material
+    check(mat.m3d_off == "EMISSION" and "m3d_layer.HEIGHT" in mat.node_tree.nodes, "adding it again builds it again")
+    press_ok("m3d.tex_channel_format", _area=tex_roles()["dock"], _run='EXEC_DEFAULT', channel='HEIGHT', depth='16')
+
+
+@step
+def t4_format_check():
+    mat = bpy.context.active_object.active_material
+    image = LY.entry_of(mat.m3d_layers[0], 'HEIGHT').image
+    check(image.is_float and image.use_half_precision and mat.m3d_depth == "HEIGHT" and "m3d_layer.HEIGHT" in mat.node_tree.nodes, "the format menu stores Height as 16 bit float")
+    bpy.context.scene.m3d_tex.set_size = '256'
+
+
+@step
+def t4_size_check():
+    mat = bpy.context.active_object.active_material
+    check(LY.stack_size(mat) == 256 and all(tuple(i.size) == (256, 256) for i in LY.stack_images(mat)) and bpy.context.scene.m3d_tex.set_size == '256',
+          "the Size dropdown scales every image of the set")
+    check(not tracebacks(), "Python error after the channel and size changes")
+    t4_redraw()
+
+
+@step
+def t4_settings_shot():
+    e_screenshot("F:/AI/m3d_texset_settings.png")
+
+
+# --- Export Textures: Ctrl+Shift+E opens the dialog, OK writes the files, a summary lists them
+@step
+def t4_export_open():
+    check(bpy.context.mode == 'PAINT_TEXTURE', "(Texture Paint Mode before the export key)")
+    s = bpy.context.scene.m3d_tex
+    s.export_folder, s.export_preset, s.export_size, s.export_padding, s.export_format, s.export_depth = os.path.join(GIZMO["t4_dir"], "out"), 'UNREAL', 'SAME', 'INFINITE', 'PNG', '8'
+    s.export_bake_meshes = False
+    t4_key('E', ctrl=True, shift=True)
+
+
+@step
+def t4_export_shot():
+    check(not tracebacks(), "Python error opening the Export Textures dialog with Ctrl+Shift+E")
+    t4_redraw()
+
+
+@step
+def t4_export_shot2():
+    e_screenshot("F:/AI/m3d_export_dialog.png")
+
+
+@step
+def t4_export_ok():
+    t4_key('RET')   # (Export)
+
+
+step(wait_until(lambda: t4_files(os.path.join(GIZMO["t4_dir"], "out")) != [], "the dialog to write the files", tries=40))
+
+
+@step
+def t4_export_check():
+    files = t4_files(os.path.join(GIZMO["t4_dir"], "out"))
+    check(files == ["T_Crate4_BC.png", "T_Crate4_N.png", "T_Crate4_ORM.png"], "the Export dialog wrote the files of the template: %s" % files)
+    check(not tracebacks(), "Python error exporting")
+    t4_redraw()
+
+
+@step
+def t4_export_summary():
+    s = bpy.context.scene.m3d_tex
+    check(len([f for f in s.export_files.split("|") if f]) == len(t4_files(os.path.join(GIZMO["t4_dir"], "out"))), "the files written are listed for the summary")
+    check(not tracebacks(), "Python error opening the summary of the export")
+    t4_key('RET')   # (closes the summary)
+
+
+@step
+def t4_export_buttons():
+    roles = tex_roles()
+    check(not tracebacks(), "Python error closing the summary")
+    s = bpy.context.scene.m3d_tex
+    s.export_preset = 'MESHMAPS'
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=roles["dockbar"], region=next(r for r in roles["dockbar"].regions if r.type == 'WINDOW')):
+        check(bpy.ops.m3d.tex_export_dialog.poll(), "the dock strip button and the toolbar button open the dialog (it has a poll)")
+    shutil.rmtree(os.path.join(GIZMO["t4_dir"], "out"), ignore_errors=True)
+    s.export_preset = 'UNITY'
+
+
+@step
+def t4_cleanup():
+    for ob in list(bpy.data.objects):
+        if ob.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.data.objects.remove(ob)
+    shutil.rmtree(GIZMO.pop("t4_dir"), ignore_errors=True)
+    s = bpy.context.scene.m3d_tex
+    s.export_folder, s.export_padding, s.resolution = "//textures/", 'INFINITE', '2048'
+    window().workspace.m3d_page_right = ""
+    check(not tracebacks(), "Python error in the texture sets tests")
+    bpy.ops.m3d.workspace(kind='MODEL')
 
 
 @step

@@ -10,8 +10,8 @@ def check(cond, msg):
 # Icons used in m3d_mode exist.
 import re, m3d_mode
 icons = set(bpy.types.UILayout.bl_rna.functions['operator'].parameters['icon'].enum_items.keys())
-import m3d_bakegroups, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_retopo, m3d_sculpt, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv
-src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_bakegroups, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_retopo, m3d_sculpt, m3d_texture, _maya_ui, _maya_uv))
+import m3d_bakegroups, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_retopo, m3d_sculpt, m3d_texset, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv
+src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_bakegroups, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_retopo, m3d_sculpt, m3d_texset, m3d_texture, _maya_ui, _maya_uv))
 for ic in set(re.findall(r"icon='([A-Z_0-9]+)'", src)):
     check(ic in icons, "missing icon " + ic)
 
@@ -1384,6 +1384,7 @@ check(U.CHECKER not in box and [s.material.name for s in box.material_slots] == 
 # ----------------------------------------------------------------------------------------------------
 # Phase 3a: Texture workspace (tabs, pages, gates, channels, saving, bake, export, keys).
 import m3d_texture as T
+import m3d_texset as TS
 import numpy as np
 
 tex_ws = bpy.data.workspaces["Texture"]
@@ -1402,7 +1403,7 @@ check([t.id for t in W.DOCK_TABS['TEXTURE_OLD']['RIGHT']] == ["tex_layers", "tex
 # Every page a panel is on is one an editor shows: a dock tab, or what the page sets add (Properties, the old tabs).
 shown_pages = {*tex_pages, T.PAINT_PAGE, T.FILL_PAGE, T.FOLDER_PAGE, T.MASK_PAGE, "tex_layer", "tex_mask", *(p for pages in T.OLD_PAGES.values() for p in pages), "tex_export", "tex_display",
                "tex_brush", "tex_brushes", "tex_library"}
-panel_pages = {c.page for c in (*T.classes, *m3d_library.classes) if hasattr(c, "page")}
+panel_pages = {c.page for c in (*T.classes, *TS.classes, *m3d_library.classes) if hasattr(c, "page")}
 check(panel_pages <= shown_pages and tex_pages <= panel_pages, "every Texture panel is on a page an editor shows, and every page has panels: %s" % sorted(panel_pages ^ shown_pages))
 check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in T.classes
           if not issubclass(c, bpy.types.PropertyGroup)), "Texture classes registered")
@@ -1441,7 +1442,7 @@ TEX_KEYS = (   # (operator, key, modifiers, properties)
     ("m3d.tex_env_rotate", 'RIGHTMOUSE', dict(shift=True), {}),
     ("m3d.tex_isolate", 'Q', dict(alt=True), {}),
     ("m3d.tex_bake_mode", 'B', dict(ctrl=True, shift=True), {"on": True}),
-    ("wm.call_panel", 'E', dict(ctrl=True, shift=True), {"name": "M3D_PT_tex_export"}),
+    ("m3d.tex_export_dialog", 'E', dict(ctrl=True, shift=True), {}),
     ("m3d.tex_frame", 'F', dict(), {}),
     ("brush.scale_size", 'LEFT_BRACKET', dict(), {}),
     ("brush.scale_size", 'RIGHT_BRACKET', dict(), {}),
@@ -1504,7 +1505,7 @@ class TCtx(SCtx):
 
 
 def tex_panels(page):
-    return [c for c in (*T.classes, *m3d_library.classes) if hasattr(c, "poll") and hasattr(c, "page")]
+    return [c for c in (*T.classes, *TS.classes, *m3d_library.classes) if hasattr(c, "poll") and hasattr(c, "page")]
 
 
 def tex_shown(page):
@@ -1628,13 +1629,13 @@ for mode in ('OBJECT', 'TEXTURE_PAINT'):
     ctx = TCtx('RIGHT')
     for cls in (*T.PAGE_GATES, m3d_library.PROPERTIES_PT_m3d_lib_browse, m3d_library.PROPERTIES_PT_m3d_lib_assets,
                 T.PROPERTIES_PT_m3d_tx_channel_view, T.PROPERTIES_PT_m3d_tx_checker, T.PROPERTIES_PT_m3d_tx_tools,
-                T.PROPERTIES_PT_m3d_tx_sets, T.PROPERTIES_PT_m3d_tx_dockbar, T.PROPERTIES_PT_m3d_tx_maps, T.PROPERTIES_PT_m3d_tx_bake_back):
+                T.PROPERTIES_PT_m3d_tx_sets, T.PROPERTIES_PT_m3d_tx_dockbar, TS.PROPERTIES_PT_m3d_tx_set_maps, T.PROPERTIES_PT_m3d_tx_bake_back):
         try:
             check_calls(cls.__name__ + " " + mode, draw_stub(cls, TCtx('ASSETS' if cls.__name__.endswith("browse") else 'TOOLS')))
         except Exception as err:
             check(False, "%s draw in %s: %r" % (cls.__name__, mode, err))
     # the popovers of the dock strip
-    for cls in (T.M3D_PT_tex_display, T.M3D_PT_tex_shader, T.M3D_PT_tex_history, T.M3D_PT_tex_export):
+    for cls in (T.M3D_PT_tex_display, T.M3D_PT_tex_shader, T.M3D_PT_tex_history):
         try:
             inst = type("Inst", (UnifiedPaintPanel,), {})()
             inst.layout, inst.is_popover = Rec([]), True
@@ -1652,7 +1653,7 @@ check({"use_mirror_x", "use_mirror_y", "use_mirror_z", "size", "strength", "use_
        "use_smooth_stroke", "smooth_stroke_radius"} <= props_drawn, "Texture context toolbar controls: %s" % sorted(props_drawn))
 ops_drawn = [r._args[0] for r in log if r._kind == "operator"]
 check(not any(r._args[0] == "m3d.tex_channel" for r in log if r._kind == "operator" and r._args), "the channel buttons are not in the toolbar any more")
-check(ops_drawn.count("m3d.tex_layout") == 3 and "m3d.tex_bake_mode" in ops_drawn and any(r._kind == "popover" and r._args[0] == "M3D_PT_tex_export" for r in log),
+check(ops_drawn.count("m3d.tex_layout") == 3 and "m3d.tex_bake_mode" in ops_drawn and "m3d.tex_export_dialog" in ops_drawn,
       "the toolbar has the view layout, Bake Mesh Maps and Export Textures: %s" % ops_drawn)
 check(len([r for r in log if r._kind == "operator" and r._args[0] == "m3d.call"]) >= 3, "toolbar mode and perspective buttons")
 for key in m3d_ui.shelves_for('TEXTURE'):
@@ -1816,9 +1817,30 @@ check(bpy.ops.m3d.tex_isolate() == {'FINISHED'} and all(p_.hide == bool(p_.mater
 check(bpy.ops.m3d.tex_isolate() == {'FINISHED'} and not any(p_.hide for p_ in sets_ob.data.polygons) and not other_ob.hide_get()
       and not tool_ob.hide_get() and bpy.context.scene.get("m3d_isolated") is None, "...and again shows everything")
 log = draw_stub(T.PROPERTIES_PT_m3d_tx_sets, TCtx('SETS'))
-rows = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_set"]
-check([r.values()["material"] for r in rows] == [first_mat.name, "Second", other_mat.name] and len([r for r in log if r._args and r._args[0] == "m3d.tex_set_visible"]) == 3
-      and [r.values()["material"] for r in rows if r._kw.get("depress")] == [first_mat.name], "the Texture Set List draws an eye and a name for each set, the active one pressed")
+lists = [r for r in log if r._kind == "template_list"]
+check(len(lists) == 1 and lists[0]._args[0] == "M3D_UL_tex_sets" and lists[0]._args[3] == "sets",
+      "the Texture Set List is a list of rows of its own, not of the materials (a list of materials asks for a preview of each): %s" % [r._args[:3] for r in lists])
+check_calls("Texture Set List", log)
+T.request_sets_sync(bpy.context.scene)   # (drawing asked for the rows: they are made in a moment)
+check(T.sets_rows(bpy.context) != [(r_.name, r_.mesh) for r_ in bpy.context.scene.m3d_tex.sets] and bpy.app.timers.is_registered(T._sync_sets),
+      "...the panel asks for the rows when they are out of date (a timer makes them: drawing may not write)")
+bpy.app.timers.unregister(T._sync_sets)
+T._sets_wanted.clear()
+T.sync_sets(bpy.context)
+rows_ = [(r_.name, r_.mesh) for r_ in bpy.context.scene.m3d_tex.sets]
+check(rows_ == [(first_mat.name, sets_ob.name), ("Second", sets_ob.name), (other_mat.name, "Other")], "...the sets, the ones of the active mesh first, in order: %s" % rows_)
+check(all(m_.preview is None for m_ in bpy.data.materials), "...and drawing the list asks for no material preview")
+row_logs_ = {}
+for m_ in (first_mat, bpy.data.materials["Second"], other_mat):
+    row_logs_[m_.name] = []
+    T.M3D_UL_tex_sets.draw_item(None, TCtx('SETS'), Rec(row_logs_[m_.name]), None, next(r_ for r_ in bpy.context.scene.m3d_tex.sets if r_.name == m_.name), 0, None, "", 0)
+    check_calls("Texture Set List row " + m_.name, row_logs_[m_.name])
+log = row_logs_[first_mat.name]
+check(any(r._kind == "operator" and r._args[0] == "m3d.tex_set_visible" and r.values()["material"] == first_mat.name for r in log)
+      and any(r._kind == "prop" and r._args[0] == first_mat and r._args[1] == "name" and r._kw.get("emboss") is False for r in log)
+      and not any(r._kind == "prop" and r._args[1] == "m3d_set_bake" for r in log), "a row has an eye and a name that a double-click renames (no Bake checkbox while painting)")
+check(any(r._kind == "label" and r._kw.get("text") == other_ob.name for r in row_logs_[other_mat.name]), "...a set of another mesh says which")
+bpy.context.scene.m3d_tex.sets.clear()
 drop_tex_object(other_ob, sets_ob)
 
 # --- Display modes: material, channels, mesh maps, mask
@@ -1973,7 +1995,7 @@ for page in [t.page for t in W.DOCK_TABS['TEXTURE_OLD']['RIGHT']] + ["tex_brushe
                 check_calls("old " + cls.__name__, draw_stub(cls, TCtx(side)))
             except Exception as err:
                 check(False, "old %s draw: %r" % (cls.__name__, err))
-check({"PROPERTIES_PT_m3d_tx_stack", "PROPERTIES_PT_m3d_tx_layer", "PROPERTIES_PT_m3d_tx_channels"} <= set(old_panels["tex_layers"])
+check({"PROPERTIES_PT_m3d_tx_stack", "PROPERTIES_PT_m3d_tx_layer", "PROPERTIES_PT_m3d_tx_set_channels"} <= set(old_panels["tex_layers"])
       and "PROPERTIES_PT_m3d_tx_brush" in old_panels["tex_brushes"] and "PROPERTIES_PT_m3d_tx_grid" in old_panels["tex_brushes"]
       and "PROPERTIES_PT_m3d_lib_browse" in old_panels["tex_library"] and "PROPERTIES_PT_m3d_tx_export_run" in old_panels["tex_export"]
       and "PROPERTIES_PT_m3d_tx_environment" in old_panels["tex_display"], "...the Layers tab holds the stack, the layer and the channels again; the others as before: %s" % old_panels)
@@ -2129,6 +2151,7 @@ paint(slots['NORMAL'], (0.5, 0.7, 1.0))
 paint(slots['EMISSION'], (0.2, 0.4, 0.6))
 out_dir = tempfile.mkdtemp(prefix="m3d_export_")
 tx = T_scene.m3d_tex
+tx.export_padding = 'NONE'   # (the files are compared with the painted pixels: the padding has its own tests)
 tx.export_folder, tx.export_size, tx.export_preset = out_dir, 'SAME', 'UNREAL'
 check(bpy.ops.m3d.tex_export() == {'FINISHED'}, "Unreal export runs")
 files = sorted(os.listdir(out_dir))
@@ -2917,10 +2940,11 @@ tex_scene_.m3d_tex.props_mode = 'MASK'
 check({"PROPERTIES_PT_m3d_tx_mk_stack"} <= set(tex_shown("tex_props")), "...and its mask")
 tex_scene_.m3d_tex.props_mode = 'AUTO'
 tex_ws.m3d_page_right = "tex_settings"
-check({"PROPERTIES_PT_m3d_tx_channels", "PROPERTIES_PT_m3d_tx_maps"} <= set(tex_shown("tex_settings")), "Texture Set Settings shows the channels and the mesh maps")
-shown_names = ["PROPERTIES_PT_m3d_tx_stack", "PROPERTIES_PT_m3d_tx_layer", "PROPERTIES_PT_m3d_tx_mask", "PROPERTIES_PT_m3d_tx_channels"]
+check({"PROPERTIES_PT_m3d_tx_set_general", "PROPERTIES_PT_m3d_tx_set_channels", "PROPERTIES_PT_m3d_tx_set_maps"} <= set(tex_shown("tex_settings")),
+      "Texture Set Settings shows General, the channels and the mesh maps")
+shown_names = ["PROPERTIES_PT_m3d_tx_stack", "PROPERTIES_PT_m3d_tx_layer", "PROPERTIES_PT_m3d_tx_mask", "PROPERTIES_PT_m3d_tx_set_channels"]
 for name in shown_names:
-    cls = getattr(T, name)
+    cls = getattr(T, name, None) or getattr(TS, name)
     try:
         check_calls(name, draw_stub(cls, ctx))
     except Exception as err:
@@ -4483,6 +4507,8 @@ shutil.rmtree(os.path.join(LIB.library_dir(), "user", "bad_json"))
 
 # --- Thumbnails: made from the item on a preview sphere (a Cycles render), cached in the user folder, the scene put back
 LIB.STARTERS, lib_starters = (lb_every["Chrome"], lb_masks["Edge Wear"]), LIB.STARTERS
+LIB._gen["shipped"] = False   # (this makes the thumbnails: the ones that come with the program would be found, see the end of the suite)
+LIB.icons().clear()   # (tiles of the thumbnails that came with the program were made before)
 LIB._user["entries"] = None
 engine_before, scenes_before, objects_before = bpy.context.scene.render.engine, len(bpy.data.scenes), len(bpy.data.objects)
 lib_pending = LIB.pending()
@@ -4534,6 +4560,7 @@ check(steps_taken >= 5 and LIB.pending() == [] and bpy.data.scenes.get(LIB.RIG) 
 check(bpy.ops.m3d.library_refresh() == {'FINISHED'} and len(LIB.pending()) == 6 and not LIB._gen["done"], "Refresh Previews forgets every thumbnail")
 LIB.STARTERS = lib_starters
 LIB._gen["failed"].clear()
+LIB._gen["shipped"] = True
 
 # --- Alphas and brushes: the Sculpt alpha library, applied to the texture brush
 S_alphas = tempfile.mkdtemp(prefix="m3d_alpha_")
@@ -7935,7 +7962,7 @@ check(not BG.PROPERTIES_PT_m3d_tx_bake_group.page_poll(bpy.context) and T.PROPER
 bg_plain.m3d_bake.high = ts_blade_h
 log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_high)
 check(any(r._kind == "operator" and r._args[0] == "m3d.hp_make_pair" for r in log), "...and Make Pair once a High Poly is picked")
-check(any(r._kind == "operator" and r._args[0] == "m3d.tex_bake" for r in bg_draw(T.PROPERTIES_PT_m3d_tx_bake_run)), "...and the Bake button")
+check(any(r._kind == "operator" and r._args[0] == "m3d.tex_bake_sets" for r in bg_draw(T.PROPERTIES_PT_m3d_tx_bake_back)), "...and the Bake button")
 bg_plain.m3d_bake.high = None
 bpy.context.view_layer.objects.active = ts_blade
 bpy.data.objects.remove(bg_plain)
@@ -9167,6 +9194,8 @@ xp_s.export_bake_meshes = False
 shutil.rmtree(xp_dir, ignore_errors=True)
 log = bg_draw(T.PROPERTIES_PT_m3d_tx_export_preset)
 check("export_bake_meshes" in [r._args[1] for r in log if r._kind == "prop"], "the Export tab has the option")
+check({"export_preset", "export_folder", "export_format", "export_size", "export_padding"} <= {r._args[1] for r in log if r._kind == "prop"},
+      "...and the template, the folder, the file type, the size and the padding")
 
 # --- ID map: a flat colour for each material of the high poly, for each mesh when they have one material
 check(any(m[0] == 'ID' for m in T.BAKE_MAPS) and 'ID' in MK.MAP_LABELS and T.BAKE_TYPES['ID'] == 'EMIT', "ID is a map of the Bake tab and a baked map of the mask effects")
@@ -9919,6 +9948,7 @@ pp_mat2.node_tree.nodes[LY.part('BASE_COLOR', pp_fill2.uid, "tex")].interpolatio
 pp_dir = tempfile.mkdtemp(prefix="m3d_export_props_")
 pp_tx = bpy.context.scene.m3d_tex
 pp_tx.export_folder, pp_tx.export_size, pp_tx.export_preset = pp_dir, 'SAME', 'UNREAL'
+pp_tx.export_padding = 'NONE'   # (the files are compared with the flattened stack: no padding)
 pp_state = sorted(n.name for n in pp_mat2.node_tree.nodes)
 check(bpy.ops.m3d.tex_export() == {'FINISHED'}, "Unreal export of a stack with a textured fill runs")
 bc, _img = load_png(pp_dir, "T_PropsExport_BC.png")
@@ -9946,9 +9976,9 @@ pp_spec = LIB.describe_layer(pp_fill2, pp_files)
 check(pp_spec.get("textures") == {"BASE_COLOR": "image1.png"} and pp_spec["uv"]["tiling"] == [2.0, 2.0] and list(pp_files) == ["image1.png"],
       "Save to Library keeps a fill's textures and its UV transform: %s" % {k: pp_spec.get(k) for k in ("textures", "uv")})
 pp_ref = LIB.save_user_item(LIB.describe_material("Textured Fill", pp_fill2, pp_files), pp_files)
-before_layers = len(pp_mat2.m3d_layers)
+before_layers, pp_fill2_uid = len(pp_mat2.m3d_layers), pp_fill2.uid   # (the uid is read before the layers are added: a collection that grows moves its items)
 check(bpy.ops.m3d.library_apply(item=pp_ref) == {'FINISHED'} and len(pp_mat2.m3d_layers) == before_layers + 2, "the saved item applies")
-pp_applied = next(l for l in pp_mat2.m3d_layers if l.kind == 'FILL' and l.uid != pp_fill2.uid and LY.has_texture(l, 'BASE_COLOR'))
+pp_applied = next(l for l in pp_mat2.m3d_layers if l.kind == 'FILL' and l.uid != pp_fill2_uid and LY.has_texture(l, 'BASE_COLOR'))
 check(tuple(pp_applied.uv_tiling) == (2.0, 2.0) and LY.entry_of(pp_applied, 'BASE_COLOR').texture is not None
       and np.abs(read(LY.entry_of(pp_applied, 'BASE_COLOR').texture).reshape(4, 4, 4)[..., :3] - col_px[..., :3]).max() < 1.5 / 255,
       "...with its texture (the pixels came back) and its transform")
@@ -10363,6 +10393,7 @@ check(LY.blend_of(named(m, "F"), 'ROUGHNESS') == 'OVERLAY' and abs(LY.opacity_of
 LY.unfreeze_folder(m, LY.index_of(m, by["F"].uid))
 tx = bpy.context.scene.m3d_tex
 tx.export_folder, tx.export_size, tx.export_preset = tempfile.mkdtemp(prefix="m3d_p3e_"), '64', 'UNREAL'
+tx.export_padding = 'NONE'
 check(bpy.ops.m3d.tex_export() == {'FINISHED'}, "Export of a stack with another mode in each channel")
 orm3, _ = load_png(tx.export_folder, "T_Flat3e_ORM.png")
 flat_roughness = LY.flatten_channel(m, 'ROUGHNESS', 64)
@@ -10649,7 +10680,7 @@ mk_path = os.path.join(mk_dir, "mask.png")
 ramp3 = np.zeros((16, 16, 4), np.float32)
 ramp3[..., :3] = np.linspace(0.0, 1.0, 16, dtype=np.float32)[None, :, None]
 ramp3[..., 3] = 1.0
-T.write_png(mk_path, ramp3, False)
+T.write_image(bpy.context, mk_path, ramp3)
 thumb_mat.m3d_layer_index = 0
 check(bpy.ops.m3d.layer_mask_image(filepath=mk_path) == {'FINISHED'} and [e.kind for e in th_paint.mask_stack] == ['PAINT', 'PAINT'] and th_paint.paint_mask
       and tuple(LY.paint_effect(th_paint).image.size) == (16, 16) and LY.paint_effect(th_paint).image.colorspace_settings.name == 'Non-Color',
@@ -10871,6 +10902,698 @@ for image in [i for i in bpy.data.images if i.name.startswith(("p3", "mg", "fl3"
 shutil.rmtree(mk_dir, ignore_errors=True)
 shutil.rmtree(tx.export_folder, ignore_errors=True)
 tx.export_preset, tx.export_folder, tx.export_size = 'UNITY', "//textures/", 'SAME'
+
+# ----------------------------------------------------------------------------------------------------
+# Phase 4: texture sets (the list, Texture Set Settings: channels, formats, size, mesh map slots), Bake Mesh Maps, the Export Textures
+# dialog (templates, file types, padding), the New Texture Project dialog, the starter thumbnails that come with the program.
+import m3d_texset as TS
+import m3d_library as LB
+
+clean_scene()
+p4_tx = bpy.context.scene.m3d_tex
+p4_dirs = []
+
+
+def p4_dir():
+    p4_dirs.append(tempfile.mkdtemp(prefix="m3d_p4_"))
+    return p4_dirs[-1]
+
+
+def p4_fill(image, values):
+    """Fill an image with one color (a tuple) or a left to right grey ramp (the string 'ramp'); returns the pixels as read back."""
+    w, h = image.size
+    px = np.ones((w * h, 4), np.float32)
+    px[:, :3] = (np.tile(np.linspace(0.0, 1.0, w, dtype=np.float32), h)[:, None] if isinstance(values, str) else np.asarray(values, np.float32))
+    image.pixels.foreach_set(px.ravel())
+    image.update()
+    return read_image(image)
+
+
+def p4_stack_image(mat, channel, index=0):
+    return LY.entry_of(mat.m3d_layers[index], channel).image
+
+
+def p4_load(folder, name):
+    """A written file as raw values (rows from the bottom), and its image."""
+    image = bpy.data.images.load(os.path.join(folder, name), check_existing=False)
+    image.colorspace_settings.name = 'Non-Color'
+    image.alpha_mode = 'CHANNEL_PACKED'
+    return read_image(image), image
+
+
+def p4_tol(depth='8'):
+    return 2.0 / 255 + 1e-4 if depth == '8' else 2e-3
+
+
+def p4_select(*obs):
+    if bpy.context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    for o in bpy.data.objects:
+        o.select_set(o in obs)
+    bpy.context.view_layer.objects.active = obs[0]
+
+
+# --- New Texture Project: the selected meshes, a Base layer for each material, the channels and the size, the normal format
+bpy.ops.m3d.add_primitive(kind='CUBE')
+p4_a = bpy.context.active_object
+p4_a.name = "P4A"
+p4_a.data.uv_layers.remove(p4_a.data.uv_layers[0])
+p4_a.data.materials.append(bpy.data.materials.new("P4Skin"))
+p4_a.data.materials.append(bpy.data.materials.new("P4Metal"))
+for i_, poly_ in enumerate(p4_a.data.polygons):
+    poly_.material_index = i_ % 2
+bpy.ops.m3d.add_primitive(kind='CUBE')
+p4_b = bpy.context.active_object
+p4_b.name = "P4B"
+p4_select(p4_a, p4_b)
+check([o.name for o in sorted(TS.project_meshes(bpy.context), key=lambda o: o.name)] == ["P4A", "P4B"] and bpy.ops.m3d.tex_project.poll(),
+      "the New Texture Project dialog works on the selected meshes")
+log = []
+TS.M3D_OT_tex_project.draw(type("Inst", (), {"layout": Rec(log), "resolution": '1024', "normal_format": 'OPENGL', "template": 'DEFAULT',
+                                              "unwrap": True, "bake_after": True})(), bpy.context)
+check({"resolution", "normal_format", "template", "unwrap", "bake_after"} <= {r._args[1] for r in log if r._kind == "prop"}
+      and any("P4A" in r._kw.get("text", "") for r in log if r._kind == "label"), "...it lists the meshes and has the resolution, the normal format, the channels, Auto Unwrap and Bake Mesh Maps After")
+tex_ws.m3d_page_right = "tex_layers"
+check(bpy.ops.m3d.tex_project('EXEC_DEFAULT', resolution='128', normal_format='DIRECTX', template='DEFAULT', unwrap=True, bake_after=True) == {'FINISHED'},
+      "OK makes the project")
+p4_skin, p4_metal, p4_b_mat = bpy.data.materials["P4Skin"], bpy.data.materials["P4Metal"], p4_b.active_material
+check(len(p4_a.data.uv_layers) == 1 and len(p4_b.data.uv_layers) == 1, "...unwraps the mesh that had no UVs")
+check(p4_b_mat is not None and p4_b_mat.name == "P4B_Material", "...gives the mesh without a material one: %s" % (p4_b_mat and p4_b_mat.name))
+for mat_ in (p4_skin, p4_metal, p4_b_mat):
+    layer_ = mat_.m3d_layers[0] if len(mat_.m3d_layers) else None
+    check(len(mat_.m3d_layers) == 1 and layer_.name == "Base" and layer_.kind == 'PAINT' and mat_.m3d_size == 128 and LY.stack_size(mat_) == 128
+          and [c.id for c in LY.set_channels(mat_)] == ['BASE_COLOR', 'ROUGHNESS', 'METALLIC', 'NORMAL', 'HEIGHT'] and mat_.m3d_off == "EMISSION"
+          and all(LY.entry_of(layer_, c).image is not None and tuple(LY.entry_of(layer_, c).image.size) == (128, 128)
+                  for c in ('BASE_COLOR', 'ROUGHNESS', 'METALLIC', 'NORMAL', 'HEIGHT')) and LY.entry_of(layer_, 'EMISSION').image is None,
+          "%s is a texture set: a Base layer with an image of 128 px for each channel of the template (not Emission)" % mat_.name)
+    check("m3d_layer.BASE_COLOR" in mat_.node_tree.nodes and "m3d_layer.EMISSION" not in mat_.node_tree.nodes, "...built into the shader: %s" % mat_.name)
+check(p4_tx.resolution == '128' and p4_tx.normal_format == 'DIRECTX', "...the document resolution and the normal map format are kept")
+check(tex_ws.m3d_page_right == "tex_bake", "Bake Mesh Maps After opens Bake Mesh Maps")
+check(bpy.context.active_object == p4_a and p4_a.active_material == p4_skin, "...the first set is the one painted")
+check(bpy.ops.m3d.tex_project('EXEC_DEFAULT', resolution='256') == {'CANCELLED'} and p4_skin.m3d_size == 128, "a second run changes nothing (the materials have layers)")
+wm_ = bpy.context.window_manager
+menu_set_ = wm_.m3d_menu_set
+for mset_, want_ in (('TEXTURING', True), ('MODELING', False)):
+    wm_.m3d_menu_set = mset_
+    log = []
+    m3d_ui.draw_entries(Rec(log), bpy.context, m3d_ui.MENUS["M3D_MT_file"][1])
+    check(("New Texture Project..." in [r._kw.get("text") for r in log if r._kind == "operator"]) == want_,
+          "File > New Texture Project... is in the %s menu set: %s" % (mset_, want_))
+wm_.m3d_menu_set = menu_set_
+check(any(e.get("idname") == "m3d.tex_project" for e in m3d_ui.MENUS["M3D_MT_file"][1]) and op_ok("m3d.tex_project", {}), "...and it is a real command")
+bpy.ops.m3d.add_primitive(kind='CUBE')
+p4_nm = bpy.context.active_object
+log = []
+T.draw_fixes(Rec(log), bpy.context, 'PAINT')
+check({"Add Material", "New Texture Project..."} <= {r._kw.get("text") for r in log if r._kind == "operator"}, "a mesh without a material is offered New Texture Project next to Add Material")
+bpy.data.objects.remove(p4_nm)
+p4_select(p4_a)
+bpy.ops.m3d.add_primitive(kind='CUBE')
+p4_c = bpy.context.active_object
+p4_c.name = "P4C"
+check(bpy.ops.m3d.tex_project('EXEC_DEFAULT', resolution='64', template='MINIMAL', unwrap=False, bake_after=False) == {'FINISHED'}
+      and p4_c.active_material.m3d_off == "NORMAL|HEIGHT|EMISSION" and p4_c.active_material.m3d_size == 64, "the minimal template: Base Color, Roughness and Metallic")
+check(tex_ws.m3d_page_right == "tex_bake", "...without Bake Mesh Maps After the page is left as it was")
+bpy.ops.m3d.add_primitive(kind='CUBE')
+p4_d = bpy.context.active_object
+p4_d.name = "P4D"
+check(bpy.ops.m3d.tex_project('EXEC_DEFAULT', resolution='64', template='EMISSION', unwrap=False, bake_after=False) == {'FINISHED'}
+      and p4_d.active_material.m3d_off == "" and p4_d.active_material.m3d_layers[0].channels[5].image is not None, "...and the one with Emission has all six")
+for o_ in (p4_c, p4_d):
+    mat_ = o_.active_material
+    bpy.data.objects.remove(o_)
+    for img_ in [i_ for i_ in bpy.data.images if i_.name.startswith(mat_.name)]:
+        bpy.data.images.remove(img_)
+    bpy.data.materials.remove(mat_)
+
+# --- The Texture Set List: a row for each set, the active one follows a click, rename, isolate
+p4_select(p4_a)
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+check([(m.name, o.name) for m, o in T.texture_sets(bpy.context)] == [("P4Skin", "P4A"), ("P4Metal", "P4A"), ("P4B_Material", "P4B")],
+      "the sets: the materials of the active mesh, then the others with layers")
+
+
+def p4_row(name):
+    """Place of a set among the rows of the Texture Set List (made up to date first, as the timer does)."""
+    T.sync_sets(bpy.context)
+    return [r_.name for r_ in p4_tx.sets].index(name)
+
+
+T.sync_sets(bpy.context)
+check([(r_.name, r_.mesh) for r_ in p4_tx.sets] == [("P4Skin", "P4A"), ("P4Metal", "P4A"), ("P4B_Material", "P4B")]
+      and all(m_.preview is None for m_ in bpy.data.materials), "the rows of the list are the sets (and no material has a preview)")
+check(p4_tx.set_index == p4_row("P4Skin"), "the active row is the active material")
+p4_tx.set_index = p4_row("P4Metal")
+check(p4_a.active_material == p4_metal and bpy.context.active_object == p4_a, "a click on a row makes the set the active material")
+p4_tx.set_index = p4_row("P4B_Material")
+T.sync_sets(bpy.context)   # (the active mesh is another one: its sets come first in the list now)
+check(bpy.context.active_object == p4_b and p4_b.mode == 'TEXTURE_PAINT' and p4_tx.set_index == [r_.name for r_ in p4_tx.sets].index("P4B_Material") == 0,
+      "...also one of another mesh (and Texture Paint Mode goes with it)")
+p4_tx.set_index = p4_row("P4Skin")
+check(bpy.context.active_object == p4_a and p4_a.active_material == p4_skin, "(back to the first mesh)")
+p4_tx.set_index = 99
+check(p4_a.active_material == p4_skin, "a row that is not there changes nothing")
+p4_skin_row = next(r_ for r_ in p4_tx.sets if r_.name == "P4Skin")
+log = []
+T.M3D_UL_tex_sets.draw_item(None, TCtx('SETS'), Rec(log), None, p4_skin_row, 0, None, "", 0)
+check(any(r._kind == "label" and r._kw.get("text") == "128" for r in log), "a row shows the size of the set's images")
+tex_ws.m3d_page_right = "tex_bake"
+log = []
+T.M3D_UL_tex_sets.draw_item(None, TCtx('SETS'), Rec(log), None, p4_skin_row, 0, None, "", 0)
+check_calls("Texture Set List row in Bake Mesh Maps", log)
+check(any(r._kind == "prop" and r._args[1] == "m3d_set_bake" for r in log), "in Bake Mesh Maps each row has a Bake checkbox")
+tex_ws.m3d_page_right = "tex_layers"
+ctx_ = TCtx('SETS')
+ctx_.ui_list, ctx_.button_pointer = NS(bl_idname="M3D_UL_tex_sets"), p4_metal
+log = []
+T.draw_sets_menu(NS(layout=Rec(log)), ctx_)
+check_calls("Texture Set List menu", log)
+ctx_.button_pointer = next(r_ for r_ in p4_tx.sets if r_.name == "P4Metal")
+log2_ = []
+T.draw_sets_menu(NS(layout=Rec(log2_)), ctx_)
+check([r.values().get("material") for r in log2_ if r._kind == "operator"] == ["P4Metal"] * 3, "(the menu of a row that is not on a button has the same items)")
+ctx_.button_pointer = p4_metal
+check([r._args[0] for r in log if r._kind == "operator"] == ["m3d.tex_set_rename", "m3d.tex_set_visible", "m3d.tex_isolate"]
+      and all(r.values().get("material") == "P4Metal" for r in log if r._kind == "operator"), "the right-click menu has Rename, Show / Hide and Isolate for the row")
+log = []
+T.draw_sets_menu(NS(layout=Rec(log)), TCtx('SETS'))
+check(not log, "...and nothing in the menus of other lists")
+check(bpy.ops.m3d.tex_isolate(object="P4A", material="P4Metal") == {'FINISHED'} and p4_a.active_material == p4_metal
+      and all(p_.hide == (p_.material_index != 1) for p_ in p4_a.data.polygons) and p4_b.hide_get(), "Isolate on a row isolates that set")
+check(bpy.ops.m3d.tex_isolate() == {'FINISHED'} and not p4_b.hide_get() and not any(p_.hide for p_ in p4_a.data.polygons), "...and again shows everything")
+check(bpy.ops.m3d.tex_set_rename('EXEC_DEFAULT', material="P4Metal", name="P4Steel") == {'FINISHED'} and p4_metal.name == "P4Steel", "Rename renames the set")
+check(bpy.ops.m3d.tex_set_rename('EXEC_DEFAULT', material="P4Steel", name="  ") == {'CANCELLED'} and p4_metal.name == "P4Steel", "...an empty name is refused")
+p4_select(p4_a)
+p4_a.active_material_index = 0
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+
+# --- Texture Set Settings: channels (add, remove, re-add keeps the images), formats, size
+check(tex_shown("tex_settings") != [] and {"PROPERTIES_PT_m3d_tx_set_general", "PROPERTIES_PT_m3d_tx_set_channels", "PROPERTIES_PT_m3d_tx_set_maps"} <= set(tex_shown("tex_settings")),
+      "Texture Set Settings: General, Channels, Mesh Maps")
+for cls_ in (TS.PROPERTIES_PT_m3d_tx_set_general, TS.PROPERTIES_PT_m3d_tx_set_channels, TS.PROPERTIES_PT_m3d_tx_set_maps):
+    bg_draw(cls_, TCtx())
+log = bg_draw(TS.PROPERTIES_PT_m3d_tx_set_channels, TCtx())
+check([r._kw.get("text") for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_channel"] == ["Base Color", "Roughness", "Metallic", "Normal", "Height"]
+      and len([r for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_channel_remove"]) == 5
+      and len([r for r in log if r._kind == "operator_menu_enum" and r._args[0] == "m3d.tex_channel_format"]) == 4
+      and any(r._kind == "menu" and r._args[0] == "M3D_MT_tex_channel_add" for r in log),
+      "the Channels list: a row for each channel of the set with its format and an x, and the Add menu (Emission is not in it)")
+log = []
+TS.M3D_MT_tex_channel_add.draw(type("Inst", (), {"layout": Rec(log)})(), bpy.context)
+check([(r._args[0], r.values()["channel"]) for r in log if r._kind == "operator"] == [("m3d.tex_channel_add", 'EMISSION')], "...which offers the removed channels")
+height_image = p4_stack_image(p4_skin, 'HEIGHT')
+p4_fill(height_image, (0.8, 0.8, 0.8))
+n_images = len(bpy.data.images)
+check(bpy.ops.m3d.tex_channel_remove(channel='HEIGHT') == {'FINISHED'} and p4_skin.m3d_off == "HEIGHT|EMISSION", "the x removes a channel")
+check("m3d_layer.HEIGHT" not in p4_skin.node_tree.nodes and 'HEIGHT' not in LY.content_channels(p4_skin) and 'HEIGHT' not in T.channel_slots(p4_skin)
+      and [c.id for c in LY.set_channels(p4_skin)] == ['BASE_COLOR', 'ROUGHNESS', 'METALLIC', 'NORMAL'], "...nothing is built for it, and it is not a paint slot of the set")
+check(p4_stack_image(p4_skin, 'HEIGHT') == height_image and len(bpy.data.images) == n_images and abs(read_image(height_image)[0, 0, 0] - 0.8) < 0.01,
+      "...but the layer keeps its image and its pixels")
+p4_tx.brush.use_height = True
+check('HEIGHT' not in [c.id for c, _i in LY.stroke_targets(bpy.context, p4_skin, LY.active_layer(p4_skin), False)], "a stroke does not paint a channel that is not in the set")
+p4_tx.brush.use_height = False
+check(bpy.ops.m3d.tex_channel_add(channel='HEIGHT') == {'FINISHED'} and p4_skin.m3d_off == "EMISSION" and "m3d_layer.HEIGHT" in p4_skin.node_tree.nodes
+      and p4_stack_image(p4_skin, 'HEIGHT') == height_image and 'HEIGHT' in LY.content_channels(p4_skin) and abs(read_image(height_image)[0, 0, 0] - 0.8) < 0.01,
+      "adding it again builds the chain with the same image")
+bpy.ops.m3d.tex_channel_remove(channel='HEIGHT')
+check(bpy.ops.m3d.tex_channel(channel='HEIGHT') == {'FINISHED'} and not LY.channel_off(p4_skin, 'HEIGHT'), "painting a removed channel (the Layers menu, the shelf) adds it back")
+for cid_ in ('BASE_COLOR', 'ROUGHNESS', 'METALLIC', 'NORMAL'):
+    bpy.ops.m3d.tex_channel_remove(channel=cid_)
+check(bpy.ops.m3d.tex_channel_remove(channel='HEIGHT') == {'CANCELLED'} and [c.id for c in LY.set_channels(p4_skin)] == ['HEIGHT'], "the last channel stays")
+check(p4_skin.m3d_channel == 'HEIGHT' and p4_skin.m3d_row_channel == 'HEIGHT', "...and the channel being painted is one of the set")
+for cid_ in ('BASE_COLOR', 'ROUGHNESS', 'METALLIC', 'NORMAL'):
+    bpy.ops.m3d.tex_channel_add(channel=cid_)
+check(p4_skin.m3d_off == "EMISSION" and set(LY.content_channels(p4_skin)) == {'BASE_COLOR', 'ROUGHNESS', 'METALLIC', 'NORMAL', 'HEIGHT'}, "(all five again)")
+
+# formats: 16 bit float for the channels that are not colors, the pixels and the names stay
+normal_image = p4_stack_image(p4_skin, 'NORMAL')
+p4_fill(normal_image, (0.5, 0.7, 1.0))
+name_ = normal_image.name
+n_images = len(bpy.data.images)
+check(bpy.ops.m3d.tex_channel_format(channel='NORMAL', depth='16') == {'FINISHED'} and p4_skin.m3d_depth == "NORMAL", "a channel can be 16 bit float")
+normal16 = p4_stack_image(p4_skin, 'NORMAL')
+check(normal16 != normal_image and normal16.name == name_ and normal16.is_float and normal16.use_half_precision and tuple(normal16.size) == (128, 128)
+      and len(bpy.data.images) == n_images and LY.channel_depth(p4_skin, 'NORMAL') == 16, "...its image is a half float copy with the same name and size (%s)" % normal16.name)
+check(np.abs(read_image(normal16)[..., :3] - np.array([0.5, 0.7, 1.0])).max() < 2e-3, "...with the same pixels")
+check("m3d_layer.NORMAL" in p4_skin.node_tree.nodes and p4_skin.node_tree.nodes["m3d_layer.NORMAL"].get("m3d_sig") is not None, "...and the chain follows")
+check(bpy.ops.m3d.tex_channel_format(channel='BASE_COLOR', depth='16') == {'CANCELLED'} and not p4_stack_image(p4_skin, 'BASE_COLOR').is_float
+      and p4_skin.m3d_depth == "NORMAL", "the color channels stay 8 bit sRGB")
+bpy.ops.m3d.layer_add(kind='PAINT')
+bpy.ops.m3d.tex_channel(channel='NORMAL')
+check(p4_stack_image(p4_skin, 'NORMAL', 1).is_float and not p4_stack_image(p4_skin, 'ROUGHNESS', 0).is_float, "a new layer makes its Normal image in the set's format")
+check(bpy.ops.m3d.layer_remove() == {'FINISHED'} and len(p4_skin.m3d_layers) == 1, "(the extra layer goes)")
+check(bpy.ops.m3d.tex_channel_format(channel='NORMAL', depth='8') == {'FINISHED'} and not p4_stack_image(p4_skin, 'NORMAL').is_float and p4_skin.m3d_depth == ""
+      and p4_stack_image(p4_skin, 'NORMAL').name == name_ and np.abs(read_image(p4_stack_image(p4_skin, 'NORMAL'))[..., :3] - np.array([0.5, 0.7, 1.0])).max() < 0.01,
+      "...and back to 8 bit")
+check(bpy.ops.m3d.tex_channel_format(channel='NORMAL', depth='8') == {'FINISHED'}, "(the same format again does nothing wrong)")
+log = bg_draw(TS.PROPERTIES_PT_m3d_tx_set_channels, TCtx())
+
+# size: one square size for the set, every image follows
+check(p4_tx.set_size == '128', "Size shows the size of the set's images")
+bpy.ops.m3d.layer_add(kind='PAINT')
+bpy.ops.m3d.tex_channel(channel='ROUGHNESS')
+bpy.ops.m3d.layer_mask_add(fill='WHITE')
+extra = LY.active_layer(p4_skin)
+mask_image = LY.paint_effect(extra).image
+sizes_ = lambda: {tuple(i.size) for l_ in p4_skin.m3d_layers for i in LY.layer_images(l_)}
+check(sizes_() == {(128, 128)}, "(every image of the set is 128 px: the layer made its images at the size of the set)")
+p4_tx.set_size = '64'
+check(sizes_() == {(64, 64)} and p4_skin.m3d_size == 64 and p4_tx.set_size == '64' and LY.stack_size(p4_skin) == 64
+      and tuple(mask_image.size) == (64, 64), "a smaller Size scales every image of the set, the masks' too")
+p4_tx.set_size = '256'
+check(sizes_() == {(256, 256)} and p4_tx.set_size == '256', "...and a bigger one")
+bpy.ops.m3d.layer_add(kind='PAINT')
+bpy.ops.m3d.tex_channel(channel='BASE_COLOR')
+check(tuple(p4_stack_image(p4_skin, 'BASE_COLOR', 2).size) == (256, 256), "a new layer's images take the size of the set")
+p4_tx.set_size = '128'
+check(sizes_() == {(128, 128)} and len(p4_skin.m3d_layers) == 3, "(back to 128 with the two extra layers)")
+bpy.ops.m3d.layer_remove()
+bpy.ops.m3d.layer_remove()
+check(len(p4_skin.m3d_layers) == 1, "(only the Base layer is left)")
+
+# --- Mesh map slots: bake into them, load a file, clear
+for cls_ in (TS.PROPERTIES_PT_m3d_tx_set_maps,):
+    log = bg_draw(cls_, TCtx())
+    check([r._kw.get("text") for r in log if r._kind == "label" and r._kw.get("text") in T.MAP_TEXT.values()]
+          == ["Normal", "World Normal", "ID", "Ambient Occlusion", "Curvature", "Position", "Thickness"], "the slots: Normal, World Normal, ID, AO, Curvature, Position, Thickness")
+    check(len([r for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_map_load"]) == 7
+          and len([r for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_map_clear"]) == 7
+          and any(r._kind == "operator" and r._args[0] == "m3d.tex_bake_mode" for r in log), "...each can be loaded from a file or cleared, and Bake Mesh Maps is under them")
+p4_b.m3d_bake.resolution, p4_b.m3d_bake.margin, p4_b.m3d_bake.samples = '64', 2, 1
+p4_a.m3d_bake.resolution, p4_a.m3d_bake.margin, p4_a.m3d_bake.samples = '64', 2, 1
+for o_ in (p4_a, p4_b):
+    s_ = o_.m3d_bake
+    s_.use_normal, s_.use_ao, s_.use_curvature, s_.use_position, s_.use_thickness, s_.use_id, s_.use_worldnormal = False, True, False, False, False, False, False
+check(bpy.ops.m3d.tex_bake() == {'FINISHED'} and "P4A_AO" in bpy.data.images, "(a map is baked)")
+log = bg_draw(TS.PROPERTIES_PT_m3d_tx_set_maps, TCtx())
+slot_ = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_view_mode"]
+check([r.values()["mode"] for r in slot_] == ["MAP:AO"] and "icon_value" in slot_[0]._kw and "P4A_AO" in bg_text(log), "a baked map has its thumbnail and its name in its slot: %s" % [r.values() for r in slot_])
+check(bpy.ops.m3d.tex_map_clear(label='AO') == {'FINISHED'} and "P4A_AO" not in bpy.data.images and "P4A_AO" not in p4_a.m3d_bake.baked
+      and bpy.ops.m3d.tex_map_clear(label='AO') == {'CANCELLED'}, "x clears the slot (the image goes)")
+p4_png = os.path.join(p4_dir(), "curv.png")
+T.write_image(bpy.context, p4_png, np.full((16, 16, 4), 0.3, np.float32))
+check(bpy.ops.m3d.tex_map_load(label='Curvature', filepath=p4_png) == {'FINISHED'}, "a slot takes an image file")
+p4_curv = bpy.data.images.get("P4A_Curvature")
+check(p4_curv is not None and p4_curv.colorspace_settings.name == 'Non-Color' and p4_curv.get("m3d_bake") == "Curvature" and dict(T.mesh_maps(p4_a)).get("Curvature") == p4_curv
+      and "P4A_Curvature" in p4_a.m3d_bake.baked and tuple(p4_curv.size) == (16, 16), "...named after the set, a mesh map of the mesh")
+check(T.ensure_maps(bpy.context, p4_a, ['CURVATURE'])['CURVATURE'] == p4_curv and p4_curv.source == 'FILE', "...the mask effects use it and do not bake over it")
+p4_a.m3d_bake.use_curvature = True
+p4_a.m3d_bake.use_ao = False
+check(bpy.ops.m3d.tex_bake() == {'FINISHED'} and bpy.data.images["P4A_Curvature"].source == 'GENERATED' and tuple(bpy.data.images["P4A_Curvature"].size) == (64, 64)
+      and len([i_ for i_ in bpy.data.images if i_.name.startswith("P4A_Curvature")]) == 1, "...and a bake replaces it")
+p4_pos_png = os.path.join(p4_dir(), "pos.png")
+T.write_image(bpy.context, p4_pos_png, np.full((8, 8, 4), 0.5, np.float32))
+bpy.ops.m3d.tex_map_load(label='Position', filepath=p4_pos_png)
+check(len(bpy.data.images["P4A_Position"].get("m3d_bounds", ())) == 6 and len(bpy.data.images["P4A_Position"].get("m3d_inv", ())) == 16, "a loaded Position map gets the bounds of the mesh")
+for label_ in ("Curvature", "Position"):
+    bpy.ops.m3d.tex_map_clear(label=label_)
+p4_a.m3d_bake.use_curvature = False
+p4_a.m3d_bake.use_ao = True
+
+# --- Bake Mesh Maps: the bakers list, common and per-map settings, the Bake button, a set of each mesh
+tex_ws.m3d_page_right = "tex_bake"
+names_ = tex_shown("tex_bake")
+check(set(names_) >= {"PROPERTIES_PT_m3d_tx_bake_back", "PROPERTIES_PT_m3d_tx_bake_maps", "PROPERTIES_PT_m3d_tx_bake_settings", "PROPERTIES_PT_m3d_tx_bake_high",
+                      "PROPERTIES_PT_m3d_tx_bake_map"}, "the Bake page: %s" % names_)
+check([c.bl_order for c in (T.PROPERTIES_PT_m3d_tx_bake_back, T.PROPERTIES_PT_m3d_tx_bake_maps, T.PROPERTIES_PT_m3d_tx_bake_settings, T.PROPERTIES_PT_m3d_tx_bake_high,
+                            T.PROPERTIES_PT_m3d_tx_bake_map, T.PROPERTIES_PT_m3d_tx_bake_multires, T.PROPERTIES_PT_m3d_tx_bake_run)] == [-10, 0, 10, 20, 30, 40, 50]
+      and BG.PROPERTIES_PT_m3d_tx_bake_groups.bl_order == 21, "...in the order Bake, bakers, common settings, high polys (and the bake groups), map settings, Multires, the baked maps")
+for cls_ in (T.PROPERTIES_PT_m3d_tx_bake_back, T.PROPERTIES_PT_m3d_tx_bake_maps, T.PROPERTIES_PT_m3d_tx_bake_settings, T.PROPERTIES_PT_m3d_tx_bake_high,
+             T.PROPERTIES_PT_m3d_tx_bake_map, T.PROPERTIES_PT_m3d_tx_bake_run):
+    bg_draw(cls_, TCtx())
+log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_maps, TCtx())
+check([r._args[1] for r in log if r._kind == "prop"] == ["use_normal", "use_ao", "use_curvature", "use_position", "use_thickness", "use_id", "use_worldnormal"]
+      and [r._args[1] for r in log if r._kind == "prop_enum"] == ["bake_map"] * 7 and [r._args[2] for r in log if r._kind == "prop_enum"] == [k for k, _l, _f in T.BAKE_MAPS],
+      "the Mesh Map Bakers: a checkbox and a button for each map")
+check([r.values().get("action") for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_bake_maps"] == ['ALL', 'NONE', 'INVERT', 'SYNC'],
+      "...with Check All, Uncheck All, Invert and (with several sets ticked) Apply to Checked Texture Sets")
+check(bpy.ops.m3d.tex_bake_maps(action='ALL') == {'FINISHED'} and all(getattr(p4_a.m3d_bake, f) for _k, _l, f in T.BAKE_MAPS), "Check All")
+check(bpy.ops.m3d.tex_bake_maps(action='NONE') == {'FINISHED'} and not any(getattr(p4_a.m3d_bake, f) for _k, _l, f in T.BAKE_MAPS), "Uncheck All")
+p4_a.m3d_bake.use_ao = True
+check(bpy.ops.m3d.tex_bake_maps(action='INVERT') == {'FINISHED'} and not p4_a.m3d_bake.use_ao and p4_a.m3d_bake.use_normal, "Invert Checked")
+bpy.ops.m3d.tex_bake_maps(action='NONE')
+p4_a.m3d_bake.use_ao = p4_a.m3d_bake.use_normal = True
+p4_a.m3d_bake.resolution, p4_a.m3d_bake.margin, p4_a.m3d_bake.samples = '64', 3, 2
+check(bpy.ops.m3d.tex_bake_maps(action='SYNC') == {'FINISHED'} and p4_b.m3d_bake.use_ao and p4_b.m3d_bake.use_normal and not p4_b.m3d_bake.use_curvature
+      and p4_b.m3d_bake.margin == 3 and p4_b.m3d_bake.samples == 2, "Apply to Checked Texture Sets copies the maps, the size, the dilation and the antialiasing")
+check(T.bake_count(bpy.context) == (2, 3), "the Bake button counts 2 maps for 3 texture sets: %s" % (T.bake_count(bpy.context),))
+log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_back, TCtx())
+check(any(r._kind == "operator" and r._args[0] == "m3d.tex_bake_sets" and r._kw.get("text") == "Bake: 2 maps x 3 sets" for r in log)
+      and any(r._kind == "operator" and r._args[0] == "m3d.tex_bake_mode" and r._kw.get("text") == "Back to Painting" for r in log), "one big Bake button with the count, and Back to Painting")
+check(T.bake_units(T.bake_checked(bpy.context)) == [('MESH', p4_a), ('MESH', p4_b)], "a mesh is baked once, however many of its sets are ticked")
+log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_settings, TCtx())
+check({"resolution", "margin", "samples", "extrusion", "ray_distance", "cage"} <= {r._args[1] for r in log if r._kind == "prop"}
+      and any(r._kind == "operator" and r._args[0] == "m3d.hp_auto_pair" for r in log), "Common Settings: size, dilation, antialiasing, the cage, Match by Name")
+for key_, label_, _flag in T.BAKE_MAPS:
+    p4_tx.bake_map = key_
+    log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_map, TCtx())
+    check(any(r._kind == "label" and r._kw.get("text", "").endswith("> " + T.MAP_TEXT[label_]) for r in log), "Map Settings of %s: %s" % (label_, bg_text(log)))
+p4_tx.bake_map = 'AO'
+if bpy.context.scene.world is None:
+    bpy.context.scene.world = bpy.data.worlds.new("P4World")
+check("distance" in [r._args[1] for r in bg_draw(T.PROPERTIES_PT_m3d_tx_bake_map, TCtx()) if r._kind == "prop"], "...AO has its distance")
+p4_tx.bake_map = 'CURVATURE'
+check("curvature_contrast" in [r._args[1] for r in bg_draw(T.PROPERTIES_PT_m3d_tx_bake_map, TCtx()) if r._kind == "prop"], "...Curvature its contrast")
+p4_tx.bake_map = 'THICKNESS'
+check("thickness_distance" in [r._args[1] for r in bg_draw(T.PROPERTIES_PT_m3d_tx_bake_map, TCtx()) if r._kind == "prop"], "...Thickness its distance")
+p4_tx.bake_map = 'NORMAL'
+check("normal_format" in [r._args[1] for r in bg_draw(T.PROPERTIES_PT_m3d_tx_bake_map, TCtx()) if r._kind == "prop"], "...Normal the format of the project")
+for name_ in [n_ for n_ in ("P4A_AO", "P4A_Normal", "P4B_AO", "P4B_Normal") if n_ in bpy.data.images]:
+    bpy.data.images.remove(bpy.data.images[name_])
+p4_b_mat.m3d_set_bake = False
+check(bpy.ops.m3d.tex_bake_sets() == {'FINISHED'} and {"P4A_AO", "P4A_Normal"} <= set(bpy.data.images.keys()) and "P4B_AO" not in bpy.data.images,
+      "Bake bakes the sets that are ticked in the Texture Set List (P4B is not)")
+p4_b_mat.m3d_set_bake = True
+check(bpy.ops.m3d.tex_bake_sets() == {'FINISHED'} and {"P4B_AO", "P4B_Normal"} <= set(bpy.data.images.keys()), "...and the other mesh when it is")
+for mat_ in (p4_skin, p4_metal, p4_b_mat):
+    mat_.m3d_set_bake = False
+check(not bpy.ops.m3d.tex_bake_sets.poll(), "...nothing to bake when no set is ticked")
+for mat_ in (p4_skin, p4_metal, p4_b_mat):
+    mat_.m3d_set_bake = True
+p4_b.data.uv_layers.remove(p4_b.data.uv_layers[0])
+for name_ in [n_ for n_ in ("P4A_AO", "P4A_Normal") if n_ in bpy.data.images]:
+    bpy.data.images.remove(bpy.data.images[name_])
+check(bpy.ops.m3d.tex_bake_sets() == {'FINISHED'} and "P4A_AO" in bpy.data.images, "a set that cannot be baked (no UVs) is reported and skipped, the others are baked")
+p4_select(p4_b)
+bpy.ops.m3d.tex_unwrap()
+p4_select(p4_a)
+tex_ws.m3d_page_right = "tex_layers"
+
+# the world normal is a baker of its own; the normal format decides the green channel; a cage and the contrast of the curvature
+bpy.ops.m3d.tex_bake_maps(action='NONE')
+p4_a.m3d_bake.use_worldnormal = True
+check(bpy.ops.m3d.tex_bake() == {'FINISHED'} and bpy.data.images["P4A_WorldNormal"].is_float and bpy.data.images["P4A_WorldNormal"].get("m3d_bake") == "WorldNormal",
+      "World Normal is baked like the others (a float map)")
+p4_a.m3d_bake.use_worldnormal = False
+p4_select(p4_a)
+bpy.ops.m3d.add_primitive(kind='CUBE')
+p4_high = bpy.context.active_object
+p4_high.name = "P4High"
+bpy.ops.object.modifier_add(type='SUBSURF')
+p4_high.modifiers[0].levels = 2
+bpy.ops.object.modifier_apply(modifier=p4_high.modifiers[0].name)
+bpy.ops.m3d.add_primitive(kind='CUBE')
+p4_low = bpy.context.active_object
+p4_low.name = "P4Low"
+p4_select(p4_low, p4_high)
+p4_low.select_set(True)
+bpy.context.view_layer.objects.active = p4_low
+bpy.ops.m3d.tex_bake_pick()
+s_ = p4_low.m3d_bake
+s_.resolution, s_.margin, s_.samples, s_.extrusion = '64', 2, 1, 0.3
+s_.use_normal, s_.use_ao, s_.use_curvature, s_.use_position, s_.use_thickness, s_.use_id, s_.use_worldnormal = True, False, False, False, False, False, False
+p4_tx.normal_format = 'OPENGL'
+bpy.ops.m3d.tex_bake()
+gl_ = read_image(bpy.data.images["P4Low_Normal"]).copy()
+p4_tx.normal_format = 'DIRECTX'
+bpy.ops.m3d.tex_bake()
+dx_ = read_image(bpy.data.images["P4Low_Normal"]).copy()
+check(np.abs(gl_[..., 1] - 0.5).max() > 0.02 and np.abs(gl_[..., 0] - dx_[..., 0]).max() < 0.02 and np.abs(gl_[..., 2] - dx_[..., 2]).max() < 0.02
+      and np.abs((gl_[..., 1] + dx_[..., 1]) - 1.0)[(gl_[..., 1] + dx_[..., 1]) > 0.1].max() < 0.03, "the DirectX normal bake has the green channel of the OpenGL one flipped")
+p4_tx.normal_format = 'OPENGL'
+s_.use_normal, s_.use_curvature = False, True
+s_.curvature_contrast = 0.5
+bpy.ops.m3d.tex_bake()
+wide_ = read_image(bpy.data.images["P4Low_Curvature"]).copy()
+s_.curvature_contrast = 0.05
+bpy.ops.m3d.tex_bake()
+narrow_ = read_image(bpy.data.images["P4Low_Curvature"]).copy()
+check(narrow_[..., 0].std() > wide_[..., 0].std() + 0.05, "a smaller Curvature contrast shows smaller edges: the map has more black and white (%.2f against %.2f)" % (narrow_[..., 0].std(), wide_[..., 0].std()))
+s_.curvature_contrast = 0.05
+s_.use_curvature, s_.use_normal = False, True
+p4_cage = p4_low.copy()
+p4_cage.data = p4_low.data.copy()
+p4_cage.scale = (1.3, 1.3, 1.3)
+bpy.context.scene.collection.objects.link(p4_cage)
+s_.cage = p4_cage
+p4_select(p4_low, p4_high)
+p4_low.select_set(True)
+bpy.context.view_layer.objects.active = p4_low
+check(bpy.ops.m3d.tex_bake() == {'FINISHED'}, "a mesh can bake from a custom Cage")
+s_.cage = None
+tex_ws.m3d_page_right = "tex_layers"
+for o_ in (p4_cage, p4_low, p4_high):
+    bpy.data.objects.remove(o_)
+for img_ in [i_ for i_ in bpy.data.images if i_.name.startswith("P4Low")]:
+    bpy.data.images.remove(img_)
+
+# --- Export Textures: templates, file types, size, padding, the sets that are ticked and the maps that are not skipped
+p4_select(p4_a)
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.ops.m3d.add_primitive(kind='CUBE')
+p4_x = bpy.context.active_object
+p4_x.name = "P4X"
+bpy.ops.m3d.tex_project('EXEC_DEFAULT', resolution='128', template='EMISSION', unwrap=False, bake_after=False)
+p4_xm = p4_x.active_material
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+p4_base, p4_rough, p4_metal_img, p4_norm, p4_height, p4_emit = (p4_stack_image(p4_xm, c) for c in ('BASE_COLOR', 'ROUGHNESS', 'METALLIC', 'NORMAL', 'HEIGHT', 'EMISSION'))
+p4_fill(p4_base, (0.6, 0.3, 0.1))
+rough_px = p4_fill(p4_rough, 'ramp')
+metal_px = p4_fill(p4_metal_img, (0.25, 0.25, 0.25))
+p4_fill(p4_norm, (0.5, 0.7, 1.0))
+p4_fill(p4_height, (0.4, 0.4, 0.4))
+p4_fill(p4_emit, (0.2, 0.4, 0.6))
+p4_ao = bpy.data.images.new("P4X_AO", 128, 128)
+p4_ao["m3d_bake"] = "AO"
+p4_fill(p4_ao, (0.9, 0.9, 0.9))
+p4_nm = bpy.data.images.new("P4X_Normal", 128, 128)
+p4_nm["m3d_bake"] = "Normal"
+p4_fill(p4_nm, (0.5, 0.5, 1.0))
+p4_tx.export_padding, p4_tx.export_size, p4_tx.export_format, p4_tx.export_depth, p4_tx.export_bake_meshes = 'NONE', 'SAME', 'PNG', '8', False
+for mat_ in (p4_skin, p4_metal, p4_b_mat):
+    mat_.m3d_set_export = False
+p4_xm.m3d_set_export = True
+
+
+def p4_export(preset, **settings):
+    out = p4_dir()
+    p4_tx.export_folder, p4_tx.export_preset = out, preset
+    for k_, v_ in settings.items():
+        setattr(p4_tx, k_, v_)
+    res = bpy.ops.m3d.tex_export_dialog('EXEC_DEFAULT')
+    return res, out, sorted(os.listdir(out))
+
+
+check(len(T.TEMPLATES) == 7 and [k for k in T.TEMPLATES] == ['GLTF', 'UNREAL', 'UNITY', 'HDRP', 'BLENDER', 'DOCUMENT', 'MESHMAPS']
+      and [i[0] for i in T.EXPORT_ITEMS] == list(T.TEMPLATES), "the templates: glTF, Unreal, Unity URP and HDRP, Blender, Document channels, Mesh maps")
+tol = p4_tol()
+res, out, files = p4_export('UNREAL')
+check(res == {'FINISHED'} and files == ["T_P4X_BC.png", "T_P4X_E.png", "T_P4X_N.png", "T_P4X_ORM.png"], "Unreal: %s" % files)
+orm, _img = p4_load(out, "T_P4X_ORM.png")
+check(tuple(_img.size) == (128, 128) and np.abs(orm[..., 0] - 0.9).max() < tol and np.abs(orm[..., 1] - rough_px[..., 0]).max() < tol and np.abs(orm[..., 2] - 0.25).max() < tol,
+      "...the ORM map: occlusion, roughness, metallic")
+n_, _img = p4_load(out, "T_P4X_N.png")
+check(abs(n_[0, 0, 1] - 0.3) < tol and abs(n_[0, 0, 0] - 0.5) < tol, "...the normal map has the green channel flipped (DirectX)")
+bc_, _img = p4_load(out, "T_P4X_BC.png")
+check(np.abs(bc_[..., :3] - np.array([0.6, 0.3, 0.1])).max() < tol and bc_[..., 3].min() > 0.99, "...the base color with its alpha")
+check(sorted(os.path.basename(f) for f in p4_tx.export_files.split("|")) == files, "...and the list of the files written is kept")
+res, out, files = p4_export('UNITY')
+check(files == ["P4X_Albedo.png", "P4X_Emission.png", "P4X_MetallicSmoothness.png", "P4X_Normal.png", "P4X_Occlusion.png"], "Unity URP: %s" % files)
+ms_, _img = p4_load(out, "P4X_MetallicSmoothness.png")
+check(np.abs(ms_[..., 0] - 0.25).max() < tol and np.abs(ms_[..., 3] - (1 - rough_px[..., 0])).max() < tol, "...metallic in red, smoothness in alpha")
+n_, _img = p4_load(out, "P4X_Normal.png")
+check(abs(n_[0, 0, 1] - 0.7) < tol, "...the normal map is OpenGL")
+res, out, files = p4_export('HDRP')
+check(files == ["P4X_BaseMap.png", "P4X_Emission.png", "P4X_MaskMap.png", "P4X_Normal.png"], "Unity HDRP: %s" % files)
+mask_, _img = p4_load(out, "P4X_MaskMap.png")
+vis_ = mask_[..., 3] > 0.05
+check(np.abs(mask_[vis_, 0] - 0.25).max() < tol and np.abs(mask_[vis_, 1] - 0.9).max() < tol and np.abs(mask_[vis_, 2]).max() < tol
+      and np.abs(mask_[..., 3] - (1 - rough_px[..., 0])).max() < tol, "...the mask map: metallic, occlusion, detail mask, smoothness in alpha")
+res, out, files = p4_export('BLENDER')
+check(files == ["P4X_BaseColor.png", "P4X_Emission.png", "P4X_Height.png", "P4X_Metallic.png", "P4X_Normal.png", "P4X_Roughness.png"], "Blender Principled: %s" % files)
+r_, _img = p4_load(out, "P4X_Roughness.png")
+check(np.abs(r_[..., 0] - rough_px[..., 0]).max() < tol and np.abs(r_[..., 1] - r_[..., 0]).max() < 1e-4, "...one grey file for each channel")
+n_, _img = p4_load(out, "P4X_Normal.png")
+check(abs(n_[0, 0, 1] - 0.7) < tol, "...and the normal map as OpenGL, whatever the project says (%s)" % p4_tx.normal_format)
+p4_tx.normal_format = 'DIRECTX'
+res, out, files = p4_export('DOCUMENT')
+check(files == ["P4X_AO.png", "P4X_BaseColor.png", "P4X_Emission.png", "P4X_Height.png", "P4X_Metallic.png", "P4X_Normal.png", "P4X_Roughness.png"], "Document channels + Normal + AO: %s" % files)
+n_, _img = p4_load(out, "P4X_Normal.png")
+check(abs(n_[0, 0, 1] - 0.3) < tol, "...the normal map follows the project: DirectX flips the green channel")
+res, out, files = p4_export('UNITY')
+n_, _img = p4_load(out, "P4X_Normal.png")
+check(abs(n_[0, 0, 1] - 0.7) < tol, "...Unity stays OpenGL in a DirectX project")
+p4_tx.normal_format = 'OPENGL'
+res, out, files = p4_export('DOCUMENT')
+n_, _img = p4_load(out, "P4X_Normal.png")
+check(abs(n_[0, 0, 1] - 0.7) < tol, "...and an OpenGL project does not flip it")
+res, out, files = p4_export('MESHMAPS')
+check(files == ["P4X_AO.png", "P4X_Normal.png"], "Mesh maps: the baked maps the set has: %s" % files)
+res, out, files = p4_export('GLTF')
+check(files == ["P4X.glb"] and os.path.getsize(os.path.join(out, "P4X.glb")) > 1000, "glTF: one .glb: %s" % files)
+# skipped maps, sets, size, file types, bit depth
+T.sync_export_maps(p4_tx)
+p4_tx.export_preset = 'UNREAL'
+def p4_skip(key, value):
+    next(m for m in p4_tx.export_maps if m.key == key).use = value
+
+
+p4_skip("UNREAL.base", False)
+res, out, files = p4_export('UNREAL')
+check(files == ["T_P4X_E.png", "T_P4X_N.png", "T_P4X_ORM.png"] and T.export_skipped(p4_tx) == {"base"}, "a map that is turned off in the list is not written: %s" % files)
+res, out, files = p4_export('UNITY')
+check("P4X_Albedo.png" in files and T.export_skipped(p4_tx) == set(), "...the others keep their own (Unity's Albedo is not the Unreal one)")
+p4_skip("UNREAL.base", True)
+p4_xm.m3d_set_export = False
+check(p4_export('UNREAL')[0] == {'CANCELLED'}, "a dialog with no texture set ticked exports nothing")
+p4_xm.m3d_set_export = True
+p4_tx.export_folder, p4_tx.export_bake_meshes = p4_dir(), True
+res = bg_try(bpy.ops.m3d.tex_export_dialog, 'EXEC_DEFAULT')
+check(isinstance(res, RuntimeError) and "bake group" in str(res) and not os.listdir(p4_tx.export_folder),
+      "Bake meshes on sets that are in no bake group: refused before anything is written (%s)" % (res,))
+p4_tx.export_bake_meshes = False
+res, out, files = p4_export('UNREAL', export_size='64')
+check(files and all(tuple(p4_load(out, f)[1].size) == (64, 64) for f in files), "Size: 64 px (the layers are resampled)")
+res, out, files = p4_export('UNREAL', export_size='256')
+check(files and all(tuple(p4_load(out, f)[1].size) == (256, 256) for f in files), "Size: 256 px")
+p4_tx.export_size = 'SAME'
+res, out, files = p4_export('UNREAL', export_format='TARGA')
+check(files == ["T_P4X_BC.tga", "T_P4X_E.tga", "T_P4X_N.tga", "T_P4X_ORM.tga"], "File type TGA: %s" % files)
+res, out, files = p4_export('UNREAL', export_format='TIFF', export_depth='16')
+orm, img_ = p4_load(out, "T_P4X_ORM.tif")
+check(files == ["T_P4X_BC.tif", "T_P4X_E.tif", "T_P4X_N.tif", "T_P4X_ORM.tif"] and img_.is_float and np.abs(orm[..., 1] - rough_px[..., 0]).max() < 2e-3, "File type TIFF, 16 bit: %s" % files)
+res, out, files = p4_export('UNREAL', export_format='PNG', export_depth='16')
+orm, img_ = p4_load(out, "T_P4X_ORM.png")
+check(img_.is_float and np.abs(orm[..., 1] - rough_px[..., 0]).max() < 2e-3 and abs(orm[0, 0, 0] - read_image(p4_ao)[0, 0, 0]) < 2e-3,
+      "PNG, 16 bit has the values of the layers to 1/65535 (%s)" % np.abs(orm[..., 1] - rough_px[..., 0]).max())
+res, out, files = p4_export('UNREAL', export_format='OPEN_EXR', export_depth='32')
+orm, img_ = p4_load(out, "T_P4X_ORM.exr")
+n_, _img = p4_load(out, "T_P4X_N.exr")
+check(files == ["T_P4X_BC.exr", "T_P4X_E.exr", "T_P4X_N.exr", "T_P4X_ORM.exr"] and np.abs(orm[..., 1] - rough_px[..., 0]).max() < 1e-5 and abs(n_[0, 0, 1] - (1 - read_image(p4_norm)[0, 0, 1])) < 1e-5,
+      "File type EXR, 32 bit: the values as they are")
+bc_, _img = p4_load(out, "T_P4X_BC.exr")
+check(np.abs(bc_[0, 0, :3] - LY.to_linear(np.array([0.6, 0.3, 0.1]))).max() < 4e-3, "...the colors in linear light (EXR files are linear): %s" % bc_[0, 0])
+p4_tx.export_format, p4_tx.export_depth = 'PNG', '8'
+
+# a mesh with two materials: one set of files for each, named after both; a set that is not ticked is left out
+p4_select(p4_a)
+for mat_ in (p4_skin, p4_metal, p4_b_mat, p4_xm):
+    mat_.m3d_set_export = mat_ in (p4_skin, p4_metal)
+res, out, files = p4_export('UNREAL')
+check(files == ["T_P4A_P4Skin_BC.png", "T_P4A_P4Skin_N.png", "T_P4A_P4Skin_ORM.png", "T_P4A_P4Steel_BC.png", "T_P4A_P4Steel_N.png", "T_P4A_P4Steel_ORM.png"],
+      "two sets on a mesh: files for each, named after the mesh and the material: %s" % files)
+p4_metal.m3d_set_export = False
+res, out, files = p4_export('UNREAL')
+check(files == ["T_P4A_P4Skin_BC.png", "T_P4A_P4Skin_N.png", "T_P4A_P4Skin_ORM.png"], "a set that is not ticked is not written: %s" % files)
+p4_metal.m3d_set_export = True
+p4_b_mat.m3d_set_export = True
+res, out, files = p4_export('UNREAL')
+check("T_P4B_BC.png" in files and len(files) == 9, "the sets of the other meshes are exported too: %s" % files)
+res, out, files = p4_export('GLTF')
+check(files == ["P4A.glb", "P4B.glb"], "glTF: one file for each mesh: %s" % files)
+p4_b_mat.m3d_set_export = False
+for mat_ in (p4_skin, p4_metal):
+    mat_.m3d_set_export = False
+p4_xm.m3d_set_export = True
+
+# the dialog draws: the sets, the output maps of the template, the settings
+for preset_ in T.TEMPLATES:
+    p4_tx.export_preset = preset_
+    T.sync_export_maps(p4_tx)
+    log = []
+    TS.M3D_OT_tex_export_dialog.draw(NS(layout=Rec(log)), bpy.context)
+    check_calls("Export dialog " + preset_, log)
+    uses_ = [r for r in log if r._kind == "prop" and r._args[1] == "use"]
+    check(len(uses_) == len(T.TEMPLATES[preset_][2]) and any(r._kind == "prop" and r._args[1] == "m3d_set_export" for r in log),
+          "the Export dialog lists the texture sets and the %d output maps of %s" % (len(T.TEMPLATES[preset_][2]), preset_))
+log = []
+T.draw_export_options(Rec(log), bpy.context)
+check({"export_preset", "export_folder", "export_format", "export_size", "export_padding", "export_bake_meshes"} <= {r._args[1] for r in log if r._kind == "prop"},
+      "the settings: template, output directory, file type, size, padding")
+p4_tx.export_preset, p4_tx.export_padding = 'UNREAL', 'DILATION'
+log = []
+T.draw_export_options(Rec(log), bpy.context)
+check("export_padding_px" in [r._args[1] for r in log if r._kind == "prop"], "...the padding in pixels with Dilation")
+log = []
+TS.M3D_OT_tex_export_summary.draw(NS(layout=Rec(log)), bpy.context)
+check(len([r for r in log if r._kind == "label" and r._kw.get("icon") == 'FILE_IMAGE']) == len([f for f in p4_tx.export_files.split("|") if f]),
+      "the summary lists the files of the last export")
+check(bpy.ops.m3d.tex_export_dialog.poll() and bpy.ops.m3d.tex_export.poll(), "(the dialog and the quick export are there)")
+
+# padding: dilation outside the UV islands
+bpy.ops.object.mode_set(mode='OBJECT')
+p4_e = bg_plate("P4E", uv=(0.25, 0.25, 0.75, 0.75))
+p4_select(p4_e)
+bpy.ops.m3d.tex_project('EXEC_DEFAULT', resolution='64', template='DEFAULT', unwrap=False, bake_after=False)
+p4_em = p4_e.active_material
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+p4_fill(p4_stack_image(p4_em, 'BASE_COLOR'), 'ramp')
+for mat_ in (p4_skin, p4_metal, p4_b_mat, p4_xm):
+    mat_.m3d_set_export = False
+cover_ = T.uv_coverage(p4_e, p4_em, 64)
+check(cover_[32, 32] and cover_[16, 16] and cover_[47, 47] and not cover_[5, 5] and not cover_[48, 48] and 1000 <= cover_.sum() <= 1100,
+      "the UV coverage of a set: the pixels of its faces (%d)" % cover_.sum())
+flat_ = np.zeros((6, 6), bool)
+flat_[2, 2] = True
+nearest_ = T.nearest_covered(flat_)
+check(nearest_[2, 2] == 2 * 6 + 2 and nearest_[0, 0] == 2 * 6 + 2 and nearest_[5, 5] == 2 * 6 + 2, "the nearest covered pixel of every pixel")
+nearest_ = T.nearest_covered(flat_, 1)
+check(nearest_[2, 3] == 2 * 6 + 2 and nearest_[3, 2] == 2 * 6 + 2 and nearest_[3, 3] == -1 and nearest_[0, 0] == -1 and nearest_[2, 5] == -1, "...within a distance")
+res, out, files = p4_export('UNITY', export_padding='NONE')
+raw_, _img = p4_load(out, "P4E_Albedo.png")
+check(np.abs(raw_[32, :, 0] - np.linspace(0.0, 1.0, 64)).max() < 0.01, "no padding: the empty part of the map is what the layers have")
+res, out, files = p4_export('UNITY', export_padding='INFINITE')
+inf_, _img = p4_load(out, "P4E_Albedo.png")
+check(np.abs(inf_[32, 2, 0] - raw_[32, 16, 0]).max() < 0.01 and np.abs(inf_[32, 60, 0] - raw_[32, 47, 0]).max() < 0.01 and np.abs(inf_[3, 3, :3] - raw_[16, 16, :3]).max() < 0.01
+      and np.abs(inf_[32, 32, 0] - raw_[32, 32, 0]).max() < 0.01, "Dilation Infinite: the colors at the edge of the island spread over the whole map")
+res, out, files = p4_export('UNITY', export_padding='DILATION', export_padding_px=4)
+dil_, _img = p4_load(out, "P4E_Albedo.png")
+check(np.abs(dil_[32, 14, 0] - raw_[32, 16, 0]).max() < 0.01 and np.abs(dil_[32, 8, 0] - raw_[32, 8, 0]).max() < 0.01 and np.abs(dil_[32, 49, 0] - raw_[32, 47, 0]).max() < 0.01,
+      "Dilation 4 px: it spreads that far and no further")
+p4_tx.export_padding = 'NONE'
+res, out, files = p4_export('MESHMAPS')
+check(res == {'CANCELLED'} and not files, "a template with nothing to write (no mesh maps) writes nothing and says so")
+bpy.ops.object.mode_set(mode='OBJECT')
+
+# --- The starter thumbnails come with the program: found first, no thumbnail is made for a starter
+shipped_ = LB.shipped_dir()
+check(bool(shipped_) and os.path.isdir(shipped_), "the starter thumbnails come with the program: %s" % shipped_)
+names_ = [LB.thumb_name(e) for e in LB.STARTERS]
+check(len(set(names_)) == len(LB.STARTERS) and all(os.path.isfile(os.path.join(shipped_, n_)) for n_ in names_), "...one for each starter item, named like the ones the Library makes")
+check(all(LB.thumb_file(e) == os.path.join(shipped_, LB.thumb_name(e)) for e in LB.STARTERS), "...and found before the user's cache")
+cache_ = p4_dir()
+LB_library_dir, LB_user = LB.library_dir, LB._user["entries"]
+LB.library_dir = lambda create=False: cache_
+LB._user["entries"] = []   # (the starters only: the items the earlier tests saved are in another folder)
+check(LB.pending() == [], "no thumbnail is left to make with an empty cache (a fresh install does not render the starters)")
+sizes_ = [os.path.getsize(os.path.join(shipped_, n_)) for n_ in names_ if os.path.isfile(os.path.join(shipped_, n_))]
+check(sizes_ and sum(sizes_) < 2 * 1024 * 1024, "...together they are small: %.0f KB" % (sum(sizes_) / 1024))
+thumb_ = bpy.data.images.load(os.path.join(shipped_, names_[0])) if sizes_ else None
+check(thumb_ is not None and tuple(thumb_.size) == (128, 128), "...128 px")
+if thumb_ is not None:
+    bpy.data.images.remove(thumb_)
+os.makedirs(os.path.join(cache_, "thumbs"))
+changed_ = LB.Entry("starter:changed", {**LB.STARTERS[0].item, "name": "Changed"}, None)
+check(LB.thumb_file(changed_) == "" and LB.thumb_path(changed_).startswith(cache_), "an item that changed has no shipped thumbnail (it is made, into the cache, as before)")
+open(LB.thumb_path(changed_), "wb").close()
+check(LB.thumb_file(changed_) == LB.thumb_path(changed_), "...and the made one is found in the cache")
+LB._gen["shipped"] = False
+check(len(LB.pending()) == len(LB.STARTERS), "Refresh Previews makes them all again (the shipped ones are not used then)")
+LB._gen["shipped"] = True
+LB.library_dir, LB._user["entries"] = LB_library_dir, LB_user
+
+# --- the old layout (Workspace.m3d_layout 0) draws the new panels of Texture Set Settings and the Bake and Export pages without errors
+tex_ws.m3d_layout = 0
+p4_select(p4_a)
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+for page_ in ("tex_layers", "tex_bake", "tex_export"):
+    tex_ws.m3d_page_right = page_
+    for cls_ in tex_panels(page_):
+        if cls_.poll(TCtx()):
+            try:
+                check_calls("old layout %s %s" % (page_, cls_.__name__), draw_stub(cls_, TCtx()))
+            except Exception as err:
+                check(False, "old layout %s %s draws: %r" % (page_, cls_.__name__, err))
+tex_ws.m3d_layout = 1
+tex_ws.m3d_page_right = ""
+bpy.ops.object.mode_set(mode='OBJECT')
+clean_scene()
+for img_ in [i_ for i_ in bpy.data.images if i_.name.startswith(("P4", "m3dExport"))]:
+    bpy.data.images.remove(img_)
+p4_tx.export_preset, p4_tx.export_folder, p4_tx.export_size, p4_tx.export_padding = 'UNITY', "//textures/", 'SAME', 'INFINITE'
+p4_tx.export_format, p4_tx.export_depth, p4_tx.normal_format, p4_tx.resolution = 'PNG', '8', 'OPENGL', '2048'
+for d_ in p4_dirs:
+    shutil.rmtree(d_, ignore_errors=True)
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

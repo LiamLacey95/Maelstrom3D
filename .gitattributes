@@ -115,3 +115,4 @@ scripts/modules/_bpy_internal/assets/remote_library/*_openapi.py linguist-genera
 docs/media/** -filter -diff -merge
 release/datafiles/startup.blend -filter -diff -merge
 release/datafiles/splash.png -filter -diff -merge
+release/datafiles/m3d_library_thumbs/** -filter -diff -merge

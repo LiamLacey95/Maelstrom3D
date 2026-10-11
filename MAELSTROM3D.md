@@ -26,7 +26,7 @@ named here only to describe compatibility.*
 | Editor names | Attribute Editor, Shader Editor, Script Editor, Command Line, Command History, Time Editor | `rna_space.cc`, `node_shader_tree.cc` |
 | Marking menus | RMB, Shift+RMB, Ctrl+RMB in the viewport; RMB, Shift+RMB in the UV Editor; Space hotbox | `m3d_mode.py`, `m3d_uv.py` |
 | UV editing | UV workspace (F3): dock tabs, Status Line and shelf for Cut/Sew/Unfold/Optimize/Layout, texel density, Auto Unwrap, UDIMs, checker map; sidebar UV Toolkit in other workspaces | `scripts/startup/m3d_uv.py` |
-| Texturing | Texture workspace (F4): tool strip, Assets, Texture Set List, Layers, Properties and dock strip laid out like a dedicated painting tool, painting keys, context toolbar, display modes of the 3D and 2D views, paint channels, Bake, Export; paint layer stack, painted images are saved or packed with the file; assets: plain and smart materials, smart masks, brushes, alphas, environments and your own items | `scripts/startup/m3d_texture.py`, `scripts/startup/m3d_layers.py`, `scripts/startup/m3d_masks.py`, `scripts/startup/m3d_library.py` (data: `m3d_library_data.py`), `scripts/startup/m3d_bakegroups.py` (bake groups) |
+| Texturing | Texture workspace (F4): tool strip, Assets, Texture Set List, Layers, Properties and dock strip laid out like a dedicated painting tool, painting keys, context toolbar, display modes of the 3D and 2D views, texture sets with their channels, size and mesh maps, Bake Mesh Maps, Export Textures and New Texture Project dialogs; paint layer stack, painted images are saved or packed with the file; assets: plain and smart materials, smart masks, brushes, alphas, environments and your own items | `scripts/startup/m3d_texture.py`, `scripts/startup/m3d_layers.py`, `scripts/startup/m3d_masks.py`, `scripts/startup/m3d_library.py` (data: `m3d_library_data.py`; preview pictures: `tools/m3d/library_thumbs.py`), `scripts/startup/m3d_bakegroups.py` (bake groups), `scripts/startup/m3d_texset.py` (texture set settings, Export Textures dialog, New Texture Project) |
 | Rigging | Rigging workspace (F5): Outliner with the bone hierarchy and bone collections on the left, a large viewport, a dock of Skeleton, Controls & Constraints, Skin, Drive, Test and Collections tabs that follows the mode, Timeline that switches to the Drivers editor; Joint tool, Orient Joint, control shapes, IK with pole, bind with fallback, weight tools, Driven Key, naming check, Rigify on demand; Ctrl+E, Shift+N | `scripts/startup/m3d_rig.py` |
 | Animation | Animation workspace (F6): a large viewport and a camera view, one bottom editor that switches between the Graph Editor and the Dope Sheet, a short Timeline, a dock of Channel Box, Pick, Tween & Poses, Motion, Layers and Playback tabs; Status Line with Auto Key, key type, new key interpolation, keying set, range, FPS, loop mode, Blocking / Polish, Playblast; Tween (Alt+Q), Push / Relax / Breakdown, object selection sets, motion paths, ghost curves, NLA layers, Playblast | `scripts/startup/m3d_anim.py` |
 | Rendering | Rendering workspace (F7): a 3D view and a Render View, a dock of Camera, Lighting, Materials, Render, Output, Passes & Layers and Advanced tabs; Status Line with engine, camera, Draft / Medium / Final presets, Render, IPR; light table, HDRI sky, camera from view; Shift+F12 | `scripts/startup/m3d_render.py` |
@@ -258,10 +258,10 @@ painted: the panels say what is missing and have a button to fix it (Auto Unwrap
 | Tool strip (far left) | One icon button for each tool: **Paint** (1), **Eraser** (2), **Projection** (3), **Polygon Fill** (4), **Smudge** (5), **Clone** (6) and the **Picker** (P). The tooltip names the tool and its key; the active tool is highlighted. Blender's own tool column is hidden in both views, so this is the only one |
 | Assets | A full height column: a row of category icons (see Assets below), a search field and a grid of tiles |
 | 3D view and 2D view | The 3D view in Material Preview and the 2D paint view (the Image Editor in Paint mode). Each has a **display mode** dropdown at the top right: Material, each channel on its own, the baked mesh maps, the mask of the active layer |
-| Texture Set List (right, top) | One row for each material of the active mesh, then the materials with layers of the other meshes. The eye shows or hides the set, a click on the name makes it the active material (the Layers follow). The button in the header isolates the active set (Alt+Q) |
-| Layers \| Texture Set Settings (right, middle) | Two tabs. **Layers** is the layer stack (see Layers below). **Texture Set Settings** has the channels (add one, size of new slots, Save All Images), the list of baked **Mesh Maps** with a big **Bake Mesh Maps** button, and All Paint Slots. **Bake Mesh Maps** replaces the tabs by the Bake page, with **Back to Painting** on top |
+| Texture Set List (right, top) | One row for each material of the active mesh, then the materials with layers of the other meshes (a texture set is a material and its layers). A row has an **eye** that shows or hides the set, its **name** (a double-click renames it), the mesh it is on when that is not the active one, and the size of its images; a click on a row makes it the active material (the Layers follow). In Bake Mesh Maps each row also has a **Bake** checkbox. The right-click menu of a row has **Rename**, **Show / Hide** and **Isolate**; the button in the header isolates the active set (Alt+Q). While no material has layers the list has a **New Texture Project...** button |
+| Layers \| Texture Set Settings (right, middle) | Two tabs. **Layers** is the layer stack (see Layers below). **Texture Set Settings** has **General** (name, **Size**, **Normal Map Format**), **Channels** (a row for each channel of the set with its format and an x, **Add Channel**, Save All Images), **Mesh Maps** (a slot for each baked map, and a big **Bake Mesh Maps** button) and All Paint Slots (see Texture set settings below). **Bake Mesh Maps** replaces the tabs by the Bake page, with the **Bake** button and **Back to Painting** on top |
 | Properties (right, bottom) | Titled by what is selected: **Properties - Paint** (previews, then the sections of the tool: Brush, Alpha, Stencil, Material ...), **Properties - Fill** (the fill's UV transform and its Material), **Properties - Mask** (the effects of the layer's mask and the selected effect; the Paint sections follow while the mask is painted) and **Properties - Folder** (the folder and its mask). The buttons **Auto \| Layer \| Mask** in its header pick the layer's own settings or its mask when the title is not the one you want. See Properties below |
-| Dock strip (far right) | Icons that open a popover: **Display Settings** (shading, environment rotation and intensity, Channel View, UV checker), **Shader Settings** (the Principled shader of the active material and its displacement), **History** (the undo steps, a click goes back to that step), **Export Textures** (the presets, folder and size; Ctrl+Shift+E), and **Log** (the Info window with the reports) |
+| Dock strip (far right) | Icons that open a popover: **Display Settings** (shading, environment rotation and intensity, Channel View, UV checker), **Shader Settings** (the Principled shader of the active material and its displacement), **History** (the undo steps, a click goes back to that step), **Export Textures** (opens the Export Textures dialog; Ctrl+Shift+E), and **Log** (the Info window with the reports) |
 | Toolbar (top bar) | Left: the controls of the active tool, **Size** and **Flow** (the brush strength) with their pen pressure buttons, **Spacing**, **Lazy Mouse** with its distance, the channel buttons of the brush material (**color height rough metal emit**, shorter on a narrower window; for the tools that paint them), **Symmetry** X Y Z. Polygon Fill shows its fill mode instead of the brush controls; Projection adds the stencil's opacity, **Reset** and **Fit**; when a fill layer is selected the toolbar shows its UV transform (**Tiling**, **Rotation**, **Offset**, **Reset**) instead of the brush. Right: the view layout (3D \| 2D, 3D only, 2D only: the last two maximize one view), perspective / orthographic, **Bake Mesh Maps**, **Export Textures**, the workspace picker. There are no shelf rows in this workspace (Show Shelf in Workspace Settings brings them back) |
 
 **Tools.** Blender has one brush tool for texture painting, and the brush decides what a stroke does, so each tool of the strip picks a brush and a few settings in one click:
@@ -377,7 +377,7 @@ keys work there), so a baked map shown in it changes if you paint on it: Undo ta
 | Mine | Your own items, and **Save Layer** / **Save Mask** |
 
 A channel is a paint slot of the active material: the first click on **Base Color**, **Roughness**, **Metallic**,
-**Normal**, **Height** or **Emission** in Texture Set Settings adds an image of the "new slot" size (Non-Color for
+**Normal**, **Height** or **Emission** in Texture Set Settings adds an image of the size of the texture set (Non-Color for
 everything except Base Color and Emission) and plugs it into the shader; later clicks only pick it. C and Shift+C show the
 next / previous channel on its own, `[` and `]` change the brush size, X swaps the two colors. A channel button in Texture Set Settings (or **Paint Roughness** and the others in the Layers menu) picks that channel to paint, alone.
 The old Channel View (in Display Settings) shows the picked channel flat in the 3D view and goes back on the next click.
@@ -407,7 +407,31 @@ the toolbar buttons are hidden. In the 2D view the image shown there is painted 
 stroke in the 2D view changes the same channels as one in the 3D view. Not done yet: UDIM tiles (a stroke on a mesh with
 UDIM paints its own image only).
 
-**Bake.** The Bake page (**Bake Mesh Maps** in Texture Set Settings, in the toolbar or Ctrl+Shift+B) needs Cycles: it switches to it, bakes every ticked map into an image (kept with the file) and switches back; the mesh's materials
+**Texture set settings.** **General** has the **Name** of the set (its material), its **Size** and the **Normal Map Format**. The size is one square size for the whole set: picking another
+scales every image of it (the layers' images, the masks' paint images, the images of frozen folders), and a layer, mask or folder made later starts at that size. It is square only, because masks,
+Merge Down, Flatten and Export work on square images. The normal map format (**OpenGL** or **DirectX**) is a setting of the project: the Normal bake writes its green channel up or down by it, and the export
+templates that follow the project (Document Channels) flip the Normal channel for DirectX; the painted Normal channel itself is always kept the way Blender reads it (OpenGL).
+**Channels** lists the channels of the set, each with its format and an x. The x removes a channel: its layers keep their images, but nothing is built, painted, shown or exported for it until **Add Channel**
+brings it back as it was (painting a removed channel from the Layers menu or the shelf adds it back too); the last channel cannot be removed. A channel that is not a color (Roughness, Metallic, Normal, Height)
+can be stored as **8 bit** or **16 bit float**: its images are copied into the other kind with the same pixels and names, and the layers made later follow. Base Color and Emission stay 8 bit sRGB, because a
+float image keeps linear light, which the layer math of the colors does not read. **Mesh Maps** has a slot for Normal, World Normal, ID, Ambient Occlusion, Curvature, Position and Thickness (Displacement
+joins them once baked): a thumbnail, the name of the image (`<set>_<map>`), a folder button that takes an image file for the slot, and an x that clears it. A map from a file is used like a baked one (the display modes, the
+mask effects); the next bake into the slot replaces it. Not done: non-square sizes, a Normal mixing setting (the layers of the Normal channel blend with their own blend modes), channels beyond the six.
+
+**New Texture Project.** **File > New Texture Project...** (in the Texturing menu set), the button in the Texture Set List and the Layers tab (while no material has layers) and the one next to Add Material (for a
+mesh without a material) open a dialog for the selected meshes: the **Document Resolution** (1024 by default), the **Normal Map Format**, the **Channels** (Base Color, Roughness, Metallic, Normal and Height; the same with
+Emission; or the minimal Base Color, Roughness and Metallic), **Auto Unwrap Missing UVs** and **Bake Mesh Maps After**. OK gives every material of the meshes a Base layer, which is its texture set, with an image of
+that size for each channel of the template (a channel that is not in the template is removed from the set, and can be added later), makes a material for a mesh that has none, unwraps a mesh without UVs and keeps the resolution
+and the format as the project's. The first set is the one painted, and Bake Mesh Maps opens (when asked for) to pick the high poly and bake. A material that has layers already is left alone.
+
+**Bake.** **Bake Mesh Maps** (in Texture Set Settings, in the toolbar, the Bake menu or Ctrl+Shift+B) replaces the tabs of the dock by the Bake page, and **Back to Painting** returns. The page has, from the top, the big **Bake**
+button with what it bakes (**Bake: 2 maps x 3 sets**: the ticked maps of the active set, and the texture sets that have their Bake checkbox ticked in the Texture Set List; a mesh with several sets is baked once, a bake group
+as a group), **Back to Painting**, the **Mesh Map Bakers** (a checkbox for each map: Normal, AO, Curvature, Position, Thickness, ID and World Normal; the name of a map shows its **Map Settings**, the eye shows a baked map;
+**Check All**, **Uncheck All**, Invert, and **Apply to Checked Texture Sets**, which gives the other ticked sets the maps, size, dilation and antialiasing of this one), the **Common Settings** (**Size**, **Dilation**, **Antialiasing**:
+the samples of each pixel, **Extrusion** and **Max Ray Distance** of the cage, a custom **Cage** mesh, and **Match by Name**, which pairs meshes called Sword_low and Sword_high into a bake group), the **High Poly Meshes** (the picker
+for a mesh without a group; a mesh of a group has the Bake Groups and Group Settings panels instead), the **Map Settings** of the map that is selected (Normal: the format; AO: the distance of the world's ambient occlusion;
+Curvature: the contrast; Thickness: the distance; Position, World Normal and ID: what they are), Multires and the list of the baked maps. A set that cannot be baked (a mesh without UVs) is reported and skipped.
+The bake needs Cycles: it switches to it, bakes every ticked map into an image (kept with the file) and switches back; the mesh's materials
 are not changed (a temporary material takes the bake and is removed). Curvature uses the shader's Pointiness (needs enough polygons), Thickness uses
 ambient occlusion from inside the mesh (closed meshes only; white where the mesh is thicker than the Thickness Distance), Position is scaled to 0-1
 within the bounds of the baked meshes (and is always baked with one sample: Cycles adds a position pass up over its samples). The window waits while
@@ -469,11 +493,26 @@ low polys and `<name>_high.fbx` with the high polys, of the groups of the active
 `_low` / `_high` style inside the files (`Sword_low`, `Sword_high`, `Sword_high_bolts`), whatever style they have in the scene, and have their own names again afterwards. High polys that Maelstrom3D hid are shown for the export only and hidden
 again before anything is drawn. A mesh without a bake group is refused; a group without a high poly only writes the low file.
 
-**Export Textures** (the dock strip, the toolbar or Ctrl+Shift+E) writes the active mesh's channels: **glTF** one `.glb` with the mesh, material and textures; **Unreal**
-`T_Name_BC`, `_N` (green channel flipped for DirectX), `_ORM` (red occlusion from the baked AO map, green roughness, blue
-metallic) and `_E`; **Unity** `Name_Albedo`, `_Normal`, `_MetallicSmoothness` (metallic in red, smoothness in alpha),
-`_Occlusion`, `_Emission`. A channel without a paint image uses the shader's value. The folder may start with `//`
-(next to the saved file).
+**Export Textures** (the dock strip, the toolbar, the Export menu or Ctrl+Shift+E) opens a dialog. On the left are the **Texture Sets** to export (a checkbox for each) and the **Output Maps** of the template, each with a
+checkbox that skips it and the file name it will have. On the right: the **Template** (the engine the files are for), the **Output Directory** (it may start with `//`, next to the saved file), the **File Type** (PNG, TGA, TIFF
+or EXR) with its **Bit Depth** (PNG and TIFF 8 or 16 bit, EXR 16 or 32 bit float, TGA 8 bit), the **Size** (the size of each set, or 64 to 8192 px: the layers are resampled) and the **Padding**, and the Bake meshes option. **Export**
+writes the files, and a summary lists them. A file is named after the mesh (and after the material too when the mesh has more than one material: `T_Hero_Body_BC.png`); a channel without a paint image uses the shader's value, and
+the colors are written in linear light in EXR files.
+
+| Template | Files |
+|---|---|
+| glTF PBR Metal Roughness | One `.glb` for each mesh, with its materials and textures |
+| Unreal Engine Packed (ORM) | `T_Name_BC`, `_N` (DirectX: green channel flipped), `_ORM` (red occlusion from the baked AO map, green roughness, blue metallic), `_E` |
+| Unity URP | `Name_Albedo`, `_Normal`, `_MetallicSmoothness` (metallic in red, smoothness in alpha), `_Occlusion`, `_Emission` |
+| Unity HDRP | `Name_BaseMap`, `_Normal`, `_MaskMap` (red metallic, green occlusion, blue detail mask, alpha smoothness), `_Emission` |
+| Blender Principled | `Name_BaseColor`, `_Roughness`, `_Metallic`, `_Normal` (OpenGL), `_Emission`, `_Height` |
+| Document Channels + Normal + AO | One file for each channel of the set, `_Normal` in the format of the project, and `_AO` from the baked map |
+| Mesh Maps | The baked mesh maps of the set as they are: `Name_Normal`, `_WorldNormal`, `_ID`, `_AO`, `_Curvature`, `_Position`, `_Thickness` |
+
+A map is written only when its channel is in the set (or its mesh map is baked): the packed maps are always written, with the shader's values for what the set lacks. **Padding** is **Dilation Infinite** (the default: the color at the edge
+of each UV island spreads over the whole empty part of the map, so filtering and mip-maps show no seams), **Dilation** (it spreads that many pixels, the rest of the map is left as the layers have it) or **No Padding**. The islands are the
+faces of the set's material in the active UV map; the baked mesh maps are written as they are (a bake has its own dilation). The **Export Active Set** entry of the Export menu writes the active set with the settings of the dialog,
+without asking.
 
 **Layers.** Blender has no paint layers, so the stack is kept on the material and built into its shader. The first
 **Paint Layer** or **Fill Layer** on a material that already has paint slots turns those images into the bottom layer
@@ -644,10 +683,10 @@ checks nothing is half done: a damaged item is refused and leaves the stack as i
 **Previews.** The tile pictures are small Cycles renders of a sphere with grooves (so edges and cavities exist) lit by
 Blender's courtyard HDRI, 128 px, with the item applied; a mask preset is shown as the mask on the sphere. They are made
 the first time the Assets panel is drawn, one small step at a time on a timer (the preview scene, then each baked map,
-then one item per step: the longest step is about a second, the starter items take about half a minute in all), and a tile shows a
-shaded disc in the material's color until its picture is ready. Starter previews are cached in
-`datafiles/m3d_library/thumbs` (made again when an item or the preview look changes), yours are `thumb.png` in the item's
-folder. The temporary preview scene is removed when it is done (and when you save the file in between); **Refresh
+then one item per step: the longest step is about a second), and a tile shows a shaded disc in the material's color until its picture is
+ready. The pictures of the starter items come with the program (`datafiles/m3d_library_thumbs`: 128 px PNGs, about 700 KB in all, made in half a minute by
+`tools/m3d/library_thumbs.py`), so the first Texture workspace does not make them; one that is not there (an item or the preview look changed since) is made as
+above and cached in `datafiles/m3d_library/thumbs`. Yours are `thumb.png` in the item's folder. The temporary preview scene is removed when it is done (and when you save the file in between); **Refresh
 Previews** (Mine, Your Items) makes them all again.
 
 Painted images never get lost: before a file is saved, images with changes are written to their files, or packed into
