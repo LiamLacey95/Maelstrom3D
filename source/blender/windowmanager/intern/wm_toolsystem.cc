@@ -328,6 +328,13 @@ bool WM_toolsystem_activate_brush_and_tool(bContext *C, Paint *paint, Brush *bru
     return false;
   }
 
+  /* Maelstrom3D: without an active tool (asked from a timer, or from an editor without tools while
+   * the 3D view's tool of this mode has not been set up) there is no binding to update: the brush
+   * is set, which is what was asked. brush_type_matches_active_tool() above checks the same. */
+  if (active_tool == nullptr || active_tool->runtime == nullptr) {
+    return true;
+  }
+
   if (active_tool->runtime->brush_type == -1) {
     /* Only update the main brush binding to reference the newly active brush. */
     toolsystem_main_brush_binding_update_from_active(paint);

@@ -702,7 +702,13 @@ def set_tool(context, tool):
         _tool_state["last"][before] = brush_name(context)   # (Paint comes back to the Airbrush you left it for)
     release_tool(context)
     name = _tool_state["last"].get(tool, TOOL_BRUSHES[tool])
-    bpy.ops.brush.asset_activate(**brush_props(name))
+    # From the tool strip (a Properties editor) or a timer there is no tool of the editor: the brush goes to the 3D view's.
+    screen = context.screen
+    areas = sorted((a for a in screen.areas if a.type == 'VIEW_3D'), key=lambda a: -a.width * a.height) if screen else []
+    region = next((r for r in areas[0].regions if r.type == 'WINDOW'), None) if areas else None
+    if region is not None and context.area != areas[0]:
+        with context.temp_override(area=areas[0], region=region):
+            bpy.ops.brush.asset_activate(**brush_props(name))
     brush = image_brush(context)
     if brush is None:
         return "No texture brush"
