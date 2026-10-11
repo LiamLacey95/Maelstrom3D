@@ -40,6 +40,7 @@ named here only to describe compatibility.*
 | F / A (Shift: all views) | Frame selected / Frame all |
 | Q W E R T | Select / Move / Rotate / Scale / Universal manipulator |
 | Click, Shift, Ctrl, Ctrl+Shift | Select, toggle, deselect, add (click and drag) |
+| Double-click, Shift / Ctrl + double-click (edges) | Edge loop; the edges between the edge selected before and this one along their ring or loop, selected / deselected (neighbours: the whole ring or loop) |
 | RMB (hold) | Marking menu (see below) |
 | Shift+RMB | Object mode: create primitives. Component mode: polygon tools |
 | Ctrl+RMB | Convert selection (vertices, edges, faces, loop, ring, border, shell) |

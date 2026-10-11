@@ -8797,6 +8797,74 @@ idm_pick = [r._kw["text"] for r in log if r._kind == "operator" and r._args[0] =
 check(idm_pick == ["Id: MatA", "Id: MatB"], "the Mask panel lists the colours of the ID map to pick: %s" % idm_pick)
 check(["color", "tolerance"] == [r._args[1] for r in log if r._kind == "prop" and r._args[1] in {"color", "tolerance"}], "...with the colour and the tolerance")
 
+# --- Shift / Ctrl + double-click an edge: the edges between it and the edge selected before, along a ring or a loop.
+clean_scene()
+bpy.ops.mesh.primitive_grid_add(x_subdivisions=6, y_subdivisions=6, size=6)   # 6 x 6 quads of 1 x 1
+eb_ob = bpy.context.active_object
+bpy.ops.object.mode_set(mode='EDIT')
+bpy.ops.mesh.select_mode(type='EDGE')
+eb_bm = bmesh.from_edit_mesh(eb_ob.data)
+
+
+def eb_edge(x, y):
+    """The edge whose midpoint is at (x, y)."""
+    return next(e for e in eb_bm.edges if (abs((e.verts[0].co.x + e.verts[1].co.x) / 2 - x) < 1e-4
+                                          and abs((e.verts[0].co.y + e.verts[1].co.y) / 2 - y) < 1e-4))
+
+
+def eb_mids(edges):
+    return sorted((round((e.verts[0].co.x + e.verts[1].co.x) / 2, 2), round((e.verts[0].co.y + e.verts[1].co.y) / 2, 2))
+                  for e in edges)
+
+
+# Horizontal edges (midpoints at x = -2.5 ... 2.5, y = -3 ... 3): a ring runs up a column, a loop along a row.
+eb_a = eb_edge(-0.5, -3.0)
+check(eb_mids(_mm.edges_between(eb_a, eb_edge(-0.5, 0.0))) == [(-0.5, y) for y in (-3.0, -2.0, -1.0, 0.0)],
+      "edges between: a partial ring up to the second edge")
+check(len(_mm.edges_between(eb_a, eb_edge(-0.5, -2.0))) == 7, "...the next edge of the ring: the whole ring (7 edges)")
+check(eb_mids(_mm.edges_between(eb_a, eb_edge(1.5, -3.0))) == [(x, -3.0) for x in (-0.5, 0.5, 1.5)],
+      "...an edge further along the loop: a partial loop")
+check(len(_mm.edges_between(eb_a, eb_edge(0.5, -3.0))) == 6, "...the next edge of the loop: the whole loop (6 edges)")
+check(_mm.edges_between(eb_a, eb_edge(1.5, 1.0)) is None, "...an edge on neither: None")
+# The operator: the edges between join the selection; the second edge becomes the active one.
+bpy.ops.mesh.select_all(action='DESELECT')
+eb_bm.select_history.clear()
+for eb_e in (eb_a, eb_edge(-0.5, 1.0)):
+    eb_e.select_set(True)
+    eb_bm.select_history.add(eb_e)
+check(bpy.ops.m3d.select_edges_between() == {'FINISHED'}
+      and eb_mids(e for e in eb_bm.edges if e.select) == [(-0.5, y) for y in (-3.0, -2.0, -1.0, 0.0, 1.0)]
+      and eb_bm.select_history.active == eb_edge(-0.5, 1.0), "Select Edges Between: the partial ring is selected")
+# Deselect (Ctrl): the edges between go, a selected edge that shares their points keeps its points.
+bpy.ops.mesh.select_all(action='DESELECT')
+eb_bm.select_history.clear()
+eb_keep = eb_edge(-1.0, -1.5)   # (vertical, shares a point with the ring edge at y = -1)
+for eb_e in (eb_keep, *(eb_edge(-0.5, y) for y in (-3.0, -2.0, -1.0, 0.0, 1.0))):
+    eb_e.select_set(True)
+eb_bm.select_history.add(eb_edge(-0.5, -2.0))
+eb_bm.select_history.add(eb_edge(-0.5, 0.0))
+check(bpy.ops.m3d.select_edges_between(deselect=True) == {'FINISHED'}
+      and eb_mids(e for e in eb_bm.edges if e.select) == sorted([(-1.0, -1.5), (-0.5, -3.0), (-0.5, 1.0)])
+      and all(v.select for v in eb_keep.verts), "...Ctrl: the edges between are deselected, a neighbour keeps its points")
+bpy.ops.mesh.select_all(action='DESELECT')
+eb_bm.select_history.clear()
+eb_a.select_set(True)
+eb_bm.select_history.add(eb_a)
+eb_edge(1.5, 1.0).select_set(True)
+eb_bm.select_history.add(eb_edge(1.5, 1.0))
+check(bpy.ops.m3d.select_edges_between() == {'CANCELLED'}, "...on neither ring nor loop: nothing (the click selects its loop)")
+bpy.ops.object.mode_set(mode='OBJECT')
+# A closed ring (the sides of a cylinder): the shorter way round.
+clean_scene()
+bpy.ops.mesh.primitive_cylinder_add(vertices=12)
+bpy.ops.object.mode_set(mode='EDIT')
+eb_bm = bmesh.from_edit_mesh(bpy.context.active_object.data)
+eb_sides = sorted((e for e in eb_bm.edges if abs(e.verts[0].co.z - e.verts[1].co.z) > 1),
+                  key=lambda e: math.atan2(e.verts[0].co.y, e.verts[0].co.x))
+check(len(_mm.edges_between(eb_sides[0], eb_sides[3])) == 4 and len(_mm.edges_between(eb_sides[0], eb_sides[9])) == 4
+      and len(_mm.edges_between(eb_sides[0], eb_sides[1])) == 12, "...a closed ring: the shorter way round; neighbours: all 12")
+bpy.ops.object.mode_set(mode='OBJECT')
+
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture
 # it uses (linked from the alpha library) and the Image of that Texture. The Image used to be left behind in the old file's data

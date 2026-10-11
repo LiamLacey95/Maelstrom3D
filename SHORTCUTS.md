@@ -259,6 +259,8 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 
 | Key | Before (Industry Compatible) | Now (Maelstrom3D) |
 |---|---|---|
+| Shift+LMB double-click | Loop Select (extend=True, deselect=False, toggle=False) | Select Edges Between |
+| Ctrl+LMB double-click | Loop Select (extend=False, deselect=True, toggle=False) | Select Edges Between (deselect=True) |
 | RMB | Menu: VIEW3D_MT_edit_mesh_context_menu | Menu: Marking Menu |
 | Shift+RMB | — | Menu: Polygon Tools |
 | Q | Tool: Select Box | Hotkey Marking Menu (menu='M3D_MT_select_mm', menu_mmb='', tool='builtin.select_box', command='') |

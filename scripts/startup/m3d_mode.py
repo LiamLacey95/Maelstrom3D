@@ -516,6 +516,112 @@ class M3D_OT_target_weld(Operator):
         return {'FINISHED'}
 
 
+WALK_LIMIT = 100_000   # Steps of a ring or loop walk: a mesh can't hold one longer, a broken one can't hang the click.
+
+
+def ring_walk(start, loop):
+    """The edge ring from `start` across the face of `loop` and on (quads only): (edges, closed). `start` is not in
+    the list; `closed` when the ring comes back to it."""
+    edges = []
+    while len(edges) < WALK_LIMIT and len(loop.face.verts) == 4:
+        opposite = loop.link_loop_next.link_loop_next
+        if opposite.edge == start:
+            return edges, True
+        edges.append(opposite.edge)
+        loop = opposite.link_loop_radial_next
+        if loop == opposite:   # (a border)
+            break
+    return edges, False
+
+
+def loop_next(edge, vert):
+    """The edge that carries the edge loop of `edge` on through `vert`: across a vertex of four quads, or along a
+    border; None where the loop ends (a pole, a triangle or an n-gon)."""
+    edges = vert.link_edges
+    if len(edges) == 4 and len(vert.link_faces) == 4 and all(len(f.verts) == 4 for f in vert.link_faces):
+        faces = set(edge.link_faces)
+        nxt = [e for e in edges if e != edge and not faces.intersection(e.link_faces)]
+    elif edge.is_boundary and len(edges) == 3:
+        nxt = [e for e in edges if e != edge and e.is_boundary]
+    else:
+        return None
+    return nxt[0] if len(nxt) == 1 else None
+
+
+def loop_walk(start, vert):
+    """The edge loop from `start` on through `vert`: (edges, closed), like ring_walk."""
+    edges, edge = [], start
+    while len(edges) < WALK_LIMIT:
+        edge = loop_next(edge, vert)
+        if edge is None:
+            break
+        if edge == start:
+            return edges, True
+        edges.append(edge)
+        vert = edge.other_vert(vert)
+    return edges, False
+
+
+def edges_between(a, b):
+    """The edges from edge `a` to edge `b` along their edge ring, else along their edge loop, both included (the
+    shorter way round a closed one); the whole ring or loop when `b` is the next one along. None when `b` is on
+    neither."""
+    for walks in ([ring_walk(a, loop) for loop in a.link_loops], [loop_walk(a, vert) for vert in a.verts]):
+        paths = [edges[:edges.index(b) + 1] for edges, _closed in walks if b in edges]
+        if paths:
+            path = min(paths, key=len)
+            if len(path) == 1:   # Neighbours: the whole ring / loop.
+                return [a, *dict.fromkeys(e for edges, _closed in walks for e in edges)]
+            return [a, *path]
+    return None
+
+
+class M3D_OT_select_edges_between(Operator):
+    """Select the edges between the edge selected before and this one along their edge ring or edge loop (the whole
+    ring or loop when they are next to each other). Ctrl: deselect them"""
+    bl_idname = "m3d.select_edges_between"
+    bl_label = "Select Edges Between"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    deselect: bpy.props.BoolProperty(name="Deselect", options={'SKIP_SAVE'})
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'EDIT_MESH'
+
+    def invoke(self, context, event):
+        if not context.tool_settings.mesh_select_mode[1]:   # Vertices, faces: the loop of the clicked one, as before.
+            return bpy.ops.mesh.loop_select('INVOKE_DEFAULT', extend=not self.deselect, deselect=self.deselect)
+        # The edge under the pointer becomes the active one (the click before the double-click may have toggled it).
+        bpy.ops.view3d.select('INVOKE_DEFAULT', extend=True, deselect=False, toggle=False)
+        if self.execute(context) == {'FINISHED'}:
+            return {'FINISHED'}
+        # No edge before it on its ring or loop: its whole loop, as a plain double-click.
+        return bpy.ops.mesh.loop_select('INVOKE_DEFAULT', extend=not self.deselect, deselect=self.deselect)
+
+    def execute(self, context):
+        import bmesh
+        mesh = context.edit_object.data
+        bm = bmesh.from_edit_mesh(mesh)
+        b = bm.select_history.active
+        a = next((e for e in reversed(bm.select_history) if isinstance(e, bmesh.types.BMEdge) and e != b and e.select),
+                 None)
+        edges = edges_between(a, b) if a is not None and isinstance(b, bmesh.types.BMEdge) else None
+        if edges is None:
+            return {'CANCELLED'}
+        for e in edges:
+            e.select_set(not self.deselect)
+        if self.deselect:   # (deselecting an edge deselects its points, also the ones selected edges still use)
+            for e in {e for edge in edges for v in edge.verts for e in v.link_edges}:
+                if e.select:
+                    e.select_set(True)
+        else:
+            bm.select_history.add(b)
+        bm.select_flush_mode()   # (faces whose edges are all selected now)
+        bmesh.update_edit_mesh(mesh, loop_triangles=False, destructive=False)
+        return {'FINISHED'}
+
+
 class M3D_OT_delete_components(Operator):
     """Delete: faces are removed, edges and vertices are dissolved (the mesh stays closed)"""
     bl_idname = "m3d.delete_components"
@@ -1099,6 +1205,7 @@ classes = (
     M3D_OT_dock_tab,
     M3D_OT_command_language,
     M3D_OT_target_weld,
+    M3D_OT_select_edges_between,
     M3D_OT_delete_components,
     M3D_OT_connect,
     M3D_OT_fill_hole,

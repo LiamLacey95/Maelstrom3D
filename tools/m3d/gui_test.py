@@ -7958,6 +7958,68 @@ def bx_control():
     bpy.ops.m3d.workspace(kind='MODEL')
 
 
+# --- Shift + double-click an edge: the edges between it and the edge clicked before, along their ring (the real keys).
+step(wait_until(lambda: hp_in('MODEL') and bpy.context.mode == 'OBJECT', "Modeling for the edges between test"))
+
+
+@step
+def eb_setup():
+    with hp_viewport():
+        bpy.ops.mesh.primitive_grid_add(x_subdivisions=6, y_subdivisions=6, size=6)
+        bpy.ops.object.mode_set_with_submode(mode='EDIT', mesh_select_mode={'EDGE'})
+        bpy.ops.mesh.select_all(action='DESELECT')
+        bpy.ops.wm.tool_set_by_id(name="builtin.select_box")
+        bpy.ops.view3d.view_axis(type='TOP')
+        bpy.ops.view3d.view_all(center=True)
+
+
+def eb_selected():
+    mesh = bmesh.from_edit_mesh(bpy.context.active_object.data)
+    return sorted((round((e.verts[0].co.x + e.verts[1].co.x) / 2, 2), round((e.verts[0].co.y + e.verts[1].co.y) / 2, 2))
+                  for e in mesh.edges if e.select)
+
+
+@step
+def eb_click_first():
+    xy = rt_xy(Vector((-0.5, -2.0, 0.0)))
+    event('MOUSEMOVE', xy=xy)
+    event('LEFTMOUSE', 'PRESS', xy)
+    event('LEFTMOUSE', 'RELEASE', xy)
+
+
+@step
+def eb_shift_double_click():
+    check(eb_selected() == [(-0.5, -2.0)], "(the first edge is selected by a click: %s)" % eb_selected())
+    # The first click of the double-click (Shift+click toggles the edge on). Simulated events never make a double-click,
+    # so the operator the Shift+double-click key runs is invoked with the pointer on the edge, after the click.
+    xy = rt_xy(Vector((-0.5, 1.0, 0.0)))
+    event('MOUSEMOVE', xy=xy)
+    event('LEFT_SHIFT', 'PRESS', xy, shift=True)
+    event('LEFTMOUSE', 'PRESS', xy, shift=True)
+    event('LEFTMOUSE', 'RELEASE', xy, shift=True)
+    event('LEFT_SHIFT', 'RELEASE', xy)
+
+
+@step
+def eb_double_click():
+    km = bpy.context.window_manager.keyconfigs.active.keymaps["Mesh"]
+    kmis = {(k.shift, k.ctrl, k.properties.deselect) for k in km.keymap_items
+            if k.idname == "m3d.select_edges_between" and k.type == 'LEFTMOUSE' and k.value == 'DOUBLE_CLICK'}
+    check(kmis == {(True, False, False), (False, True, True)}, "Shift / Ctrl + double-click run Select Edges Between: %s" % kmis)
+    with hp_viewport():
+        bpy.ops.m3d.select_edges_between('INVOKE_DEFAULT')
+
+
+@step
+def eb_check():
+    check(eb_selected() == [(-0.5, y) for y in (-2.0, -1.0, 0.0, 1.0)],
+          "Shift+double-click an edge up the ring: the edges between are selected: %s" % eb_selected())
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for ob in list(bpy.data.objects):
+        bpy.data.objects.remove(ob)
+    check(not tracebacks(), "Python error in the edges between test")
+
+
 @step
 def finish():
     errors = "".join(stderr_tee.buf + sys.stdout.buf)

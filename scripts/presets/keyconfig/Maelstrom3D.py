@@ -239,6 +239,10 @@ OVERRIDES = {
         ("REMOVE", {"type": 'LEFTMOUSE', "value": 'CLICK', "shift": True}, None),
     ],
     "Mesh": [
+        # Shift / Ctrl + double-click an edge: select / deselect the edges between it and the edge selected before,
+        # along their ring or loop (the whole ring or loop for neighbours).
+        _kmi("m3d.select_edges_between", 'LEFTMOUSE', 'DOUBLE_CLICK', shift=True),
+        _kmi("m3d.select_edges_between", 'LEFTMOUSE', 'DOUBLE_CLICK', props={"deselect": True}, ctrl=True),
         _pie("M3D_MT_marking_menu", 'RIGHTMOUSE'),
         _pie("M3D_MT_shift_rmb", 'RIGHTMOUSE', shift=True),
         *_QWER_MM, _UNIVERSAL,
@@ -285,7 +289,8 @@ def selection_modifiers(keyconfig_data):
             mods = (bool(args.get("shift")), bool(args.get("ctrl")))
             if args.get("alt") or not any(mods):
                 continue
-            if idname in {"view3d.select_box", "view3d.select_lasso", "uv.select_box", "uv.select_lasso"} and data and                     any(k == "mode" for k, _ in data.get("properties", ())):
+            if idname in {"view3d.select_box", "view3d.select_lasso", "uv.select_box", "uv.select_lasso"} and data and \
+                    any(k == "mode" for k, _ in data.get("properties", ())):
                 mode = drag_modes[mods]
                 if mode == 'XOR' and idname.startswith("uv."):
                     mode = 'ADD'  # UV box/lasso select has no toggle mode.
