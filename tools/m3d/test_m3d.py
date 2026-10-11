@@ -2540,6 +2540,7 @@ def two_layers(ch_id, mode, opacity, srgb=False):
     """A scene whose stack is a 4 x 4 opaque base and a layer with `mode`, opacity and per-row alpha."""
     o, m = fresh_cube("Merge")
     m.m3d_channel = ch_id
+    LY.paint_only(bpy.context, ch_id)   # (the brush material paints that channel: the images a layer makes are that channel's)
     base_img = small("lowImg", grid_rgba(lambda x, y: (cx[x],) * 3, lambda y: 1.0), srgb)
     top_img = small("topImg", grid_rgba(lambda x, y: (ry[y],) * 3, lambda y: ay[y]), srgb)
     for name, img in (("Low", base_img), ("High", top_img)):
@@ -2606,6 +2607,7 @@ check(not bpy.ops.m3d.layer_merge_down.poll(), "nothing below the bottom layer")
 # Flatten three layers (Mix, Multiply, Add) and compare with the hand-worked chain.
 o, m = fresh_cube("Flat")
 m.m3d_channel = 'ROUGHNESS'
+LY.paint_only(bpy.context, 'ROUGHNESS')
 imgs = [small("f%d" % i, grid_rgba(lambda x, y, i=i: ((cx, ry, cx[::-1])[i][x if i != 1 else y],) * 3, lambda y, i=i: 1.0 if i == 0 else ay[y])) for i in range(3)]
 modes, opacities = ('MIX', 'MULTIPLY', 'ADD'), (1.0, 0.8, 0.6)
 for i in range(3):
@@ -9329,6 +9331,205 @@ eb_sides = sorted((e for e in eb_bm.edges if abs(e.verts[0].co.z - e.verts[1].co
 check(len(_mm.edges_between(eb_sides[0], eb_sides[3])) == 4 and len(_mm.edges_between(eb_sides[0], eb_sides[9])) == 4
       and len(_mm.edges_between(eb_sides[0], eb_sides[1])) == 12, "...a closed ring: the shorter way round; neighbours: all 12")
 bpy.ops.object.mode_set(mode='OBJECT')
+
+# ----------------------------------------------------------------------------------------------------
+# Multi-channel painting: the brush material (Scene.m3d_tex.brush), the list of what one stroke paints that the paint code reads
+# (the window manager's m3d_paint_targets), the images it needs. The strokes themselves are tested in gui_test.py.
+tex_ws = bpy.data.workspaces["Texture"]   # (files were opened since: the workspaces are new)
+mc_wm = bpy.context.window_manager
+mc_brush = bpy.context.scene.m3d_tex.brush
+MC_VALUES = {'use_base_color': True, 'use_height': False, 'use_roughness': False, 'use_metallic': False, 'use_emission': False,
+             'height': 0.5, 'roughness': 0.5, 'metallic': 0.0, 'emission': (0.0, 0.0, 0.0)}
+
+
+def mc_reset():
+    with LY.muted():
+        for key, value in MC_VALUES.items():
+            setattr(mc_brush, key, value)
+
+
+def mc_list():
+    """[(image name, color or None)] of the list the paint code reads (empty without one)."""
+    items = mc_wm.get(LY.TARGETS)
+    return [(i["image"], tuple(i["color"].to_list()) if "color" in i else None) for i in items] if items is not None else []
+
+
+def mc_names(layer, *channels):
+    return [LY.entry_of(layer, c).image.name for c in channels]
+
+
+mc_reset()
+check(all(getattr(mc_brush, k) == v if k != 'emission' else tuple(mc_brush.emission) == v for k, v in MC_VALUES.items()),
+      "the brush material starts with Base Color on, the other channels off")
+check("normal" not in " ".join(p.identifier for p in mc_brush.bl_rna.properties), "the brush material has no Normal channel")
+o, m = fresh_cube("Multi", '64')
+check(bpy.ops.m3d.layer_add(kind='PAINT') == {'FINISHED'}, "(a paint layer)")
+layer = m.m3d_layers[0]
+check(LY.entry_of(layer, 'BASE_COLOR').image is not None and sum(e.image is not None for e in layer.channels) == 1
+      and mc_list() == [(LY.entry_of(layer, 'BASE_COLOR').image.name, None)],
+      "Base Color only: its image is made, the list names it without a color (%s)" % mc_list())
+check(slot_image(m) == LY.entry_of(layer, 'BASE_COLOR').image, "...and it is the canvas (the active paint slot)")
+
+# Turn channels on: the layer makes their images, at the size of its other images; the list has the values.
+mc_brush.roughness, mc_brush.metallic, mc_brush.height = 0.2, 1.0, 0.8
+mc_brush.use_roughness = mc_brush.use_metallic = mc_brush.use_height = True
+names = mc_names(layer, 'BASE_COLOR', 'ROUGHNESS', 'METALLIC', 'HEIGHT')
+want = [(names[0], None)] + [(n, (v,) * 3) for n, v in zip(names[1:], (0.2, 1.0, 0.8))]
+got = mc_list()
+check(len(got) == 4 and [n for n, _c in got] == names and got[0][1] is None
+      and all(np.allclose(g[1], w[1], atol=1e-6) for g, w in zip(got[1:], want[1:])),
+      "Base Color, Roughness, Metallic and Height on: the list is %s" % got)
+check(all(tuple(LY.entry_of(layer, c).image.size) == (64, 64) for c in ('BASE_COLOR', 'ROUGHNESS', 'METALLIC', 'HEIGHT'))
+      and LY.entry_of(layer, 'EMISSION').image is None and LY.entry_of(layer, 'NORMAL').image is None,
+      "...the images have one size, and channels that are off have none")
+check(LY.entry_of(layer, 'ROUGHNESS').image.colorspace_settings.name == 'Non-Color'
+      and LY.entry_of(layer, 'HEIGHT').image.colorspace_settings.name == 'Non-Color'
+      and LY.entry_of(layer, 'BASE_COLOR').image.colorspace_settings.name == 'sRGB', "...in the color spaces of the channels")
+check(slot_image(m) == LY.entry_of(layer, 'BASE_COLOR').image and all(LY.entry_of(layer, c).image in list(m.texture_paint_images)
+                                                                       for c in ('ROUGHNESS', 'METALLIC', 'HEIGHT')),
+      "...the canvas is the Base Color image, and the others are in the chains (paint slots)")
+mc_brush.height = 0.65
+check(abs(mc_list()[3][1][0] - 0.65) < 1e-6, "changing a value rewrites the list (%s)" % mc_list())
+mc_brush.use_emission = True
+mc_brush.emission = (0.5, 0.2, 0.1)
+got = mc_list()
+check(len(got) == 5 and got[4][0] == LY.entry_of(layer, 'EMISSION').image.name and np.allclose(got[4][1], (0.5, 0.2, 0.1), atol=1e-6)
+      and LY.entry_of(layer, 'EMISSION').image.colorspace_settings.name == 'sRGB', "Emission: its color is in the list (linear)")
+mc_brush.use_emission = False
+
+# The Eraser has no channels of its own: the list is the same (the stroke's blend erases every image of it).
+bpy.ops.m3d.tex_tool(tool='ERASER')
+check(len(mc_list()) == 4, "the Eraser erases the channels that are on: the same list")
+bpy.ops.m3d.tex_tool(tool='PAINT')
+
+# The first channel that is on is the canvas, and gets its own value (the brush color is Base Color's).
+mc_brush.use_base_color = False
+got = mc_list()
+check([n for n, _c in got] == names[1:] and np.allclose(got[0][1], (0.2,) * 3) and slot_image(m) == LY.entry_of(layer, 'ROUGHNESS').image,
+      "Base Color off: Roughness is the canvas and keeps its value (%s)" % got)
+mc_brush.use_roughness = mc_brush.use_metallic = False
+got = mc_list()
+check(len(got) == 1 and got[0][0] == names[3] and np.allclose(got[0][1], (0.65,) * 3) and slot_image(m) == LY.entry_of(layer, 'HEIGHT').image,
+      "...even alone (%s)" % got)
+mc_brush.use_base_color = True
+
+# A channel the layer does not have is not painted; turning it on gives it back.
+with LY.muted():
+    LY.entry_of(layer, 'HEIGHT').use = False
+LY.sync_target(bpy.context, m, True)
+check(names[3] not in [n for n, _c in mc_list()], "a channel the layer does not have is not in the list")
+mc_brush.use_height = False
+mc_brush.use_height = True
+check(LY.entry_of(layer, 'HEIGHT').use and names[3] in [n for n, _c in mc_list()], "...turning the channel on in the brush material gives it back")
+
+# Selecting a channel to show (C) does not change what is painted; picking one to paint does.
+mc_brush.use_roughness = mc_brush.use_metallic = True
+before_ = (mc_list(), {k: getattr(mc_brush, k) for k in MC_VALUES if k != 'emission'})
+T.select_channel(m, 'METALLIC')
+check(m.m3d_channel == 'METALLIC' and mc_list() == before_[0] and before_[1] == {k: getattr(mc_brush, k) for k in MC_VALUES if k != 'emission'},
+      "C only shows a channel: the list and the toggles stay (%s)" % mc_list())
+check(bpy.ops.m3d.tex_channel(channel='ROUGHNESS') == {'FINISHED'} and m.m3d_channel == 'ROUGHNESS'
+      and [k for k in MC_VALUES if k.startswith("use_") and getattr(mc_brush, k)] == ['use_roughness']
+      and [n for n, _c in mc_list()] == [names[1]] and np.allclose(mc_list()[0][1], (0.2,) * 3), "Paint Roughness paints that channel alone (%s)" % mc_list())
+check(bpy.ops.m3d.tex_channel(channel='NORMAL') == {'FINISHED'} and not mc_list() and slot_image(m) == LY.entry_of(layer, 'NORMAL').image
+      and not any(k.startswith("use_") and getattr(mc_brush, k) for k in MC_VALUES),
+      "Normal is not in the brush material: it is painted alone (no list, the canvas is its image)")
+check(bpy.ops.m3d.tex_channel(channel='BASE_COLOR') == {'FINISHED'} and mc_list() == [(names[0], None)], "Paint Base Color: back to the brush color")
+
+# Paint Mask, a fill layer and a folder have no list.
+mc_brush.use_roughness = True
+check(len(mc_list()) == 2, "(two channels again)")
+bpy.ops.m3d.layer_mask_add(fill='WHITE')
+check(layer.paint_mask and not mc_list() and slot_image(m) == LY.paint_effect(layer).image,
+      "Add Mask: strokes go to the mask alone, no list (%s)" % mc_list())
+check(bpy.ops.m3d.layer_paint_mask() == {'FINISHED'} and not layer.paint_mask and len(mc_list()) == 2,
+      "...Paint Mask off: the list comes back with the channels (%s)" % mc_list())
+layer.paint_mask = True
+check(not mc_list(), "...and on again: no list")
+layer.paint_mask = False
+check(bpy.ops.m3d.layer_add(kind='FILL') == {'FINISHED'} and not mc_list() and slot_image(m).name == LY.SCRATCH,
+      "a fill layer: the strokes go to the scratch image, no list")
+check(bpy.ops.m3d.layer_folder_add() == {'FINISHED'} and not mc_list(), "a folder: no list")
+m.m3d_layer_index = 0
+check(len(mc_list()) == 2, "back on the paint layer: the list is back")
+
+# New images take the size of the layer's other images, not the size of new slots.
+mc_reset()
+o, m = fresh_cube("MultiSize", '64')
+bpy.ops.m3d.layer_add(kind='PAINT')
+layer = m.m3d_layers[0]
+small_ = bpy.data.images.new("MultiSize32", 32, 32, alpha=True)
+LY.set_channel_space(small_, LY.CHANNEL_BY_ID['BASE_COLOR'])
+with LY.muted():
+    old_ = LY.entry_of(layer, 'BASE_COLOR').image
+    LY.entry_of(layer, 'BASE_COLOR').image = small_
+    bpy.data.images.remove(old_)
+LY.rebuild_all(m)
+mc_brush.use_roughness = mc_brush.use_metallic = True
+check(all(tuple(LY.entry_of(layer, c).image.size) == (32, 32) for c in ('ROUGHNESS', 'METALLIC')),
+      "new channel images have the size of the layer's other images (%s)" % [tuple(LY.entry_of(layer, c).image.size) for c in ('ROUGHNESS', 'METALLIC')])
+check(LY.layer_size(bpy.context, layer) == (32, 32), "(layer_size)")
+
+# Undo, Redo and File > Open bring back layers, not the window manager's property: the handlers write the list again.
+for handler in (LY.undo_post, LY.load_post):
+    del mc_wm[LY.TARGETS]
+    handler()
+    check(len(mc_list()) == 3, "%s writes the list again (%s)" % (handler.__name__, mc_list()))
+bpy.ops.object.mode_set(mode='OBJECT')
+clean_scene()
+LY.undo_post()
+check(not mc_list(), "without a mesh the list is empty")
+
+# The Material section of Properties - Paint and the toggles of the context toolbar.
+mc_reset()
+o, m = fresh_cube("MultiUI", '64')
+bpy.context.scene.m3d_tex.props_mode = 'AUTO'
+mc_ctx = TCtx('PROPS')
+check("PROPERTIES_PT_m3d_tx_material" in tex_shown("tex_props"), "Properties - Paint has a Material section (no layer: it says what to do)")
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_material, mc_ctx)
+check_calls("Material section, no layer", log)
+check(not [r for r in log if r._kind == "prop"] and any(r._kind == "label" for r in log), "...with no layer: a message, no buttons")
+bpy.ops.m3d.layer_add(kind='PAINT')
+mc_brush.use_roughness = mc_brush.use_emission = True
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_material, mc_ctx)
+check_calls("Material section", log)
+drawn_ = [r._args[1] for r in log if r._kind == "prop"]
+check(drawn_[:5] == ["use_base_color", "use_height", "use_roughness", "use_metallic", "use_emission"]
+      and "roughness" in drawn_ and "emission" in drawn_ and "metallic" not in drawn_ and "height" not in drawn_,
+      "the Material section: a toggle for each channel, then a value for each that is on: %s" % drawn_)
+check([r._kw.get("text") for r in log if r._kind == "prop"][:5] == ["color", "height", "rough", "metal", "emit"],
+      "...with the labels of the buttons")
+bpy.ops.m3d.layer_mask_add(fill='WHITE')
+m.m3d_layers[0].paint_mask = True
+check("PROPERTIES_PT_m3d_tx_material" not in tex_shown("tex_props"), "Properties - Mask (painting the mask) has no Material section")
+m.m3d_layers[0].paint_mask = False
+bpy.ops.m3d.tex_tool(tool='PAINT')
+log = []
+T.draw_status_line(Rec(log), wide_)
+check_calls("Texture context toolbar with a paint layer", log)
+drawn_ = [r._args[1] for r in log if r._kind == "prop"]
+MC_TOGGLES = ["use_base_color", "use_height", "use_roughness", "use_metallic", "use_emission"]
+check([d for d in drawn_ if d in MC_TOGGLES] == MC_TOGGLES
+      and [r._kw.get("text") for r in log if r._kind == "prop" and r._args[1] == "use_roughness"] == ["rough"],
+      "the context toolbar has the channel toggles: %s" % [d for d in drawn_ if d in MC_TOGGLES])
+narrow_ = TCtx('RIGHT')
+narrow_.region = NS(type='HEADER', width=1800)
+log = []
+T.draw_status_line(Rec(log), narrow_)
+check([r._kw.get("text") for r in log if r._kind == "prop" and r._args[1] in MC_TOGGLES] == ["C", "H", "R", "M", "E"],
+      "...short on a narrower window")
+bpy.ops.m3d.tex_tool(tool='SMUDGE')
+log = []
+T.draw_status_line(Rec(log), wide_)
+check("use_roughness" not in [r._args[1] for r in log if r._kind == "prop"], "Smudge works on one channel: no toggles")
+bpy.ops.m3d.tex_tool(tool='PAINT')
+bpy.ops.m3d.layer_add(kind='FILL')
+log = []
+T.draw_status_line(Rec(log), wide_)
+check("use_roughness" not in [r._args[1] for r in log if r._kind == "prop"], "a fill layer: no toggles")
+mc_reset()
+bpy.ops.object.mode_set(mode='OBJECT')
+clean_scene()
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

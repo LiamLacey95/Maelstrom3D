@@ -11,8 +11,10 @@ chain per channel that is rebuilt from it: Image Texture -> Mix (blend mode, fac
 the layer below, the top of the chain feeding the Principled BSDF. The chains live in one frame per channel; only nodes
 that carry the m3d_layer custom property are ever touched. A layer's mask is a stack of effects (m3d_masks.py) built as
 one more chain, in a frame of its own per layer, whose result multiplies the factor of every channel the layer has.
-The same blend math in numpy flattens a stack (Merge Down, Flatten, Export). Painting needs no special support: the
-active layer's image for the active channel (or its mask's Paint effect) is made the material's active paint slot.
+The same blend math in numpy flattens a stack (Merge Down, Flatten, Export). Painting needs little support: the first
+channel image of the brush material (or the active layer's mask's Paint effect) is made the material's active paint slot,
+and the paint code is told, through a window manager property, which other channel images the stroke paints along with
+it (target_set, TARGETS).
 
 Folders: a layer of kind FOLDER holds the layers whose `parent` is its uid (folders nest). The stack stays one list,
 bottom to top, with each folder right after the layers inside it, so the list read backwards is what the UI shows. A
@@ -999,10 +1001,12 @@ def image_name(mat, layer, label):
 
 
 def make_channel_image(mat, layer, ch, size, opaque):
-    """A new image for a layer's channel. `opaque`: the bottom layer's kind, filled with the channel's starting color
-    (data channels without alpha, like a new paint slot); otherwise transparent, so only painted pixels show."""
+    """A new image for a layer's channel (`size`: its side, or (width, height)). `opaque`: the bottom layer's kind, filled
+    with the channel's starting color (data channels without alpha, like a new paint slot); otherwise transparent, so
+    only painted pixels show."""
     alpha = ch.id == 'BASE_COLOR' or not opaque
-    image = bpy.data.images.new(image_name(mat, layer, ch.label), size, size, alpha=alpha, is_data=not ch.srgb)
+    width, height = (size, size) if isinstance(size, int) else size
+    image = bpy.data.images.new(image_name(mat, layer, ch.label), width, height, alpha=alpha, is_data=not ch.srgb)
     image.generated_color = (*ch.color[:3], 1.0 if opaque else 0.0)
     set_channel_space(image, ch)
     return image
@@ -1030,37 +1034,131 @@ def new_size(context):
     return int(context.scene.m3d_tex.resolution)
 
 
-def target_image(context, mat, create):
-    """The image strokes should go to: the active layer's Paint effect when Paint Mask is on (always for a fill layer or
-    a folder), else its image for the active channel (made here when `create`). None for a fill layer or a folder
-    without a Paint effect, a layer in a frozen folder, or a channel the layer does not have."""
-    index = mat.m3d_layer_index
+# The brush material: the channels one stroke paints at once (Scene.m3d_tex.brush, see m3d_texture.py). The paint code reads
+# the list of their images from the window manager property TARGETS when a stroke starts (paint_targets_get in
+# paint_image.cc): the first image is the one the brush paints anyway (the canvas), the rest are painted along with it
+# through the same stroke: same texels, same opacity and falloff, undone with it. A list that does not name the canvas does
+# nothing, so a stale one is harmless.
+TARGETS = "m3d_paint_targets"
+BRUSH_CHANNELS = ('BASE_COLOR', 'HEIGHT', 'ROUGHNESS', 'METALLIC', 'EMISSION')   # (Normal is painted alone: see target_set)
+
+
+def brush_of(context):
+    tex = getattr(context.scene, "m3d_tex", None)
+    return tex.brush if tex is not None else None
+
+
+def brush_channels(context):
+    """The channels of the brush material that are on, in the order of CHANNELS (Base Color first)."""
+    brush = brush_of(context)
+    return [ch for ch in CHANNELS if brush is not None and ch.id in BRUSH_CHANNELS and getattr(brush, "use_" + ch.id.lower())]
+
+
+def brush_value(brush, ch_id):
+    """The linear value a stroke paints into channel `ch_id` of the brush material (not Base Color: that is the brush
+    color): a grey for the scalar channels, the color of Emission."""
+    value = getattr(brush, ch_id.lower())
+    return (value, value, value) if ch_id in SCALARS else tuple(value)
+
+
+def paint_only(context, ch_id):
+    """The brush material paints channel `ch_id` alone (no channel of it when `ch_id` is one it has none for)."""
+    brush = brush_of(context)
+    if brush is not None:
+        with muted():
+            for cid in BRUSH_CHANNELS:
+                setattr(brush, "use_" + cid.lower(), cid == ch_id)
+
+
+def layer_size(context, layer):
+    """(width, height) of the layer's images: a new one is made at that size (the paint code paints only images of the
+    size of the canvas). A layer without images starts at the size of new slots."""
+    for ch in CHANNELS:
+        image = entry_of(layer, ch.id).image
+        if image is not None:
+            return image_size(image)
+    return (new_size(context),) * 2
+
+
+def stroke_targets(context, mat, layer, create):
+    """[(channel, image)] a stroke on a paint layer paints: the channels of the brush material that are on and that the
+    layer has, Base Color first (the canvas). The images they lack are made when `create` (with the others' size)."""
+    wanted = [ch for ch in brush_channels(context) if entry_of(layer, ch.id).use]
+    if create and any(entry_of(layer, ch.id).image is None for ch in wanted):
+        size = layer_size(context, layer)
+        with muted():
+            for ch in wanted:
+                if entry_of(layer, ch.id).image is None:
+                    entry_of(layer, ch.id).image = make_channel_image(mat, layer, ch, size, opaque=mat.m3d_layer_index == 0)
+        rebuild_all(mat)
+    return [(ch, entry_of(layer, ch.id).image) for ch in wanted if entry_of(layer, ch.id).image is not None]
+
+
+def target_set(context, mat, create):
+    """(canvas, [(channel, image)]): the image strokes should go to, and the images one stroke paints at once (see
+    stroke_targets; the canvas is the first of them). With Paint Mask on (always for a fill layer or a folder) strokes go to
+    the active layer's Paint effect alone. A paint layer paints the channels of the brush material; when it has none of
+    them the channel being shown (Material.m3d_channel) is painted alone, which is how Normal is painted. The canvas is
+    None for a fill layer or a folder without a Paint effect, a layer in a frozen folder (its layers are no paint slots:
+    nothing can be painted), or a channel the layer does not have. The images are made here when `create`."""
     layer = active_layer(mat)
-    if layer is None or in_frozen(layer):   # (a frozen folder's layers are no paint slots: nothing can be painted)
-        return None
+    if layer is None or in_frozen(layer):
+        return None, []
     effect = paint_effect(layer)
     if effect is not None and (layer.paint_mask or layer.kind != 'PAINT'):
-        return effect.image
+        return effect.image, []
+    if layer.kind != 'PAINT':
+        return None, []
+    targets = stroke_targets(context, mat, layer, create)
+    if targets:
+        return targets[0][1], targets
     ch = CHANNEL_BY_ID[mat.m3d_channel]
     e = entry_of(layer, ch.id)
-    if layer.kind != 'PAINT' or not e.use:
-        return None
+    if not e.use:
+        return None, []
     if e.image is None and create:
         with muted():
-            e.image = make_channel_image(mat, layer, ch, new_size(context), opaque=index == 0)
+            e.image = make_channel_image(mat, layer, ch, layer_size(context, layer), opaque=mat.m3d_layer_index == 0)
         rebuild_all(mat)
-    return e.image
+    return e.image, []
+
+
+def target_image(context, mat, create):
+    """The image strokes go to (see target_set)."""
+    return target_set(context, mat, create)[0]
+
+
+def write_paint_targets(context, targets):
+    """Tell the paint code which images a stroke paints (TARGETS): the image of each channel, with its value (Base Color
+    has none: it gets the brush color). Without targets the property is removed."""
+    wm = context.window_manager
+    brush = brush_of(context)
+    items = [{"image": image.name} if ch.id == 'BASE_COLOR' else
+             {"image": image.name, "color": [float(v) for v in brush_value(brush, ch.id)]} for ch, image in targets]
+    if items:
+        wm[TARGETS] = items   # (even one: a canvas that is not Base Color needs its value, not the brush color)
+    elif TARGETS in wm:
+        del wm[TARGETS]
 
 
 def sync_target(context, mat, create):
-    """Point the material's paint slot at the paint target (see target_image)."""
-    image = target_image(context, mat, create)
+    """Point the material's paint slot at the paint target (see target_set) and tell the paint code what else to paint."""
+    image, targets = target_set(context, mat, create)
     if image is None and len(mat.m3d_layers):
         image = ensure_scratch(mat)   # Nothing paintable here: strokes must not land on some other layer's image.
     images = list(mat.texture_paint_images)
     if image is not None and image in images:
         mat.paint_active_slot = images.index(image)
+    write_paint_targets(context, targets)
     return image
+
+
+def sync_list(context):
+    """Write the images of a stroke for the active mesh's material only (no image or node is made: for a loaded file and
+    for Undo / Redo, which bring back layers and toggles but not the window manager's property)."""
+    ob = mesh_of(context)
+    mat = ob.active_material if ob is not None else None
+    write_paint_targets(context, target_set(context, mat, False)[1] if mat is not None and len(mat.m3d_layers) else [])
 
 
 def refresh(context, mat):
@@ -1074,7 +1172,8 @@ def refresh(context, mat):
 
 
 def paint_channel(context, ob, ch):
-    """Paint channel `ch` on the active layer: the layer gets the channel and, once, its image. Returns the image."""
+    """Paint channel `ch` on the active layer, and nothing else: the layer gets the channel and, once, its image, and the
+    brush material has it alone on. Returns the image."""
     mat = ob.active_material
     layer = active_layer(mat)
     if layer is None:
@@ -1090,6 +1189,7 @@ def paint_channel(context, ob, ch):
         if layer.kind == 'PAINT':
             entry_of(layer, ch.id).use = True
             layer.paint_mask = False
+    paint_only(context, ch.id)
     return sync_target(context, mat, True)
 
 
@@ -1395,6 +1495,7 @@ def migrate(mat):
                 if e.image == active:
                     mat.m3d_channel = ch.id   # The slot that was being painted stays the channel being painted.
         mat.m3d_layer_index = 0
+    paint_only(bpy.context, mat.m3d_channel)   # (and the brush material paints that channel alone, as the slots did)
     for ch_id, node in found.items():
         _carry[part(ch_id, layer.uid, "tex")] = settings_of(node)
         mids = [l.to_node for l in node.outputs[0].links if l.to_node.type in {'NORMAL_MAP', 'BUMP'}]
@@ -2311,6 +2412,13 @@ def load_post(*_args):
     for mat in bpy.data.materials:
         if mat.node_tree is not None and any(l.mask is not None for l in mat.m3d_layers):
             rebuild_all(mat)
+    sync_list(bpy.context)
+
+
+@bpy.app.handlers.persistent
+def undo_post(*_args):
+    """Undo and Redo bring back layers and brush material, not the window manager's list of what a stroke paints."""
+    sync_list(bpy.context)
 
 
 _pending = [False]
@@ -2342,18 +2450,23 @@ def register():
     mat.m3d_layers = CollectionProperty(type=M3D_Layer)
     mat.m3d_layer_index = IntProperty(name="Active Layer", default=0, min=0, update=_changed)
     mat.m3d_channel = EnumProperty(name="Channel", default='BASE_COLOR', items=CHANNEL_ITEMS, update=_changed,
-                                   description="Channel the brush paints on the active layer")
+                                   description="Channel shown on its own (C). It is painted too only when the brush "
+                                   "material has no channel on, or when it is Normal")
     mat.m3d_show_mask = BoolProperty(name="Show Mask", default=False, update=_show_mask_changed,
                                      description="Show the active layer's mask in the 3D view instead of the material "
                                      "(white shows the layer, black hides it)")
     mat.m3d_show_map = StringProperty(name="Show Map", default="", update=_show_mask_changed,
                                       description="Show a baked map (the name of its image) in the 3D view instead of the material")
     bpy.app.handlers.load_post.append(load_post)
+    bpy.app.handlers.undo_post.append(undo_post)
+    bpy.app.handlers.redo_post.append(undo_post)
     bpy.app.handlers.depsgraph_update_post.append(depsgraph_post)
 
 
 def unregister():
     bpy.app.handlers.depsgraph_update_post.remove(depsgraph_post)
+    bpy.app.handlers.redo_post.remove(undo_post)
+    bpy.app.handlers.undo_post.remove(undo_post)
     bpy.app.handlers.load_post.remove(load_post)
     del bpy.types.Material.m3d_show_map, bpy.types.Material.m3d_show_mask, bpy.types.Material.m3d_channel, bpy.types.Material.m3d_layer_index
     del bpy.types.Material.m3d_layers

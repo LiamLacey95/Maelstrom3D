@@ -27,7 +27,8 @@ from contextlib import ExitStack, contextmanager, nullcontext
 
 import bpy
 import numpy as np
-from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, PointerProperty, StringProperty
+from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty, PointerProperty,
+                       StringProperty)
 from bpy.types import Menu, Operator, Panel, PropertyGroup
 from bl_ui.properties_paint_common import (
     BrushSelectPanel, ClonePanel, ColorPalettePanel, DisplayPanel, FalloffPanel, SmoothStrokePanel,
@@ -230,10 +231,61 @@ def draw_fixes(layout, context, need):
 # -----------------------------------------------------------------------------
 # Settings
 
+def _brush_toggled(cid):
+    """Update of a channel toggle of the brush material: the paint layer gets the channel when it is turned on, then the
+    brush is aimed again (which makes the images the stroke needs)."""
+    def update(self, context):
+        if MK._muted[0]:
+            return
+        ob = mesh_of(context)
+        mat = ob.active_material if ob is not None else None
+        if mat is None or not len(mat.m3d_layers):
+            return
+        layer = active_layer(mat)
+        if getattr(self, "use_" + cid.lower()) and layer is not None and layer.kind == 'PAINT' and not L.in_frozen(layer):
+            with MK.muted():
+                entry_of(layer, cid).use = True
+            L.rebuild_all(mat)
+        L.sync_target(context, mat, True)
+    return update
+
+
+def _brush_value_changed(self, context):
+    ob = mesh_of(context)
+    mat = ob.active_material if ob is not None else None
+    if not MK._muted[0] and mat is not None and len(mat.m3d_layers):
+        L.sync_target(context, mat, True)
+
+
+class M3D_BrushMaterial(PropertyGroup):
+    """What one brush stroke paints (Scene.m3d_tex.brush): the channels of the paint layer that are on, each with its own value.
+    Base Color is painted with the brush color. The Eraser erases all the channels that are on."""
+    use_base_color: BoolProperty(name="Base Color", default=True, update=_brush_toggled('BASE_COLOR'),
+                                 description="Paint the Base Color of the layer with the brush color")
+    use_height: BoolProperty(name="Height", default=False, update=_brush_toggled('HEIGHT'),
+                             description="Paint the Height of the layer with the value below (grey: 0.5 is flat, more is "
+                             "higher)")
+    use_roughness: BoolProperty(name="Roughness", default=False, update=_brush_toggled('ROUGHNESS'),
+                                description="Paint the Roughness of the layer with the value below")
+    use_metallic: BoolProperty(name="Metallic", default=False, update=_brush_toggled('METALLIC'),
+                               description="Paint the Metallic of the layer with the value below")
+    use_emission: BoolProperty(name="Emission", default=False, update=_brush_toggled('EMISSION'),
+                               description="Paint the Emission of the layer with the color below")
+    height: FloatProperty(name="Height", default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=_brush_value_changed,
+                          description="Value painted into Height (0.5 is flat)")
+    roughness: FloatProperty(name="Roughness", default=0.5, min=0.0, max=1.0, subtype='FACTOR',
+                             update=_brush_value_changed, description="Value painted into Roughness")
+    metallic: FloatProperty(name="Metallic", default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_brush_value_changed,
+                            description="Value painted into Metallic")
+    emission: FloatVectorProperty(name="Emission", size=3, subtype='COLOR', min=0.0, max=1.0, default=(0.0, 0.0, 0.0),
+                                  update=_brush_value_changed, description="Color painted into Emission")
+
+
 class M3D_TexSettings(PropertyGroup):
-    """Texture workspace options (Scene.m3d_tex): new slot size and the Export tab."""
+    """Texture workspace options (Scene.m3d_tex): new slot size, the brush material and the Export tab."""
     resolution: EnumProperty(name="Resolution", default='2048', items=SIZES,
                              description="Size of new paint slots (bigger images use more memory)")
+    brush: PointerProperty(type=M3D_BrushMaterial)
     export_preset: EnumProperty(name="Preset", default='UNREAL', items=(
         ('GLTF', "glTF", "One .glb file with the mesh, the material and its textures"),
         ('UNREAL', "Unreal", "Base Color, Normal (DirectX), packed ORM (Occlusion, Roughness, Metallic), Emissive"),
@@ -391,7 +443,14 @@ class M3D_OT_tex_channel_cycle(Operator):
             return {'CANCELLED'}
         now = active_channel(mat)
         i = (order.index(now) + self.delta) % len(order) if now in order else 0
-        select_channel(mat, order[i])
+        if mat.m3d_layers:
+            try:
+                L.paint_channel(context, paint_mesh(context), CHANNEL_BY_ID[order[i]])   # (that channel alone)
+            except RuntimeError as err:
+                self.report({'WARNING'}, str(err).strip())
+                return {'CANCELLED'}
+        else:
+            select_channel(mat, order[i])
         self.report({'INFO'}, "Painting " + CHANNEL_BY_ID[order[i]].label)
         return {'FINISHED'}
 
@@ -2185,6 +2244,64 @@ class PROPERTIES_PT_m3d_tx_tuning(_Page, Panel):
         layout.prop(brush, "blend", text="Blend Mode")
 
 
+MATERIAL_BUTTONS = (   # (channel, button text, short text): the channels of the brush material, in the order of the buttons
+    ('BASE_COLOR', "color", "C"), ('HEIGHT', "height", "H"), ('ROUGHNESS', "rough", "R"), ('METALLIC', "metal", "M"),
+    ('EMISSION', "emit", "E"))
+
+
+def paint_layer_active(context):
+    """The active layer when a stroke paints the channels of the brush material (a paint layer that is not frozen, with
+    Paint Mask off), else None."""
+    ob = mesh_of(context)
+    mat = ob.active_material if ob is not None else None
+    layer = active_layer(mat) if mat is not None and principled_of(mat) is not None else None
+    return layer if layer is not None and layer.kind == 'PAINT' and not layer.paint_mask and not L.in_frozen(layer) else None
+
+
+def draw_material_toggles(layout, context, short=False):
+    """One button per channel of the brush material: the channels one stroke paints."""
+    brush = context.scene.m3d_tex.brush
+    row = layout.row(align=True)
+    for cid, text, initial in MATERIAL_BUTTONS:
+        row.prop(brush, "use_" + cid.lower(), text=initial if short else text, toggle=True)
+    return row
+
+
+class PROPERTIES_PT_m3d_tx_material(_Page, Panel):
+    page = "tex_brushes"
+    bl_label = "Material"
+
+    @classmethod
+    def page_poll(cls, context):
+        return ready(context, 'PAINT') and props_context(context) == 'PAINT'
+
+    def draw(self, context):
+        layout = self.layout
+        if paint_layer_active(context) is None:
+            reason(layout, "Add a Paint Layer to paint several channels with one stroke")
+            return
+        brush = context.scene.m3d_tex.brush
+        draw_material_toggles(layout, context)
+        col = layout.column(align=True)
+        split_props(col)
+        ibrush = image_brush(context)
+        for cid, _text, _initial in MATERIAL_BUTTONS:
+            if not getattr(brush, "use_" + cid.lower()):
+                continue
+            label = CHANNEL_BY_ID[cid].label
+            if cid == 'BASE_COLOR':
+                if ibrush is not None:
+                    UnifiedPaintPanel.prop_unified_color(col, context, ibrush, "color", text=label)
+            elif cid in L.SCALARS:
+                col.prop(brush, cid.lower(), text=label, slider=True)
+            else:
+                col.prop(brush, cid.lower(), text=label)
+        if not L.brush_channels(context):
+            reason(layout, "None on: the channel shown (C) is painted alone")
+        else:
+            reason(layout, "One stroke paints every channel that is on; the Eraser erases them all")
+
+
 class PROPERTIES_PT_m3d_tx_projection(_Page, Panel):
     page = "tex_brushes"
     bl_label = "Stencil and Projection"
@@ -2280,8 +2397,9 @@ class PROPERTIES_PT_m3d_tx_stack(_Page, Panel):
         elif layer.kind == 'FOLDER' and effect is None:
             reason(layout, "A folder holds layers: pick one to paint")
         else:
+            channels = [ch.label for ch, _image in L.target_set(context, mat, False)[1]] or [CHANNEL_BY_ID[mat.m3d_channel].label]
             target = layer.name + (" mask" if effect is not None and (layer.paint_mask or layer.kind != 'PAINT')
-                                   else ": " + CHANNEL_BY_ID[mat.m3d_channel].label)
+                                   else ": " + ", ".join(channels))
             reason(layout, "Painting " + target)
         equivalent = L.memory_equivalent(mat)
         row = layout.row()
@@ -3189,6 +3307,8 @@ def draw_status_line(layout, context):
             layout.row(align=True).prop(context.scene.m3d_tex, "fill_mode", expand=True)
         elif tool != 'PICKER':
             draw_brush_controls(layout, context, brush, tier)
+        if tool in {'PAINT', 'ERASER', 'PROJECTION', 'POLYFILL'} and paint_layer_active(context) is not None:
+            draw_material_toggles(layout, context, short=tier < 2)   # (Smudge and Clone work on one channel)
     if ob is not None:
         row = layout.row(align=True)
         for axis in "xyz":
@@ -3232,6 +3352,7 @@ SHELF_OUTPUT = [
 # -----------------------------------------------------------------------------
 
 classes = (
+    M3D_BrushMaterial,
     M3D_TexSettings,
     M3D_BakeSettings,
     M3D_OT_tex_channel,
@@ -3274,6 +3395,7 @@ classes = (
     PROPERTIES_PT_m3d_tx_brush,
     PROPERTIES_PT_m3d_tx_grid,
     PROPERTIES_PT_m3d_tx_tuning,
+    PROPERTIES_PT_m3d_tx_material,
     PROPERTIES_PT_m3d_tx_projection,
     PROPERTIES_PT_m3d_tx_more,
     PROPERTIES_PT_m3d_tx_advanced,

@@ -12,6 +12,7 @@
 #include "BLI_math_vector_types.hh"
 #include "BLI_rand.hh"
 #include "BLI_span.hh"
+#include "BLI_vector.hh"
 
 #include "DNA_object_enums.h"
 #include "DNA_scene_enums.h"
@@ -503,6 +504,29 @@ void paint_brush_color_get(const Paint *paint,
                            float distance,
                            float pressure,
                            float r_color[3]);
+
+/**
+ * Maelstrom3D: an image a stroke paints together with its canvas (the image the brush paints
+ * anyway). The list is the window manager property `m3d_paint_targets`, written by the Texture
+ * workspace: a list of `{"image": name, "color": (r, g, b)}`. Without "color" the target gets the
+ * brush color.
+ */
+struct PaintTarget {
+  Image *image = nullptr;
+  bool use_brush_color = true;
+  /** Scene linear (the raw value for non-color images). */
+  float color[3] = {0.0f, 0.0f, 0.0f};
+};
+
+/**
+ * The images a stroke on `canvas` paints besides it: everything the list names but the canvas.
+ * Empty unless the list names the canvas, so a stale list does nothing. `r_canvas` is the canvas'
+ * own entry (`image` is null when it has none). Entries that cannot be painted (missing, linked,
+ * UDIM, repeated) are left out with a warning.
+ */
+Vector<PaintTarget> paint_targets_get(const bContext *C,
+                                      const Image *canvas,
+                                      PaintTarget &r_canvas);
 bool paint_use_opacity_masking(const Paint *paint, const Brush *brush);
 void paint_brush_init_tex(Brush *brush);
 void paint_brush_exit_tex(Brush *brush);

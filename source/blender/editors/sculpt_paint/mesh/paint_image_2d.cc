@@ -21,6 +21,7 @@
 #include "BLI_math_color_blend.h"
 #include "BLI_stack.h"
 #include "BLI_task.h"
+#include "BLI_vector.hh"
 
 #include "BKE_brush.hh"
 #include "BKE_colorband.hh"
@@ -95,6 +96,11 @@ struct BrushPainter {
   rctf mask_mapping; /* mask texture coordinate mapping */
 
   bool cache_invert;
+
+  /* Maelstrom3D: the canvas has its own color (a data channel): not the color of the brush, and a
+   * texture only masks it. Scene linear. */
+  bool use_color;
+  float color[3];
 };
 
 struct ImagePaintRegion {
@@ -124,6 +130,26 @@ struct ImagePaintTile {
   float start_paintpos[2] = {}; /* position of first paint */
 };
 
+/**
+ * Maelstrom3D: an image painted together with the canvas of the stroke (see #paint_targets_get).
+ * It has the size of the canvas, so a dab covers the same pixels in both.
+ */
+struct Paint2DExtra {
+  Image *ima;
+  ImageUser iuser;
+  ImBuf *ibuf;
+
+  /** No color in the list: the color of the brush. */
+  bool use_brush_color;
+  /** Scene linear (raw for non-color images). */
+  float color[3];
+  /** Per dab: the brush color or `color`. */
+  float paint_color_linear[3];
+
+  /** The brush of the canvas in this image's color, rebuilt for each dab (same size and alpha). */
+  ImBuf *brushbuf;
+};
+
 struct ImagePaintState {
   BrushPainter *painter;
   SpaceImage *sima;
@@ -144,6 +170,12 @@ struct ImagePaintState {
   int num_tiles;
 
   BlurKernel *blurkernel;
+
+  /* Maelstrom3D: the images painted together with the canvas (only a Draw brush, no UDIM). */
+  Paint2DExtra *extras;
+  int extras_num;
+  bool use_canvas_color;
+  float canvas_color[3];
 };
 
 static BrushPainter *brush_painter_2d_new(Scene *scene,
@@ -410,8 +442,14 @@ static ImBuf *brush_painter_imbuf_new(
 
   /* get brush color */
   if (brush->image_brush_type == IMAGE_PAINT_BRUSH_TYPE_DRAW) {
-    paint_brush_color_get(
-        paint, brush, painter->initial_hsv_jitter, cache->invert, distance, pressure, brush_rgb);
+    if (painter->use_color) {
+      /* Maelstrom3D: the color of the canvas from the list of what a stroke paints. */
+      copy_v3_v3(brush_rgb, painter->color);
+    }
+    else {
+      paint_brush_color_get(
+          paint, brush, painter->initial_hsv_jitter, cache->invert, distance, pressure, brush_rgb);
+    }
 
     if (cache->is_srgb) {
       IMB_colormanagement_scene_linear_to_srgb_v3(brush_rgb, brush_rgb);
@@ -446,7 +484,12 @@ static ImBuf *brush_painter_imbuf_new(
           IMB_colormanagement_scene_linear_to_colorspace_v3(rgba, cache->byte_colorspace);
         }
 
-        mul_v3_v3(rgba, brush_rgb);
+        if (painter->use_color) {
+          copy_v3_v3(rgba, brush_rgb); /* Maelstrom3D: flat, the texture is only the alpha. */
+        }
+        else {
+          mul_v3_v3(rgba, brush_rgb);
+        }
       }
       else {
         copy_v3_v3(rgba, brush_rgb);
@@ -503,8 +546,14 @@ static void brush_painter_imbuf_update(BrushPainter *painter,
 
   /* get brush color */
   if (brush->image_brush_type == IMAGE_PAINT_BRUSH_TYPE_DRAW) {
-    paint_brush_color_get(
-        paint, brush, painter->initial_hsv_jitter, cache->invert, 0.0f, 1.0f, brush_rgb);
+    if (painter->use_color) {
+      /* Maelstrom3D: the color of the canvas from the list of what a stroke paints. */
+      copy_v3_v3(brush_rgb, painter->color);
+    }
+    else {
+      paint_brush_color_get(
+          paint, brush, painter->initial_hsv_jitter, cache->invert, 0.0f, 1.0f, brush_rgb);
+    }
 
     if (cache->is_srgb) {
       IMB_colormanagement_scene_linear_to_srgb_v3(brush_rgb, brush_rgb);
@@ -543,7 +592,12 @@ static void brush_painter_imbuf_update(BrushPainter *painter,
             IMB_colormanagement_scene_linear_to_colorspace_v3(rgba, cache->byte_colorspace);
           }
 
-          mul_v3_v3(rgba, brush_rgb);
+          if (painter->use_color) {
+            copy_v3_v3(rgba, brush_rgb); /* Maelstrom3D: flat, the texture is only the alpha. */
+          }
+          else {
+            mul_v3_v3(rgba, brush_rgb);
+          }
         }
         else {
           copy_v3_v3(rgba, brush_rgb);
@@ -1235,8 +1289,14 @@ static void paint_2d_convert_brushco(ImBuf *ibufb, const float pos[2], int ipos[
   ipos[1] = int(floorf(pos[1] - ibufb->y / 2));
 }
 
+/* Maelstrom3D: `image`, `canvas` and `iuser` are the image blended into: the canvas of the stroke,
+ * or an image painted together with it (the masks are the canvas' own, they depend on the brush
+ * only). */
 static void paint_2d_do_making_brush(ImagePaintState *s,
                                      ImagePaintTile *tile,
+                                     Image *image,
+                                     ImBuf *canvas,
+                                     ImageUser *iuser,
                                      ImagePaintRegion *region,
                                      ImBuf *frombuf,
                                      float mask_max,
@@ -1259,9 +1319,9 @@ static void paint_2d_do_making_brush(ImagePaintState *s,
       int origy = region->desty - ty * ED_IMAGE_UNDO_TILE_SIZE;
 
       if (const ImBuf *data = ED_image_paint_tile_find(
-              undo_tiles, s->image, tile->canvas, &tile->iuser, tx, ty, &mask, false))
+              undo_tiles, image, canvas, iuser, tx, ty, &mask, false))
       {
-        if (tile->canvas->float_data()) {
+        if (canvas->float_data()) {
           tmpbuf.float_buffer = data->float_buffer;
         }
         else {
@@ -1269,7 +1329,7 @@ static void paint_2d_do_making_brush(ImagePaintState *s,
         }
       }
 
-      IMB_rectblend(tile->canvas,
+      IMB_rectblend(canvas,
                     &tmpbuf,
                     frombuf,
                     mask,
@@ -1293,6 +1353,9 @@ static void paint_2d_do_making_brush(ImagePaintState *s,
 struct Paint2DForeachData {
   ImagePaintState *s;
   ImagePaintTile *tile;
+  Image *image;
+  ImBuf *canvas;
+  ImageUser *iuser;
   ImagePaintRegion *region;
   ImBuf *frombuf;
   float mask_max;
@@ -1308,6 +1371,9 @@ static void paint_2d_op_foreach_do(void *__restrict data_v,
   Paint2DForeachData *data = static_cast<Paint2DForeachData *>(data_v);
   paint_2d_do_making_brush(data->s,
                            data->tile,
+                           data->image,
+                           data->canvas,
+                           data->iuser,
                            data->region,
                            data->frombuf,
                            data->mask_max,
@@ -1316,6 +1382,155 @@ static void paint_2d_op_foreach_do(void *__restrict data_v,
                            iter,
                            data->tilew,
                            iter);
+}
+
+/* Maelstrom3D: blend the brush `frombuf` into `canvas` (the canvas of the stroke, or an image
+ * painted together with it) over the regions of a dab. This is the loop paint_2d_op ran for the
+ * canvas. */
+static void paint_2d_blend(ImagePaintState *s,
+                           ImagePaintTile *tile,
+                           Image *image,
+                           ImBuf *canvas,
+                           ImageUser *iuser,
+                           ImBuf *frombuf,
+                           ImagePaintRegion *region,
+                           const int tot,
+                           const float mask_max,
+                           const short blend)
+{
+  for (int a = 0; a < tot; a++) {
+    ED_imapaint_dirty_region(image,
+                             canvas,
+                             iuser,
+                             region[a].destx,
+                             region[a].desty,
+                             region[a].width,
+                             region[a].height,
+                             true);
+
+    if (s->do_masking) {
+      /* masking, find original pixels tiles from undo buffer to composite over */
+      int tilex, tiley, tilew, tileh;
+
+      imapaint_region_tiles(canvas,
+                            region[a].destx,
+                            region[a].desty,
+                            region[a].width,
+                            region[a].height,
+                            &tilex,
+                            &tiley,
+                            &tilew,
+                            &tileh);
+
+      if (tiley == tileh) {
+        paint_2d_do_making_brush(s,
+                                 tile,
+                                 image,
+                                 canvas,
+                                 iuser,
+                                 &region[a],
+                                 frombuf,
+                                 mask_max,
+                                 blend,
+                                 tilex,
+                                 tiley,
+                                 tilew,
+                                 tileh);
+      }
+      else {
+        Paint2DForeachData data;
+        data.s = s;
+        data.tile = tile;
+        data.image = image;
+        data.canvas = canvas;
+        data.iuser = iuser;
+        data.region = &region[a];
+        data.frombuf = frombuf;
+        data.mask_max = mask_max;
+        data.blend = blend;
+        data.tilex = tilex;
+        data.tilew = tilew;
+
+        TaskParallelSettings settings;
+        BLI_parallel_range_settings_defaults(&settings);
+        BLI_task_parallel_range(tiley, tileh + 1, &data, paint_2d_op_foreach_do, &settings);
+      }
+    }
+    else {
+      /* no masking, composite brush directly onto canvas */
+      IMB_rectblend_threaded(canvas,
+                             canvas,
+                             frombuf,
+                             nullptr,
+                             tile->cache.curve_mask_cache.curve_mask,
+                             tile->cache.tex_mask,
+                             mask_max,
+                             region[a].destx,
+                             region[a].desty,
+                             region[a].destx,
+                             region[a].desty,
+                             region[a].srcx,
+                             region[a].srcy,
+                             region[a].width,
+                             region[a].height,
+                             IMB_BlendMode(blend),
+                             false);
+    }
+  }
+}
+
+/* Maelstrom3D: the brush of the canvas (`frombuf`) in the color of `extra` and in the color space
+ * of its image: the same size and the same alpha, so the same masks apply. */
+static void paint_2d_extra_brush(Paint2DExtra *extra, const ImBuf *frombuf)
+{
+  const bool is_float = extra->ibuf->float_data() != nullptr;
+
+  if (extra->brushbuf && (extra->brushbuf->x != frombuf->x || extra->brushbuf->y != frombuf->y ||
+                          (extra->brushbuf->float_data() != nullptr) != is_float))
+  {
+    IMB_freeImBuf(extra->brushbuf);
+    extra->brushbuf = nullptr;
+  }
+  if (extra->brushbuf == nullptr) {
+    extra->brushbuf = IMB_allocImBuf(
+        frombuf->x, frombuf->y, is_float ? ImBufFlags::FloatData : ImBufFlags::ByteData);
+  }
+
+  float rgb[3];
+  copy_v3_v3(rgb, extra->paint_color_linear);
+  if (!is_float && !extra->ibuf->colorspace_is_data() && extra->ibuf->byte_buffer.colorspace) {
+    const ColorSpace *colorspace = extra->ibuf->byte_buffer.colorspace;
+    if (IMB_colormanagement_space_is_srgb(colorspace)) {
+      IMB_colormanagement_scene_linear_to_srgb_v3(rgb, rgb);
+    }
+    else {
+      IMB_colormanagement_scene_linear_to_colorspace_v3(rgb, colorspace);
+    }
+  }
+
+  const int pixels_num = frombuf->x * frombuf->y;
+  const uchar *from_byte = frombuf->byte_data();
+  const float *from_float = frombuf->float_data();
+  if (is_float) {
+    float *dst = extra->brushbuf->float_data_for_write();
+    for (int i = 0; i < pixels_num; i++, dst += 4) {
+      const float alpha = from_float ? from_float[i * 4 + 3] :
+                                       from_byte[i * 4 + 3] * (1.0f / 255.0f);
+      mul_v3_v3fl(dst, rgb, alpha); /* premultiplied */
+      dst[3] = alpha;
+    }
+  }
+  else {
+    uchar *dst = extra->brushbuf->byte_data_for_write();
+    uchar rgb_byte[3];
+    unit_float_to_uchar_clamp_v3(rgb_byte, rgb);
+    for (int i = 0; i < pixels_num; i++, dst += 4) {
+      dst[0] = rgb_byte[0];
+      dst[1] = rgb_byte[1];
+      dst[2] = rgb_byte[2];
+      dst[3] = from_byte ? from_byte[i * 4 + 3] : unit_float_to_uchar_clamp(from_float[i * 4 + 3]);
+    }
+  }
 }
 
 static int paint_2d_op(void *state,
@@ -1335,7 +1550,7 @@ static int paint_2d_op(void *state,
   float liftpos[2];
   float mask_max = BKE_brush_alpha_get(s->paint, s->brush);
   int bpos[2], blastpos[2], bliftpos[2];
-  int a, tot;
+  int tot;
 
   paint_2d_convert_brushco(ibufb, pos, bpos);
 
@@ -1373,70 +1588,23 @@ static int paint_2d_op(void *state,
   }
 
   /* blend into canvas */
-  for (a = 0; a < tot; a++) {
-    ED_imapaint_dirty_region(s->image,
-                             canvas,
-                             &tile->iuser,
-                             region[a].destx,
-                             region[a].desty,
-                             region[a].width,
-                             region[a].height,
-                             true);
+  paint_2d_blend(s, tile, s->image, canvas, &tile->iuser, frombuf, region, tot, mask_max, blend);
 
-    if (s->do_masking) {
-      /* masking, find original pixels tiles from undo buffer to composite over */
-      int tilex, tiley, tilew, tileh;
-
-      imapaint_region_tiles(canvas,
-                            region[a].destx,
-                            region[a].desty,
-                            region[a].width,
-                            region[a].height,
-                            &tilex,
-                            &tiley,
-                            &tilew,
-                            &tileh);
-
-      if (tiley == tileh) {
-        paint_2d_do_making_brush(
-            s, tile, &region[a], frombuf, mask_max, blend, tilex, tiley, tilew, tileh);
-      }
-      else {
-        Paint2DForeachData data;
-        data.s = s;
-        data.tile = tile;
-        data.region = &region[a];
-        data.frombuf = frombuf;
-        data.mask_max = mask_max;
-        data.blend = blend;
-        data.tilex = tilex;
-        data.tilew = tilew;
-
-        TaskParallelSettings settings;
-        BLI_parallel_range_settings_defaults(&settings);
-        BLI_task_parallel_range(tiley, tileh + 1, &data, paint_2d_op_foreach_do, &settings);
-      }
-    }
-    else {
-      /* no masking, composite brush directly onto canvas */
-      IMB_rectblend_threaded(canvas,
-                             canvas,
-                             frombuf,
-                             nullptr,
-                             tile->cache.curve_mask_cache.curve_mask,
-                             tile->cache.tex_mask,
-                             mask_max,
-                             region[a].destx,
-                             region[a].desty,
-                             region[a].destx,
-                             region[a].desty,
-                             region[a].srcx,
-                             region[a].srcy,
-                             region[a].width,
-                             region[a].height,
-                             IMB_BlendMode(blend),
-                             false);
-    }
+  /* Maelstrom3D: the images painted together with the canvas get the same dab, in their own color.
+   */
+  for (int i = 0; i < s->extras_num; i++) {
+    Paint2DExtra *extra = &s->extras[i];
+    paint_2d_extra_brush(extra, frombuf);
+    paint_2d_blend(s,
+                   tile,
+                   extra->ima,
+                   extra->ibuf,
+                   &extra->iuser,
+                   extra->brushbuf,
+                   region,
+                   tot,
+                   mask_max,
+                   blend);
   }
 
   if (clonebuf) {
@@ -1602,12 +1770,90 @@ void paint_2d_stroke(void *ps,
 
     brush_painter_2d_refresh_cache(s, painter, tile, new_coord, mval, pressure, distance, size);
 
+    /* Maelstrom3D: the color each image painted together with the canvas gets in this dab. */
+    for (int e = 0; e < s->extras_num; e++) {
+      Paint2DExtra *extra = &s->extras[e];
+      if (extra->use_brush_color) {
+        paint_brush_color_get(painter->paint,
+                              painter->brush,
+                              painter->initial_hsv_jitter,
+                              painter->cache_invert,
+                              distance,
+                              pressure,
+                              extra->paint_color_linear);
+      }
+      else {
+        copy_v3_v3(extra->paint_color_linear, extra->color);
+      }
+    }
+
     if (paint_2d_op(s, tile, old_coord, new_coord)) {
       tile->need_redraw = true;
     }
   }
 
   painter->firsttouch = false;
+}
+
+/* Maelstrom3D: find the images painted together with the canvas (#paint_targets_get), and the
+ * color the list gives the canvas. Only a Draw brush has them (the others lift color from the
+ * canvas), and only a canvas without UDIM tiles. They are painted if they are of the size of the
+ * canvas. */
+static void paint_2d_extras_init(const bContext *C, ImagePaintState *s)
+{
+  if (s->brush_type != IMAGE_PAINT_BRUSH_TYPE_DRAW || s->num_tiles != 1) {
+    return;
+  }
+
+  PaintTarget canvas_entry;
+  const Vector<PaintTarget> targets = paint_targets_get(C, s->image, canvas_entry);
+  if (canvas_entry.image == nullptr) {
+    return;
+  }
+  if (!canvas_entry.use_brush_color) {
+    s->use_canvas_color = true;
+    copy_v3_v3(s->canvas_color, canvas_entry.color);
+  }
+
+  const ImBuf *canvas = s->tiles[0].canvas;
+  Vector<Paint2DExtra> extras;
+  for (const PaintTarget &target : targets) {
+    Image *ima = target.image;
+
+    Paint2DExtra extra = {};
+    extra.ima = ima;
+    BKE_imageuser_default(&extra.iuser);
+    extra.iuser.framenr = ima->lastframe;
+    extra.ibuf = BKE_image_acquire_ibuf(ima, &extra.iuser, nullptr);
+    if (extra.ibuf == nullptr || !(extra.ibuf->byte_data() || extra.ibuf->float_data())) {
+      BKE_image_release_ibuf(ima, extra.ibuf, nullptr);
+      continue;
+    }
+    if (extra.ibuf->x != canvas->x || extra.ibuf->y != canvas->y) {
+      WM_global_reportf(RPT_WARNING,
+                        "\"%s\" is not the size of \"%s\": not painted",
+                        ima->id.name + 2,
+                        s->image->id.name + 2);
+      BKE_image_release_ibuf(ima, extra.ibuf, nullptr);
+      continue;
+    }
+    if (extra.ibuf->channels != 4) {
+      WM_global_reportf(
+          RPT_WARNING, "\"%s\" needs 4 color channels: not painted", ima->id.name + 2);
+      BKE_image_release_ibuf(ima, extra.ibuf, nullptr);
+      continue;
+    }
+
+    extra.use_brush_color = target.use_brush_color;
+    copy_v3_v3(extra.color, target.color);
+    extras.append(extra);
+  }
+
+  if (!extras.is_empty()) {
+    s->extras = MEM_new_array<Paint2DExtra>(extras.size(), __func__);
+    memcpy(static_cast<void *>(s->extras), extras.data(), sizeof(Paint2DExtra) * extras.size());
+    s->extras_num = int(extras.size());
+  }
 }
 
 void *paint_2d_new_stroke(bContext *C, wmOperator *op, const BrushStrokeMode mode)
@@ -1696,8 +1942,12 @@ void *paint_2d_new_stroke(bContext *C, wmOperator *op, const BrushStrokeMode mod
 
   paint_brush_init_tex(s->brush);
 
+  paint_2d_extras_init(C, s);
+
   /* create painter */
   s->painter = brush_painter_2d_new(scene, paint, s->brush, mode == BrushStrokeMode::Invert);
+  s->painter->use_color = s->use_canvas_color;
+  copy_v3_v3(s->painter->color, s->canvas_color);
 
   return s;
 }
@@ -1712,6 +1962,13 @@ void paint_2d_redraw(const bContext *C, void *ps, bool final)
       ImBuf *ibuf = BKE_image_acquire_ibuf(s->image, &s->tiles[i].iuser, nullptr);
 
       imapaint_image_update(s->sima, s->image, ibuf, &s->tiles[i].iuser, false);
+
+      /* Maelstrom3D: the images painted together with the canvas have the same dirty pixels, and
+       * the 3D view shows them while the stroke goes on. */
+      for (int e = 0; e < s->extras_num; e++) {
+        Paint2DExtra &extra = s->extras[e];
+        imapaint_image_update(s->sima, extra.ima, extra.ibuf, &extra.iuser, true);
+      }
 
       BKE_image_release_ibuf(s->image, ibuf, nullptr);
 
@@ -1739,6 +1996,13 @@ void paint_2d_redraw(const bContext *C, void *ps, bool final)
     WM_event_add_notifier(C, NC_IMAGE | NA_EDITED, s->image);
     DEG_id_tag_update(&s->image->id, 0);
 
+    /* Maelstrom3D: the images painted together with the canvas. */
+    for (int e = 0; e < s->extras_num; e++) {
+      Paint2DExtra &extra = s->extras[e];
+      WM_event_add_notifier(C, NC_IMAGE | NA_EDITED, extra.ima);
+      DEG_id_tag_update(&extra.ima->id, 0);
+    }
+
     /* Ideally, we shouldn't have to tag the object as needing to be recalculated if using this
      * paint mode, however, because the image isn't connected as part of the shader nodes, the draw
      * code is unaware of the corresponding image tag. See #150957 for more details. */
@@ -1757,6 +2021,17 @@ void paint_2d_stroke_done(void *ps)
   ImagePaintState *s = static_cast<ImagePaintState *>(ps);
 
   paint_2d_canvas_free(s);
+
+  /* Maelstrom3D: the images painted together with the canvas. */
+  for (int i = 0; i < s->extras_num; i++) {
+    Paint2DExtra &extra = s->extras[i];
+    BKE_image_release_ibuf(extra.ima, extra.ibuf, nullptr);
+    if (extra.brushbuf) {
+      IMB_freeImBuf(extra.brushbuf);
+    }
+  }
+  MEM_SAFE_DELETE(s->extras);
+
   for (int i = 0; i < s->num_tiles; i++) {
     brush_painter_cache_2d_free(&s->tiles[i].cache);
   }

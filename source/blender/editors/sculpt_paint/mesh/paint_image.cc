@@ -7,6 +7,7 @@
  * \brief Functions to paint images in 2D and 3D.
  */
 
+#include <algorithm>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
@@ -20,23 +21,28 @@
 #include "BLI_rand.hh"
 #include "BLI_string.h"
 #include "BLI_utildefines.h"
+#include "BLI_vector.hh"
 
 #include "IMB_imbuf.hh"
 #include "IMB_imbuf_types.hh"
 
 #include "DNA_brush_types.h"
+#include "DNA_image_types.h"
 #include "DNA_material_types.h"
 #include "DNA_mesh_types.h"
 #include "DNA_node_types.h"
 #include "DNA_object_types.h"
 #include "DNA_scene_types.h"
+#include "DNA_windowmanager_types.h"
 
 #include "BKE_brush.hh"
 #include "BKE_colorband.hh"
 #include "BKE_context.hh"
 #include "BKE_curves.hh"
 #include "BKE_grease_pencil.hh"
+#include "BKE_idprop.hh"
 #include "BKE_image.hh"
+#include "BKE_lib_id.hh"
 #include "BKE_library.hh"
 #include "BKE_main.hh"
 #include "BKE_material.hh"
@@ -399,6 +405,93 @@ void paint_brush_color_get(const Paint *paint,
       copy_v3_v3(r_color, BKE_brush_color_get(paint, br));
     }
   }
+}
+
+/* Maelstrom3D: the images a stroke paints together with its canvas, see #PaintTarget. */
+Vector<PaintTarget> paint_targets_get(const bContext *C,
+                                      const Image *canvas,
+                                      PaintTarget &r_canvas)
+{
+  r_canvas = PaintTarget();
+  Vector<PaintTarget> targets;
+
+  const wmWindowManager *wm = CTX_wm_manager(C);
+  const IDProperty *list = (wm && wm->id.properties) ?
+                               IDP_GetPropertyTypeFromGroup(
+                                   wm->id.properties, "m3d_paint_targets", IDP_IDPARRAY) :
+                               nullptr;
+  if (list == nullptr || canvas == nullptr || canvas->source == IMA_SRC_TILED) {
+    return targets;
+  }
+
+  /* Parse the whole list first: a list that does not name the canvas is ignored without any
+   * warning (it is stale, or made for another canvas). */
+  Main *bmain = CTX_data_main(C);
+  Vector<PaintTarget> entries;
+  bool has_canvas = false;
+  const IDProperty *items = IDP_property_array_get(list);
+  for (int i = 0; i < list->len; i++) {
+    const IDProperty &item = items[i];
+    if (item.type != IDP_GROUP) {
+      continue;
+    }
+    const std::optional<StringRefNull> name = IDP_group_lookup_string(item, "image");
+    if (!name) {
+      continue;
+    }
+    PaintTarget target;
+    target.image = id_cast<Image *>(BKE_libblock_find_name(bmain, ID_IM, name->c_str(), nullptr));
+    if (target.image == nullptr) {
+      WM_global_reportf(RPT_WARNING, "Paint target \"%s\" not found: not painted", name->c_str());
+      continue;
+    }
+
+    /* Not IDP_group_lookup_float_array: it tests for a single float, not an array. */
+    const IDProperty *color = IDP_GetPropertyTypeFromGroup(
+        const_cast<IDProperty *>(&item), "color", IDP_ARRAY);
+    if (color && color->len >= 3 && ELEM(color->subtype, IDP_DOUBLE, IDP_FLOAT, IDP_INT)) {
+      const void *data = color->data.pointer;
+      for (int c = 0; c < 3; c++) {
+        target.color[c] = (color->subtype == IDP_DOUBLE) ?
+                              float(static_cast<const double *>(data)[c]) :
+                          (color->subtype == IDP_FLOAT) ? static_cast<const float *>(data)[c] :
+                                                          float(static_cast<const int *>(data)[c]);
+      }
+      target.use_brush_color = false;
+    }
+
+    if (target.image == canvas) {
+      has_canvas = true;
+      r_canvas = target;
+    }
+    else {
+      entries.append(target);
+    }
+  }
+  if (!has_canvas) {
+    r_canvas = PaintTarget();
+    return targets;
+  }
+
+  for (const PaintTarget &target : entries) {
+    Image *ima = target.image;
+    const bool seen = std::any_of(targets.begin(), targets.end(), [&](const PaintTarget &other) {
+      return other.image == ima;
+    });
+    if (seen) {
+      continue;
+    }
+    if (!ID_IS_EDITABLE(ima) || ID_IS_OVERRIDE_LIBRARY(ima)) {
+      WM_global_reportf(RPT_WARNING, "\"%s\" is linked: not painted", ima->id.name + 2);
+      continue;
+    }
+    if (ima->source == IMA_SRC_TILED) {
+      WM_global_reportf(RPT_WARNING, "\"%s\" has UDIM tiles: not painted", ima->id.name + 2);
+      continue;
+    }
+    targets.append(target);
+  }
+  return targets;
 }
 
 void paint_brush_init_tex(Brush *brush)

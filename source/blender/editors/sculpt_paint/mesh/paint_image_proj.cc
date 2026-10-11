@@ -208,6 +208,38 @@ BLI_INLINE uchar f_to_char(const float val)
 struct ProjPaintState;
 
 /**
+ * Maelstrom3D: an image painted together with a canvas (see #paint_targets_get). It has the size
+ * of the canvas, so a pixel of the canvas is the same pixel here, in the same 64 x 64 undo tile:
+ * everything the canvas knows about a pixel (masks, accumulated opacity, bleed, symmetry) holds
+ * for the extra too, and its pre-stroke color is read from its own undo tile.
+ */
+struct ProjPaintExtra {
+  Image *ima;
+  ImageUser iuser;
+  ImBuf *ibuf;
+
+  /* Regenerated in project_paint_op, like in #ProjPaintImage. */
+  float *float_data_mut;
+  uint8_t *byte_data_mut;
+
+  /** Same indexing as the canvas' #ProjPaintImage::undoRect: this image before the stroke. */
+  volatile const void **undoRect;
+  bool **valid;
+
+  /** No color in the list: the color of the brush. */
+  bool use_brush_color;
+  /** Scene linear (raw for non-color images). */
+  float color[3];
+
+  /** Per dab: the brush color or `color`, and the same in the color space of the image. */
+  float paint_color_linear[3];
+  float paint_color_byte[3];
+  bool is_data;
+  bool is_srgb;
+  const ColorSpace *byte_colorspace;
+};
+
+/**
  * This is mainly a convenience struct used so we can keep an array of images we use -
  * their #ImBuf's, etc, in 1 array, When using threads this array is copied for each thread
  * because 'partRedrawRect' and 'touch' values would not be thread safe.
@@ -235,6 +267,15 @@ struct ProjPaintImage {
   bool is_data;
   bool is_srgb;
   const ColorSpace *byte_colorspace;
+
+  /* Maelstrom3D: the images painted together with this one, shared by all views and threads. */
+  ProjPaintExtra *extras;
+  int extras_num;
+  /** The list gives this image its own color (a data channel: not the brush color). */
+  bool use_color_override;
+  float color_override[3];
+  /** Per dab: `color_override` or the color of the brush (scene linear). */
+  float paint_color_linear[3];
 };
 
 /**
@@ -1940,6 +1981,31 @@ static int project_paint_undo_subtiles(const TileInfo *tinf, int tx, int ty)
     }
 
     BKE_image_mark_dirty(pjIma->ima, pjIma->ibuf);
+
+    /* Maelstrom3D: the same tile of every image painted together with this one, before this tile
+     * is published: a pixel is written only after its tile is, so every image has its pre-stroke
+     * tile in the undo step (one step for all of them) by then. */
+    for (int i = 0; i < pjIma->extras_num; i++) {
+      ProjPaintExtra &extra = pjIma->extras[i];
+      volatile const void *extra_undorect = nullptr;
+      if (const ImBuf *ibuf = ED_image_paint_tile_push(undo_tiles,
+                                                       extra.ima,
+                                                       extra.ibuf,
+                                                       &extra.iuser,
+                                                       tx,
+                                                       ty,
+                                                       nullptr,
+                                                       &extra.valid[tile_index],
+                                                       true,
+                                                       false))
+      {
+        extra_undorect = ibuf->float_data() ? static_cast<const void *>(ibuf->float_data()) :
+                                              static_cast<const void *>(ibuf->byte_data());
+      }
+      extra.undoRect[tile_index] = extra_undorect;
+      BKE_image_mark_dirty(extra.ima, extra.ibuf);
+    }
+
     /* tile ready, publish */
     if (tinf->lock) {
       BLI_spin_lock(tinf->lock);
@@ -4468,6 +4534,13 @@ static void project_paint_build_proj_ima(ProjPaintState *ps,
     memset(projIma->maskRect, 0, size);
     projIma->valid = static_cast<bool **>(BLI_memarena_alloc(arena, size));
     memset(projIma->valid, 0, size);
+
+    /* Maelstrom3D: no images painted together with this one until proj_paint_extras_init. */
+    projIma->extras = nullptr;
+    projIma->extras_num = 0;
+    projIma->use_color_override = false;
+    zero_v3(projIma->color_override);
+    zero_v3(projIma->paint_color_linear);
   }
 }
 
@@ -4825,6 +4898,13 @@ static void project_paint_end(ProjPaintState *ps)
     for (a = 0, projIma = ps->projImages; a < ps->image_tot; a++, projIma++) {
       BKE_image_release_ibuf(projIma->ima, projIma->ibuf, nullptr);
       DEG_id_tag_update(&projIma->ima->id, 0);
+
+      /* Maelstrom3D: the images painted together with it. */
+      for (int i = 0; i < projIma->extras_num; i++) {
+        ProjPaintExtra &extra = projIma->extras[i];
+        BKE_image_release_ibuf(extra.ima, extra.ibuf, nullptr);
+        DEG_id_tag_update(&extra.ima->id, 0);
+      }
     }
   }
 
@@ -4943,6 +5023,11 @@ static bool project_image_refresh_tagged(ProjPaintState *ps)
         if (BLI_rcti_is_valid(&pr->dirty_region)) {
           set_imapaintpartial(pr);
           imapaint_image_update(nullptr, projIma->ima, projIma->ibuf, &projIma->iuser, true);
+          /* Maelstrom3D: the images painted together with it have the same dirty pixels. */
+          for (int e = 0; e < projIma->extras_num; e++) {
+            ProjPaintExtra &extra = projIma->extras[e];
+            imapaint_image_update(nullptr, extra.ima, extra.ibuf, &extra.iuser, true);
+          }
           redraw = true;
         }
 
@@ -5279,8 +5364,9 @@ static void do_projectpaint_draw(ProjPaintState *ps,
   float rgb[3];
   uchar rgba_ub[4];
 
-  if (ps->is_texbrush) {
-    mul_v3_v3v3(rgb, texrgb, ps->paint_color_linear);
+  /* Maelstrom3D: an image with its own color from the list is flat (the texture only masks it). */
+  if (ps->is_texbrush && !img->use_color_override) {
+    mul_v3_v3v3(rgb, texrgb, img->paint_color_linear);
     if (img->is_srgb) {
       /* Fast-ish path for sRGB. */
       IMB_colormanagement_scene_linear_to_srgb_v3(rgb, rgb);
@@ -5315,12 +5401,14 @@ static void do_projectpaint_draw_f(ProjPaintState *ps,
                                    const float texrgb[3],
                                    float mask)
 {
-  float *data = ps->projImages[projPixel->image_index].float_data_mut + projPixel->pixel_offset;
+  const ProjPaintImage *img = &ps->projImages[projPixel->image_index];
+  float *data = img->float_data_mut + projPixel->pixel_offset;
   float rgba[4];
 
-  copy_v3_v3(rgba, ps->paint_color_linear);
+  /* Maelstrom3D: the color of this image (see ProjPaintImage::paint_color_linear). */
+  copy_v3_v3(rgba, img->paint_color_linear);
 
-  if (ps->is_texbrush) {
+  if (ps->is_texbrush && !img->use_color_override) {
     mul_v3_v3(rgba, texrgb);
   }
 
@@ -5389,6 +5477,97 @@ static void copy_original_alpha_channel(ProjPaintState *ps, ProjPixel *pixel, bo
   else {
     uint8_t *data = ps->projImages[pixel->image_index].byte_data_mut + pixel->pixel_offset;
     data[3] = pixel->origColor.ch_pt[3];
+  }
+}
+
+/**
+ * Maelstrom3D: paint the images of `img` that are painted together with it. Called where the
+ * canvas pixel is written, with the same blend mode, opacity and alpha lock, so each image gets
+ * its own color through the same stroke.
+ *
+ * \param texrgb: The color of the brush texture, null when the colors are flat.
+ * \param alpha: What the canvas pixel gets (brush alpha, falloff, masks).
+ * \param use_orig: Blend from the pre-stroke pixel (opacity masking), else from the pixel.
+ */
+static void do_projectpaint_extras(const ProjPaintState *ps,
+                                   const ProjPaintImage *img,
+                                   const ProjPixel *projPixel,
+                                   const float *texrgb,
+                                   const float alpha,
+                                   const bool use_orig,
+                                   const bool lock_alpha)
+{
+  const int tile_index = (projPixel->x_px >> ED_IMAGE_UNDO_TILE_BITS) +
+                         (projPixel->y_px >> ED_IMAGE_UNDO_TILE_BITS) *
+                             ED_IMAGE_UNDO_TILE_NUMBER(img->ibuf->x);
+  const int tile_offset = (projPixel->x_px & (ED_IMAGE_UNDO_TILE_SIZE - 1)) +
+                          (projPixel->y_px & (ED_IMAGE_UNDO_TILE_SIZE - 1)) *
+                              ED_IMAGE_UNDO_TILE_SIZE;
+
+  for (int i = 0; i < img->extras_num; i++) {
+    const ProjPaintExtra &extra = img->extras[i];
+    const void *undo = const_cast<const void *>(extra.undoRect[tile_index]);
+
+    /* Validate the undo tile, since we will modify it. */
+    if (!*extra.valid[tile_index]) {
+      *extra.valid[tile_index] = true;
+    }
+
+    if (extra.float_data_mut) {
+      float *data = extra.float_data_mut + projPixel->pixel_offset;
+      const float *orig = static_cast<const float *>(undo) + 4 * tile_offset;
+      float rgba[4];
+
+      copy_v3_v3(rgba, extra.paint_color_linear);
+      if (texrgb && extra.use_brush_color) {
+        mul_v3_v3(rgba, texrgb);
+      }
+      mul_v3_fl(rgba, alpha);
+      rgba[3] = alpha;
+
+      IMB_blend_color_float(data, use_orig ? orig : data, rgba, IMB_BlendMode(ps->blend));
+
+      if (lock_alpha) {
+        /* Floats are premultiplied: see #copy_original_alpha_channel. */
+        float rgb_straight[4];
+        premul_to_straight_v4_v4(rgb_straight, data);
+        rgb_straight[3] = orig[3];
+        straight_to_premul_v4_v4(data, rgb_straight);
+      }
+    }
+    else {
+      uint8_t *data = extra.byte_data_mut + projPixel->pixel_offset;
+      const uint8_t *orig = static_cast<const uint8_t *>(undo) + 4 * tile_offset;
+      float rgb[3];
+      uchar rgba_ub[4];
+
+      if (texrgb && extra.use_brush_color) {
+        mul_v3_v3v3(rgb, texrgb, extra.paint_color_linear);
+        if (extra.is_srgb) {
+          IMB_colormanagement_scene_linear_to_srgb_v3(rgb, rgb);
+        }
+        else if (extra.byte_colorspace) {
+          IMB_colormanagement_scene_linear_to_colorspace_v3(rgb, extra.byte_colorspace);
+        }
+      }
+      else {
+        copy_v3_v3(rgb, extra.paint_color_byte);
+      }
+
+      if (ps->dither > 0.0f) {
+        float_to_byte_dither_v3(rgba_ub, rgb, ps->dither, projPixel->x_px, projPixel->y_px);
+      }
+      else {
+        unit_float_to_uchar_clamp_v3(rgba_ub, rgb);
+      }
+      rgba_ub[3] = f_to_char(alpha);
+
+      IMB_blend_color_byte(data, use_orig ? orig : data, rgba_ub, IMB_BlendMode(ps->blend));
+
+      if (lock_alpha) {
+        data[3] = orig[3];
+      }
+    }
   }
 }
 
@@ -5494,6 +5673,10 @@ static void do_projectpaint_thread(TaskPool *__restrict /*pool*/, void *ph_v)
 
         /* fill brushes */
         if (ps->source == PROJ_SRC_VIEW_FILL) {
+          /* Maelstrom3D: what the images painted together with this one get (a gradient changes
+           * it below). */
+          float fill_alpha = float(projPixel->mask) * (1.0f / 65535.0f) * brush_alpha;
+
           if (brush->flag & BRUSH_USE_GRADIENT) {
             /* these could probably be cached instead of being done per pixel */
             float tangent[2];
@@ -5523,6 +5706,7 @@ static void do_projectpaint_thread(TaskPool *__restrict /*pool*/, void *ph_v)
             }
             BKE_colorband_evaluate(brush->gradient, f, color_f);
             color_f[3] *= float(projPixel->mask) * (1.0f / 65535.0f) * brush_alpha;
+            fill_alpha = color_f[3];
 
             if (is_floatbuf) {
               /* Convert to premutliplied. */
@@ -5559,7 +5743,8 @@ static void do_projectpaint_thread(TaskPool *__restrict /*pool*/, void *ph_v)
             if (is_floatbuf) {
               float newColor_f[4];
               newColor_f[3] = float(projPixel->mask) * (1.0f / 65535.0f) * brush_alpha;
-              copy_v3_v3(newColor_f, ps->paint_color_linear);
+              /* Maelstrom3D: the color of this image (see ProjPaintImage::paint_color_linear). */
+              copy_v3_v3(newColor_f, last_projIma->paint_color_linear);
 
               IMB_blend_color_float(float_data + projPixel->pixel_offset,
                                     projPixel->origColor.f_pt,
@@ -5581,6 +5766,12 @@ static void do_projectpaint_thread(TaskPool *__restrict /*pool*/, void *ph_v)
 
           if (lock_alpha) {
             copy_original_alpha_channel(ps, projPixel, is_floatbuf);
+          }
+
+          /* Maelstrom3D: the images painted together with this one, filled the same way. */
+          if (last_projIma->extras_num > 0) {
+            do_projectpaint_extras(
+                ps, last_projIma, projPixel, nullptr, fill_alpha, true, lock_alpha);
           }
 
           last_partial_redraw_cell = last_projIma->partRedrawRect + projPixel->bb_cell_index;
@@ -5781,6 +5972,17 @@ static void do_projectpaint_thread(TaskPool *__restrict /*pool*/, void *ph_v)
               if (lock_alpha) {
                 copy_original_alpha_channel(ps, projPixel, is_floatbuf);
               }
+
+              /* Maelstrom3D: the images painted together with this one (only Draw has them). */
+              if (last_projIma->extras_num > 0) {
+                do_projectpaint_extras(ps,
+                                       last_projIma,
+                                       projPixel,
+                                       ps->is_texbrush ? texrgb : nullptr,
+                                       mask,
+                                       ps->do_masking,
+                                       lock_alpha);
+              }
             }
 
             /* done painting */
@@ -5892,6 +6094,14 @@ static bool project_paint_op(void *state, const float lastpos[2], const float po
     ps->projImages[i].float_data_mut = ps->projImages[i].ibuf->float_data_for_write();
     ps->projImages[i].byte_data_mut = ps->projImages[i].ibuf->byte_data_for_write();
     BLI_assert(ps->projImages[i].float_data_mut || ps->projImages[i].byte_data_mut);
+
+    /* Maelstrom3D: the same for the images painted together with it. */
+    for (int e = 0; e < ps->projImages[i].extras_num; e++) {
+      ProjPaintExtra &extra = ps->projImages[i].extras[e];
+      extra.float_data_mut = extra.ibuf->float_data_for_write();
+      extra.byte_data_mut = extra.ibuf->byte_data_for_write();
+      BLI_assert(extra.float_data_mut || extra.byte_data_mut);
+    }
   }
 
   /* get the threads running */
@@ -5983,6 +6193,37 @@ static bool project_paint_op(void *state, const float lastpos[2], const float po
   return touch_any;
 }
 
+/**
+ * The paint color `color_linear` in the color space of the byte buffer of `ibuf`, and what is
+ * needed to convert a color of the brush texture the same way.
+ */
+static void proj_paint_color_cache(const ImBuf *ibuf,
+                                   const float color_linear[3],
+                                   float r_color_byte[3],
+                                   bool *r_is_data,
+                                   bool *r_is_srgb,
+                                   const ColorSpace **r_byte_colorspace)
+{
+  copy_v3_v3(r_color_byte, color_linear);
+  *r_byte_colorspace = nullptr;
+  *r_is_data = false;
+  *r_is_srgb = false;
+
+  if (ibuf->colorspace_is_data()) {
+    *r_is_data = true;
+  }
+  else if (ibuf->byte_data() && ibuf->byte_buffer.colorspace) {
+    *r_byte_colorspace = ibuf->byte_buffer.colorspace;
+    *r_is_srgb = IMB_colormanagement_space_is_srgb(*r_byte_colorspace);
+    if (*r_is_srgb) {
+      IMB_colormanagement_scene_linear_to_srgb_v3(r_color_byte, r_color_byte);
+    }
+    else {
+      IMB_colormanagement_scene_linear_to_colorspace_v3(r_color_byte, *r_byte_colorspace);
+    }
+  }
+}
+
 static void paint_proj_stroke_ps(const bContext * /*C*/,
                                  void *ps_handle_p,
                                  const float prev_pos[2],
@@ -6018,27 +6259,28 @@ static void paint_proj_stroke_ps(const bContext * /*C*/,
     /* Cache colorspace info per image for performance. */
     for (int i = 0; i < ps->image_tot; i++) {
       ProjPaintImage *img = &ps->projImages[i];
-      const ImBuf *ibuf = img->ibuf;
 
-      copy_v3_v3(img->paint_color_byte, ps->paint_color_linear);
-      img->byte_colorspace = nullptr;
-      img->is_data = false;
-      img->is_srgb = false;
+      /* Maelstrom3D: an image with its own color in the list is not painted with the brush color
+       * (the colors of the images painted together with it are cached the same way). */
+      copy_v3_v3(img->paint_color_linear,
+                 img->use_color_override ? img->color_override : ps->paint_color_linear);
+      proj_paint_color_cache(img->ibuf,
+                             img->paint_color_linear,
+                             img->paint_color_byte,
+                             &img->is_data,
+                             &img->is_srgb,
+                             &img->byte_colorspace);
 
-      if (ibuf->colorspace_is_data()) {
-        img->is_data = true;
-      }
-      else if (ibuf->byte_data() && ibuf->byte_buffer.colorspace) {
-        img->byte_colorspace = ibuf->byte_buffer.colorspace;
-        img->is_srgb = IMB_colormanagement_space_is_srgb(img->byte_colorspace);
-        if (img->is_srgb) {
-          IMB_colormanagement_scene_linear_to_srgb_v3(img->paint_color_byte,
-                                                      img->paint_color_byte);
-        }
-        else {
-          IMB_colormanagement_scene_linear_to_colorspace_v3(img->paint_color_byte,
-                                                            img->byte_colorspace);
-        }
+      for (int e = 0; e < img->extras_num; e++) {
+        ProjPaintExtra &extra = img->extras[e];
+        copy_v3_v3(extra.paint_color_linear,
+                   extra.use_brush_color ? ps->paint_color_linear : extra.color);
+        proj_paint_color_cache(extra.ibuf,
+                               extra.paint_color_linear,
+                               extra.paint_color_byte,
+                               &extra.is_data,
+                               &extra.is_srgb,
+                               &extra.byte_colorspace);
       }
     }
   }
@@ -6218,6 +6460,114 @@ static void project_state_init(bContext *C,
   ps->dither = settings->imapaint.dither;
 }
 
+/**
+ * Maelstrom3D: attach to each canvas of the stroke the images that are painted together with it
+ * (#paint_targets_get), and give a canvas its own color when the list says so. Only Draw and Fill
+ * have them: Soften, Smear, Clone and the stencil brush take their colors from the canvas, so
+ * they change the canvas only.
+ *
+ * Run once per stroke, for the first view (the others share the images).
+ */
+static void proj_paint_extras_init(const bContext *C, ProjPaintState *ps)
+{
+  if (!ELEM(ps->source, PROJ_SRC_VIEW, PROJ_SRC_VIEW_FILL) ||
+      !ELEM(ps->brush_type, IMAGE_PAINT_BRUSH_TYPE_DRAW, IMAGE_PAINT_BRUSH_TYPE_FILL))
+  {
+    return;
+  }
+
+  MemArena *arena = ps->arena_mt[0];
+
+  /* Is `ima` painted by the stroke already, as a canvas or as the image of a canvas? */
+  auto is_painted = [&](const Image *ima) {
+    for (int a = 0; a < ps->image_tot; a++) {
+      const ProjPaintImage &canvas = ps->projImages[a];
+      if (canvas.ima == ima) {
+        return true;
+      }
+      for (int e = 0; e < canvas.extras_num; e++) {
+        if (canvas.extras[e].ima == ima) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  for (int a = 0; a < ps->image_tot; a++) {
+    ProjPaintImage *canvas = &ps->projImages[a];
+
+    PaintTarget canvas_entry;
+    const Vector<PaintTarget> targets = paint_targets_get(C, canvas->ima, canvas_entry);
+    if (canvas_entry.image == nullptr) {
+      continue;
+    }
+    if (!canvas_entry.use_brush_color) {
+      canvas->use_color_override = true;
+      copy_v3_v3(canvas->color_override, canvas_entry.color);
+    }
+
+    Vector<ProjPaintExtra> extras;
+    for (const PaintTarget &target : targets) {
+      Image *ima = target.image;
+      /* An image two things write to would push the same undo tile twice, and a stencil is read
+       * while painting. */
+      if (ima == ps->stencil_ima || is_painted(ima) ||
+          std::any_of(extras.begin(), extras.end(), [&](const ProjPaintExtra &extra) {
+            return extra.ima == ima;
+          }))
+      {
+        continue;
+      }
+
+      ProjPaintExtra extra = {};
+      extra.ima = ima;
+      BKE_imageuser_default(&extra.iuser);
+      extra.iuser.framenr = ima->lastframe;
+      extra.ibuf = BKE_image_acquire_ibuf(ima, &extra.iuser, nullptr);
+      if (extra.ibuf == nullptr || !(extra.ibuf->byte_data() || extra.ibuf->float_data())) {
+        BKE_image_release_ibuf(ima, extra.ibuf, nullptr);
+        continue;
+      }
+      if (extra.ibuf->x != canvas->ibuf->x || extra.ibuf->y != canvas->ibuf->y) {
+        WM_global_reportf(RPT_WARNING,
+                          "\"%s\" is not the size of \"%s\": not painted",
+                          ima->id.name + 2,
+                          canvas->ima->id.name + 2);
+        BKE_image_release_ibuf(ima, extra.ibuf, nullptr);
+        continue;
+      }
+      if (extra.ibuf->float_data() && extra.ibuf->channels != 4) {
+        WM_global_reportf(
+            RPT_WARNING, "\"%s\" needs 4 color channels: not painted", ima->id.name + 2);
+        BKE_image_release_ibuf(ima, extra.ibuf, nullptr);
+        continue;
+      }
+
+      /* Same tile indexing as the canvas. */
+      const size_t size = sizeof(void **) * ED_IMAGE_UNDO_TILE_NUMBER(canvas->ibuf->x) *
+                          ED_IMAGE_UNDO_TILE_NUMBER(canvas->ibuf->y);
+      extra.undoRect = static_cast<volatile const void **>(BLI_memarena_alloc(arena, size));
+      memset(static_cast<void *>(extra.undoRect), 0, size);
+      extra.valid = static_cast<bool **>(BLI_memarena_alloc(arena, size));
+      memset(extra.valid, 0, size);
+
+      extra.use_brush_color = target.use_brush_color;
+      copy_v3_v3(extra.color, target.color);
+      extras.append(extra);
+    }
+
+    if (!extras.is_empty()) {
+      canvas->extras = static_cast<ProjPaintExtra *>(
+          BLI_memarena_alloc(arena, sizeof(ProjPaintExtra) * extras.size()));
+      memcpy(static_cast<void *>(canvas->extras),
+             extras.data(),
+             sizeof(ProjPaintExtra) * extras.size());
+      canvas->extras_num = int(extras.size());
+    }
+  }
+}
+
 void *paint_proj_new_stroke(bContext *C,
                             Object *ob,
                             const float mouse[2],
@@ -6311,6 +6661,11 @@ void *paint_proj_new_stroke(bContext *C,
     project_paint_begin(C, ps, symmetry_flag_views[i]);
     if (ps->mesh_eval == nullptr) {
       goto fail;
+    }
+
+    if (i == 0) {
+      /* Maelstrom3D: the other views share the images, extras included. */
+      proj_paint_extras_init(C, ps);
     }
 
     paint_proj_begin_clone(ps, mouse);

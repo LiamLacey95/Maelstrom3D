@@ -19,7 +19,8 @@ camera, three lights, an HDRI and a 480 x 270 render), `+ipr` (the viewport rend
 low poly drawn over part of its face in Edit Mode: use it before `+angle`, `+frame` and the Modeling workspace), `+autolow` (Auto Low Poly on a smooth Suzanne, the low poly
 next to the high poly, drawn with its edges), `+angle` (a three-quarter view), `+assets` / `+assetmat` / `+assetmask` / `+assetenv` / `+assetbrush` (open Smart Materials / Materials / Smart Masks / Environments / Brushes
 in the Texture workspace's Assets panel), `+apply` (the Painted Metal smart material on top of the layers; after `+layers`), `+thumbs` (make the thumbnails of the Assets now: use a BLENDER_USER_RESOURCES of your own, a minute
-of rendering), `+texpaint` (Texture workspace: the Eraser tool, Lazy Mouse on), `+bakegroups` (three bake groups: a
+of rendering), `+texpaint` (Texture workspace: the Eraser tool, Lazy Mouse on), `+multipaint` (a material, a paint layer, and one stroke that paints
+Base Color, Roughness and Height together; use it after `+monkey`, `+angle` and `+frame`; `+propsscroll` scrolls Properties down), `+bakegroups` (three bake groups: a
 sword with two floaters that is not baked, a shield that is baked and a pommel that is stale; use it before `TEXTURE/tex_bake`,
 `+frame` and `TEXTURE/tex_bake` again), `+bakeresult` (like `+bakegroups`, then Bake All, a normal-mapped material on each low poly and
 the sword's normal map in the paint view), `+bakeextras` (two groups that overlap, lined up by Explode, baked with the ID map, and the cage
@@ -692,7 +693,50 @@ def texpaint():
     T.image_brush(bpy.context).use_smooth_stroke = True
 
 
+def multipaint():
+    """One stroke with the brush material's Base Color, Roughness and Height on: an orange, glossy, raised streak across Suzanne."""
+    import math
+    from bpy_extras.view3d_utils import location_3d_to_region_2d
+    win = bpy.context.window_manager.windows[0]
+    bpy.ops.m3d.tex_add_material()
+    bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+    bpy.context.scene.m3d_tex.resolution = '1024'
+    bpy.ops.m3d.layer_add(kind='PAINT')
+    bpy.context.tool_settings.image_paint.unified_paint_settings.color = (1.0, 0.32, 0.04)
+    brush = bpy.context.scene.m3d_tex.brush
+    brush.roughness, brush.height = 0.04, 1.0
+    brush.use_roughness = brush.use_height = True
+    area = next(a for a in win.screen.areas if a.type == 'VIEW_3D')
+    region = next(r for r in area.regions if r.type == 'WINDOW')
+    w, h = region.width, region.height
+    elements = []
+    for i in range(81):
+        t = i / 80
+        x, y = w * (0.30 + 0.40 * t), h * (0.52 + 0.07 * math.sin(2 * math.pi * t))
+        elements.append({"name": "", "mouse_event": (x, y), "mouse": (x, y), "is_start": i == 0, "location": (0.0, 0.0, 0.0),
+                         "pressure": 1.0, "size": 0.045 * h, "time": i * 0.01, "x_tilt": 0.0, "y_tilt": 0.0})
+    with bpy.context.temp_override(window=win, screen=win.screen, area=area, region=region, space_data=area.spaces.active):
+        bpy.ops.paint.image_paint(stroke=elements)
+    image = next(a for a in win.screen.areas if a.type == 'IMAGE_EDITOR')
+    with bpy.context.temp_override(window=win, screen=win.screen, area=image, region=next(r for r in image.regions if r.type == 'WINDOW'),
+                                   space_data=image.spaces.active):
+        bpy.ops.image.view_all(fit_view=True)
+
+
+def propsscroll():
+    """Scroll the Properties editor of the Texture workspace down to its last panels (the Material section)."""
+    win = bpy.context.window_manager.windows[0]
+    areas = sorted((a for a in win.screen.areas if a.type == 'PROPERTIES'), key=lambda a: (a.x, -a.y))
+    area = areas[4]
+    with bpy.context.temp_override(window=win, screen=win.screen, area=area, region=next(r for r in area.regions if r.type == 'WINDOW'),
+                                   space_data=area.spaces.active):
+        for _ in range(9):
+            bpy.ops.view2d.scroll_down()
+
+
 SETUP = {
+    "+multipaint": multipaint,
+    "+propsscroll": propsscroll,
     "+assets": assets('SMART_MATERIALS'),
     "+assetmat": assets('MATERIALS'),
     "+assetmask": assets('SMART_MASKS'),

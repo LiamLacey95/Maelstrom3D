@@ -260,9 +260,9 @@ painted: the panels say what is missing and have a button to fix it (Auto Unwrap
 | 3D view and 2D view | The 3D view in Material Preview and the 2D paint view (the Image Editor in Paint mode). Each has a **display mode** dropdown at the top right: Material, each channel on its own, the baked mesh maps, the mask of the active layer |
 | Texture Set List (right, top) | One row for each material of the active mesh, then the materials with layers of the other meshes. The eye shows or hides the set, a click on the name makes it the active material (the Layers follow). The button in the header isolates the active set (Alt+Q) |
 | Layers \| Texture Set Settings (right, middle) | Two tabs. **Layers** is the layer stack (see Layers below). **Texture Set Settings** has the channels (add one, size of new slots, Save All Images), the list of baked **Mesh Maps** with a big **Bake Mesh Maps** button, and All Paint Slots. **Bake Mesh Maps** replaces the tabs by the Bake page, with **Back to Painting** on top |
-| Properties (right, bottom) | Titled by what is selected: **Properties - Paint** (the brush: picker, size, strength, color, blend mode, stencil and projection, stroke and stabilize, falloff, texture and alpha, clone, options, cursor, palette), **Properties - Fill** (the fill layer's settings: name, blend, opacity, channels and their values), **Properties - Mask** (the mask effects of the layer, and the brush while the mask is painted) and **Properties - Folder**. The buttons **Auto \| Layer \| Mask** in its header pick the layer's settings or its mask when the title is not the one you want |
+| Properties (right, bottom) | Titled by what is selected: **Properties - Paint** (the brush: picker, size, strength, color, blend mode, the **Material** section, stencil and projection, stroke and stabilize, falloff, texture and alpha, clone, options, cursor, palette), **Properties - Fill** (the fill layer's settings: name, blend, opacity, channels and their values), **Properties - Mask** (the mask effects of the layer, and the brush while the mask is painted) and **Properties - Folder**. The buttons **Auto \| Layer \| Mask** in its header pick the layer's settings or its mask when the title is not the one you want |
 | Dock strip (far right) | Icons that open a popover: **Display Settings** (shading, environment rotation and intensity, Channel View, UV checker), **Shader Settings** (the Principled shader of the active material and its displacement), **History** (the undo steps, a click goes back to that step), **Export Textures** (the presets, folder and size; Ctrl+Shift+E), and **Log** (the Info window with the reports) |
-| Toolbar (top bar) | Left: the controls of the active tool, **Size** and **Flow** (the brush strength) with their pen pressure buttons, **Spacing**, **Lazy Mouse** with its distance, **Symmetry** X Y Z; Polygon Fill shows its fill mode instead. Right: the view layout (3D \| 2D, 3D only, 2D only: the last two maximize one view), perspective / orthographic, **Bake Mesh Maps**, **Export Textures**, the workspace picker. There are no shelf rows in this workspace (Show Shelf in Workspace Settings brings them back) |
+| Toolbar (top bar) | Left: the controls of the active tool, **Size** and **Flow** (the brush strength) with their pen pressure buttons, **Spacing**, **Lazy Mouse** with its distance, the channel buttons of the brush material (**color height rough metal emit**, shorter on a narrower window; for the tools that paint them), **Symmetry** X Y Z; Polygon Fill shows its fill mode instead. Right: the view layout (3D \| 2D, 3D only, 2D only: the last two maximize one view), perspective / orthographic, **Bake Mesh Maps**, **Export Textures**, the workspace picker. There are no shelf rows in this workspace (Show Shelf in Workspace Settings brings them back) |
 
 **Tools.** Blender has one brush tool for texture painting, and the brush decides what a stroke does, so each tool of the strip picks a brush and a few settings in one click:
 
@@ -287,7 +287,7 @@ the tool it belongs to.
 | 1 2 3 4 5 6 | Paint, Eraser, Projection, Polygon Fill, Smudge, Clone |
 | P | Pick color (hold P, move over the model, let go) |
 | M | Show the material |
-| C / Shift+C | Show the next / previous channel on its own (the channel becomes the painted one); after the last the material is shown again |
+| C / Shift+C | Show the next / previous channel on its own (what a stroke paints does not change: that is the Material section); after the last the material is shown again |
 | B / Shift+B | Show the next / previous baked mesh map |
 | D | Lazy Mouse |
 | L | Symmetry (X) |
@@ -332,8 +332,33 @@ keys work there), so a baked map shown in it changes if you paint on it: Undo ta
 A channel is a paint slot of the active material: the first click on **Base Color**, **Roughness**, **Metallic**,
 **Normal**, **Height** or **Emission** in Texture Set Settings adds an image of the "new slot" size (Non-Color for
 everything except Base Color and Emission) and plugs it into the shader; later clicks only pick it. C and Shift+C show the
-next / previous channel on its own and make it the painted one, `[` and `]` change the brush size, X swaps the two colors.
+next / previous channel on its own, `[` and `]` change the brush size, X swaps the two colors. A channel button in Texture Set Settings (or **Paint Roughness** and the others in the Layers menu) picks that channel to paint, alone.
 The old Channel View (in Display Settings) shows the picked channel flat in the 3D view and goes back on the next click.
+
+**Painting several channels at once.** A stroke on a Paint Layer paints every channel that is on in the **Material**
+section of Properties - Paint, with its own value, in one go: the same pixels, the same opacity, falloff, symmetry and seam
+bleed, and **one undo step** takes the whole stroke back in all of them. The section is a row of buttons, **color height
+rough metal emit**, and below it a value for each one that is on: **Base Color** is the brush color (the picker and the X
+swap are the same), **Height** and **Roughness** and **Metallic** are sliders from 0 to 1 (Height 0.5 is flat, more is
+higher), **Emission** is a color. Base Color is on at first, so a new project paints as before; turn on **rough**, say, and
+the next stroke paints a Roughness value next to the color. The same buttons are in the toolbar when the Paint, Eraser,
+Projection or Polygon Fill tool is active. The channel that is turned on is added to the layer if it is missing: its image
+is made at the size of the layer's other images (a stroke paints only images of one size, and says so for one that is
+not). Normal is painted alone: pick it with **Paint Normal**, and with every button off the channel shown with C is the one
+painted. What each tool does with them:
+
+| Tool | Channels |
+|---|---|
+| Paint, Projection | Every channel that is on. A brush texture only masks (through its alpha) the channels that have a value; Base Color gets its colors |
+| Eraser | Erases every channel that is on, so the layer shows through in all of them |
+| Polygon Fill | Fills every channel that is on |
+| Smudge, Clone, Blur | The first channel that is on only (they move the color that is there: the other channels need a smear of their own, which is not done yet) |
+
+With Base Color off the first channel that is on is the one the brush is aimed at, and it gets its own value, not the brush
+color. Paint Mask, a Fill Layer, a folder and a frozen folder have nothing to paint besides the mask: the section says so and
+the toolbar buttons are hidden. In the 2D view the image shown there is painted and every other channel that is on goes along with it, so a
+stroke in the 2D view changes the same channels as one in the 3D view. Not done yet: UDIM tiles (a stroke on a mesh with
+UDIM paints its own image only).
 
 **Bake.** The Bake page (**Bake Mesh Maps** in Texture Set Settings, in the toolbar or Ctrl+Shift+B) needs Cycles: it switches to it, bakes every ticked map into an image (kept with the file) and switches back; the mesh's materials
 are not changed (a temporary material takes the bake and is removed). Curvature uses the shader's Pointiness (needs enough polygons), Thickness uses
@@ -412,7 +437,7 @@ no memory. A Fill Layer is a value or color over the whole mesh; limit it with a
 **Paint Mask** sends strokes to the mask's Paint effect instead of the channel (on a Fill Layer strokes always go to
 it; a Fill Layer without a Paint effect can be turned into a Paint Layer with Convert, and until then the brush is
 aimed at a tiny hidden scratch image so no layer is painted by mistake).
-The brush always paints the active layer's image of the active channel (the channel buttons in Texture Set Settings, C / Shift+C). Blend modes
+The brush paints the active layer's images of the channels that are on in the brush material (next paragraph). Blend modes
 are Mix, Multiply, Add, Overlay, Screen, Soft Light, Subtract, Difference, Color, Darken and Lighten (the Normal channel
 always mixes). Double-click a name to rename it. In the shader each channel has a frame with one Image Texture and Mix
 node per layer; only nodes made by the stack are ever changed. **Merge Down** combines a layer into the one below with

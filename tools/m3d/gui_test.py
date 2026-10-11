@@ -3911,6 +3911,730 @@ def lay_done():
 
 
 # ----------------------------------------------------------------------------------------------------
+# Multi-channel painting: one stroke paints every channel of the brush material at once (Base Color with the brush color, the
+# others with their own value), the Eraser erases them all, one Ctrl+Z takes the whole stroke back.
+
+MC = {}
+
+
+def mc_layer():
+    m = lay_mat()
+    return m.m3d_layers[m.m3d_layer_index]
+
+
+def mc_image(ch):
+    return LY.entry_of(mc_layer(), ch).image
+
+
+def mc_brush():
+    return bpy.context.scene.m3d_tex.brush
+
+
+def mc_shots():
+    """{channel: pixels} of the active layer's images."""
+    return {ch.id: px(mc_image(ch.id)).copy() for ch in LY.CHANNELS if mc_image(ch.id) is not None}
+
+
+def mc_list():
+    """[(image name, color or None)] the paint code is told to paint."""
+    items = bpy.context.window_manager.get(LY.TARGETS)
+    return [(i["image"], tuple(i["color"].to_list()) if "color" in i else None) for i in items] if items is not None else []
+
+
+def mc_points(x0=-40, x1=40, dy=0, n=11):
+    """A horizontal stroke through the cube's centre, in window coordinates."""
+    view, region = tex_view()
+    p = location_3d_to_region_2d(region, view.spaces.active.region_3d, Vector((0, 0, 0)))
+    cx, cy = (int(region.x + p.x), int(region.y + p.y)) if p is not None else tex_xy()
+    return [(cx + x0 + (x1 - x0) * i // (n - 1), cy + dy) for i in range(n)]
+
+
+def mc_press(points):
+    event('MOUSEMOVE', xy=points[0])
+    event('LEFTMOUSE', 'PRESS', points[0])
+    for xy in points[1:]:
+        event('MOUSEMOVE', xy=xy)
+
+
+def mc_release(points):
+    event('LEFTMOUSE', 'RELEASE', points[-1])
+
+
+def mc_chord(key, shift=False):
+    """Ctrl+key (Ctrl+Shift+key) over the 3D view."""
+    xy = MC["points"][0]
+    event('LEFT_CTRL', 'PRESS', xy, ctrl=True)
+    if shift:
+        event('LEFT_SHIFT', 'PRESS', xy, ctrl=True, shift=True)
+    event(key, 'PRESS', xy, ctrl=True, shift=shift)
+    event(key, 'RELEASE', xy, ctrl=True, shift=shift)
+    if shift:
+        event('LEFT_SHIFT', 'RELEASE', xy, ctrl=True)
+    event('LEFT_CTRL', 'RELEASE', xy)
+
+
+def mc_push(message):
+    """The undo step a button press makes after it changed a property (a change from Python makes none): Undo must not go
+    back past the property."""
+    bpy.ops.ed.undo_push(message=message)
+
+
+def mc_equal(a, b):
+    return a.keys() == b.keys() and all(np.array_equal(a[k], b[k]) for k in a)
+
+
+def mc_undo_until(name, target, tries=4):
+    """A step that presses Ctrl+Z until the layer's images are `target()`: a tool button between two strokes is an undo step too."""
+    count = [0]
+
+    def body():
+        if mc_equal(mc_shots(), target()):
+            return
+        count[0] += 1
+        if count[0] > tries:
+            fails.append("%s: Ctrl+Z did not bring the layer back (%s)" % (name, mc_diff(mc_shots(), target())))
+            return
+        mc_chord('Z')
+        steps.insert(0, body)
+    body.__name__ = name
+    return body
+
+
+def mc_diff(a, b):
+    """Which channels differ, and on how many texels (for the messages)."""
+    return {k: int((np.abs(a[k] - b[k]).max(axis=1) > 0).sum()) for k in a if k in b and not np.array_equal(a[k], b[k])}
+
+
+def mc_expect(tag, before, after, want, skip=()):
+    """The stroke between `before` and `after` painted every channel of `want` ({channel: stored rgb}) on the same texels as the
+    first one, with its value; the other channels and everything outside the stroke are as they were. Returns the texels."""
+    canvas = next(iter(want))
+    changed = np.abs(after[canvas] - before[canvas]).max(axis=1) > 0.0
+    check(changed.sum() > 40, "%s: the stroke painted the canvas (%d texels)" % (tag, changed.sum()))
+    solid = after[canvas][:, 3] > 0.25
+    for ch, rgb in want.items():
+        img = after[ch]
+        check(np.array_equal(np.abs(img - before[ch]).max(axis=1) > 0.0, changed), "%s: %s changed the texels of %s" % (tag, ch, canvas))
+        check(np.abs(img[changed][:, 3] - after[canvas][changed][:, 3]).max() <= 1.5 / 255,
+              "%s: %s has the alpha of the stroke (largest difference %.4f)" % (tag, ch, np.abs(img[changed][:, 3] - after[canvas][changed][:, 3]).max()))
+        if solid.any():
+            err = np.abs(img[solid][:, :3] - np.asarray(rgb, np.float32)).max()
+            check(err <= 4 / 255, "%s: %s holds %s (largest difference %.4f)" % (tag, ch, tuple(round(float(v), 3) for v in rgb), err))
+        check(np.array_equal(img[~changed], before[ch][~changed]), "%s: %s is as before outside the stroke" % (tag, ch))
+    for ch in after:
+        if ch not in want and ch not in skip:
+            check(np.array_equal(after[ch], before[ch]), "%s: %s is not painted and did not change" % (tag, ch))
+    return changed
+
+
+@step
+def mc_setup():
+    lay_show_tab()
+    press_ok("m3d.tex_tool", _area=tex_roles()["tools"], tool='PAINT')
+    press_ok("m3d.layer_add", _area=tex_areas()[1], kind='PAINT')
+    bpy.context.tool_settings.image_paint.unified_paint_settings.color = (1.0, 0.0, 0.0)
+    b = mc_brush()
+    b.roughness, b.metallic, b.height = 0.2, 1.0, 0.8
+    b.use_roughness = b.use_metallic = b.use_height = True
+    mc_push("Brush material")
+
+
+@step
+def mc_setup_check():
+    m, layer, b = lay_mat(), mc_layer(), mc_brush()
+    check(layer.kind == 'PAINT' and m.m3d_layer_index == len(m.m3d_layers) - 1, "multi-channel tests start on a new paint layer (%s)" % lay_names())
+    check(b.use_base_color and b.use_roughness and b.use_metallic and b.use_height and not b.use_emission, "the brush material has four channels on")
+    names = [mc_image(c).name for c in ('BASE_COLOR', 'ROUGHNESS', 'METALLIC', 'HEIGHT')]
+    items = mc_list()
+    check([n for n, _c in items] == names and items[0][1] is None, "the list of what a stroke paints: Base Color first, without a color (%s)" % items)
+    got = {n: c for n, c in items}
+    check(all(np.allclose(got[mc_image(c).name], (v,) * 3, atol=1e-6) for c, v in (('ROUGHNESS', 0.2), ('METALLIC', 1.0), ('HEIGHT', 0.8))),
+          "...the others with their values (%s)" % items)
+    check({tuple(mc_image(c).size) for c in ('BASE_COLOR', 'ROUGHNESS', 'METALLIC', 'HEIGHT')} == {(128, 128)}, "the four images have the same size")
+    check(mc_image('EMISSION') is None and mc_image('NORMAL') is None, "channels that are off have no image")
+    check(m.texture_paint_images[m.paint_active_slot] == mc_image('BASE_COLOR'), "the canvas (the active slot) is the Base Color image")
+    MC["before"], MC["points"] = mc_shots(), mc_points()
+    check(not tracebacks(), "Python error setting up the brush material")
+    event('MOUSEMOVE', xy=MC["points"][0])
+
+
+@step
+def mc_stroke_press():
+    mc_press(MC["points"])
+
+
+@step
+def mc_stroke_release():
+    mc_release(MC["points"])
+
+
+@step
+def mc_stroke_check():
+    after = mc_shots()
+    MC["after"] = after
+    MC["changed"] = mc_expect("mc stroke", MC["before"], after,
+                              {'BASE_COLOR': (1.0, 0.0, 0.0), 'ROUGHNESS': (0.2,) * 3, 'METALLIC': (1.0,) * 3, 'HEIGHT': (0.8,) * 3})
+    check(not tracebacks(), "Python error during the multi-channel stroke")
+    mc_chord('Z')
+
+
+@step
+def mc_undo_check():
+    check(mc_equal(mc_shots(), MC["before"]), "one Ctrl+Z took the stroke back in all four channels")
+    check(not tracebacks(), "Python error in Undo of the multi-channel stroke")
+    check(mc_list() and len(mc_list()) == 4, "Undo left the list of what a stroke paints (%s)" % mc_list())
+    mc_chord('Z', shift=True)
+
+
+@step
+def mc_redo_check():
+    check(mc_equal(mc_shots(), MC["after"]), "Ctrl+Shift+Z brought the stroke back in all four channels")
+    check(not tracebacks(), "Python error in Redo of the multi-channel stroke")
+    # The Eraser: the right half of the stroke, in all four channels.
+    press_ok("m3d.tex_tool", _area=tex_roles()["tools"], tool='ERASER')
+    MC["before_erase"] = mc_shots()
+    MC["erase_points"] = mc_points(0, 40, n=6)
+
+
+@step
+def mc_eraser_press():
+    mc_press(MC["erase_points"])
+
+
+@step
+def mc_eraser_release():
+    mc_release(MC["erase_points"])
+
+
+@step
+def mc_eraser_check():
+    before, after = MC["before_erase"], mc_shots()
+    erased = before['BASE_COLOR'][:, 3] - after['BASE_COLOR'][:, 3] > 0.05
+    check(erased.sum() > 10, "the Eraser erased the canvas (%d texels)" % erased.sum())
+    for ch in before:
+        a = before[ch][:, 3] - after[ch][:, 3]
+        check(np.array_equal(a > 0.05, erased) and np.abs(a - (before['BASE_COLOR'][:, 3] - after['BASE_COLOR'][:, 3])).max() <= 1.5 / 255,
+              "the Eraser took the alpha of %s down on the same texels, by the same amount" % ch)
+        check(np.array_equal(after[ch][a <= 0], before[ch][a <= 0]), "...and left the rest of %s alone" % ch)
+    check(not tracebacks(), "Python error while erasing")
+    mc_chord('Z')
+
+
+@step
+def mc_eraser_undo_check():
+    check(mc_equal(mc_shots(), MC["before_erase"]), "one Ctrl+Z took the erasing back in all four channels")
+    press_ok("m3d.tex_tool", _area=tex_roles()["tools"], tool='PAINT')
+    mc_brush().use_roughness = False   # A channel that is off is not touched.
+    mc_push("Roughness off")
+    MC["before_off"], MC["off_points"] = mc_shots(), mc_points(-40, 40, dy=-24)
+    event('MOUSEMOVE', xy=MC["off_points"][0])
+
+
+@step
+def mc_off_press():
+    mc_press(MC["off_points"])
+
+
+@step
+def mc_off_release():
+    mc_release(MC["off_points"])
+
+
+@step
+def mc_off_check():
+    before, after = MC["before_off"], mc_shots()
+    mc_expect("mc roughness off", before, after, {'BASE_COLOR': (1.0, 0.0, 0.0), 'METALLIC': (1.0,) * 3, 'HEIGHT': (0.8,) * 3})
+    check(np.array_equal(after['ROUGHNESS'], before['ROUGHNESS']), "Roughness is off: the stroke did not touch it")
+    check(len(mc_list()) == 3, "the list lost Roughness (%s)" % mc_list())
+    mc_chord('Z')
+
+
+@step
+def mc_off_undo_check():
+    check(mc_equal(mc_shots(), MC["before_off"]), "Undo of a stroke with Roughness off")
+    # Base Color off: the canvas is the first channel that is on (Metallic), painted with its own value, not the brush color.
+    b = mc_brush()
+    b.use_base_color = False
+    mc_push("Base Color off")
+    m = lay_mat()
+    check(m.texture_paint_images[m.paint_active_slot] == mc_image('METALLIC'), "Base Color off: the canvas is the Metallic image")
+    items = mc_list()
+    check(len(items) == 2 and items[0][0] == mc_image('METALLIC').name and items[0][1] == (1.0, 1.0, 1.0), "...with its value in the list (%s)" % items)
+    MC["before_canvas"], MC["canvas_points"] = mc_shots(), mc_points(-40, 40, dy=24)
+    event('MOUSEMOVE', xy=MC["canvas_points"][0])
+
+
+@step
+def mc_canvas_press():
+    mc_press(MC["canvas_points"])
+
+
+@step
+def mc_canvas_release():
+    mc_release(MC["canvas_points"])
+
+
+@step
+def mc_canvas_check():
+    before, after = MC["before_canvas"], mc_shots()
+    mc_expect("mc canvas not Base Color", before, after, {'METALLIC': (1.0,) * 3, 'HEIGHT': (0.8,) * 3})
+    check(np.array_equal(after['BASE_COLOR'], before['BASE_COLOR']) and np.array_equal(after['ROUGHNESS'], before['ROUGHNESS']),
+          "Base Color and Roughness are off: not touched")
+    check(not tracebacks(), "Python error painting with a canvas that is not Base Color")
+    mc_chord('Z')
+
+
+@step
+def mc_canvas_undo_check():
+    check(mc_equal(mc_shots(), MC["before_canvas"]), "Undo of a stroke whose canvas is not Base Color")
+    b = mc_brush()
+    b.use_base_color = b.use_roughness = True
+    mc_push("Base Color and Roughness on")
+    # A long stroke across the cube's edges, with seam bleed: every channel has the same texels (the bleed included).
+    bpy.context.tool_settings.image_paint.seam_bleed = 3
+    MC["before_seam"], MC["seam_points"] = mc_shots(), mc_points(-110, 110, dy=-50, n=16)
+    event('MOUSEMOVE', xy=MC["seam_points"][0])
+
+
+@step
+def mc_seam_press():
+    mc_press(MC["seam_points"])
+
+
+@step
+def mc_seam_release():
+    mc_release(MC["seam_points"])
+
+
+@step
+def mc_seam_check():
+    before, after = MC["before_seam"], mc_shots()
+    mc_expect("mc seam bleed", before, after, {'BASE_COLOR': (1.0, 0.0, 0.0), 'ROUGHNESS': (0.2,) * 3, 'METALLIC': (1.0,) * 3, 'HEIGHT': (0.8,) * 3})
+    check(not tracebacks(), "Python error painting across seams with bleed")
+    mc_chord('Z')
+
+
+@step
+def mc_seam_undo_check():
+    check(mc_equal(mc_shots(), MC["before_seam"]), "Undo of a stroke across seams")
+    bpy.context.tool_settings.image_paint.seam_bleed = 2
+    # Symmetry: the mirrored texels change in every channel too.
+    bpy.context.active_object.data.use_mirror_x = True
+    mc_push("Symmetry")
+    MC["before_mirror"], MC["mirror_points"] = mc_shots(), mc_points(-40, 40, dy=40)
+    event('MOUSEMOVE', xy=MC["mirror_points"][0])
+
+
+@step
+def mc_mirror_press():
+    mc_press(MC["mirror_points"])
+
+
+@step
+def mc_mirror_release():
+    mc_release(MC["mirror_points"])
+
+
+@step
+def mc_mirror_check():
+    before, after = MC["before_mirror"], mc_shots()
+    mc_expect("mc symmetry", before, after, {'BASE_COLOR': (1.0, 0.0, 0.0), 'ROUGHNESS': (0.2,) * 3, 'METALLIC': (1.0,) * 3, 'HEIGHT': (0.8,) * 3})
+    check(not tracebacks(), "Python error painting with symmetry")
+    bpy.context.active_object.data.use_mirror_x = False
+    mc_chord('Z')
+
+
+@step
+def mc_mirror_undo_check():
+    check(mc_equal(mc_shots(), MC["before_mirror"]), "Undo of a stroke with symmetry")
+
+
+@step
+def mc_fill_setup():
+    # Polygon Fill: the Fill brush on the face under the cursor fills every channel; one undo takes it back.
+    press_ok("m3d.tex_tool", _area=tex_roles()["tools"], tool='POLYFILL')
+    MC["before_fill"], MC["fill_xy"] = mc_shots(), mc_points()[5]
+    event('MOUSEMOVE', xy=MC["fill_xy"])
+
+
+@step
+def mc_fill_press():
+    event('LEFTMOUSE', 'PRESS', MC["fill_xy"])
+
+
+@step
+def mc_fill_release():
+    event('LEFTMOUSE', 'RELEASE', MC["fill_xy"])
+
+
+@step
+def mc_fill_check():
+    before, after = MC["before_fill"], mc_shots()
+    changed = mc_expect("mc polygon fill", before, after, {'BASE_COLOR': (1.0, 0.0, 0.0), 'ROUGHNESS': (0.2,) * 3, 'METALLIC': (1.0,) * 3, 'HEIGHT': (0.8,) * 3})
+    check(changed.sum() > 500, "the fill covered a polygon of the cube (%d texels)" % changed.sum())
+    check(not tracebacks(), "Python error filling")
+    mc_chord('Z')
+
+
+@step
+def mc_fill_undo_check():
+    check(mc_equal(mc_shots(), MC["before_fill"]), "one Ctrl+Z took the fill back in all four channels")
+    # Smudge lifts color from the canvas: it changes the canvas only (the other channels need their own smear, not done yet).
+    # Put paint under it first: a plain stroke.
+    press_ok("m3d.tex_tool", _area=tex_roles()["tools"], tool='PAINT')
+    MC["smudge_points"] = mc_points(-60, 60, dy=0, n=13)
+    event('MOUSEMOVE', xy=MC["points"][0])
+
+
+@step
+def mc_smudge_paint_press():
+    mc_press(MC["points"])
+
+
+@step
+def mc_smudge_paint_release():
+    mc_release(MC["points"])
+
+
+@step
+def mc_smudge_setup():
+    press_ok("m3d.tex_tool", _area=tex_roles()["tools"], tool='SMUDGE')
+    MC["before_smudge"] = mc_shots()
+    event('MOUSEMOVE', xy=MC["smudge_points"][0])
+
+
+@step
+def mc_smudge_press():
+    mc_press(MC["smudge_points"])
+
+
+@step
+def mc_smudge_release():
+    mc_release(MC["smudge_points"])
+
+
+@step
+def mc_smudge_check():
+    before, after = MC["before_smudge"], mc_shots()
+    check(not np.array_equal(after['BASE_COLOR'], before['BASE_COLOR']), "Smudge moved the Base Color")
+    check(all(np.array_equal(after[ch], before[ch]) for ch in ('ROUGHNESS', 'METALLIC', 'HEIGHT')),
+          "...and only that: Smudge works on the canvas channel (the other three are as they were)")
+    check(not tracebacks(), "Python error smudging")
+    press_ok("m3d.tex_tool", _area=tex_roles()["tools"], tool='PAINT')
+    mc_chord('Z')
+
+
+@step
+def mc_smudge_undo_check():
+    check(mc_equal(mc_shots(), MC["before_smudge"]), "Undo of the smudge")
+    mc_chord('Z')   # ...and the stroke under it
+
+
+step(mc_undo_until("mc_smudge_all_undone", lambda: MC["after"]))
+
+
+@step
+def mc_float_setup():
+    check(mc_equal(mc_shots(), MC["after"]), "(the layer is as the first stroke left it: %s)" % mc_diff(mc_shots(), MC["after"]))
+    # A float image among byte images (same size): it is painted too, with the value in the float image.
+    m = lay_mat()
+    height = mc_image('HEIGHT')
+    flt = bpy.data.images.new("MCFloat", 128, 128, alpha=True, float_buffer=True, is_data=True)
+    flt.colorspace_settings.name = 'Non-Color'   # (before the pixels: choosing the color space blanks a generated image)
+    data = px(height).copy()
+    data[:, :3] *= data[:, 3:4]   # (a float image holds premultiplied colors)
+    flt.pixels.foreach_set(data.ravel())
+    flt.update()
+    flt["m3d_channel"] = 'HEIGHT'
+    with LY.muted():
+        LY.entry_of(mc_layer(), 'HEIGHT').image = flt
+    LY.rebuild_all(m)
+    LY.sync_target(bpy.context, m, True)
+    mc_push("Float Height")
+    MC["flt"], MC["old_height"] = flt, height
+    MC["before_float"], MC["float_points"] = mc_shots(), mc_points(-40, 40, dy=-10)
+    event('MOUSEMOVE', xy=MC["float_points"][0])
+
+
+@step
+def mc_float_press():
+    mc_press(MC["float_points"])
+
+
+@step
+def mc_float_release():
+    mc_release(MC["float_points"])
+
+
+@step
+def mc_float_check():
+    before, after = MC["before_float"], mc_shots()
+    changed = mc_expect("mc float", before, after, {'BASE_COLOR': (1.0, 0.0, 0.0), 'ROUGHNESS': (0.2,) * 3, 'METALLIC': (1.0,) * 3}, skip=('HEIGHT',))
+    flt, a = after['HEIGHT'], after['HEIGHT'][:, 3]
+    check(np.abs(a - after['BASE_COLOR'][:, 3]).max() <= 1.5 / 255, "the float image has the alpha of the stroke (largest difference %.4f; before: alpha %.2f-%.2f)" % (
+        np.abs(a - after['BASE_COLOR'][:, 3]).max(), before['HEIGHT'][:, 3].min(), before['HEIGHT'][:, 3].max()))
+    solid = a > 0.25
+    check(solid.any() and np.abs(flt[solid, :3] / a[solid, None] - 0.8).max() < 2e-3,
+          "...with the value (premultiplied by the stroke's alpha: %.4f)" % (np.abs(flt[solid, :3] / a[solid, None] - 0.8).max() if solid.any() else -1))
+    check(np.array_equal(flt[~changed & (a == 0)], before['HEIGHT'][~changed & (a == 0)]), "...and nothing outside it")
+    check(not tracebacks(), "Python error painting a float image along with byte images")
+    mc_chord('Z')
+
+
+@step
+def mc_float_undo_check():
+    check(mc_equal(mc_shots(), MC["before_float"]), "Undo restores the float image with the others")
+    # Back to a byte Height image.
+    with LY.muted():
+        LY.entry_of(mc_layer(), 'HEIGHT').image = MC["old_height"]
+    LY.rebuild_all(lay_mat())
+    LY.sync_target(bpy.context, lay_mat(), True)
+    bpy.data.images.remove(MC["flt"])
+    mc_push("Byte Height")
+    # An image of another size is not painted (and says so); the others are.
+    m = lay_mat()
+    small_ = bpy.data.images.new("MCHalf", 64, 64, alpha=True, is_data=True)
+    small_.colorspace_settings.name = 'Non-Color'
+    small_["m3d_channel"] = 'METALLIC'
+    with LY.muted():
+        MC["old_metal"] = LY.entry_of(mc_layer(), 'METALLIC').image
+        LY.entry_of(mc_layer(), 'METALLIC').image = small_
+    LY.rebuild_all(m)
+    LY.sync_target(bpy.context, m, True)
+    mc_push("Half-size Metallic")
+    MC["before_size"], MC["size_points"] = mc_shots(), mc_points(-40, 40, dy=-10)
+    event('MOUSEMOVE', xy=MC["size_points"][0])
+
+
+@step
+def mc_size_press():
+    mc_press(MC["size_points"])
+
+
+@step
+def mc_size_release():
+    mc_release(MC["size_points"])
+
+
+@step
+def mc_size_check():
+    before, after = MC["before_size"], mc_shots()
+    mc_expect("mc size", before, after, {'BASE_COLOR': (1.0, 0.0, 0.0), 'ROUGHNESS': (0.2,) * 3, 'HEIGHT': (0.8,) * 3})
+    check(np.array_equal(after['METALLIC'], before['METALLIC']), "an image of another size is not painted (the others are)")
+    check(not tracebacks(), "Python error with an image of another size")
+    mc_chord('Z')
+
+
+@step
+def mc_size_undo_check():
+    check(mc_equal(mc_shots(), MC["before_size"]), "Undo of a stroke that skipped an image")
+    with LY.muted():
+        LY.entry_of(mc_layer(), 'METALLIC').image = MC["old_metal"]
+    LY.rebuild_all(lay_mat())
+    LY.sync_target(bpy.context, lay_mat(), True)
+    bpy.data.images.remove(bpy.data.images["MCHalf"])
+    mc_push("Metallic back")
+    # A list that does not name the canvas does nothing: only the canvas is painted, and no warning.
+    wm = bpy.context.window_manager
+    wm[LY.TARGETS] = [{"image": "Elsewhere", "color": [0.5, 0.5, 0.5]}, {"image": mc_image('ROUGHNESS').name, "color": [0.5, 0.5, 0.5]}]
+    MC["before_stale"], MC["stale_points"] = mc_shots(), mc_points(-40, 40, dy=-10)
+    event('MOUSEMOVE', xy=MC["stale_points"][0])
+
+
+@step
+def mc_stale_press():
+    mc_press(MC["stale_points"])
+
+
+@step
+def mc_stale_release():
+    mc_release(MC["stale_points"])
+
+
+@step
+def mc_stale_check():
+    before, after = MC["before_stale"], mc_shots()
+    mc_expect("mc stale list", before, after, {'BASE_COLOR': (1.0, 0.0, 0.0)})
+    check(not tracebacks(), "Python error with a list that does not name the canvas")
+    mc_chord('Z')
+
+
+@step
+def mc_stale_undo_check():
+    check(mc_equal(mc_shots(), MC["before_stale"]), "Undo of a stroke with a list that did not name the canvas")
+    LY.sync_target(bpy.context, lay_mat(), True)   # (the list is the right one again)
+    check(len(mc_list()) == 4, "the list is back (%s)" % mc_list())
+
+
+# --- The same in the 2D view (Image Editor in Paint mode): the canvas is the image shown there.
+
+def mc_2d_area():
+    area = next(a for a in window().screen.areas if a.type == 'IMAGE_EDITOR')
+    return area, next(r for r in area.regions if r.type == 'WINDOW')
+
+
+def mc_2d_points(u0=0.25, u1=0.75, v=0.5, n=11):
+    """A stroke along the 2D view at height v of the image, in window coordinates."""
+    area, region = mc_2d_area()
+    out = []
+    for i in range(n):
+        rx, ry = region.view2d.view_to_region(u0 + (u1 - u0) * i / (n - 1), v, clip=False)
+        out.append((int(region.x + rx), int(region.y + ry)))
+    return out
+
+
+@step
+def mc_2d_setup():
+    area, region = mc_2d_area()
+    space = area.spaces.active
+    space.image = mc_image('BASE_COLOR')
+    space.mode = 'PAINT'
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=area, region=region, space_data=space):
+        bpy.ops.image.view_all(fit_view=True)
+    mc_push("2D view")
+
+
+@step
+def mc_2d_aim():
+    MC["before_2d"], MC["points_2d"] = mc_shots(), mc_2d_points()
+    check(window().screen.areas and mc_2d_area()[0].spaces.active.image == mc_image('BASE_COLOR'), "the 2D view shows the Base Color image")
+    xy = MC["points_2d"][0]
+    event('MOUSEMOVE', xy=xy)
+
+
+@step
+def mc_2d_press():
+    mc_press(MC["points_2d"])
+
+
+@step
+def mc_2d_release():
+    mc_release(MC["points_2d"])
+
+
+@step
+def mc_2d_check():
+    before, after = MC["before_2d"], mc_shots()
+    mc_expect("mc 2D view", before, after, {'BASE_COLOR': (1.0, 0.0, 0.0), 'ROUGHNESS': (0.2,) * 3, 'METALLIC': (1.0,) * 3, 'HEIGHT': (0.8,) * 3})
+    check(not tracebacks(), "Python error painting in the 2D view")
+    MC["after_2d"] = after
+    mc_chord('Z')
+
+
+@step
+def mc_2d_undo_check():
+    check(mc_equal(mc_shots(), MC["before_2d"]), "one Ctrl+Z took the 2D stroke back in all four channels")
+    mc_chord('Z', shift=True)
+
+
+@step
+def mc_2d_redo_check():
+    check(mc_equal(mc_shots(), MC["after_2d"]), "Ctrl+Shift+Z brought the 2D stroke back in all four channels")
+    # The Eraser in the 2D view.
+    press_ok("m3d.tex_tool", _area=tex_roles()["tools"], tool='ERASER')
+    MC["before_erase_2d"], MC["erase_points_2d"] = mc_shots(), mc_2d_points(0.5, 0.75)
+    event('MOUSEMOVE', xy=MC["erase_points_2d"][0])
+
+
+@step
+def mc_2d_eraser_press():
+    mc_press(MC["erase_points_2d"])
+
+
+@step
+def mc_2d_eraser_release():
+    mc_release(MC["erase_points_2d"])
+
+
+@step
+def mc_2d_eraser_check():
+    before, after = MC["before_erase_2d"], mc_shots()
+    erased = before['BASE_COLOR'][:, 3] - after['BASE_COLOR'][:, 3] > 0.05
+    check(erased.sum() > 10, "the Eraser erased in the 2D view (%d texels)" % erased.sum())
+    for ch in before:
+        a = before[ch][:, 3] - after[ch][:, 3]
+        check(np.array_equal(a > 0.05, erased), "the Eraser took the alpha of %s down on the same texels in the 2D view" % ch)
+    check(not tracebacks(), "Python error erasing in the 2D view")
+    press_ok("m3d.tex_tool", _area=tex_roles()["tools"], tool='PAINT')
+    mc_chord('Z')
+    mc_chord('Z')
+
+
+@step
+def mc_2d_done_check():
+    check(mc_equal(mc_shots(), MC["before_2d"]), "two Ctrl+Z took the 2D eraser and the stroke back")
+
+
+# --- Time: the same stroke with one channel and with five, 2K images (the stroke operator runs it in one go).
+
+def mc_stroke_time(points, size):
+    view, region = tex_view()
+    elements = []
+    for i, (x, y) in enumerate(points):
+        rx, ry = x - region.x, y - region.y
+        elements.append({"name": "", "mouse_event": (rx, ry), "mouse": (rx, ry), "is_start": i == 0, "location": (0.0, 0.0, 0.0),
+                         "pressure": 1.0, "size": size, "time": i * 0.01, "x_tilt": 0.0, "y_tilt": 0.0})
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=view, region=region, space_data=view.spaces.active):
+        t0 = time.perf_counter()
+        res = bpy.ops.paint.image_paint(stroke=elements)
+        return time.perf_counter() - t0, res
+
+
+@step
+def mc_perf_setup():
+    bpy.context.scene.m3d_tex.resolution = '2048'
+    b = mc_brush()
+    with LY.muted():
+        b.use_base_color, b.use_roughness, b.use_metallic, b.use_height, b.use_emission = True, False, False, False, False
+    MC["perf_layers"] = len(lay_mat().m3d_layers)
+    press_ok("m3d.layer_add", _area=tex_areas()[1], kind='PAINT')
+
+
+@step
+def mc_perf_one():
+    MC["perf_size"] = 60.0
+    MC["perf_points"] = mc_points(-120, 120, dy=0, n=40)
+    check(tuple(mc_image('BASE_COLOR').size) == (2048, 2048), "the perf layer has 2K images (%s)" % (tuple(mc_image('BASE_COLOR').size),))
+    one = [mc_stroke_time(MC["perf_points"], MC["perf_size"])[0] for _ in range(3)]
+    MC["t1"] = sorted(one)[1]
+    b = mc_brush()
+    b.use_roughness = b.use_metallic = b.use_height = b.use_emission = True   # Five channels (the images are made here)
+
+
+@step
+def mc_perf_five():
+    check(len(mc_list()) == 5, "five channels on the perf layer (%s)" % len(mc_list()))
+    five = [mc_stroke_time(MC["perf_points"], MC["perf_size"])[0] for _ in range(3)]
+    MC["t5"] = sorted(five)[1]
+    print("MC_TIMING 1 channel %.3f s, 5 channels %.3f s, ratio %.2f (2048 px images, 40 dabs of 60 px, median of 3)" % (MC["t1"], MC["t5"], MC["t5"] / MC["t1"]))
+    check(MC["t5"] < 5.0 * MC["t1"] + 0.05, "five channels cost less than five times one (%.3f s and %.3f s)" % (MC["t1"], MC["t5"]))
+    check(not tracebacks(), "Python error timing strokes")
+
+
+@step
+def mc_cleanup():
+    # Back to the state the next tests expect: the layers as they were, the brush material at its start, 128 px slots.
+    for _ in range(2):
+        press_ok("m3d.layer_remove", _area=tex_areas()[1])
+    b = mc_brush()
+    with LY.muted():
+        b.use_base_color, b.use_roughness, b.use_metallic, b.use_height, b.use_emission = True, False, False, False, False
+        b.roughness, b.metallic, b.height = 0.5, 0.0, 0.5
+    bpy.context.scene.m3d_tex.resolution = '128'
+    lay_mat().m3d_channel = 'BASE_COLOR'
+    LY.sync_target(bpy.context, lay_mat(), True)
+    for image in [i for i in bpy.data.images if i.name.startswith("MC")]:
+        bpy.data.images.remove(image)
+    mc_push("Multi-channel tests done")
+
+
+@step
+def mc_done():
+    check(lay_names() == ["Base", "Fill Layer"] and not mc_list(), "the multi-channel tests left the layers as they were (%s, %s)" % (lay_names(), mc_list()))
+    check(not tracebacks(), "Python error in the multi-channel tests")
+
+
+# ----------------------------------------------------------------------------------------------------
 # Phase 7a: mask effects in the Texture workspace: the Add menu by key presses, generators baked from the cube, a stroke on
 # the Paint effect, order, Show Mask.
 
