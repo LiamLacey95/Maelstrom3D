@@ -37,6 +37,7 @@ from bl_ui.properties_paint_common import (
     StrokePanel, TextureMaskPanel, UnifiedPaintPanel, brush_settings, brush_settings_advanced, brush_texture_settings)
 from mathutils import Vector
 
+import m3d_bakeq as Q
 import m3d_layers as L
 import m3d_masks as MK
 import m3d_pair
@@ -370,6 +371,12 @@ def _export_template_changed(self, _context):
     sync_export_maps(self)
 
 
+def _view_changed(_self, _context):
+    """A visualization setting of Bake Mesh Maps changed: the next timer tick puts the view right."""
+    import m3d_bakeview
+    m3d_bakeview.touch()
+
+
 def _view_ao_changed(self, _context):
     """AO in Viewport was switched: every texture set that has a baked AO map takes it up or leaves it."""
     for mat in bpy.data.materials:
@@ -467,6 +474,20 @@ class M3D_TexSettings(PropertyGroup):
                              description="Also show the advanced brush settings and the cursor settings in Properties - Paint")
     bake_map: EnumProperty(name="Map", default='NORMAL', items=[(key, BAKE_TEXT[label], "") for key, label, _flag in BAKE_MAPS],
                            description="The mesh map whose settings are shown")
+    bake_gpu: BoolProperty(name="Bake on GPU", default=True,
+                           description="Bake on the graphics card when there is one that bakes right (a test bake tells): it is much faster. "
+                                       "The first time Cycles' preferences get a compute device if they have none; a choice you made stays. "
+                                       "Off: the processor bakes")
+    view_hp: BoolProperty(name="Show High Poly", default=True, update=_view_changed,
+                          description="In Bake Mesh Maps the high polys of the groups that are baked are shown as a see-through blue mesh")
+    view_cage: BoolProperty(name="Show Cage", default=True, update=_view_changed,
+                            description="In Bake Mesh Maps the low polys are shown pushed out by the Extrusion (the cage the rays start "
+                                        "from), in red where the bake would go wrong")
+    view_opacity: FloatProperty(name="High Poly Opacity", default=0.35, min=0.05, max=1.0, subtype='FACTOR', update=_view_changed,
+                                description="How solid the blue high poly is drawn")
+    view_problem: FloatVectorProperty(name="Problem Color", size=3, subtype='COLOR', default=(1.0, 0.1, 0.1), min=0.0, max=1.0,
+                                      update=_view_changed, description="Color of the parts of the cage where the rays find no high poly or start "
+                                      "inside it")
     sets: CollectionProperty(type=M3D_SetRow)
     set_index: IntProperty(name="Texture Set", get=set_index_get, set=set_index_set, description="The texture set that is painted")
     set_size: EnumProperty(name="Size", items=SIZES, get=set_size_get, set=set_size_set,
@@ -524,9 +545,14 @@ class M3D_BakeSettings(PropertyGroup):
                                          "out of the low poly")
     ray_distance: FloatProperty(name="Max Ray Distance", default=0.0, min=0.0, soft_max=1.0, unit='LENGTH',
                                 description="Longest distance a ray travels to the high-poly mesh (0: no limit)")
-    samples: IntProperty(name="Antialiasing", default=32, min=1, soft_max=512,
-                         description="Samples for each pixel of the baked maps: more is smoother and takes longer (Position and ID "
-                                     "use one)")
+    samples: IntProperty(name="Antialiasing", default=4, min=1, soft_max=512,
+                         description="Samples for each pixel of the Normal, World Normal and Curvature maps: they are exact, the samples "
+                                     "only smooth the edges (AO and Thickness have their own Quality, Position and ID use one)")
+    samples_ao: IntProperty(name="Quality", default=32, min=1, soft_max=512,
+                            description="Rays for each pixel of the Ambient Occlusion map: more is smoother and takes longer")
+    samples_thickness: IntProperty(name="Quality", default=8, min=1, soft_max=512,
+                                   description="Samples for each pixel of the Thickness map (each shoots 16 rays): more is smoother and "
+                                               "takes longer")
     thickness_distance: FloatProperty(name="Thickness Distance", default=0.25, min=0.001, soft_max=10.0, unit='LENGTH',
                                       description="Where the mesh is thicker than this the map is white, where it is thinner "
                                       "it gets darker")
@@ -1359,20 +1385,22 @@ RENDERED = {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT', 'CURVES', 'POINTCLOUD', 
 
 @contextmanager
 def bake_scene(context, ob, highs=None, hide=(), cycles=True):
-    """Cycles on (the bake needs it; `cycles` False: the engine stays), the low-poly mesh active and the high-poly meshes
-    `highs` (one, a list or None) selected with it, Object Mode; `hide`: meshes that are not rendered meanwhile (Cycles
-    bakes ambient occlusion against everything it renders, except the low poly itself). Everything is put back afterwards,
-    also after an error. A mesh that is hidden is shown inside: the redraw does not happen before it is hidden again."""
+    """Cycles on (the bake needs it; `cycles` False: the engine stays) on the GPU when there is one that bakes right (Bake on GPU), the
+    low-poly mesh active and the high-poly meshes `highs` (one, a list or None) selected with it, Object Mode; `hide`: meshes that are
+    not rendered meanwhile (Cycles bakes ambient occlusion against everything it renders, except the low poly itself). Everything is
+    put back afterwards, also after an error. A mesh that is hidden is shown inside: in a blocking bake the redraw does not happen
+    before it is hidden again; in a queue (the window draws meanwhile) the high polys are drawn as boxes, a mesh of millions of faces
+    would slow the window down."""
     scene, layer = context.scene, context.view_layer
     highs = meshes_of(highs)
     objs = [ob, *highs]
     if any(o.name not in layer.objects for o in objs):
         raise RuntimeError("Both meshes have to be in the view layer")
     active = layer.objects.active
-    state = dict(engine=scene.render.engine, samples=scene.cycles.samples, mode=active.mode if active else 'OBJECT',
+    state = dict(engine=scene.render.engine, samples=scene.cycles.samples, device=scene.cycles.device, mode=active.mode if active else 'OBJECT',
                  active=active, selected=[o for o in layer.objects if o.select_get()],
                  flags=[(o, o.hide_get(), o.hide_viewport, o.hide_render, o.hide_select) for o in objs],
-                 hidden=[(o, o.hide_render) for o in hide])
+                 hidden=[(o, o.hide_render) for o in hide], display=[(o, o.display_type) for o in highs])
     if state["mode"] != 'OBJECT':
         bpy.ops.object.mode_set(mode='OBJECT')
     try:
@@ -1381,6 +1409,9 @@ def bake_scene(context, ob, highs=None, hide=(), cycles=True):
         for o in objs:   # (a mesh that is parked is shown for the bake and hidden again before anything is drawn)
             o.hide_viewport = o.hide_render = o.hide_select = False
             o.hide_set(False)
+        if Q.running():
+            for o in highs:
+                o.display_type = 'BOUNDS'
         for o in state["selected"]:
             o.select_set(False)
         for o in objs:
@@ -1388,11 +1419,14 @@ def bake_scene(context, ob, highs=None, hide=(), cycles=True):
         layer.objects.active = ob
         if cycles:
             scene.render.engine = 'CYCLES'
+            scene.cycles.device = Q.device_for(context)
         yield
     finally:
-        scene.render.engine, scene.cycles.samples = state["engine"], state["samples"]
+        scene.render.engine, scene.cycles.samples, scene.cycles.device = state["engine"], state["samples"], state["device"]
         for o, hide_render in state["hidden"]:
             o.hide_render = hide_render
+        for o, display in state["display"]:
+            o.display_type = display
         for o, hidden, hide_viewport, hide_render, hide_select in state["flags"]:
             o.hide_set(hidden)
             o.hide_viewport, o.hide_render, o.hide_select = hide_viewport, hide_render, hide_select
@@ -1428,17 +1462,24 @@ def id_plan(obs):
     return colors, {o.name: slots(o) for o in obs}
 
 
-def bake_maps(context, ob, high, s, maps, name=None, extrusion=None, ray_distance=None, cage=None, others=(), normalise=True):
+def map_samples(s, key):
+    """The samples of a map. Position and ID take one (the Position pass adds its samples up instead of averaging them, and it is exact
+    anyway; the ID colors are flat, one sample keeps the edges between them hard, the margin only extends them). AO and Thickness have
+    a Quality of their own (rays), the others, Normal, World Normal and Curvature, are exact and take the Antialiasing."""
+    return 1 if key in {'POSITION', 'ID'} else s.samples_ao if key == 'AO' else s.samples_thickness if key == 'THICKNESS' else s.samples
+
+
+def bake_maps_steps(context, ob, high, s, maps, name=None, extrusion=None, ray_distance=None, cage=None, others=(), normalise=True):
     """Bake the ticked maps of `ob` (from `high`, a mesh or a list, when set) into images named `name`_<Map> (default: the
     name of `ob`). `extrusion`, `ray_distance` and `cage` (a mesh with the faces of `ob`) are the group's, `s` has the
     rest. `others`: names of the other low polys that share the images: their islands stay, the image is cleared only
-    when it holds none of them. `normalise`: Position is scaled to 0-1 (not when more low polys follow). Returns the images."""
+    when it holds none of them. `normalise`: Position is scaled to 0-1 (not when more low polys follow). A generator (see
+    m3d_bakeq): it yields the arguments of each bake and returns the images."""
     size, images, highs = int(s.resolution), [], meshes_of(high)
     name = name or ob.name
     for key, label, _flag in maps:
-        # The Position pass adds up its samples instead of averaging them: one sample, and it is exact anyway. The ID colours
-        # are flat: one sample keeps the edges between them hard (the margin only extends them).
-        context.scene.cycles.samples = 1 if key in {'POSITION', 'ID'} else s.samples
+        context.scene.cycles.samples = map_samples(s, key)
+        Q.note(label=BAKE_TEXT[label])
         image = bake_image(name, label, size, key in {'POSITION', 'WORLDNORMAL'})
         held = set(filter(None, str(image.get("m3d_parts", "")).split("|"))) & (set(others) - {ob.name})
         emission = key if BAKE_TYPES[key] == 'EMIT' else None
@@ -1455,7 +1496,7 @@ def bake_maps(context, ob, high, s, maps, name=None, extrusion=None, ray_distanc
                     stack.enter_context(materials_swapped(h, id_materials(ids[1][h.name]) if ids is not None else
                                                           bake_material(emission=emission, distance=s.thickness_distance,
                                                                         spread=s.curvature_contrast)))
-            bpy.ops.object.bake(
+            yield dict(
                 type=BAKE_TYPES[key], margin=s.margin, use_selected_to_active=bool(highs),
                 cage_extrusion=s.extrusion if extrusion is None else extrusion,
                 max_ray_distance=s.ray_distance if ray_distance is None else ray_distance, normal_space='TANGENT',
@@ -1475,6 +1516,11 @@ def bake_maps(context, ob, high, s, maps, name=None, extrusion=None, ray_distanc
         image["m3d_stamp"] = MK.new_uid()
         images.append(image)
     return images
+
+
+def bake_maps(context, ob, high, s, maps, **kwargs):
+    """`bake_maps_steps`, each bake a blocking call. Returns the images."""
+    return Q.drive(bake_maps_steps(context, ob, high, s, maps, **kwargs))
 
 
 def ensure_maps(context, ob, keys, force=False):
@@ -1646,28 +1692,61 @@ def ticked_maps(s):
     return [m for m in BAKE_MAPS if getattr(s, m[2])]
 
 
-def bake_mesh(context, ob):
+def bake_mesh_steps(context, ob):
     """Bake the ticked maps of a mesh that is not in a bake group into images named after it, from its High Poly mesh when it has
-    one (and from its Cage when it has one). Raises RuntimeError. Returns the maps and the size they have."""
+    one (and from its Cage when it has one). A generator (m3d_bakeq): it yields the bakes and returns the maps and the size they
+    have. Raises RuntimeError."""
     s = ob.m3d_bake
     maps = ticked_maps(s)
     if not maps:
         raise RuntimeError("Tick at least one map")
-    wm = context.window_manager
-    wm.progress_begin(0, 1)
-    try:
-        with bake_scene(context, ob, s.high):
-            images = bake_maps(context, ob, s.high, s, maps, cage=s.cage)
-    finally:
-        wm.progress_end()
+    Q.note(where=ob.name)
+    with bake_scene(context, ob, s.high):
+        images = yield from bake_maps_steps(context, ob, s.high, s, maps, cage=s.cage)
     s.baked = "|".join(img.name for img in images)
     L.use_baked_maps(context, [ob])   # (the texture sets of the mesh show the Normal and AO maps)
     return maps, s.resolution
 
 
+def bake_mesh(context, ob):
+    """`bake_mesh_steps`, each bake a blocking call, with the progress bar of the window."""
+    wm = context.window_manager
+    wm.progress_begin(0, 1)
+    try:
+        return Q.drive(bake_mesh_steps(context, ob))
+    finally:
+        wm.progress_end()
+
+
+def mesh_job(context, ob):
+    """The Job (m3d_bakeq) that bakes a mesh that is not in a bake group."""
+    def finish(context, report, result, error):
+        if error is Q.CANCELLED:
+            report('WARNING', "Baking %s was cancelled" % ob.name)
+            return False
+        if error is not None:
+            report('WARNING' if "Tick" in str(error) else 'ERROR', str(error).strip())
+            return False
+        maps, size = result
+        after_bake(context)
+        report('INFO', "Baked %s at %s px" % (", ".join(m[1] for m in maps), size))
+        return True
+    return Q.Job("Bake " + ob.name, bake_mesh_steps(context, ob), len(ticked_maps(ob.m3d_bake)), finish)
+
+
+def bake_job(context):
+    """The Job (m3d_bakeq) that bakes the active mesh: its group, or the mesh itself. None (and a warning) when it cannot."""
+    import m3d_bakegroups
+    ob = mesh_of(context)
+    if m3d_pair.grouped(ob):
+        return m3d_bakegroups.group_job(context, ob.m3d_pair.group)
+    return mesh_job(context, ob)
+
+
 class M3D_OT_tex_bake(Operator):
     """Bake the ticked maps of the active mesh into images (from the high-poly mesh when set; a mesh in a bake group bakes its
-    group). Cycles is used for the bake and switched back; the mesh's materials are not changed"""
+    group). Cycles is used for the bake and switched back; the mesh's materials are not changed. The window keeps working
+    meanwhile (Esc cancels)"""
     bl_idname = "m3d.tex_bake"
     bl_label = "Bake"
     bl_options = {'REGISTER'}
@@ -1675,23 +1754,22 @@ class M3D_OT_tex_bake(Operator):
     @classmethod
     def poll(cls, context):
         ob = mesh_of(context)
-        return ob is not None and (bool(ob.data.uv_layers) or m3d_pair.grouped(ob))
+        return ob is not None and (bool(ob.data.uv_layers) or m3d_pair.grouped(ob)) and not Q.running()
+
+    def job(self, context):
+        ob = mesh_of(context)
+        if m3d_pair.grouped(ob) and not bpy.ops.m3d.bg_bake.poll():
+            self.report({'WARNING'}, "%s has no low poly to bake onto" % ob.m3d_pair.group)
+            return None
+        return bake_job(context)
 
     def execute(self, context):
-        ob = mesh_of(context)
-        if m3d_pair.grouped(ob):
-            if not bpy.ops.m3d.bg_bake.poll():
-                self.report({'WARNING'}, "%s has no low poly to bake onto" % ob.m3d_pair.group)
-                return {'CANCELLED'}
-            return bpy.ops.m3d.bg_bake('EXEC_DEFAULT', group=ob.m3d_pair.group)
-        try:
-            maps, size = bake_mesh(context, ob)
-        except RuntimeError as err:
-            self.report({'WARNING' if "Tick" in str(err) else 'ERROR'}, str(err).strip())
-            return {'CANCELLED'}
-        after_bake(context)
-        self.report({'INFO'}, "Baked %s at %s px" % (", ".join(m[1] for m in maps), size))
-        return {'FINISHED'}
+        job = self.job(context)
+        return {'FINISHED'} if job is not None and Q.run_blocking(context, job, lambda level, text: self.report({level}, text)) else {'CANCELLED'}
+
+    def invoke(self, context, _event):
+        job = self.job(context)
+        return {'FINISHED'} if job is not None and Q.run_queued(context, job) else {'CANCELLED'}
 
 
 def bake_checked(context):
@@ -1710,39 +1788,73 @@ def bake_units(sets):
     return units
 
 
+def bake_sets_steps(context, units):
+    """Bake the units (`bake_units`) one after the other (a generator, m3d_bakeq). A unit that cannot be baked is skipped.
+    Returns ([what was baked], {unit name: error}, seconds)."""
+    import m3d_bakegroups
+    t0, baked, errors = time.perf_counter(), [], {}
+    for kind, unit in units:
+        name = unit if kind == 'GROUP' else unit.name
+        try:
+            if kind == 'GROUP':
+                maps, size = yield from m3d_bakegroups.bake_group_steps(context, unit)
+            else:
+                if not unit.data.uv_layers:
+                    raise RuntimeError("%s has no UVs: use Auto Unwrap" % unit.name)
+                maps, size = yield from bake_mesh_steps(context, unit)
+            baked.append("%s: %s" % (name, ", ".join(m[1] for m in maps)))
+        except RuntimeError as err:
+            errors[name] = str(err).strip()
+    return baked, errors, time.perf_counter() - t0
+
+
+def sets_job(context):
+    """The Job (m3d_bakeq) that bakes the texture sets that are ticked (what the Bake button does)."""
+    import m3d_bakegroups
+    units = bake_units(bake_checked(context))
+
+    def finish(context, report, result, error):
+        if error is Q.CANCELLED:
+            report('WARNING', "Baking was cancelled")
+            return False
+        if error is not None:
+            report('ERROR', str(error).strip())
+            return False
+        baked, errors, seconds = result
+        for name, err in errors.items():
+            report('WARNING', "%s: %s" % (name, err))
+        if not baked:
+            return False
+        after_bake(context)
+        report('INFO', "Baked %s in %.1f s" % ("; ".join(baked), seconds))
+        return True
+
+    total = 0
+    for kind, unit in units:
+        try:
+            total += m3d_bakegroups.bake_count(context, unit) if kind == 'GROUP' else len(ticked_maps(unit.m3d_bake))
+        except m3d_bakegroups.Refused:
+            pass   # (the unit reports itself when it is baked)
+    return Q.Job("Bake", bake_sets_steps(context, units), total, finish)
+
+
 class M3D_OT_tex_bake_sets(Operator):
     """Bake the ticked maps for every texture set that is ticked in the Texture Set List: a mesh bakes its own maps (from its
-    High Poly mesh), a mesh in a bake group bakes its group. A set that cannot be baked is reported and skipped"""
+    High Poly mesh), a mesh in a bake group bakes its group. A set that cannot be baked is reported and skipped. The window keeps
+    working meanwhile (Esc cancels)"""
     bl_idname = "m3d.tex_bake_sets"
     bl_label = "Bake"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
-        return bool(bake_checked(context))
+        return bool(bake_checked(context)) and not Q.running()
 
     def execute(self, context):
-        import m3d_bakegroups
-        t0, baked, errors, wm = time.perf_counter(), [], {}, context.window_manager
-        for kind, unit in bake_units(bake_checked(context)):
-            name = unit if kind == 'GROUP' else unit.name
-            try:
-                if kind == 'GROUP':
-                    maps, size = m3d_bakegroups.bake_group(context, unit)
-                else:
-                    if not unit.data.uv_layers:
-                        raise RuntimeError("%s has no UVs: use Auto Unwrap" % unit.name)
-                    maps, size = bake_mesh(context, unit)
-                baked.append("%s: %s" % (name, ", ".join(m[1] for m in maps)))
-            except RuntimeError as err:
-                errors[name] = str(err).strip()
-        for name, err in errors.items():
-            self.report({'WARNING'}, "%s: %s" % (name, err))
-        if not baked:
-            return {'CANCELLED'}
-        after_bake(context)
-        self.report({'INFO'}, "Baked %s in %.1f s" % ("; ".join(baked), time.perf_counter() - t0))
-        return {'FINISHED'}
+        return {'FINISHED'} if Q.run_blocking(context, sets_job(context), lambda level, text: self.report({level}, text)) else {'CANCELLED'}
+
+    def invoke(self, context, _event):
+        return {'FINISHED'} if Q.run_queued(context, sets_job(context)) else {'CANCELLED'}
 
 
 class M3D_OT_tex_bake_maps(Operator):
@@ -1769,7 +1881,8 @@ class M3D_OT_tex_bake_maps(Operator):
                 if t != s:
                     for _key, _label, flag in BAKE_MAPS:
                         setattr(t, flag, getattr(s, flag))
-                    t.resolution, t.margin, t.samples = s.resolution, s.margin, s.samples
+                    t.resolution, t.margin, t.samples, t.samples_ao, t.samples_thickness = (
+                        s.resolution, s.margin, s.samples, s.samples_ao, s.samples_thickness)
             return {'FINISHED'}
         for _key, _label, flag in BAKE_MAPS:
             setattr(s, flag, {'ALL': True, 'NONE': False}.get(self.action, not getattr(s, flag)))
@@ -2678,10 +2791,61 @@ class M3D_MT_tex_more(Menu):
         layout.menu("M3D_MT_blender_menus", text="Blender Menus")
 
 
+class M3D_MT_tex_view_baking(Menu):
+    """The View menu of the 3D view while a bake runs: only what moves the view"""
+    bl_label = "View"
+
+    def draw(self, _context):
+        layout = self.layout
+        layout.operator("view3d.view_all", text="Frame All", icon='VIEWZOOM').center = False
+        layout.operator("view3d.view_selected", text="Frame Selected")
+        layout.separator()
+        layout.operator("view3d.view_persportho", text="Orthographic / Perspective", icon='VIEW_PERSPECTIVE')
+        for label, kind in (("Top", 'TOP'), ("Front", 'FRONT'), ("Side", 'RIGHT')):
+            layout.operator("view3d.view_axis", text=label).type = kind
+
+
+class M3D_PT_tex_display_baking(Panel):
+    """Display Settings of the 3D view while a bake runs: the environment and the overlays of the view (they are settings of the view,
+    nothing that edits the scene)"""
+    bl_space_type = 'TOPBAR'
+    bl_region_type = 'HEADER'
+    bl_label = "Display Settings"
+    bl_ui_units_x = 16
+
+    def draw(self, context):
+        layout = self.layout
+        draw_environment_settings(layout, context, defaults=False)
+        space = view3d_space(context)
+        if space is not None:
+            layout.separator()
+            split_props(layout)
+            layout.prop(space.overlay, "show_overlays", text="Overlays")
+            layout.prop(space.overlay, "show_floor", text="Grid")
+            layout.prop(space, "show_gizmo", text="Gizmos")
+            layout.prop(space.shading, "show_xray", text="X-Ray")
+
+
+def draw_baking_header(layout, context, menu, display=False):
+    """The header of a 3D or 2D view while a bake runs: the View menu, what is baking, Cancel, the view layout and (`display`) Display
+    Settings (the guard, m3d_bakeq, lets a click on a header through: it draws nothing that changes the scene)."""
+    layout.menu(menu)
+    layout.label(text=Q.text(), icon='RENDER_STILL', translate=False)
+    layout.operator("m3d.bake_cancel", icon='CANCEL')
+    layout.separator_spacer()
+    draw_layout_buttons(layout, context)
+    if display:
+        layout.popover("M3D_PT_tex_display_baking", text="", icon='WORLD')
+
+
 def draw_view_header(layout, context):
     """The 3D view's header in the Texture workspace (after the editor type): the compact View menu, then at the right the display mode
     dropdown, the viewport type, the view layout, Display Settings and More. The rest of Blender's header (the other menus, the
-    selection modes, the gizmo and overlay buttons, the shading popover, the texture slots) is left out."""
+    selection modes, the gizmo and overlay buttons, the shading popover, the texture slots) is left out. While a bake runs only the
+    View menu, what is baking, Cancel and the view layout."""
+    if Q.running():
+        draw_baking_header(layout, context, "M3D_MT_tex_view_baking", display=True)
+        return
     layout.menu("M3D_MT_tex_view")
     layout.separator_spacer()
     draw_view_mode(layout, context)
@@ -2694,6 +2858,9 @@ def draw_view_header(layout, context):
 def draw_image_header(layout, context):
     """The 2D view's header in the Texture workspace (after the editor type): the compact View menu and the display mode dropdown. The
     image selector, the pin, the Image and UV menus and the overlay buttons are left out: the dropdown picks what is shown."""
+    if Q.running():
+        draw_baking_header(layout, context, "M3D_MT_tex_image_view")
+        return
     layout.menu("M3D_MT_tex_image_view")
     layout.separator_spacer()
     draw_view_mode(layout, context)
@@ -2886,9 +3053,12 @@ def follow(wm):
     """Timer (m3d_workspace._follow_workspace): the 2D view of the Texture workspace frames its image (image.view_all, fit) when
     the workspace opens, when a view is new, and the first time it shows an image (or one of another size, or none): Blender keeps
     the view of each image (a new one is shown 1:1, a small square in a big empty area), so an image framed once keeps the
-    view you gave it when it comes back."""
+    view you gave it when it comes back. Also the view of Bake Mesh Maps (m3d_bakeview.py) follows the dock here. Nothing is written while a
+    bake runs (its job reads the scene from another thread)."""
+    import m3d_bakeview
+    m3d_bakeview.follow(wm)
     win = wm.windows[0] if wm.windows else None
-    if win is None:
+    if win is None or Q.running():
         return
     ws = win.workspace
     if W.workspace_kind(ws) != 'TEXTURE':
@@ -4015,6 +4185,10 @@ class _Bake(_Page):
     page = "tex_bake"
     need = 'BAKE'
 
+    @classmethod
+    def page_poll(cls, context):
+        return ready(context, cls.need) and not Q.running()   # (while a bake runs the page shows its progress, see PROPERTIES_PT_m3d_tx_bake_progress)
+
 
 def plural(count, word):
     return "%d %s%s" % (count, word, "" if count == 1 else "s")
@@ -4031,11 +4205,29 @@ def bake_text(maps, sets):
     return "Bake %s" % plural(maps, "map") + (" for %s" % plural(sets, "texture set") if sets > 1 else "")
 
 
+class PROPERTIES_PT_m3d_tx_bake_progress(_PagePanel, Panel):
+    page = "tex_bake"
+    bl_label = "Baking"
+    bl_options = {'HIDE_HEADER'}
+    bl_order = -20
+
+    @classmethod
+    def page_poll(cls, _context):
+        return Q.running()
+
+    def draw(self, context):
+        Q.draw_progress(self.layout, context)
+
+
 class PROPERTIES_PT_m3d_tx_bake_back(_PagePanel, Panel):
     page = "tex_bake"
     bl_label = "Bake Mesh Maps"
     bl_options = {'HIDE_HEADER'}
     bl_order = -10
+
+    @classmethod
+    def page_poll(cls, _context):
+        return not Q.running()
 
     def draw(self, context):
         row = self.layout.row()
@@ -4100,7 +4292,9 @@ class PROPERTIES_PT_m3d_tx_bake_settings(_Bake, Panel):
         row = layout.row()
         row.scale_y = 1.6
         row.operator("m3d.tex_bake_sets", text=bake_text(*bake_count(context)), icon='RENDER_STILL')
-        reason(layout, "Uses Cycles; the window waits until it is done")
+        Q.check_gpu_soon()
+        reason(layout, Q.device_note(context))
+        reason(layout, "Uses Cycles; the window stays usable (Esc cancels)")
 
 
 def draw_map_settings(layout, context):
@@ -4113,21 +4307,26 @@ def draw_map_settings(layout, context):
     layout.label(text="%s > %s" % (texture_set(owner)[0], MAP_TEXT[next(label for k, label, _f in BAKE_MAPS if k == key)]), translate=False)
     if key == 'NORMAL':
         layout.prop(tex, "normal_format", text="Format")
+        layout.prop(s, "samples", text="Antialiasing")
         reason(layout, "Tangent space; DirectX flips the green channel")
     elif key == 'AO':
         world = context.scene.world
         if world is not None:
             layout.prop(world.light_settings, "distance", text="Distance")
+        layout.prop(s, "samples_ao")
         reason(layout, "How far an occluder can be: the AO distance of the world")
     elif key == 'CURVATURE':
         layout.prop(s, "curvature_contrast")
+        layout.prop(s, "samples", text="Antialiasing")
         reason(layout, "Convex edges light, concave ones dark; needs enough polygons")
     elif key == 'THICKNESS':
         layout.prop(s, "thickness_distance", text="Distance")
+        layout.prop(s, "samples_thickness")
         reason(layout, "For closed meshes: white where the mesh is thicker than this")
     elif key == 'POSITION':
         reason(layout, "Scaled to 0-1 within the bounds of the baked meshes; one sample")
     elif key == 'WORLDNORMAL':
+        layout.prop(s, "samples", text="Antialiasing")
         reason(layout, "The surface direction in the scene, n * 0.5 + 0.5")
     else:
         reason(layout, "One flat colour for each material of the high poly (each mesh when they have one material)")
@@ -4175,6 +4374,9 @@ class PROPERTIES_PT_m3d_tx_bake_advanced(_Bake, Panel):
         split_props(layout)
         layout.prop(s, "margin")
         layout.prop(s, "samples")
+        layout.prop(context.scene.m3d_tex, "bake_gpu")
+        Q.check_gpu_soon()
+        reason(layout, Q.device_note(context))
         if not m3d_pair.grouped(ob):   # (a group has its own extrusion, ray distance and cage: Group Settings)
             layout.prop(s, "extrusion")
             layout.prop(s, "ray_distance")
@@ -4294,9 +4496,9 @@ def draw_viewport_settings(layout, context):
     reason(layout, "Only for what you see, never the export")
 
 
-def draw_environment_settings(layout, context):
+def draw_environment_settings(layout, context, defaults=True):
     """The environment that lights the Material view: a row of the studio HDRIs (a click picks one), how it is turned, how strong it
-    is, how blurred it shows behind the model, and the way back to the studio defaults."""
+    is, how blurred it shows behind the model, and (`defaults`) the way back to the studio defaults."""
     space = viewport(context)
     if space is None:
         reason(layout, "No 3D Viewport in this workspace")
@@ -4323,7 +4525,8 @@ def draw_environment_settings(layout, context):
     sub = layout.column()
     sub.active = shading.studiolight_background_alpha > 0.0
     sub.prop(shading, "studiolight_background_blur", text="Blur")
-    layout.operator("m3d.tex_view_defaults", icon='LOOP_BACK')
+    if defaults:
+        layout.operator("m3d.tex_view_defaults", icon='LOOP_BACK')
     reason(layout, "Shift+RMB drag turns the environment")
 
 
@@ -4421,6 +4624,8 @@ _sets_wanted = set()   # names of the scenes whose rows are out of date
 
 
 def _sync_sets():
+    if Q.running():
+        return 0.5   # (the meshes carry the temporary materials of the bake meanwhile)
     for name in sorted(_sets_wanted):
         if bpy.context.scene.name == name:
             sync_sets(bpy.context)
@@ -4535,7 +4740,7 @@ class PROPERTIES_PT_m3d_tx_sets(_PagePanel, Panel):
                 layout.operator("m3d.tex_project", icon='FILE_NEW')
             return
         tex = context.scene.m3d_tex
-        if [(row.name, row.mesh) for row in tex.sets] != [(mat.name, owner.name) for mat, owner in sets]:
+        if not Q.running() and [(row.name, row.mesh) for row in tex.sets] != [(mat.name, owner.name) for mat, owner in sets]:
             request_sets_sync(context.scene)   # (drawing may not write: the rows are made a moment later)
         layout.template_list("M3D_UL_tex_sets", "", tex, "sets", tex, "set_index", rows=3, sort_lock=True)
         if not any(mat.m3d_layers for mat, _owner in sets):
@@ -4794,6 +4999,14 @@ def draw_status_line(layout, context):
     mode for Polygon Fill, the stencil for Projection; the UV transform when a fill layer is selected), Symmetry; on the right the
     viewport type, view layout, perspective / orthographic, Bake Mesh Maps, Export Textures, the workspace picker."""
     from m3d_ui import _call, draw_file_buttons, draw_workspace_picker
+    if Q.running():   # (what is baking, Cancel and the view: the guard lets a click on this line through, so it draws nothing that edits)
+        layout.label(text=Q.text(), icon='RENDER_STILL', translate=False)
+        layout.operator("m3d.bake_cancel", icon='CANCEL')
+        layout.label(text="Esc stops the map that is baking")
+        layout.separator_spacer()
+        draw_layout_buttons(layout, context)
+        _call(layout, "view3d.view_persportho", 'VIEW_PERSPECTIVE', "Perspective / Orthographic")
+        return
     draw_file_buttons(layout)
     row = layout.row(align=True)
     _call(row, "object.mode_set", 'OBJECT_DATAMODE', "Object Mode", depress=context.mode == 'OBJECT', mode='OBJECT')
@@ -4887,6 +5100,8 @@ classes = (
     M3D_OT_tex_view_defaults,
     M3D_MT_tex_view_type,
     M3D_MT_tex_more,
+    M3D_MT_tex_view_baking,
+    M3D_PT_tex_display_baking,
     M3D_OT_tex_lazy,
     M3D_OT_tex_symmetry,
     M3D_OT_tex_stencil,
@@ -4952,6 +5167,7 @@ classes = (
     PROPERTIES_PT_m3d_tx_palette,
     PROPERTIES_PT_m3d_tx_bake_back,
     PROPERTIES_PT_m3d_tx_bake_high,
+    PROPERTIES_PT_m3d_tx_bake_progress,
     PROPERTIES_PT_m3d_tx_bake_maps,
     PROPERTIES_PT_m3d_tx_bake_settings,
     PROPERTIES_PT_m3d_tx_bake_advanced,

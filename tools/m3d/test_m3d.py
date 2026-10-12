@@ -10,8 +10,8 @@ def check(cond, msg):
 # Icons used in m3d_mode exist.
 import re, m3d_mode
 icons = set(bpy.types.UILayout.bl_rna.functions['operator'].parameters['icon'].enum_items.keys())
-import m3d_bakegroups, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_retopo, m3d_sculpt, m3d_texset, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv
-src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_bakegroups, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_retopo, m3d_sculpt, m3d_texset, m3d_texture, _maya_ui, _maya_uv))
+import m3d_bakegroups, m3d_bakeq, m3d_bakeview, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_retopo, m3d_sculpt, m3d_texset, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv
+src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_bakegroups, m3d_bakeq, m3d_bakeview, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_retopo, m3d_sculpt, m3d_texset, m3d_texture, _maya_ui, _maya_uv))
 for ic in set(re.findall(r"icon='([A-Z_0-9]+)'", src)):
     check(ic in icons, "missing icon " + ic)
 
@@ -12509,6 +12509,492 @@ cm_other_ob, cm_other = fresh_cube("Mask3h", '64')
 bpy.ops.m3d.layer_add(kind='PAINT')
 check(bpy.ops.m3d.layer_mask_paste() == {'FINISHED'} and [e.kind for e in LY.active_layer(cm_other).mask_stack] == ['FILL'], "Paste Mask works in another material")
 rw_tex.props_mode = 'AUTO'
+
+# --- Bakes that do not block: the Cycles device, the samples of each map, the queue, the guard, the cage check and the Bake mode view
+# (m3d_bakeq.py, m3d_bakeview.py). The bake job itself needs a window (the GUI tests have it); here the queue is driven by hand.
+import m3d_bakeq as QQ
+import m3d_bakeview as VV
+import time
+
+
+def bq_sphere(name, radius=1.0, u=16, v=8, role='NONE', group="", push=None, push_by=0.0, cut=None):
+    """A UV sphere (with UVs); the vertices where push(co) holds are pushed out by `push_by`, the faces whose middle satisfies cut(co) are deleted."""
+    me = bpy.data.meshes.new(name)
+    bm = bmesh.new()
+    bm.loops.layers.uv.new("UVMap")   # (the sphere gets its UVs on the active layer)
+    bmesh.ops.create_uvsphere(bm, u_segments=u, v_segments=v, radius=radius, calc_uvs=True)
+    if push is not None:
+        for vert in bm.verts:
+            if push(vert.co):
+                vert.co *= (radius + push_by) / radius
+    if cut is not None:
+        bmesh.ops.delete(bm, geom=[f for f in bm.faces if cut(f.calc_center_median())], context='FACES')
+    bm.to_mesh(me)
+    bm.free()
+    ob = bpy.data.objects.new(name, me)
+    bpy.context.scene.collection.objects.link(ob)
+    if role != 'NONE':
+        m3d_pair.set_role(ob, role, group)
+    bpy.context.view_layer.update()
+    return ob
+
+
+def bq_clean():
+    clean_scene()
+    for entry in list(bpy.context.scene.m3d_bake_groups):
+        bpy.context.scene.m3d_bake_groups.remove(0)
+    QQ._run = None
+    VV.leave(bpy.context)
+
+
+# --- The device: a GPU is used when there is one that bakes right, and never against the user's choice
+bq_ctx = bpy.context
+bq_prefs = QQ.cycles_prefs()
+bq_type, bq_uses = bq_prefs.compute_device_type, [(d, d.use) for d in bq_prefs.devices]
+bq_data = lambda: tuple(len(c) for c in (bpy.data.scenes, bpy.data.objects, bpy.data.meshes, bpy.data.materials, bpy.data.images))
+bq_before = bq_data()
+bq_probe = QQ.probe
+check(isinstance(bq_probe(), bool) and bq_data() == bq_before, "the test bake of a GPU leaves nothing behind: %s" % (bq_data(),))
+bq_ctx.scene.m3d_tex.bake_gpu = True
+bq_backends = QQ.offered(bq_prefs)
+if bq_backends:
+    QQ._gpu.update(found=None, kind=None)
+    QQ.probe = lambda *_a: False
+    found = QQ.find_gpu(bq_ctx)
+    check(found[0] is None and "did not pass" in found[2] and bq_prefs.compute_device_type == bq_type
+          and [(d.name, d.use) for d, _u in bq_uses] == [(d.name, u) for d, u in bq_uses],
+          "a GPU that fails its test bake is not used and the preferences are put back: %s" % (found,))
+    check(QQ.device_for(bq_ctx) == 'CPU' and QQ.device_note(bq_ctx).startswith("CPU"), "...the bake runs on the CPU (%s)" % QQ.device_note(bq_ctx))
+    if bq_type == 'NONE':
+        QQ._gpu.update(found=None, kind=None)
+        QQ.probe = lambda *_a: True
+        found = QQ.find_gpu(bq_ctx)
+        gpus = [d for d in bq_prefs.devices if d.type == found[0]]
+        check(found[0] in bq_backends and bq_prefs.compute_device_type == found[0] and gpus and all(d.use for d in gpus)
+              and not any(d.use for d in bq_prefs.devices if d.type == 'CPU'),
+              "a GPU that bakes right gets a compute device type when there was none, its GPUs on and the CPU off: %s" % (found,))
+        check(QQ.device_for(bq_ctx) == 'GPU' and QQ.device_note(bq_ctx).startswith("GPU"), "...the bake runs on the GPU (%s)" % QQ.device_note(bq_ctx))
+        bq_ctx.scene.m3d_tex.bake_gpu = False
+        check(QQ.device_for(bq_ctx) == 'CPU' and QQ.device_note(bq_ctx) == "CPU: Bake on GPU is off", "Bake on GPU off: the CPU")
+        bq_ctx.scene.m3d_tex.bake_gpu = True
+        # inside a bake the scene is on the GPU, and the device is put back, also after an error
+        bq_scene = bq_ctx.scene
+        bq_low, bq_high = bq_sphere("Dev_low", role='LOW', group="Dev"), bq_sphere("Dev_high", role='HIGH', group="Dev")
+        bq_scene.cycles.device = 'CPU'
+        with T.bake_scene(bq_ctx, bq_low, [bq_high]):
+            inside = (bq_scene.cycles.device, bq_scene.render.engine)
+        check(inside == ('GPU', 'CYCLES') and bq_scene.cycles.device == 'CPU', "the scene is on the GPU in a bake and the device comes back: %s" % (inside,))
+        try:
+            with T.bake_scene(bq_ctx, bq_low, [bq_high]):
+                raise ValueError("boom")
+        except ValueError:
+            pass
+        check(bq_scene.cycles.device == 'CPU' and bq_scene.render.engine != 'CYCLES', "...also after an error")
+        with T.bake_scene(bq_ctx, bq_low, [bq_high], cycles=False):
+            check(bq_scene.cycles.device == 'CPU', "a bake that keeps the engine keeps the device")
+        # the choice of the user stays
+        bq_ctx.scene.m3d_tex.bake_gpu = True
+        QQ._gpu.update(found=None, kind=None)
+        bq_prefs.compute_device_type = found[0]
+        for d in bq_prefs.devices:
+            d.use = False
+        found2 = QQ.find_gpu(bq_ctx)
+        check(found2[0] is None and "no GPU" in found2[2] and bq_prefs.compute_device_type == found[0],
+              "a compute device type that was chosen stays, and with no GPU ticked the CPU bakes: %s" % (found2,))
+        for d in bq_prefs.devices:
+            d.use = d.type == found[0]
+        QQ._gpu.update(found=None, kind=None)
+        found3 = QQ.find_gpu(bq_ctx)
+        check(found3[0] == found[0] and bq_prefs.compute_device_type == found[0], "...with its GPU ticked it is used")
+        bpy.data.objects.remove(bq_low)
+        bpy.data.objects.remove(bq_high)
+        bpy.data.meshes.remove(bpy.data.meshes["Dev_low"])
+        bpy.data.meshes.remove(bpy.data.meshes["Dev_high"])
+else:
+    found = QQ.find_gpu(bq_ctx)
+    check(found[0] is None and QQ.device_for(bq_ctx) == 'CPU', "no GPU backend in this build: the CPU bakes (%s)" % (found,))
+QQ.probe = bq_probe
+bq_prefs.compute_device_type = bq_type
+for d, use in bq_uses:
+    d.use = use
+QQ._gpu.update(found=None, kind=None)
+bq_ctx.scene.m3d_tex.bake_gpu = True
+
+# --- The samples of each map
+bq_clean()
+bq_low, bq_high = bq_sphere("Smp_low", role='LOW', group="Smp"), bq_sphere("Smp_high", role='HIGH', group="Smp")
+bq_s = bq_low.m3d_bake
+check((bq_s.samples, bq_s.samples_ao, bq_s.samples_thickness) == (4, 32, 8), "defaults: 4 to smooth the edges, AO 32, Thickness 8: %s" % ((bq_s.samples, bq_s.samples_ao, bq_s.samples_thickness),))
+check({k: T.map_samples(bq_s, k) for k, _l, _f in T.BAKE_MAPS} == {'NORMAL': 4, 'AO': 32, 'CURVATURE': 4, 'POSITION': 1, 'THICKNESS': 8, 'ID': 1, 'WORLDNORMAL': 4},
+      "Normal, World Normal and Curvature take the Antialiasing, AO and Thickness their Quality, Position and ID one: %s" % {k: T.map_samples(bq_s, k) for k, _l, _f in T.BAKE_MAPS})
+bq_s.resolution, bq_s.samples, bq_s.samples_ao, bq_s.samples_thickness = '64', 3, 21, 5
+bq_seen = []
+with T.bake_scene(bq_ctx, bq_low, [bq_high]):
+    bq_gen = T.bake_maps_steps(bq_ctx, bq_low, [bq_high], bq_s, list(T.BAKE_MAPS))
+    try:
+        request = next(bq_gen)
+        while True:
+            bq_seen.append((request["type"], bq_ctx.scene.cycles.samples))
+            request = bq_gen.send(None)
+    except StopIteration:
+        pass
+check(bq_seen == [('NORMAL', 3), ('AO', 21), ('EMIT', 3), ('POSITION', 1), ('EMIT', 5), ('EMIT', 1), ('EMIT', 3)],
+      "each map is baked with its own samples (Normal, AO, Curvature, Position, Thickness, ID, World Normal): %s" % (bq_seen,))
+bq_ctx.scene.cycles.samples = 77
+bq_s.use_normal = bq_s.use_ao = True
+bq_s.use_curvature = bq_s.use_position = bq_s.use_thickness = bq_s.use_id = bq_s.use_worldnormal = False
+with T.bake_scene(bq_ctx, bq_low, [bq_high]):
+    T.bake_maps(bq_ctx, bq_low, [bq_high], bq_s, T.ticked_maps(bq_s))
+check(bq_ctx.scene.cycles.samples == 77 and bpy.data.images.get("Smp_low_Normal") is not None, "a blocking bake of the maps works and puts the samples back")
+bq_t = bpy.context.scene.m3d_tex
+check(T.M3D_TexSettings.bl_rna.properties["bake_gpu"].default is True, "Bake on GPU is on by default")
+check("Quality" in [p.name for p in T.M3D_BakeSettings.bl_rna.properties if p.identifier in {"samples_ao", "samples_thickness"}], "AO and Thickness have a Quality")
+
+# --- The queue, driven by hand (what the timer and the handlers do), with a bake that is a blocking call
+bq_clean()
+bq_reports = []
+bq_report_real = QQ.report_later
+QQ.report_later = lambda level, text: bq_reports.append((level, text))
+
+
+def bq_groups():
+    bq_clean()
+    for image in [i for i in bpy.data.images if i.name.startswith(("Qa_", "Qb_"))]:
+        bpy.data.images.remove(image)
+    for name, x in (("Qa", 0.0), ("Qb", 3.0)):
+        low = bg_plate(name + "_low", x=x, role='LOW', group=name)
+        bg_plate(name + "_high", x=x, res=8, bump=0.1, role='HIGH', group=name)
+        bg_small(low)
+        low.m3d_bake.use_normal = low.m3d_bake.use_ao = True
+    PR.park_all(bpy.context)
+    bpy.context.view_layer.objects.active = bpy.data.objects["Qa_low"]
+    bpy.data.objects["Qa_low"].select_set(True)
+
+
+def bq_launcher(log, fail_at=None, cancel_at=None):
+    count = [0]
+
+    def launch(run, request):
+        count[0] += 1
+        log.append((QQ._note["where"], QQ._note["label"]))
+        if cancel_at == count[0]:
+            QQ.cancel()
+        if fail_at == count[0]:
+            raise RuntimeError("kaput")
+        bpy.ops.object.bake(**request)
+        run.ended, run.phase, run.launched = 'complete', 'WAIT', time.perf_counter()
+    return launch
+
+
+def bq_pump(job, launch):
+    """Start a job and run the timer by hand until the queue is over; True when it is."""
+    launched = QQ._launch
+    QQ._launch = launch
+    del bq_reports[:]
+    try:
+        QQ.start(bpy.context, job, None)
+        for _ in range(100):
+            if QQ._run is None:
+                break
+            QQ._tick()
+    finally:
+        QQ._launch = launched
+        if bpy.app.timers.is_registered(QQ._tick):
+            bpy.app.timers.unregister(QQ._tick)
+    return QQ._run is None
+
+
+bq_groups()
+bq_flags = bg_flags()
+bq_log = []
+check(bq_pump(BG.bake_all_job(bpy.context), bq_launcher(bq_log)), "the queue ends")
+check(bq_log == [("Qa", "Normal"), ("Qa", "Ambient Occlusion"), ("Qb", "Normal"), ("Qb", "Ambient Occlusion")],
+      "the bakes come in the order of the groups and their maps: %s" % bq_log)
+check(all(bpy.data.images.get("%s_low_%s" % (g, m)) is not None for g in ("Qa", "Qb") for m in ("Normal", "AO"))
+      and bg_state("Qa") == 'BAKED' and bg_state("Qb") == 'BAKED', "...and the maps are made and the groups are baked")
+check(bg_flags() == bq_flags and not QQ.running(), "everything is put back when the queue is over: %s" % (bg_flags(),))
+check(("INFO", "Baked 2 groups") == bq_reports[-1][:2] or bq_reports[-1][1].startswith("Baked 2 groups"), "...and it says so: %s" % bq_reports)
+check(QQ.progress()[0] == 0 and QQ.text() == "", "(no queue, no progress text)")
+
+# Cancel: the queue stops, the generator closes its with blocks (selection, hidden meshes, engine, samples, materials)
+bq_groups()
+bq_flags = bg_flags()
+bq_log = []
+check(bq_pump(BG.bake_all_job(bpy.context), bq_launcher(bq_log, cancel_at=2)), "a cancelled queue ends")
+check(len(bq_log) == 2 and bg_state("Qa") != 'BAKED' and bpy.data.images.get("Qb_low_Normal") is None, "...no bake starts after Cancel: %s" % bq_log)
+check(bg_flags() == bq_flags and not bpy.data.materials.get("m3dBake"), "...and everything is put back as it was: %s" % (bg_flags(),))
+check(bq_reports and bq_reports[-1][0] == 'WARNING' and "cancel" in bq_reports[-1][1], "...and says that it was cancelled: %s" % bq_reports)
+
+# An error of one bake: the group is skipped and reported, the others go on
+bq_groups()
+bq_flags = bg_flags()
+bq_log = []
+check(bq_pump(BG.bake_all_job(bpy.context), bq_launcher(bq_log, fail_at=3)), "a queue with a failing bake ends")
+check(bg_state("Qa") == 'BAKED' and bg_state("Qb") == 'NONE' and len(bq_log) == 3, "a bake that cannot start is an error of its group, which is skipped (its other maps do not start): %s %s" % (bg_state("Qb"), bq_log))
+check(any(level == 'WARNING' and "kaput" in text for level, text in bq_reports) and bg_flags() == bq_flags, "...reported, and everything is put back: %s" % bq_reports)
+
+# An error of the one group job (and of the code between two bakes): reported, everything put back
+bq_groups()
+bq_flags = bg_flags()
+bq_log = []
+check(bq_pump(BG.group_job(bpy.context, "Qa"), bq_launcher(bq_log, fail_at=2)), "a failing group bake ends")
+check(bq_reports and bq_reports[-1][0] == 'ERROR' and "kaput" in bq_reports[-1][1] and bg_state("Qa") == 'NONE' and bg_flags() == bq_flags,
+      "an error is reported and the scene is put back: %s" % bq_reports)
+bq_real = T.bake_image
+calls = [0]
+
+
+def bq_failing(*args, **kw):
+    calls[0] += 1
+    if calls[0] == 3:
+        raise ValueError("not a RuntimeError")
+    return bq_real(*args, **kw)
+
+
+T.bake_image = bq_failing
+bq_groups()
+bq_flags = bg_flags()
+bq_log = []
+check(bq_pump(BG.bake_all_job(bpy.context), bq_launcher(bq_log)), "a bug between two bakes ends the queue")
+T.bake_image = bq_real
+check(bq_reports and bq_reports[-1][0] == 'ERROR' and "not a RuntimeError" in bq_reports[-1][1] and bg_flags() == bq_flags and not QQ.running(),
+      "...and the scene is put back: %s" % bq_reports)
+
+# The panels say what bakes
+bq_groups()
+bq_job = BG.bake_all_job(bpy.context)
+check(bq_job.total == 4, "the job knows how many bakes there are: %s" % bq_job.total)
+bq_job.steps.close()
+QQ._run = QQ.Run(bq_job, None)
+QQ._note.update(label="AO", where="Qa")
+QQ._run.count = 1
+log = []
+QQ.draw_progress(Rec(log), bpy.context)
+check_calls("bake progress", log)
+check(any("Baking AO (Qa): 2 of 4" in r._kw.get("text", "") for r in log if r._kind == "label"), "the Bake page says what is baking: %s" % [r._kw.get("text") for r in log if r._kind == "label"])
+check(any(r._kind == "operator" and r._args[0] == "m3d.bake_cancel" for r in log) and any(r._kind == "progress" for r in log) and any(r._kind == "template_running_jobs" for r in log),
+      "...with the bar, the job's own bar and Cancel")
+check(not T.PROPERTIES_PT_m3d_tx_bake_maps.page_poll(bpy.context) and T.PROPERTIES_PT_m3d_tx_bake_progress.page_poll(bpy.context)
+      and not T.PROPERTIES_PT_m3d_tx_bake_back.page_poll(bpy.context), "while a bake runs the Bake page shows its progress and nothing that edits")
+bq_header = []
+T.draw_baking_header(Rec(bq_header), bpy.context, "M3D_MT_tex_view_baking", display=True)
+check_calls("baking header", bq_header)
+check(any(r._kind == "operator" and r._args[0] == "m3d.bake_cancel" for r in bq_header) and not any(r._kind == "prop" for r in bq_header)
+      and [r._kw.get("panel", r._args[0] if r._args else "") for r in bq_header if r._kind == "popover"] == ["M3D_PT_tex_display_baking"],
+      "the header of a 3D view has the View menu, Cancel, the layout buttons and the Display popover, and no setting of the scene")
+bq_display = []
+T.M3D_PT_tex_display_baking.draw(NS(layout=Rec(bq_display)), bpy.context)
+check_calls("baking display", bq_display)
+check(not any(r._kind == "operator" and r._args[0] == "m3d.tex_view_defaults" for r in bq_display), "the Display popover of a bake has nothing that edits materials (no Studio Defaults, no viewport type, no channel view)")
+bq_status = []
+T.draw_status_line(Rec(bq_status), bpy.context)
+check_calls("baking status line", bq_status)
+check(any(r._kind == "operator" and r._args[0] == "m3d.bake_cancel" for r in bq_status), "the Status Line has Cancel while a bake runs")
+check(bpy.ops.m3d.bake_cancel.poll() and not bpy.ops.m3d.bg_bake_all.poll() and not bpy.ops.m3d.tex_bake_sets.poll(), "Cancel is there, and a second bake cannot start meanwhile")
+QQ.cancel()
+check(QQ.cancelling() and QQ.text().endswith("stopping"), "Cancel marks the queue")
+QQ._run = None
+bq_groups()
+check(QQ.run_queued(bpy.context, BG.bake_all_job(bpy.context)) is True and not QQ.running() and bpy.data.images.get("Qa_low_Normal") is not None,
+      "without a window (background mode) a queued bake is a blocking one")
+
+# --- The guard: the view moves and the panels scroll, nothing else changes
+bq_regions = lambda *rs: [NS(type=t, x=x, y=y, width=w, height=h) for t, x, y, w, h in rs]
+bq_view = NS(type='VIEW_3D', x=300, y=50, width=700, height=950, dock=False,
+             regions=bq_regions(('HEADER', 300, 970, 700, 30), ('WINDOW', 300, 50, 700, 920)))
+bq_props = NS(type='PROPERTIES', x=1600, y=50, width=400, height=950, dock=False, regions=bq_regions(('WINDOW', 1600, 50, 400, 920)))
+bq_dock = NS(type='PROPERTIES', x=1600, y=50, width=400, height=950, dock=True, regions=bq_regions(('WINDOW', 1600, 50, 400, 920)))
+bq_outliner = NS(type='OUTLINER', x=1000, y=50, width=600, height=950, dock=False, regions=bq_regions(('WINDOW', 1000, 50, 600, 950)))
+bq_win = NS(screen=NS(areas=[bq_view, bq_props, bq_outliner]))
+bq_win_dock = NS(screen=NS(areas=[bq_view, bq_dock, bq_outliner]))
+QQ._bars["status"] = (0, 1000, 2000, 28)
+bq_real_dock, bq_real_headers, bq_real_status = QQ.is_bake_dock, QQ.headers_reduced, QQ.status_reduced
+QQ.is_bake_dock = lambda _c, area, _r: area.dock
+QQ.headers_reduced = QQ.status_reduced = lambda _c: True
+
+
+def bq_ok(window, type, value='PRESS', pos=(600, 500), alt=False, ctrl=False, shift=False):
+    return QQ.allowed(bpy.context, window, NS(type=type, value=value, mouse_x=pos[0], mouse_y=pos[1], alt=alt, ctrl=ctrl, shift=shift))
+
+
+check(bq_ok(bq_win, 'MOUSEMOVE', 'NOTHING') and bq_ok(bq_win, 'TIMER', 'NOTHING') and bq_ok(bq_win, 'LEFT_CTRL'), "mouse moves, timers and modifier keys pass")
+check(bq_ok(bq_win, 'MIDDLEMOUSE') and bq_ok(bq_win, 'WHEELUPMOUSE') and bq_ok(bq_win, 'LEFTMOUSE', alt=True) and bq_ok(bq_win, 'RIGHTMOUSE', alt=True)
+      and bq_ok(bq_win, 'MIDDLEMOUSE', alt=True), "in the 3D view the middle button, the wheel and Alt + mouse (orbit, pan, zoom) pass")
+check(bq_ok(bq_win, 'F') and bq_ok(bq_win, 'HOME') and bq_ok(bq_win, 'NUMPAD_1'), "...F, Home and the number pad (frame, view)")
+check(not bq_ok(bq_win, 'LEFTMOUSE') and not bq_ok(bq_win, 'RIGHTMOUSE') and not bq_ok(bq_win, 'LEFTMOUSE', 'CLICK_DRAG'), "a click in the 3D view is blocked (it would select)")
+check(not any(bq_ok(bq_win, k) for k in ('X', 'DEL', 'G', 'R', 'S', 'TAB', 'Z', 'ONE', 'RET', 'SPACE')) and not bq_ok(bq_win, 'S', ctrl=True) and not bq_ok(bq_win, 'Z', ctrl=True)
+      and not bq_ok(bq_win, 'F', ctrl=True) and not bq_ok(bq_win, 'F4') and not bq_ok(bq_win, 'ESC'), "keys that edit, save, undo, delete, change mode or workspace are blocked (Esc is the guard's own)")
+check(bq_ok(bq_win, 'LEFTMOUSE', pos=(500, 985)) and not bq_ok(bq_win, 'RIGHTMOUSE', pos=(500, 985)) and not bq_ok(bq_win, 'X', pos=(500, 985)),
+      "a click in the header of the 3D view passes (the View menu, the layout buttons: the header draws nothing that edits meanwhile)")
+check(bq_ok(bq_win, 'WHEELDOWNMOUSE', pos=(1800, 500)) and not bq_ok(bq_win, 'WHEELDOWNMOUSE', pos=(1800, 500), ctrl=True) and not bq_ok(bq_win, 'WHEELDOWNMOUSE', pos=(1800, 500), alt=True),
+      "the wheel scrolls a panel (with Ctrl or Alt it would change a value under the pointer)")
+check(not bq_ok(bq_win, 'LEFTMOUSE', pos=(1800, 500)) and not bq_ok(bq_win, 'MIDDLEMOUSE', pos=(1800, 500)), "a click on a panel, a layer or a list is blocked")
+check(bq_ok(bq_win_dock, 'LEFTMOUSE', pos=(1800, 500)) and not bq_ok(bq_win_dock, 'RIGHTMOUSE', pos=(1800, 500)) and not bq_ok(bq_win_dock, 'X', pos=(1800, 500)),
+      "...except on the Bake page, which shows the progress and Cancel while a bake runs")
+check(not bq_ok(bq_win, 'LEFTMOUSE', pos=(1200, 500)) and bq_ok(bq_win, 'WHEELUPMOUSE', pos=(1200, 500)), "other editors scroll and nothing more")
+check(bq_ok(bq_win, 'LEFTMOUSE', pos=(900, 1010)) and not bq_ok(bq_win, 'LEFTMOUSE', pos=(900, 1050)) and not bq_ok(bq_win, 'S', pos=(900, 1010), ctrl=True),
+      "over the top bar only the Status Line is clickable (its place is noted when it draws): the File menu, the workspace tabs and the shelf are not")
+QQ.headers_reduced = QQ.status_reduced = lambda _c: False
+check(not bq_ok(bq_win, 'LEFTMOUSE', pos=(500, 985)) and not bq_ok(bq_win, 'LEFTMOUSE', pos=(900, 1010)),
+      "a header and a Status Line that are not the reduced ones (the old layout, other workspaces: they have menus that edit) are blocked as well")
+QQ.is_bake_dock, QQ.headers_reduced, QQ.status_reduced = bq_real_dock, bq_real_headers, bq_real_status
+QQ._bars["status"] = None
+
+# --- The cage check: which parts of the low poly would bake wrong
+bq_clean()
+bq_low = bq_sphere("Cg_low", u=48, v=24, role='LOW', group="Cg")
+bq_high = bq_sphere("Cg_high", u=64, v=32, role='HIGH', group="Cg", push=lambda co: co.z > 0.8, push_by=0.25, cut=lambda co: co.x > 0.9)
+bq_depsgraph = bpy.context.view_layer.update
+
+
+def bq_check(entries):
+    gen = VV.check_steps(bpy.context, entries)
+    try:
+        while True:
+            next(gen)
+    except StopIteration as done:
+        return done.value
+
+
+bq_depsgraph()
+VV._view["bvh"].clear()
+bq_result, bq_areas = bq_check([(bq_low, [bq_high], 0.05, 0.3)])
+bq_bad = bq_result["Cg_low"].bad
+bq_centers = np.array([tuple(p.center) for p in bq_low.data.polygons])
+check(bq_areas == 2, "a high poly that sticks out of the cage in one place and is missing in another gives two problem areas: %s" % bq_areas)
+check(bq_bad[bq_centers[:, 2] > 0.9].all() and bq_bad[bq_centers[:, 0] > 0.95].all(), "...the faces where the high poly is bigger than the cage (the top) and where it is missing (the side) are bad")
+check(not bq_bad[(bq_centers[:, 0] < 0.5) & (bq_centers[:, 2] < 0.5)].any(), "...and the faces that are fine are not")
+check(bq_result["Cg_low"].problems == int(bq_bad.sum()) and 0 < bq_result["Cg_low"].problems < len(bq_bad), "...with their count: %d of %d" % (bq_result["Cg_low"].problems, len(bq_bad)))
+bq_result, bq_areas = bq_check([(bq_low, [bq_high], 0.05, 0.0)])
+check(bq_areas == 2 and bq_result["Cg_low"].bad[bq_centers[:, 0] > 0.95].all(),
+      "without a Max Ray Distance the missing part is still found: the ray goes through the hole and reaches the far wall from inside, which the bake would take: %s" % bq_areas)
+check(bq_check([(bq_low, [bq_high], 0.5, 0.6)])[1] == 1, "a bigger extrusion starts the rays outside the bump again: only the missing part is left")
+bq_clean_high = bq_sphere("Cg_clean", u=64, v=32, role='HIGH', group="Cg2")
+bq_clean_low = bq_sphere("Cg2_low", u=48, v=24, role='LOW', group="Cg2")
+check(bq_check([(bq_clean_low, [bq_clean_high], 0.05, 0.3)])[1] == 0, "a high poly that the cage covers all round gives no problem")
+# the BVH of a high poly is kept, and made again after its geometry changed
+bq_tree = VV._view["bvh"]["Cg_high"]
+bq_check([(bq_low, [bq_high], 0.05, 0.3)])
+check(VV._view["bvh"]["Cg_high"] is bq_tree, "the BVH of a high poly is kept between two checks")
+VV._view["geo"].add("Cg_high")
+bq_check([(bq_low, [bq_high], 0.05, 0.3)])
+check(VV._view["bvh"]["Cg_high"] is not bq_tree and "Cg_high" not in VV._view["geo"], "...and made again after its geometry changed")
+# a second high poly of the group (a floater) that lies where the first one is missing is hit too
+bq_patch = bq_sphere("Cg_high_patch", u=64, v=32, role='HIGH', group="Cg", cut=lambda co: co.x <= 0.9)
+bq_depsgraph()
+check(bq_check([(bq_low, [bq_high, bq_patch], 0.05, 0.3)])[1] == 1, "a floater of the group that fills the hole is hit too: only the bump is left")
+# the check runs in slices by a timer
+VV._view.update(on=True, job=None, result={}, areas=None, note="")
+bq_found = [("Cg", [bq_low], [bq_high])]
+VV.start_check(bpy.context, bq_found)
+check(VV._view["job"] is not None and VV._view["areas"] is None and VV.status_text() == ("Cage: checking...", False), "a check starts and says that it is checking")
+bq_ticks = 0
+while VV._view["job"] is not None and bq_ticks < 10000:
+    VV._check_tick()
+    bq_ticks += 1
+if bpy.app.timers.is_registered(VV._check_tick):
+    bpy.app.timers.unregister(VV._check_tick)
+check(VV._view["areas"] is not None and VV.status_text()[1] == (VV._view["areas"] > 0) and VV.status_text()[0].startswith("Cage:"),
+      "...and ends with a count: %s" % (VV.status_text(),))
+VV._view["areas"] = 1
+check(VV.status_text() == ("Cage: 1 problem area", True), "one problem area, singular")
+VV._view["areas"] = 37
+check(VV.status_text() == ("Cage: 37 problem areas", True), "...and 37 problem areas")
+VV._view["areas"] = 0
+check(VV.status_text() == ("Cage: no problems found", False), "...and none")
+bq_max = VV.MAX_FACES
+VV.MAX_FACES = 10
+VV.start_check(bpy.context, bq_found)
+check(VV._view["job"] is None and "too big" in VV.status_text()[0], "a high poly that is too big is not checked, and the page says so: %s" % (VV.status_text(),))
+VV.MAX_FACES = bq_max
+VV.start_check(bpy.context, [("Cg", [bq_low], [])])
+check(VV._view["job"] is None and "No high poly" in VV.status_text()[0], "no high poly: nothing to check against")
+VV.leave(bpy.context)
+
+# --- The blue high poly: object slots only, and everything back when the view goes
+bq_clean()
+bq_real_a, bq_real_b, bq_other = (bpy.data.materials.new(n) for n in ("Real", "ObjLevel", "Latent"))
+bq_low = bq_sphere("Vw_low", role='LOW', group="Vw")
+bq_hp_a = bq_sphere("Vw_high", role='HIGH', group="Vw")                      # one slot, data level
+bq_hp_a.data.materials.append(bq_real_a)
+bq_hp_b = bq_sphere("Vw_high_b", role='HIGH', group="Vw")                    # object level material
+bq_hp_b.data.materials.append(bq_real_a)
+bq_hp_b.material_slots[0].link = 'OBJECT'
+bq_hp_b.material_slots[0].material = bq_real_b
+bq_hp_c = bq_sphere("Vw_high_c", role='HIGH', group="Vw")                    # no slot at all
+bq_hp_d = bq_sphere("Vw_high_d", role='HIGH', group="Vw")                    # a data slot with a material that an old object level one hides
+bq_hp_d.data.materials.append(bq_real_a)
+bq_hp_d.material_slots[0].link = 'OBJECT'
+bq_hp_d.material_slots[0].material = bq_other
+bq_hp_d.material_slots[0].link = 'DATA'
+bq_obs = (bq_hp_a, bq_hp_b, bq_hp_c, bq_hp_d)
+m3d_pair.park_all(bpy.context)
+bq_mesh_mats = lambda: [[m.name if m else None for m in ob.data.materials] for ob in bq_obs]
+bq_slots = lambda: [[(s.link, s.material.name if s.material else None) for s in ob.material_slots] for ob in bq_obs]
+bq_state = lambda: [(ob.hide_get(), ob.m3d_pair.parked, ob.show_transparent, VV.KEY in ob) for ob in bq_obs]
+bq_mesh_before, bq_slots_before, bq_state_before = bq_mesh_mats(), bq_slots(), bq_state()
+bq_baked_low = bq_low
+bq_low.m3d_bake.resolution = '64'
+bq_low.m3d_bake.use_normal, bq_low.m3d_bake.use_ao = True, False
+bpy.context.view_layer.objects.active = bq_low
+bq_low.select_set(True)
+check(bpy.ops.m3d.bg_bake(group="Vw") == {'FINISHED'} and bg_state("Vw") == 'BAKED', "(a group that is baked)")
+check(all(s[0] for s in bq_state_before[:4]) and not any(s[3] for s in bq_state_before), "(the high polys are parked)")
+bq_found = VV.targets(bpy.context)
+check(len(bq_found) == 1 and bq_found[0][0] == "Vw" and [o.name for o in bq_found[0][2]] == ["Vw_high", "Vw_high_b", "Vw_high_c", "Vw_high_d"],
+      "the view shows the high polys of the group that is baked: %s" % [(g, [o.name for o in lows], [o.name for o in highs]) for g, lows, highs in bq_found])
+VV._view["geo"].clear()
+VV.enter(bpy.context, bq_found)
+check(not VV._view["geo"], "(drawing the high polys in another material is no change of their geometry: their BVH stays)")
+check(all(x == [('OBJECT', VV.MATERIAL)] for x in bq_slots()),
+      "every high poly is drawn in the blue material through its object slots: %s" % bq_slots())
+check(all(ob.show_transparent and not ob.hide_get() for ob in bq_obs) and VV.MATERIAL in bpy.data.materials, "...see-through, and the parked ones are shown")
+check([[m.name if m else None for m in ob.data.materials] for ob in (bq_hp_a, bq_hp_b, bq_hp_d)] == [bq_mesh_before[0], bq_mesh_before[1], bq_mesh_before[3]],
+      "the mesh data and its materials are not touched: %s" % bq_mesh_mats())
+check(bq_hp_c.data.materials[:] == [None] and bg_state("Vw") == 'BAKED', "(a mesh without a slot has an empty one meanwhile; the group does not go stale from the view)")
+mat = bpy.data.materials[VV.MATERIAL]
+check(abs(mat.node_tree.nodes["Principled BSDF"].inputs["Alpha"].default_value - bpy.context.scene.m3d_tex.view_opacity) < 1e-6 and mat.surface_render_method == 'BLENDED', "the blue follows High Poly Opacity")
+bpy.context.scene.m3d_tex.view_opacity = 0.6
+VV.enter(bpy.context, bq_found)
+check(abs(mat.node_tree.nodes["Principled BSDF"].inputs["Alpha"].default_value - 0.6) < 1e-6 and abs(mat.diffuse_color[3] - 0.6) < 1e-6, "...and changes with it")
+bpy.context.scene.m3d_tex.view_opacity = 0.35
+bpy.context.scene.m3d_tex.view_hp = False
+VV.enter(bpy.context, bq_found)
+check(bq_slots() == bq_slots_before and VV.MATERIAL not in bpy.data.materials and all(not s[3] for s in bq_state()),
+      "Show High Poly off: the high polys are as they were: %s" % bq_slots())
+bpy.context.scene.m3d_tex.view_hp = True
+VV.enter(bpy.context, bq_found)
+VV.leave(bpy.context)
+check(bq_slots() == bq_slots_before and bq_mesh_mats() == bq_mesh_before and bq_state() == bq_state_before and VV.MATERIAL not in bpy.data.materials,
+      "leaving puts the slots, the flags and the parking back: %s" % (bq_state(),))
+check(bq_hp_d.material_slots[0].link == 'DATA' and bq_hp_d.material_slots[0].material == bq_real_a, "(a slot that was on the data level is on it again)")
+bq_hp_d.material_slots[0].link = 'OBJECT'
+check(bq_hp_d.material_slots[0].material == bq_other, "...and the object level material that was hidden behind it is still there")
+bq_hp_d.material_slots[0].link = 'DATA'
+check(bq_hp_c.data.materials[:] == [] and bq_hp_b.material_slots[0].link == 'OBJECT' and bq_hp_b.material_slots[0].material == bq_real_b, "...a slot that was added is gone, a material of the object level is back")
+check(bg_state("Vw") == 'BAKED', "the group is still baked after the view came and went")
+# saved files never have it; an undo, a redo or a load that finds it takes it away
+VV.enter(bpy.context, bq_found)
+bq_path = os.path.join(tempfile.mkdtemp(prefix="m3d_view_"), "view.blend")
+bpy.ops.wm.save_as_mainfile(filepath=bq_path, copy=True)
+check(not VV._view["on"] and bq_slots() == bq_slots_before, "saving puts the high polys back first")
+with bpy.data.libraries.load(bq_path) as (src, _dst):
+    saved = list(src.materials)
+check(VV.MATERIAL not in saved and "Real" in saved, "...so the file does not have the blue material: %s" % saved)
+shutil.rmtree(os.path.dirname(bq_path), ignore_errors=True)
+VV.enter(bpy.context, bq_found)
+VV._undo_post()
+check(bq_slots() == bq_slots_before and VV._view["sig"] is None and not any(s[3] for s in bq_state()), "an undo or redo takes what the view left on the objects away (the objects carry what they had)")
+VV.enter(bpy.context, bq_found)
+VV._load_post()
+check(bq_slots() == bq_slots_before and not VV._view["on"] and VV.MATERIAL not in bpy.data.materials, "a file that was loaded with the blue in it is put right")
+check(VV._view["handles"] == [] and not any(VV.KEY in ob for ob in bpy.data.objects), "(no draw handler and no mark is left)")
+check(not VV.in_bake_mode(bpy.context), "no Bake page, no view")
+check(len(bpy.context.scene.m3d_bake_groups) == 1, "(the group settings are the only data the view touched)")
+check({"M3D_OT_bake_guard", "M3D_OT_bake_cancel", "M3D_OT_bake_report", "M3D_OT_bake_view_check"} <= {c.__name__ for c in (*QQ.classes, *VV.classes)}, "the new operators are registered")
+check(bpy.ops.m3d.bake_report('EXEC_DEFAULT', level='INFO', text="x") == {'FINISHED'}, "the report operator says a news of a queue that is over")
+QQ.report_later = bq_report_real
+bq_clean()
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

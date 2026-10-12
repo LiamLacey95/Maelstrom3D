@@ -16,6 +16,8 @@ import bpy
 from bpy_extras.view3d_utils import location_3d_to_region_2d
 from mathutils import Matrix, Vector
 
+import m3d_bakeq as QB
+import m3d_bakeview as BVW
 import m3d_edit
 import m3d_mode
 import m3d_ui
@@ -3581,6 +3583,9 @@ def tex_bake_from_dock():
     GIZMO["nodes"] = sorted(n.name for n in tex_mat().node_tree.nodes)
     GIZMO["engine"] = bpy.context.scene.render.engine
     press_ok("m3d.tex_bake", _area=dock)
+
+
+step(wait_until(lambda: not QB.running(), "the bake of the dock to finish (it is a queue of jobs: the window goes on)", 400))
 
 
 @step
@@ -9490,7 +9495,9 @@ def bgg_scene():
     GIZMO["bgg_seen"] = []
 
     def draws():
-        GIZMO["bgg_seen"] += [n for n in ("Sword_high", "Sword_high_bolts", "Shield_high") if not bpy.data.objects[n].hide_get()]
+        if not BVW._view["on"]:   # (the Bake mode view shows the high polys of the groups on purpose; a queue draws them as boxes)
+            GIZMO["bgg_seen"] += [n for n in ("Sword_high", "Sword_high_bolts", "Shield_high")
+                                  if not bpy.data.objects[n].hide_get() and bpy.data.objects[n].display_type != 'BOUNDS']
     GIZMO["bgg_handle"] = bpy.types.SpaceView3D.draw_handler_add(draws, (), 'WINDOW', 'POST_PIXEL')
     win, _area, region = view3d()
     GIZMO["center"] = (region.x + region.width // 2, region.y + region.height // 2)
@@ -9554,12 +9561,16 @@ def bgg_click_row():
     press_ok("m3d.bg_select", _area=dock, group="Shield")
 
 
+step(wait_until(lambda: BVW.KEY in hp_ob("Shield_high") and BVW.KEY not in hp_ob("Sword_high"), "the Bake mode view to follow the group that was picked", 40))
+
+
 @step
 def bgg_click_row_check():
     low = hp_ob("Shield_low")
     check(bpy.context.active_object == low and low.select_get() and not hp_ob("Sword_low").select_get(), "a click on the Shield row selects its low poly")
     check(bpy.context.mode == 'PAINT_TEXTURE' and low.mode == 'TEXTURE_PAINT', "...and Texture Paint Mode goes with it (%s)" % bpy.context.mode)
-    check(hp_ob("Shield_high").hide_get(), "...the high poly stays hidden")
+    check(not hp_ob("Shield_high").hide_get() and hp_ob("Sword_high").hide_get() and hp_ob("Sword_high").m3d_pair.parked,
+          "...Bake mode shows the high poly of that group (see-through blue), the high polys of the other groups stay hidden")
     for a in window().screen.areas:
         a.tag_redraw()
 
@@ -9569,6 +9580,9 @@ def bgg_bake_group():
     GIZMO["bgg_engine"] = bpy.context.scene.render.engine
     dock, _region = bgg_dock_context()
     press_ok("m3d.bg_bake", _area=dock)
+
+
+step(wait_until(lambda: not QB.running(), "Bake Group to finish (it is a queue of jobs: the window goes on)", 400))
 
 
 @step
@@ -9589,6 +9603,9 @@ def bgg_bake_group_check():
 def bgg_bake_all():
     dock, _region = bgg_dock_context()
     press_ok("m3d.bg_bake_all", _area=dock)
+
+
+step(wait_until(lambda: not QB.running(), "Bake All to finish (it is a queue of jobs: the window goes on)", 400))
 
 
 @step
@@ -9643,6 +9660,9 @@ def bgg_all(state):
 @step
 def bgg_rebake():
     press_ok("m3d.bg_bake_all", _area=bgg_dock_context()[0])
+
+
+step(wait_until(lambda: not QB.running(), "the second Bake All to finish (it is a queue of jobs: the window goes on)", 400))
 
 
 @step
@@ -9752,7 +9772,7 @@ def bgg_undo_setup():
         bpy.context.scene.m3d_bake_groups.remove(0)
     with bpy.context.temp_override(window=window(), screen=window().screen):
         bpy.ops.ed.undo_push(message="Before Bake All")
-        res = bpy.ops.m3d.bg_bake_all('INVOKE_DEFAULT', True)
+        res = bpy.ops.m3d.bg_bake_all('EXEC_DEFAULT', True)   # (blocking: the Undo of one step is what is tested; the queue's own Undo is at the end)
     check(res == {'FINISHED'}, "Bake All with an undo step: %s" % res)
     check(bgg_group_state("Sword") == 'BAKED', "(baked)")
     with bpy.context.temp_override(window=window(), screen=window().screen):
@@ -10221,7 +10241,9 @@ def bx_scene():
     GIZMO["bx_seen"] = []
 
     def draws():
-        GIZMO["bx_seen"] += [n for n in ("Axe_high", "Bow_high", "Cup_high") if n in bpy.data.objects and not bpy.data.objects[n].hide_get()]
+        if not BVW._view["on"]:
+            GIZMO["bx_seen"] += [n for n in ("Axe_high", "Bow_high", "Cup_high")
+                                 if n in bpy.data.objects and not bpy.data.objects[n].hide_get() and bpy.data.objects[n].display_type != 'BOUNDS']
     GIZMO["bx_handle"] = bpy.types.SpaceView3D.draw_handler_add(draws, (), 'WINDOW', 'POST_PIXEL')
     _win, _area, region = view3d()
     GIZMO["center"] = (region.x + region.width // 2, region.y + region.height // 2)
@@ -10356,6 +10378,9 @@ def bx_cage_bake_on():
 def bx_cage_bake():
     check(len(BGR.cage_objects()) == 1, "(the preview is on before the bake)")
     press_ok("m3d.bg_bake_all", _area=bgg_dock_context()[0])
+
+
+step(wait_until(lambda: not QB.running(), "Bake All with the cage preview to finish (it is a queue of jobs: the window goes on)", 400))
 
 
 @step
@@ -10636,6 +10661,9 @@ def t4_bake_press():
     press_ok("m3d.tex_bake_sets", _area=tex_roles()["dock"])
 
 
+step(wait_until(lambda: not QB.running(), "the Bake button to finish (it is a queue of jobs: the window goes on)", 400))
+
+
 @step
 def t4_bake_check():
     ob = bpy.context.active_object
@@ -10852,6 +10880,9 @@ def fb_bake():
     press_ok("m3d.tex_bake_sets", _area=tex_roles()["dock"])
 
 
+step(wait_until(lambda: not QB.running(), "the Bake button of the feedback tests to finish (it is a queue of jobs: the window goes on)", 400))
+
+
 @step
 def fb_baked_check():
     low = bpy.data.objects["FbLow"]
@@ -11012,6 +11043,466 @@ def fb_display_shot():
     e_screenshot("F:/AI/m3d_fb_display.png")
     event('ESC', 'PRESS')
     event('ESC', 'RELEASE')
+
+
+# -----------------------------------------------------------------------------
+# Bake queue and the view of Bake Mesh Maps: a bake that does not freeze the window (a queue of Blender's bake jobs), the guard that lets
+# the view move and blocks everything else, Esc and Cancel, the blue high poly and the red cage problems.
+import time
+
+import m3d_bakeview as BV
+
+
+def bq_sphere(name, u=24, v=12, push=None, push_by=0.0, cut=None):
+    me = bpy.data.meshes.new(name)
+    bm = bmesh.new()
+    bm.loops.layers.uv.new("UVMap")   # (the sphere gets its UVs on the active layer)
+    bmesh.ops.create_uvsphere(bm, u_segments=u, v_segments=v, radius=1.0, calc_uvs=True)
+    if push is not None:
+        for vert in bm.verts:
+            if push(vert.co):
+                vert.co *= (1.0 + push_by)
+    if cut is not None:
+        bmesh.ops.delete(bm, geom=[f for f in bm.faces if cut(f.calc_center_median())], context='FACES')
+    bm.to_mesh(me)
+    bm.free()
+    ob = bpy.data.objects.new(name, me)
+    bpy.context.scene.collection.objects.link(ob)
+    return ob
+
+
+BQ = {}
+
+
+def bq_flags():
+    """Everything a queue puts away and has to put back."""
+    sc, vl = bpy.context.scene, bpy.context.view_layer
+    return ({o.name: (o.hide_get(), o.hide_viewport, o.hide_render, o.hide_select, o.select_get(), o.display_type, o.m3d_pair.parked,
+                      [(s.link, s.material.name if s.material else None) for s in o.material_slots], o.show_transparent)
+             for o in bpy.data.objects}, vl.objects.active.name if vl.objects.active else None, sc.render.engine, sc.cycles.samples,
+            sc.cycles.device, bpy.context.mode, len([m for m in bpy.data.materials if m.name.startswith("m3dBake")]),
+            [(a.spaces.active.shading.type) for a in window().screen.areas if a.type == 'VIEW_3D'])
+
+
+def bq_dock():
+    return tex_roles()["dock"]
+
+
+def bq_sets_checkbox():
+    """Where the Bake checkbox of the first row of the Texture Set List is (window pixels)."""
+    area = tex_roles()["sets"]
+    return area.x + area.width - 31, area.y + area.height - 48
+
+
+@step
+def bq_to_modeling():
+    if bpy.context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
+step(wait_until(lambda: hp_in('MODEL') and bpy.context.mode == 'OBJECT', "Modeling for the bake queue tests"))
+
+
+@step
+def bq_scene():
+    for ob in list(bpy.data.objects):
+        bpy.data.objects.remove(ob)
+    for entry in list(bpy.context.scene.m3d_bake_groups):
+        bpy.context.scene.m3d_bake_groups.remove(0)
+    high = bq_sphere("Orb_high", u=400, v=200, push=lambda co: co.z > 0.8, push_by=0.25, cut=lambda co: co.x > 0.9)
+    low = bq_sphere("Orb_low")
+    mat = bpy.data.materials.new("OrbMat")
+    mat.use_nodes = True
+    low.data.materials.append(mat)
+    high.data.materials.append(bpy.data.materials.new("OrbHighMat"))
+    bpy.context.view_layer.update()
+    check(bpy.ops.m3d.hp_auto_pair() == {'FINISHED'}, "(the sphere and its high poly are paired)")
+    s = low.m3d_bake
+    s.resolution, s.margin = '1024', 8
+    s.use_normal = s.use_ao = s.use_curvature = s.use_thickness = True
+    s.use_position = s.use_id = s.use_worldnormal = False
+    entry = BGR.settings_of(bpy.context, "Orb")
+    entry.extrusion, entry.ray_distance = 0.05, 0.3
+    HPR.park_all(bpy.context)
+    for ob in bpy.data.objects:
+        ob.select_set(ob.name == "Orb_low")
+    bpy.context.view_layer.objects.active = low
+    BQ["draws"], BQ["steps"] = [0], [0]
+
+    def draws():
+        BQ["draws"][0] += 1
+    BQ["handle"] = bpy.types.SpaceView3D.draw_handler_add(draws, (), 'WINDOW', 'POST_PIXEL')
+    check(hp_ob("Orb_high").hide_get() and hp_ob("Orb_high").m3d_pair.parked, "(the high poly is parked)")
+    bpy.ops.m3d.workspace(kind='TEXTURE')
+
+
+step(wait_until(lambda: hp_in('TEXTURE') and bpy.context.mode == 'PAINT_TEXTURE', "Texture Paint Mode for the bake queue tests"))
+
+
+@step
+def bq_open_page():
+    BQ["before"] = bq_flags()
+    window().workspace.m3d_page_right = "tex_bake"
+
+
+step(wait_until(lambda: BV._view["on"] and BV._view["areas"] is not None, "the Bake mode view and its cage check", 100))
+
+
+@step
+def bq_view_check():
+    high = hp_ob("Orb_high")
+    check(not tracebacks(), "Python error in the Bake mode view")
+    check(not high.hide_get() and [(s.link, s.material.name) for s in high.material_slots] == [('OBJECT', BV.MATERIAL)] and high.show_transparent,
+          "Bake mode shows the high poly as the blue see-through material through its object slots: %s" % ([(s.link, s.material.name) for s in high.material_slots],))
+    check([m.name for m in high.data.materials] == ["OrbHighMat"], "...the mesh and its material are not touched")
+    check(BV.status_text() == ("Cage: 2 problem areas", True), "...and the cage check finds the two problems (the high poly sticks out at the top and is missing at the side): %s" % (BV.status_text(),))
+    cage = BV._view["result"]["Orb_low"]
+    check(cage.lines is not None and cage.tris is not None and cage.problems > 0, "...as batches the draw handler only draws (%d bad faces)" % cage.problems)
+    check(bpy.data.materials[BV.MATERIAL].surface_render_method == 'BLENDED', "(the blue is blended)")
+    win, area, region = view3d()
+    from mathutils import Euler
+    area.spaces.active.region_3d.view_rotation = Euler((math.radians(72), 0.0, math.radians(58))).to_quaternion()   # (a three-quarter view: the cap and the side)
+    with bpy.context.temp_override(window=win, screen=win.screen, area=area, region=region, space_data=area.spaces.active):
+        bpy.ops.view3d.view_all(center=False)
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def bq_view_redraw():
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def bq_view_shot():
+    e_screenshot("F:/AI/m3d_bake_viz.png")
+
+
+@step
+def bq_control_click():
+    """(control) a click on the Bake checkbox of a texture set works while nothing bakes."""
+    mat = bpy.data.materials["OrbMat"]
+    BQ["checked"] = mat.m3d_set_bake
+    x, y = bq_sets_checkbox()
+    event('MOUSEMOVE', xy=(x, y))
+    event('LEFTMOUSE', 'PRESS', xy=(x, y))
+    event('LEFTMOUSE', 'RELEASE', xy=(x, y))
+
+
+@step
+def bq_control_check():
+    mat = bpy.data.materials["OrbMat"]
+    check(mat.m3d_set_bake != BQ["checked"], "(control: a click on the Bake checkbox of the Texture Set List toggles it)")
+    mat.m3d_set_bake = BQ["checked"]
+    BQ["tick"] = 0
+
+
+@step
+def bq_start():
+    BQ["draws0"] = BQ["draws"][0]
+    BQ["t0"] = time.monotonic()
+    BQ["swap"] = bpy.data.materials["OrbMat"].m3d_set_bake
+    BQ["select"] = [o.name for o in bpy.data.objects if o.select_get()]
+    BQ["objects"] = len(bpy.data.objects)
+    BQ["rot"] = view3d()[1].spaces.active.region_3d.view_rotation.copy()
+    BQ["dist"] = view3d()[1].spaces.active.region_3d.view_distance
+    press_ok("m3d.tex_bake_sets", _area=bq_dock())
+    check(QB.running(), "the Bake button starts a queue and returns at once")
+
+
+def bq_in_job():
+    run = QB._run
+    return run is not None and run.phase == 'WAIT' and run.count >= 1 and bpy.app.is_job_running('OBJECT_BAKE')
+
+
+step(wait_until(bq_in_job, "the second bake of the queue to run as a job", 200))
+
+
+@step
+def bq_while_baking():
+    check(QB.running() and bpy.app.is_job_running('OBJECT_BAKE') and window().workspace.m3d_page_right == "tex_bake", "a bake job runs and the Bake page is shown")
+    check(BQ["draws"][0] > BQ["draws0"] + 3, "the window keeps drawing during the bake (%d redraws of the 3D view)" % (BQ["draws"][0] - BQ["draws0"]))
+    check(not BV._view["on"] and not any(BV.KEY in o for o in bpy.data.objects), "the view of the Bake page is put away while the queue bakes")
+    check(bpy.context.scene.render.engine == 'CYCLES' and hp_ob("Orb_high").display_type == 'BOUNDS', "(Cycles is the engine, the high poly is drawn as a box meanwhile)")
+    BQ["steps"][0] += 1
+    win, area, region = view3d()
+    cx, cy = region.x + region.width // 2, region.y + region.height // 2
+    BQ["rv0"] = area.spaces.active.region_3d.view_rotation.copy()
+    event('MOUSEMOVE', xy=(cx, cy))
+    event('LEFTMOUSE', 'PRESS', xy=(cx, cy), alt=True)
+    for i in range(1, 9):
+        event('MOUSEMOVE', xy=(cx + i * 14, cy + i * 4), alt=True)
+    event('LEFTMOUSE', 'RELEASE', xy=(cx + 120, cy + 32), alt=True)
+
+
+@step
+def bq_orbit_check():
+    rv = view3d()[1].spaces.active.region_3d
+    angle = rv.view_rotation.rotation_difference(BQ["rv0"]).angle
+    check(angle > 0.05 and QB.running(), "an Alt+drag orbits the view while the bake runs (%.2f rad)" % angle)
+    BQ["dist0"] = rv.view_distance
+    win, area, region = view3d()
+    cx, cy = region.x + region.width // 2, region.y + region.height // 2
+    event('MOUSEMOVE', xy=(cx, cy))
+    for _ in range(3):
+        event('WHEELUPMOUSE', 'PRESS', xy=(cx, cy))
+
+
+@step
+def bq_wheel_check():
+    rv = view3d()[1].spaces.active.region_3d
+    check(rv.view_distance < BQ["dist0"] - 1e-4 and QB.running(), "...the wheel zooms (%.2f -> %.2f)" % (BQ["dist0"], rv.view_distance))
+    win, area, region = view3d()
+    cx, cy = region.x + region.width // 2, region.y + region.height // 2
+    BQ["dist1"] = rv.view_distance
+    BQ["loc1"] = rv.view_location.copy()
+    event('MOUSEMOVE', xy=(cx, cy))
+    event('F', 'PRESS', xy=(cx, cy))
+    event('F', 'RELEASE', xy=(cx, cy))
+
+
+@step
+def bq_frame_check():
+    rv = view3d()[1].spaces.active.region_3d
+    check(QB.running() and ((rv.view_distance - BQ["dist1"]) ** 2 + (rv.view_location - BQ["loc1"]).length_squared) > 1e-8, "...and F frames the model")
+    # Clicks and keys that edit are blocked: the viewport (a click selects), the Texture Set List, keys that delete or save
+    win, area, region = view3d()
+    cx, cy = region.x + region.width // 2, region.y + region.height // 2
+    BQ["sel1"] = [o.name for o in bpy.data.objects if o.select_get()]
+    BQ["n1"] = len(bpy.data.objects)
+    for xy in ((cx - 60, cy - 60), (cx + 40, cy + 20)):
+        event('MOUSEMOVE', xy=xy)
+        event('LEFTMOUSE', 'PRESS', xy=xy)
+        event('LEFTMOUSE', 'RELEASE', xy=xy)
+    event('MOUSEMOVE', xy=(cx, cy))
+    for key in ('X', 'DEL'):
+        event(key, 'PRESS', xy=(cx, cy))
+        event(key, 'RELEASE', xy=(cx, cy))
+    event('S', 'PRESS', xy=(cx, cy), ctrl=True)
+    event('S', 'RELEASE', xy=(cx, cy), ctrl=True)
+    for key, mods in (('Z', {"ctrl": True}), ('F1', {}), ('TAB', {})):   # undo, another workspace, another mode
+        event(key, 'PRESS', xy=(cx, cy), **mods)
+        event(key, 'RELEASE', xy=(cx, cy), **mods)
+    BQ["mode"], BQ["kind"] = bpy.context.mode, m3d_workspace.workspace_kind(window().workspace)
+    x, y = bq_sets_checkbox()
+    event('MOUSEMOVE', xy=(x, y))
+    event('LEFTMOUSE', 'PRESS', xy=(x, y))
+    event('LEFTMOUSE', 'RELEASE', xy=(x, y))
+    BQ["draws1"] = BQ["draws"][0]
+
+
+@step
+def bq_blocked_check():
+    check([o.name for o in bpy.data.objects if o.select_get()] == BQ["sel1"] and len(bpy.data.objects) == BQ["n1"], "a click in the 3D view, X and Delete change nothing during the bake")
+    check(bpy.context.mode == BQ["mode"] and m3d_workspace.workspace_kind(window().workspace) == BQ["kind"] == 'TEXTURE' and bpy.data.objects.get("Orb_low") is not None,
+          "Ctrl+Z, F1 (another workspace) and Tab (another mode) do nothing during the bake (%s, %s)" % (bpy.context.mode, BQ["kind"]))
+    check(bpy.data.materials["OrbMat"].m3d_set_bake == BQ["swap"], "a click on a Texture Set row (a layer, a list, a panel) is blocked")
+    check(QB.running(), "(the queue is still running)")
+    check(QB._run is not None and time.monotonic() - QB._run.blocked < 5.0, "the guard noted the clicks it stopped (the banner flashes)")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def bq_progress_redraw():
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def bq_progress_shot():
+    e_screenshot("F:/AI/m3d_bake_progress.png")
+    check(QB.text().startswith("Baking") and QB.progress()[1] == 4, "the progress says what bakes: %s (%s)" % (QB.text(), QB.progress()))
+
+
+step(wait_until(lambda: not QB.running(), "the queue to finish", 600))
+
+
+@step
+def bq_done_check():
+    check(not tracebacks(), "no Python error during the queue")
+    check(all(bpy.data.images.get("Orb_low_" + n) is not None for n in ("Normal", "AO", "Curvature", "Thickness")), "the queue baked every map")
+    check(bgg_group_state("Orb") == 'BAKED', "...the group is baked")
+    check(window().workspace.m3d_page_right == "tex_layers", "...and the dock is back on the Layers: results are applied as before")
+    after = bq_flags()
+    check(after[0]["Orb_high"] == BQ["before"][0]["Orb_high"] and after[1:] == BQ["before"][1:], "everything is put back as it was before Bake Mesh Maps was opened: %s vs %s" % (after[1:], BQ["before"][1:]))
+    check(not BV._view["on"] and not any(BV.KEY in o for o in bpy.data.objects) and BV.MATERIAL not in bpy.data.materials, "the Bake mode view is gone with the page")
+    check(QB.progress()[0] == 0 and QB.text() == "", "no progress is shown when it is over")
+    win, area, region = view3d()
+    event('MOUSEMOVE', xy=(region.x + 5, region.y + 5))
+
+
+@step
+def bq_display_open():
+    """The Display Settings that a header offers while a bake runs (they have no setting of the scene) draw without a Python error."""
+    area, region = tex_view()
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=area, region=region, space_data=area.spaces.active):
+        bpy.ops.wm.call_panel('INVOKE_DEFAULT', name="M3D_PT_tex_display_baking", keep_open=True)
+
+
+@step
+def bq_display_check():
+    check(not tracebacks(), "Python error drawing the Display Settings of a bake")
+    event('ESC', 'PRESS')
+    event('ESC', 'RELEASE')
+
+
+# Esc cancels the running job (Blender's own), everything is put back
+@step
+def bq_cancel_open():
+    for name in ("Normal", "AO", "Curvature", "Thickness"):
+        bpy.data.images.remove(bpy.data.images["Orb_low_" + name])
+    bpy.context.scene.m3d_bake_groups["Orb"].state = 'NONE'
+    window().workspace.m3d_page_right = "tex_bake"
+
+
+step(wait_until(lambda: BV._view["on"] and BV._view["areas"] is not None, "the Bake mode view again", 100))
+
+
+@step
+def bq_esc_start():
+    BQ["before"] = bq_flags()
+    BQ["esc_view"] = [(s.link, s.material.name) for s in hp_ob("Orb_high").material_slots]
+    press_ok("m3d.tex_bake_sets", _area=bq_dock())
+
+
+step(wait_until(bq_in_job, "the second bake of the queue to run as a job (Esc)", 200))
+
+
+@step
+def bq_esc():
+    win, area, region = view3d()
+    event('MOUSEMOVE', xy=(region.x + 50, region.y + 50))
+    event('ESC', 'PRESS', xy=(region.x + 50, region.y + 50))
+    event('ESC', 'RELEASE', xy=(region.x + 50, region.y + 50))
+
+
+step(wait_until(lambda: not QB.running(), "Esc to cancel the queue", 200))
+
+
+@step
+def bq_esc_check():
+    check(not tracebacks(), "no Python error when Esc cancels the bake")
+    check(bgg_group_state("Orb") != 'BAKED' and window().workspace.m3d_page_right == "tex_bake", "Esc cancelled the bake: the group is not baked, the Bake page stays")
+
+
+step(wait_until(lambda: BV._view["on"] and BV._view["areas"] is not None, "the Bake mode view comes back after Esc", 100))
+
+
+@step
+def bq_esc_restored():
+    after = bq_flags()
+    check(after[0] == BQ["before"][0] and after[1:] == BQ["before"][1:],
+          "Esc restored everything exactly (selection, hidden, display, slots, engine, samples, device, mode): %s" % [k for k in after[0] if after[0][k] != BQ["before"][0].get(k)])
+    check([(s.link, s.material.name) for s in hp_ob("Orb_high").material_slots] == BQ["esc_view"], "...and the Bake mode view is back as it was")
+
+
+# The Cancel button stops the queue after the map that bakes
+@step
+def bq_cancel_start():
+    BQ["before"] = bq_flags()
+    press_ok("m3d.tex_bake_sets", _area=bq_dock())
+
+
+step(wait_until(bq_in_job, "the second bake of the queue to run as a job (Cancel)", 200))
+
+
+@step
+def bq_cancel_press():
+    dock = bq_dock()
+    press_ok("m3d.bake_cancel", _area=dock)
+    check(QB.cancelling(), "Cancel marks the queue")
+
+
+step(wait_until(lambda: not QB.running(), "Cancel to end the queue", 600))
+
+
+@step
+def bq_cancel_check():
+    check(not tracebacks(), "no Python error when Cancel stops the bake")
+    check(bgg_group_state("Orb") != 'BAKED' and window().workspace.m3d_page_right == "tex_bake", "Cancel stopped the queue: the group is not baked")
+
+
+step(wait_until(lambda: BV._view["on"] and BV._view["areas"] is not None, "the Bake mode view comes back after Cancel", 100))
+
+
+@step
+def bq_cancel_restored():
+    after = bq_flags()
+    check(after[0] == BQ["before"][0] and after[1:] == BQ["before"][1:],
+          "Cancel restored everything exactly: %s" % [k for k in after[0] if after[0][k] != BQ["before"][0].get(k)])
+
+
+# Leaving Bake mode puts the high poly back
+@step
+def bq_leave():
+    window().workspace.m3d_page_right = "tex_layers"
+
+
+step(wait_until(lambda: not BV._view["on"], "the Bake mode view to go away", 100))
+
+
+@step
+def bq_leave_check():
+    high = hp_ob("Orb_high")
+    check(high.hide_get() and high.m3d_pair.parked and [(s.link, s.material.name if s.material else None) for s in high.material_slots] == [('DATA', "OrbHighMat")]
+          and not high.show_transparent and BV.MATERIAL not in bpy.data.materials and BV.KEY not in high,
+          "leaving Bake mode parks the high poly again and gives it its own material back")
+    check(bq_flags()[1:] == BQ["before"][1:], "...and nothing else changed: %s vs %s" % (bq_flags()[1:], BQ["before"][1:]))
+    # A whole bake from the Bake page, undone
+    window().workspace.m3d_page_right = "tex_bake"
+
+
+step(wait_until(lambda: BV._view["on"] and BV._view["areas"] is not None, "the Bake mode view once more", 100))
+
+
+@step
+def bq_last_bake():
+    BQ["state0"] = bpy.context.scene.m3d_bake_groups["Orb"].state
+    for ob in bpy.data.objects:
+        ob.select_set(ob.name == "Orb_low")
+    dock = bq_dock()
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=dock, region=next(r for r in dock.regions if r.type == 'WINDOW'), space_data=dock.spaces.active):
+        res = bpy.ops.m3d.tex_bake_sets('INVOKE_DEFAULT', True)   # (True: the call makes its undo step, as a click on the button does)
+    check(res == {'FINISHED'}, "(the Bake button with its undo step)")
+
+
+step(wait_until(lambda: not QB.running(), "the last queue to finish", 800))
+
+
+@step
+def bq_last_check():
+    check(bgg_group_state("Orb") == 'BAKED' and window().workspace.m3d_page_right == "tex_layers", "(the last bake is done)")
+    check(not tracebacks(), "no Python error in the bake queue tests")
+
+
+@step
+def bq_undo():
+    """One Undo takes the whole queued bake back (the step of the button is the one before the first bake; the queue adds one at its end)."""
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        check(bpy.ops.ed.undo() == {'FINISHED'}, "Undo after a queued bake runs")
+
+
+@step
+def bq_undo_check():
+    entry = bpy.context.scene.m3d_bake_groups.get("Orb")
+    check(entry is not None and entry.state != 'BAKED' and not QB.running(), "...and the group is not baked any more (%s, it was %s before the bake)" % (entry.state if entry else None, BQ["state0"]))
+    check(not tracebacks(), "no Python error in the Undo of the bake")
+
+
+@step
+def bq_cleanup():
+    bpy.types.SpaceView3D.draw_handler_remove(BQ.pop("handle"), 'WINDOW')
+    for ob in list(bpy.data.objects):
+        if ob.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.data.objects.remove(ob)
+    for entry in list(bpy.context.scene.m3d_bake_groups):
+        bpy.context.scene.m3d_bake_groups.remove(0)
+    window().workspace.m3d_page_right = ""
+    bpy.ops.m3d.workspace(kind='MODEL')
 
 
 @step

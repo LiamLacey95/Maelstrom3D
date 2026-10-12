@@ -1238,6 +1238,8 @@ class TOPBAR_HT_m3d_status_line(bpy.types.Header):
     bl_region_type = 'TOOL_HEADER'
 
     def draw(self, context):
+        import m3d_bakeq
+        m3d_bakeq.note_region(context.region)   # (where a click may reach it while a bake runs)
         draw_status_line(self.layout, context)
 
 

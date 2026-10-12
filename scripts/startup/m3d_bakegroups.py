@@ -28,6 +28,7 @@ from bpy.props import CollectionProperty, EnumProperty, FloatProperty, PointerPr
 from bpy.types import Operator, PropertyGroup
 from mathutils import Vector
 
+import m3d_bakeq as Q
 import m3d_layers as L
 import m3d_pair
 import m3d_texture as T
@@ -387,24 +388,26 @@ def ticked(s):
     return [m for m in T.BAKE_MAPS if getattr(s, m[2])]
 
 
-def bake_low(context, low, groups, s, maps, name, others):
-    """The maps of one low poly of a group, from the high polys of the group, with everything else not rendered."""
+def bake_low_steps(context, low, groups, s, maps, name, others):
+    """The maps of one low poly of a group, from the high polys of the group, with everything else not rendered. A generator
+    (m3d_bakeq): it yields the bakes."""
     group = low.m3d_pair.group
     lows, highs = groups[group]
     entry = settings_of(context, group)
     if not low.data.uv_layers:
         raise RuntimeError("%s has no UVs: unwrap it first" % low.name)
     cage = entry.cage if len(lows) == 1 and entry.cage is not None and entry.cage != low else None
+    Q.note(where=group)
     with m3d_pair.quiet(context), T.bake_scene(context, low, highs, hidden_for(context, low, group, groups, entry.ao_scope)):
-        T.bake_maps(context, low, highs, s, maps, name=name, extrusion=entry.extrusion, ray_distance=entry.ray_distance,
-                    cage=cage, others=others, normalise=False)
+        yield from T.bake_maps_steps(context, low, highs, s, maps, name=name, extrusion=entry.extrusion, ray_distance=entry.ray_distance,
+                                     cage=cage, others=others, normalise=False)
 
 
-def bake_set(context, lows, maps, times=None, errors=None, progress=None):
+def bake_set_steps(context, lows, maps, times=None, errors=None, progress=None):
     """Bake `maps` ((key, label, flag) as in T.BAKE_MAPS) of `lows`, low polys of one texture set, each from its own group,
     into the maps of the set. All the low polys of the set: the images start over; some: their islands are added to what
     the images hold. `times` {group: seconds}, `errors` {group: message} (a low poly that fails is skipped; without it the
-    error is raised), `progress()` is called after each low poly. The cage preview is taken away first."""
+    error is raised), `progress()` is called after each low poly. The cage preview is taken away first. A generator (m3d_bakeq)."""
     cage_hide()
     name, every = T.texture_set(lows[0])
     s = T.bake_owner(lows[0]).m3d_bake
@@ -419,7 +422,7 @@ def bake_set(context, lows, maps, times=None, errors=None, progress=None):
         for low in targets:
             t0 = time.perf_counter()
             try:
-                bake_low(context, low, groups, s, todo, name, others)
+                yield from bake_low_steps(context, low, groups, s, todo, name, others)
             except RuntimeError as err:
                 if errors is None:
                     raise
@@ -429,14 +432,19 @@ def bake_set(context, lows, maps, times=None, errors=None, progress=None):
             if progress is not None:
                 progress()
 
-    run(lows, maps if whole else [m for m in maps if m[0] != 'POSITION'])
+    yield from run(lows, maps if whole else [m for m in maps if m[0] != 'POSITION'])
     if position and not whole:   # (the map is scaled to the bounds of the whole set: all of it is baked again)
         T.forget_parts(name, ["Position"])
-        run(every, [m for m in maps if m[0] == 'POSITION'])
+        yield from run(every, [m for m in maps if m[0] == 'POSITION'])
     image = bpy.data.images.get("%s_Position" % name)
     if position and image is not None:
         geometry = {o.name: o for low in every for o in (groups[low.m3d_pair.group][1] or [low])}
         T.normalise_position(image, list(geometry.values()), every[0])
+
+
+def bake_set(context, lows, maps, times=None, errors=None, progress=None):
+    """`bake_set_steps`, each bake a blocking call."""
+    Q.drive(bake_set_steps(context, lows, maps, times, errors, progress))
 
 
 def bake_groups_done(context, groups, names):
@@ -497,39 +505,84 @@ class Refused(RuntimeError):
     """Nothing to bake (no low poly, no map ticked): a warning, not an error."""
 
 
-def bake_group(context, group):
-    """Bake the ticked maps of every low poly of `group` from the high polys of the group, into the maps of the texture sets the
-    low polys are in (the low polys that share a material bake into the same images). Returns the maps and the size of the last
-    set. Raises Refused, or RuntimeError for a bake that failed."""
-    groups = m3d_pair.all_groups(context)
-    lows = groups.get(group, ([], []))[0]
+def group_sets(context, group):
+    """{texture set name: its low polys among the low polys of `group`}; Refused when the group has no low poly."""
+    lows = m3d_pair.all_groups(context).get(group, ([], []))[0]
     if not lows:
         raise Refused("%s has no low poly to bake onto" % (group or "No group"))
     sets = {}
     for low in lows:
         sets.setdefault(T.texture_set(low)[0], []).append(low)
-    wm = context.window_manager
-    wm.progress_begin(0, len(lows))
-    step, shown = stepper(wm), []
-    try:
-        for name, set_lows in sets.items():
-            s = T.bake_owner(set_lows[0]).m3d_bake
-            maps = ticked(s)
-            if not maps:
-                raise Refused("Tick at least one map")
-            bake_set(context, set_lows, maps, progress=step)
-            record_baked(s, name, maps)
-            shown = maps
-    finally:
-        wm.progress_end()
+    return sets
+
+
+def bake_group_steps(context, group, progress=None):
+    """Bake the ticked maps of every low poly of `group` from the high polys of the group, into the maps of the texture sets the
+    low polys are in (the low polys that share a material bake into the same images). A generator (m3d_bakeq): it yields the
+    bakes and returns the maps and the size of the last set. Raises Refused, or RuntimeError for a bake that failed."""
+    groups = m3d_pair.all_groups(context)
+    sets = group_sets(context, group)
+    lows = groups[group][0]
+    shown = []
+    for name, set_lows in sets.items():
+        s = T.bake_owner(set_lows[0]).m3d_bake
+        maps = ticked(s)
+        if not maps:
+            raise Refused("Tick at least one map")
+        yield from bake_set_steps(context, set_lows, maps, progress=progress)
+        record_baked(s, name, maps)
+        shown = maps
     bake_groups_done(context, groups, [group])
     L.use_baked_maps(context, lows)   # (their texture sets show the Normal and AO maps)
     return shown, T.bake_owner(lows[0]).m3d_bake.resolution
 
 
+def bake_group(context, group):
+    """`bake_group_steps`, each bake a blocking call, with the progress bar of the window."""
+    wm = context.window_manager
+    wm.progress_begin(0, sum(len(lows) for lows in group_sets(context, group).values()))
+    try:
+        return Q.drive(bake_group_steps(context, group, stepper(wm)))
+    finally:
+        wm.progress_end()
+
+
+def bake_count(context, group):
+    """How many bakes (operator calls) baking `group` makes: the ticked maps for each low poly (Position bakes again when a set is only
+    partly baked)."""
+    count = 0
+    for set_lows in group_sets(context, group).values():
+        every = T.texture_set(set_lows[0])[1]
+        maps = ticked(T.bake_owner(set_lows[0]).m3d_bake)
+        count += len(maps) * len(set_lows) + (len(every) if len(set_lows) < len(every) and any(m[0] == 'POSITION' for m in maps) else 0)
+    return count
+
+
+def group_job(context, group):
+    """The Job (m3d_bakeq) that bakes a group."""
+    def finish(context, report, result, error):
+        if error is Q.CANCELLED:
+            report('WARNING', "Baking %s was cancelled" % group)
+            return False
+        if error is not None:
+            report('WARNING' if isinstance(error, Refused) else 'ERROR', str(error).strip())
+            return False
+        maps, size, seconds = result
+        T.after_bake(context)   # (the 3D view shows the material, the dock is back on the Layers)
+        report('INFO', "Baked %s: %s at %s px in %.1f s" % (group, ", ".join(m[1] for m in maps), size, seconds))
+        return True
+
+    def steps():
+        t0 = time.perf_counter()
+        maps, size = yield from bake_group_steps(context, group)
+        return maps, size, time.perf_counter() - t0
+    return Q.Job("Bake " + group, steps(), bake_count(context, group), finish)
+
+
 class M3D_OT_bg_bake(Operator):
     """Bake the maps ticked in the Bake tab for every low poly of a group, from the high poly meshes of that group (only
-    they are baked from, and nothing else shadows them). Low polys that share a material bake into the same images"""
+    they are baked from, and nothing else shadows them). Low polys that share a material bake into the same images. The window
+    keeps working meanwhile (Esc cancels)"""
     bl_idname = "m3d.bg_bake"
     bl_label = "Bake Group"
     bl_options = {'REGISTER', 'UNDO'}
@@ -539,70 +592,96 @@ class M3D_OT_bg_bake(Operator):
     @classmethod
     def poll(cls, context):
         ob = mesh_of(context)
-        return m3d_pair.grouped(ob) and bool(m3d_pair.group_of(context, ob.m3d_pair.group)[0])
+        return m3d_pair.grouped(ob) and bool(m3d_pair.group_of(context, ob.m3d_pair.group)[0]) and not Q.running()
 
-    def execute(self, context):
+    def job(self, context):
         ob = mesh_of(context)
         group = self.group or (ob.m3d_pair.group if m3d_pair.grouped(ob) else "")
-        t0 = time.perf_counter()
         try:
-            maps, size = bake_group(context, group)
+            return group_job(context, group)
         except Refused as err:
             self.report({'WARNING'}, str(err))
-            return {'CANCELLED'}
-        except RuntimeError as err:
-            self.report({'ERROR'}, str(err).strip())
-            return {'CANCELLED'}
-        T.after_bake(context)   # (the 3D view shows the material, the dock is back on the Layers)
-        self.report({'INFO'}, "Baked %s: %s at %s px in %.1f s" % (group, ", ".join(m[1] for m in maps), size, time.perf_counter() - t0))
-        return {'FINISHED'}
+            return None
+
+    def execute(self, context):
+        job = self.job(context)
+        return {'FINISHED'} if job is not None and Q.run_blocking(context, job, lambda level, text: self.report({level}, text)) else {'CANCELLED'}
+
+    def invoke(self, context, _event):
+        job = self.job(context)
+        return {'FINISHED'} if job is not None and Q.run_queued(context, job) else {'CANCELLED'}
+
+
+def all_sets(context):
+    """{texture set name: its low polys} of every group, in the order of the first group of each set."""
+    sets = {}
+    for lows, _highs in m3d_pair.all_groups(context).values():
+        for low in lows:
+            name, every = T.texture_set(low)
+            sets[name] = every
+    return sets
+
+
+def bake_all_steps(context):
+    """Bake every group, set after set (a generator, m3d_bakeq). Returns ({group: seconds}, {group: error}, seconds)."""
+    groups = m3d_pair.all_groups(context)
+    times, errors, t0 = {}, {}, time.perf_counter()
+    for name, every in all_sets(context).items():
+        s = T.bake_owner(every[0]).m3d_bake
+        maps = ticked(s)
+        if not maps:
+            errors[name] = "no map is ticked"
+            continue
+        yield from bake_set_steps(context, every, maps, times, errors)
+        record_baked(s, name, maps)
+    baked = [g for g in times if g not in errors]
+    bake_groups_done(context, groups, baked)
+    L.use_baked_maps(context, [low for g in baked for low in groups[g][0]])
+    return times, errors, time.perf_counter() - t0
+
+
+def bake_all_job(context):
+    """The Job (m3d_bakeq) that bakes every group. A group that fails is skipped and reported."""
+    def finish(context, report, result, error):
+        if error is Q.CANCELLED:
+            report('WARNING', "Baking was cancelled")
+            return False
+        if error is not None:
+            report('ERROR', str(error).strip())
+            return False
+        times, errors, seconds = result
+        baked = [g for g in times if g not in errors]
+        for group in baked:
+            report('INFO', "%s: %.1f s" % (group, times[group]))
+        if errors:
+            report('WARNING', "Not baked: " + "; ".join("%s (%s)" % item for item in errors.items()))
+        if not baked:
+            return False
+        T.after_bake(context)
+        report('INFO', "Baked %s in %.1f s" % (m3d_pair.plural(len(baked), "group"), seconds))
+        return True
+
+    total = sum(bake_count(context, group) for group, (lows, _highs) in m3d_pair.all_groups(context).items() if lows)
+    return Q.Job("Bake All", bake_all_steps(context), total, finish)
 
 
 class M3D_OT_bg_bake_all(Operator):
     """Bake every group, one after the other, with the maps ticked in the Bake tab. A group that fails is skipped and
-    reported. Low polys that share a material bake into the same images; one Undo takes the whole bake back"""
+    reported. Low polys that share a material bake into the same images; one Undo takes the whole bake back. The window keeps
+    working meanwhile (Esc cancels)"""
     bl_idname = "m3d.bg_bake_all"
     bl_label = "Bake All"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
-        return any(lows for lows, _highs in m3d_pair.all_groups(context).values())
+        return any(lows for lows, _highs in m3d_pair.all_groups(context).values()) and not Q.running()
 
     def execute(self, context):
-        groups = m3d_pair.all_groups(context)
-        sets = {}   # texture set -> its low polys, the sets in the order of their first group
-        for lows, _highs in groups.values():
-            for low in lows:
-                name, every = T.texture_set(low)
-                sets[name] = every
-        total = sum(len(every) for every in sets.values())
-        wm = context.window_manager
-        wm.progress_begin(0, total)
-        step, times, errors, t0 = stepper(wm), {}, {}, time.perf_counter()
-        try:
-            for name, every in sets.items():
-                s = T.bake_owner(every[0]).m3d_bake
-                maps = ticked(s)
-                if not maps:
-                    errors[name] = "no map is ticked"
-                    continue
-                bake_set(context, every, maps, times, errors, progress=step)
-                record_baked(s, name, maps)
-        finally:
-            wm.progress_end()
-        baked = [g for g in times if g not in errors]
-        bake_groups_done(context, groups, baked)
-        L.use_baked_maps(context, [low for g in baked for low in groups[g][0]])
-        for group in baked:
-            self.report({'INFO'}, "%s: %.1f s" % (group, times[group]))
-        if errors:
-            self.report({'WARNING'}, "Not baked: " + "; ".join("%s (%s)" % item for item in errors.items()))
-        if not baked:
-            return {'CANCELLED'}
-        T.after_bake(context)
-        self.report({'INFO'}, "Baked %s in %.1f s" % (m3d_pair.plural(len(baked), "group"), time.perf_counter() - t0))
-        return {'FINISHED'}
+        return {'FINISHED'} if Q.run_blocking(context, bake_all_job(context), lambda level, text: self.report({level}, text)) else {'CANCELLED'}
+
+    def invoke(self, context, _event):
+        return {'FINISHED'} if Q.run_queued(context, bake_all_job(context)) else {'CANCELLED'}
 
 
 # -----------------------------------------------------------------------------

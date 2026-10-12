@@ -554,6 +554,14 @@ class M3D_PT_workspace_settings(Panel):
             row = layout.row()
             row.label(text="Face limit")
             row.prop(ws, "m3d_face_limit", text="")
+        if kind == 'TEXTURE':
+            import m3d_bakeq
+            layout.separator()
+            layout.prop(bpy.context.scene.m3d_tex, "bake_gpu")
+            m3d_bakeq.check_gpu_soon()
+            row = layout.row()
+            row.active = False
+            row.label(text=m3d_bakeq.device_note(bpy.context), translate=False)
         layout.separator()
         layout.operator("screen.userpref_show", text="Keyboard Shortcuts...", icon='KEYINGSET').section = 'KEYMAP'
         layout.operator("wm.save_homefile", text="Save Layouts as Default", icon='FILE_TICK')
