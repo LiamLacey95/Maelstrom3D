@@ -575,22 +575,24 @@ Export, glTF included, uses the flattened visible stack of each channel (the Nor
 when the layer images add up to more than twelve 4K images of memory.
 
 **The Layers panel.** The header has, from the left, the **channel dropdown** and these icon buttons: **Add Effect** (a menu:
-Generator, Paint, Fill, Levels, Filter, Color ID: they are the effects of the selected layer's mask, see Masks), **Add Mask** (a
-menu: White Mask, Black Mask, Mask with Color Selection, which is a Color ID effect, and Image Mask, which reads an image file),
+Add Fill, Add Paint, Add Generator and Add Filter (menus of the generators and the filters), Add Levels, Add Color Selection (a
+Color ID effect): they are the effects of the selected layer's mask, see Masks), **Add Mask** (a
+menu: White Mask, Black Mask and Image Mask, which reads an image file, then the same Add items as Add Effect),
 **Add Paint Layer**, **Add Fill Layer**, **Add Smart Material** (a grid of the smart materials of the Library: a click adds one as a
 folder), **Add Folder** and **Delete**. The **...** menu has Merge Down, Flatten, Group, Move In and Move Out, Freeze (Unfreeze),
-Merge Folder, Convert to Paint Layer and Cut, Copy and Paste. The list shows the top layer first. A row has the eye, the folder
-triangle (folders), the **content thumbnail**, the **mask thumbnail** when the layer has a mask, the name, and at the right the
-blend mode (a short name: Norm, Pthr, Repl, Mult, Add ...) over the opacity. The thumbnail is a small picture of the layer's image,
+Merge Folder, Convert to Paint Layer and Cut, Copy and Paste. The list shows the top layer first. A row is one line: the eye, the folder
+triangle (folders), the **content thumbnail**, the **mask thumbnail** when the layer has a mask, the name (a double-click renames
+it), and at the right the blend mode (a short name: Norm, Pthr, Repl, Mult, Add ...) over the opacity. The columns have the
+same width in every row, so the names line up. The thumbnail is a small picture of the layer's image,
 a flat swatch for a fill, a folder icon for a folder, and the layer's kind in grey when it has nothing in the channel. The mask
 thumbnail is the picture of the mask's Paint effect, or the icon of its top effect when it has none (a generator). The row
 at its right shows **the channel picked in the dropdown**: the thumbnail, the blend mode and the opacity of Base Color, Roughness,
 Metallic, Normal, Height or Emission (it changes nothing else: the other channels keep their own). A click on a thumbnail selects
 the layer (Properties shows the layer); a click on the mask thumbnail selects the mask (Properties - Mask), **Alt+click** shows the
 mask alone in the 3D view (Show Mask, again to go back) and **Shift+click** switches the mask off and on (the layer shows as if it
-had none; the mask is kept, and the Mask section has the same switch). The active layer lists the effects of its mask under it, each
-with an eye, its icon, its name, blend mode, opacity and an **x** that removes it: a click on the name selects the effect
-(Properties - Mask). The arrows beside the list move the active layer (a list cannot be dragged); the button under them duplicates it.
+had none; the mask is kept, and the Mask section has the same switch). The active layer lists the effects of its mask under it, each in
+a thin row with an eye, its icon and name, blend mode (a filter has none), opacity and an **x** that removes it: a click on the
+name selects the effect (Properties - Mask). The arrows beside the list move the active layer (a list cannot be dragged); the button under them duplicates it.
 
 The blend modes are Normal (a mix), **Passthrough** (the layer does not touch this channel: it has no nodes in it and nothing
 is exported for it), **Replace** (the layer's pixels replace what is below, also where its image is transparent; opacity and
@@ -608,7 +610,12 @@ blend mode and opacity of every channel. Layers from older files open with their
 first): **Cut**, **Copy**, **Paste**, **Duplicate**, **Delete**, **Group**, **Add Effect**, **Add Mask**, **Create Smart Material**
 (on a folder: the same as Save to Library), **Create Smart Mask** (on a layer with a mask), **Merge Down**, **Flatten** and **Freeze**
 (Unfreeze). Copy and Cut take the active layer (a folder with its layers); Paste puts a copy above the active layer, with its own
-images, also in another material (after Cut it moves the layer instead). In the Layers tab the keys are Ctrl+C, Ctrl+X, Ctrl+V
+images, also in another material (after Cut it moves the layer instead). A right-click on the **mask thumbnail**, on an effect row
+of its mask, or on the effects in the Mask panel opens the **mask menu** instead, for that layer: **Add Fill**, **Add Paint**
+(white or black), **Add Generator** and **Add Filter** (menus), **Add Levels**, **Add Color Selection**, then **Invert Mask**,
+**Toggle Mask**, **Clear Mask** (to white or to black), **Copy Mask**, **Paste Mask** (replaces the mask of the layer with a copy,
+also from another material), **Create Smart Mask** and **Remove Mask**. From an effect row a new effect goes above that effect.
+The Mask panel has the same menu behind its **...** button. In the Layers tab the keys are Ctrl+C, Ctrl+X, Ctrl+V
 (also Ctrl+Shift+V), Ctrl+D, Ctrl+G and Delete. Blender uses the buttons first: with the pointer on a number field or a name,
 Ctrl+D adds a driver and Ctrl+V pastes text into it, so point at a thumbnail or at empty space when you use the keys (Ctrl+V
 needs empty space; Ctrl+Shift+V works over a thumbnail).

@@ -3421,8 +3421,9 @@ check("blend" not in {r._args[1] for r in log if r._kind == "prop"}, "a filter's
 log = []
 T.M3D_MT_mask_add.draw(NS(layout=Rec(log)), mctx)
 added = [r for r in log if r._kind == "operator"]
-check({r._kw["text"] if "text" in r._kw else "" for r in added} >= {"Paint (White)", "Paint (Black)", "Edges", "Cavity", "Top-down", "Thickness", "Noise", "Levels", "Blur", "Invert", "Sharpen"},
-      "the Add menu lists Paint, Fill, the generators and the filters")
+check({r._kw["text"] for r in added} == {"Add Fill", "Add Paint (White)", "Add Paint (Black)", "Add Levels", "Add Color Selection"}
+      and [r._args[0] for r in log if r._kind == "menu"] == ["M3D_MT_mask_generator", "M3D_MT_mask_filter"],
+      "the Add menu lists Fill, Paint, Levels, Color Selection and the Generator and Filter menus")
 check_calls("mask add menu", log)
 mtop.mask_stack.clear()
 log = draw_stub(T.PROPERTIES_PT_m3d_tx_mask, mctx)
@@ -9324,7 +9325,7 @@ if "Id_low_ID" in bpy.data.images:   # (the maps of the tests above are not this
     bpy.data.images.remove(bpy.data.images["Id_low_ID"])
 idm_menu = []
 T.M3D_MT_mask_add.draw(type("Inst", (), {"layout": Rec(idm_menu)})(), bpy.context)
-check("COLORID" in [r.kind for r in idm_menu if r._kind == "operator"], "Add Mask Effect lists Color ID with the generators")
+check("COLORID" in [r.kind for r in idm_menu if r._kind == "operator"], "Add Mask Effect lists Color Selection (Color ID)")
 check(bpy.ops.m3d.mask_effect_add(kind='COLORID') == {'FINISHED'}, "add a Color ID effect (it bakes the ID map)")
 idm_e = idm_top.mask_stack[0]
 idm_img = bpy.data.images.get("Id_low_ID")
@@ -10802,23 +10803,38 @@ log = []
 LY.draw_effect_items(Rec(log))
 check_calls("Add Effect menu", log)
 adds = [(r.values().get("kind"), r.values().get("fill")) for r in log if r._kind == "operator"]
-check({k for k, _f in adds} == {'EDGES', 'CAVITY', 'TOPDOWN', 'THICKNESS', 'NOISE', 'PAINT', 'FILL', 'LEVELS', 'BLUR', 'INVERT', 'SHARPEN', 'COLORID'}
-      and ('PAINT', 'WHITE') in adds and ('PAINT', 'BLACK') in adds and {r._kw["text"] for r in log if r._kind == "label"} == {"Generator", "Filter"},
-      "Add Effect lists the mask effects: %s" % adds)
-labels = [r._kw["text"] for r in log if r._kind in {"label", "operator"}]
-check(labels.index("Generator") < labels.index("Paint (White)") < labels.index("Fill") < labels.index("Levels") < labels.index("Filter") < labels.index("Color ID"),
-      "...Generator, Paint, Fill, Levels, Filter, Color ID in that order")
+check(adds == [('FILL', 'WHITE'), ('PAINT', 'WHITE'), ('PAINT', 'BLACK'), ('LEVELS', 'WHITE'), ('COLORID', 'WHITE')]
+      and all(r._kw.get("icon") for r in log if r._kind in {"operator", "menu"}), "Add Effect lists Fill, Paint (white, black), Levels and Color Selection: %s" % adds)
+order = [r._kw["text"] if r._kind == "operator" else r._args[0] for r in log if r._kind in {"operator", "menu"}]
+check(order == ["Add Fill", "Add Paint (White)", "Add Paint (Black)", "M3D_MT_mask_generator", "Add Levels", "M3D_MT_mask_filter", "Add Color Selection"],
+      "...with the Generator and Filter menus between them in the order Fill, Paint, Generator, Levels, Filter, Color Selection: %s" % order)
+check(all(hasattr(bpy.types, n) for n in ("M3D_MT_mask_generator", "M3D_MT_mask_filter", "M3D_MT_mask_clear", "M3D_MT_mask_more")), "the submenus are registered")
+for menu_, want_ in ((LY.M3D_MT_mask_generator, ['EDGES', 'CAVITY', 'TOPDOWN', 'THICKNESS', 'NOISE']), (LY.M3D_MT_mask_filter, ['BLUR', 'INVERT', 'SHARPEN'])):
+    LY._menu_target.update(uid=None, pick=-1)
+    log = []
+    menu_.draw(NS(layout=Rec(log)), th_ctx)
+    check_calls(menu_.bl_label, log)
+    check([r.values().get("kind") for r in log if r._kind == "operator"] == want_ and all(r._args[0] == "m3d.mask_effect_add" for r in log if r._kind == "operator"),
+          "%s lists %s" % (menu_.bl_label, want_))
 log = []
 LY.draw_mask_items(Rec(log))
 check_calls("Add Mask menu", log)
-mask_items = [(r._args[0], r.values().get("fill"), r.values().get("kind")) for r in log if r._kind == "operator"]
-check(mask_items == [("m3d.layer_mask_add", 'WHITE', None), ("m3d.layer_mask_add", 'BLACK', None), ("m3d.mask_effect_add", None, 'COLORID'), ("m3d.layer_mask_image", None, None)],
-      "Add Mask: white, black, with color selection (Color ID), image: %s" % mask_items)
+mask_items = [(r._args[0], r.values().get("fill")) for r in log if r._kind == "operator"]
+check(mask_items == [("m3d.layer_mask_add", 'WHITE'), ("m3d.layer_mask_add", 'BLACK'), ("m3d.layer_mask_image", None)],
+      "Add Mask: white, black, from an image: %s" % mask_items)
 log = []
 LY.draw_mask_items(Rec(log), "abc")
 check_calls("Add Mask menu (list)", log)
-check([r.values().get("action") for r in log if r._kind == "operator"] == ['MASK_WHITE', 'MASK_BLACK', 'MASK_COLORID', 'MASK_IMAGE'] and all(r.values().get("uid") == "abc" for r in log if r._kind == "operator"),
+check([r.values().get("action") for r in log if r._kind == "operator"] == ['MASK_WHITE', 'MASK_BLACK', 'MASK_IMAGE'] and all(r.values().get("uid") == "abc" for r in log if r._kind == "operator"),
       "...the same items in the right-click menu run on the layer under the pointer")
+log_mask, log_effect = [], []
+LY.M3D_MT_layer_mask_add.draw(NS(layout=Rec(log_mask)), th_ctx)
+LY.M3D_MT_layer_effect_add.draw(NS(layout=Rec(log_effect)), th_ctx)
+check_calls("header Add Mask menu", log_mask)
+items_mask = [(r._args[0], r.values().get("kind"), r.values().get("fill")) for r in log_mask if r._kind in {"operator", "menu"}]
+items_effect = [(r._args[0], r.values().get("kind"), r.values().get("fill")) for r in log_effect if r._kind in {"operator", "menu"}]
+check(items_effect and items_mask[-len(items_effect):] == items_effect and [i[0] for i in items_mask[:3]] == ["m3d.layer_mask_add", "m3d.layer_mask_add", "m3d.layer_mask_image"],
+      "the Add Mask and Add Effect buttons of the header offer the same Add items (Add Mask has the ways to start a mask first)")
 log = []
 LIB.M3D_PT_lib_smart.draw(NS(layout=Rec(log)), th_ctx)
 check_calls("Add Smart Material popover", log)
@@ -10832,7 +10848,8 @@ check({"m3d.layer_merge_down", "m3d.layer_flatten", "m3d.layer_folder_add", "m3d
        "m3d.layer_copy", "m3d.layer_paste"} <= {r._args[0] for r in log if r._kind in {"operator", "operator_menu_enum"}}, "the ... menu has Merge Down, Flatten, Group, Move In / Out, Freeze and the clipboard")
 
 # --- The right-click menu: items of the list item context menu, for this list only
-check(LY.draw_list_menu in bpy.types.UI_MT_list_item_context_menu._dyn_ui_initialize(), "the commands are items of the list item context menu")
+check(LY.draw_list_menu in bpy.types.UI_MT_button_context_menu._dyn_ui_initialize() and LY.draw_list_menu not in bpy.types.UI_MT_list_item_context_menu._dyn_ui_initialize(),
+      "the commands are items of the button context menu (the list item menu opens over the top of a row only), not of the list item menu")
 
 
 class MenuCtx(TCtx):
@@ -10846,8 +10863,15 @@ class MenuCtx(TCtx):
             self.button_pointer = layer
         elif pointer == "effect":
             self.button_pointer = layer.mask_stack[0]
+        elif pointer == "mask":
+            self.button_operator = NS(index=LY.index_of(layer.id_data, layer.uid), part='MASK', effect=-1)
+        elif pointer == "effect_button":
+            self.button_operator = NS(index=LY.index_of(layer.id_data, layer.uid), part='EFFECT', effect=0)
+        elif pointer == "mask_list":   # (the effect rows of the Mask panel)
+            self.ui_list = NS(bl_idname="M3D_UL_mask_effects")
+            self.button_pointer = layer.mask_stack[0]
         else:
-            self.button_operator = NS(index=LY.index_of(layer.id_data, layer.uid))
+            self.button_operator = NS(index=LY.index_of(layer.id_data, layer.uid), part='LAYER', effect=-1)
 
 
 use_material(cb_mat)
@@ -10855,7 +10879,7 @@ cb_mat.m3d_layer_index = 0
 folder_cb = LY.add_layer(cb_mat, 'FOLDER', "MenuFolder")
 LY.rebuild_all(cb_mat)
 target = named(cb_mat, "L1")
-for pointer in ("entry", "layer", "effect", "operator"):
+for pointer in ("entry", "layer", "operator"):
     log = []
     LY.draw_list_menu(NS(layout=Rec(log)), MenuCtx(target, pointer))
     check_calls("right-click menu (%s)" % pointer, log)
@@ -10873,11 +10897,15 @@ LY.draw_list_menu(NS(layout=Rec(log)), TCtx())
 LY.draw_list_menu(NS(layout=Rec(log)), type("OtherList", (TCtx,), {"ui_list": NS(bl_idname="MATERIAL_UL_matslots")})())
 check(not log, "outside our list the menu adds nothing")
 log = []
-LY._menu_target["uid"] = target.uid
+LY._menu_target.update(uid=target.uid, pick=-1)
 LY.M3D_MT_layer_ctx_effect_add.draw(NS(layout=Rec(log)), th_ctx)
 check_calls("right-click Add Effect", log)
 check(all(r.values().get("uid") == target.uid and r.values().get("action") == 'EFFECT' for r in log if r._kind == "operator")
-      and {r.values().get("effect") for r in log if r._kind == "operator"} >= {'NOISE', 'COLORID', 'PAINT'}, "the right-click Add Effect items run on that layer, with the effect kind")
+      and {r.values().get("effect") for r in log if r._kind == "operator"} >= {'FILL', 'COLORID', 'PAINT', 'LEVELS'}, "the right-click Add Effect items run on that layer, with the effect kind")
+log = []
+LY.M3D_MT_mask_generator.draw(NS(layout=Rec(log)), th_ctx)
+check({r.values().get("effect") for r in log if r._kind == "operator"} == set(LY.GENERATORS) and all(r.values().get("uid") == target.uid for r in log if r._kind == "operator"),
+      "...and so do the items of its Generator menu")
 
 # --- The keys over the stack
 for key, action, mods in (('C', 'COPY', {"ctrl": True}), ('X', 'CUT', {"ctrl": True}), ('V', 'PASTE', {"ctrl": True}), ('D', 'DUPLICATE', {"ctrl": True}),
@@ -12223,6 +12251,264 @@ ld_mat = bpy.data.materials["LoadLook_Material"]
 check(ld_mat.m3d_baked_normal == bpy.data.images["LoadLook_Normal"] and ld_mat.m3d_baked_ao == bpy.data.images["LoadLook_AO"] and "m3d_layer.NORMAL.encode" in ld_mat.node_tree.nodes
       and LY.principled_of(ld_mat).inputs["Base Color"].links[0].from_node.name == LY.AO_MUL, "opening the file puts its baked Normal and AO maps in the shader of the texture set")
 shutil.rmtree(ld_dir, ignore_errors=True)
+
+# ----------------------------------------------------------------------------------------------------
+# Compact layer rows and the mask menu (the Layers tab of the Texture workspace)
+
+rw_ctx = TCtx()
+rw_tex = bpy.context.scene.m3d_tex
+rw_tex.props_mode = 'AUTO'
+
+
+def rw_row(name, active=None, mat=None):
+    """The calls that draw the list row of the layer `name` while the layer `active` (default: that one) is the active one."""
+    mat = mat or rw_mat
+    mat.m3d_layer_index = LY.index_of(mat, named(mat, active or name).uid)
+    log = []
+    LY.M3D_UL_layers.draw_item(None, rw_ctx, Rec(log), None, named(mat, name), 0, None, "", LY.index_of(mat, named(mat, name).uid))
+    check_calls("row of %s" % name, log)
+    return log
+
+
+def rw_lead(log):
+    """What comes before the name in a row: separators (the indent), eye, arrow or its blank, thumbnail, mask thumbnail or its blank."""
+    items = [r for r in log if r._kind in {"prop", "operator", "label", "separator"}]
+    first = next(i for i, r in enumerate(items) if r._kind == "prop" and r._args[1] == "name")
+    return [r._kind if r._kind != "operator" else r._args[0] for r in items[:first]]
+
+
+def rw_at(log, pred):
+    return next(i for i, r in enumerate(log) if pred(r))
+
+
+# --- A stack with no folder and no mask has no arrow column and no mask column
+rw_ob2, rw_mat2 = fresh_cube("Rows3h", '64')
+bpy.ops.m3d.layer_add(kind='PAINT')
+LY.active_layer(rw_mat2).name = "One"
+bpy.ops.m3d.layer_add(kind='PAINT')
+LY.active_layer(rw_mat2).name = "Two"
+check(rw_lead(rw_row("One", mat=rw_mat2)) == ["prop", "m3d.layer_pick"], "a stack without folders or masks has no arrow or mask column: %s" % rw_lead(rw_row("One", mat=rw_mat2)))
+
+# --- The rows: one line per layer, a column has the same width in every row
+rw_ob, rw_mat = fresh_cube("Rows3g", '64')
+bpy.ops.m3d.layer_add(kind='PAINT')
+LY.active_layer(rw_mat).name = "Base"
+bpy.ops.m3d.layer_mask_add(fill='WHITE')
+bpy.ops.m3d.layer_add(kind='FILL')
+LY.active_layer(rw_mat).name = "Tint"
+bpy.ops.m3d.layer_mask_add(fill='BLACK')
+bpy.ops.m3d.mask_effect_add(kind='NOISE')
+bpy.ops.m3d.mask_effect_add(kind='BLUR')
+bpy.ops.m3d.layer_add(kind='PAINT')
+LY.active_layer(rw_mat).name = "Inner"
+bpy.ops.m3d.layer_folder_add(group=True)
+LY.active_layer(rw_mat).name = "Group"
+bpy.ops.m3d.layer_add(kind='PAINT')
+LY.active_layer(rw_mat).name = "Plain"
+check([l.name for l in rw_mat.m3d_layers] == ["Base", "Tint", "Inner", "Group", "Plain"] and named(rw_mat, "Inner").parent == named(rw_mat, "Group").uid,
+      "(the stack of the row tests: %s)" % [l.name for l in rw_mat.m3d_layers])
+tint = named(rw_mat, "Tint")
+check(LY.ROW <= 1.6 and LY.EFFECT_ROW <= 1.0, "a layer row is one line (%.2f widget heights), the effect rows are thin (%.2f)" % (LY.ROW, LY.EFFECT_ROW))
+rows_log = {name: rw_row(name) for name in ("Base", "Tint", "Group", "Inner", "Plain")}
+for name, log in rows_log.items():
+    lead = rw_lead(log)
+    check(len([k for k in lead if k != "separator"]) == 4 and lead.count("separator") == LY.depth_of(named(rw_mat, name)),
+          "the row of %s has four columns left of its name (eye, arrow, thumbnail, mask), indented by its depth: %s" % (name, lead))
+check(rw_lead(rows_log["Base"]) == rw_lead(rows_log["Tint"]) == ["prop", "label", "m3d.layer_pick", "m3d.layer_pick"]
+      and rw_lead(rows_log["Plain"]) == ["prop", "label", "m3d.layer_pick", "label"]
+      and rw_lead(rows_log["Group"]) == ["prop", "prop", "m3d.layer_pick", "label"]
+      and rw_lead(rows_log["Inner"]) == ["separator", "prop", "label", "m3d.layer_pick", "label"],
+      "the columns are the same in every row (a blank takes the place of a missing arrow or mask), so the names line up: %s" % {k: rw_lead(v) for k, v in rows_log.items()})
+log = rows_log["Base"]
+order = [rw_at(log, lambda r: r._kind == "prop" and r._args[1] == "visible"),
+         rw_at(log, lambda r: r._kind == "operator" and r._args[0] == "m3d.layer_pick" and "part" not in r.values()),
+         rw_at(log, lambda r: r._kind == "operator" and r._args[0] == "m3d.layer_pick" and r.values().get("part") == 'MASK'),
+         rw_at(log, lambda r: r._kind == "prop" and r._args[1] == "name"),
+         rw_at(log, lambda r: r._kind == "prop_menu_enum" and r._args[1] == "blend"),
+         rw_at(log, lambda r: r._kind == "prop" and r._args[1] == "opacity")]
+check(order == sorted(order), "a row reads: eye, thumbnail, mask thumbnail, name, blend mode, opacity")
+name_prop = log[rw_at(log, lambda r: r._kind == "prop" and r._args[1] == "name")]
+check(name_prop._kw.get("text") == "" and name_prop._kw.get("emboss") is False, "the name is the layer's name property in the list (left-aligned text, double-click renames)")
+rows_ = [r for r in log if r._kind == "row"]
+check(rows_[0].values().get("scale_y") == LY.ROW and LY.ROW in [r.values().get("scale_x") for r in rows_], "the row has one height and its thumbnails are as wide")
+check([r for r in log if r._kind == "column"][1].values().get("scale_y") == LY.ROW / 2, "the blend mode and the opacity are stacked at the right, as high as the row together")
+check(not [r for r in rw_row("Base", active="Plain") if r._kind == "operator" and r.values().get("part") == 'EFFECT'], "a layer that is not active lists no effects")
+
+# --- The effect rows of the active layer's mask: thin, indented, aligned
+rw_tex.props_mode = 'AUTO'
+log = rw_row("Tint")
+effects = [r for r in log if r._kind == "operator" and r.values().get("part") == 'EFFECT']
+check([r.values()["effect"] for r in effects] == [2, 1, 0] and [r._kw["text"] for r in effects] == ["Blur", "Noise", "Paint"]
+      and all(r.values()["index"] == LY.index_of(rw_mat, tint.uid) and r._kw.get("icon") == MK.KIND_BY_ID[tint.mask_stack[r.values()["effect"]].kind].icon for r in effects),
+      "the active layer's mask lists its effects, the top one first, each with its type icon and its name (the Paint effect is called Paint like the others): %s" % [r._kw["text"] for r in effects])
+effect_splits = [r for r in log if r._kind == "split" and "scale_y" in r.values()]
+check(len(effect_splits) == 3 and all(r.values()["scale_y"] == LY.EFFECT_ROW for r in effect_splits), "...in thin rows, one under the other")
+for i in (2, 1, 0):
+    e = tint.mask_stack[i]
+    props = [(r._kind, r._args[1]) for r in log if r._kind in {"prop", "prop_menu_enum"} and r._args[0] == e]
+    want = [("prop", "visible")] + ([] if e.kind in MK.FILTERS else [("prop_menu_enum", "blend")]) + [("prop", "opacity")]
+    removes = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.mask_effect_remove" and r.values().get("index") == i]
+    check(props == want and len(removes) == 1, "the effect row of %s: eye, %sopacity, x: %s" % (e.name, "(a filter has no blend mode) " if e.kind in MK.FILTERS else "blend mode, ", props))
+check(all(not r._kw.get("emboss") for r in effects), "no effect is highlighted while Properties shows the layer")
+rw_tex.props_mode = 'MASK'
+tint.mask_index = 1
+log = rw_row("Tint")
+effects = [r for r in log if r._kind == "operator" and r.values().get("part") == 'EFFECT']
+check([r._kw["emboss"] for r in effects] == [False, True, False] and any(r._kind == "operator" and r.values().get("part") == 'MASK' and r._kw.get("emboss") for r in log)
+      and not any(r._kind == "operator" and r._args[0] == "m3d.layer_pick" and "part" not in r.values() and r._kw.get("emboss") for r in log),
+      "while Properties shows the mask, the selected effect and the mask thumbnail are highlighted")
+check(bpy.ops.m3d.layer_pick(part='EFFECT', index=LY.index_of(rw_mat, tint.uid), effect=2) == {'FINISHED'} and tint.mask_index == 2, "clicking an effect row selects that effect (Properties - Mask shows it)")
+rw_tex.props_mode = 'AUTO'
+
+# --- What a right-click was on
+tint_i = LY.index_of(rw_mat, tint.uid)
+for what, ctx_, want in (
+        ("the mask thumbnail", dict(button_operator=NS(index=tint_i, part='MASK', effect=-1)), (tint.uid, True, -1)),
+        ("an effect row's button", dict(button_operator=NS(index=tint_i, part='EFFECT', effect=1)), (tint.uid, True, 1)),
+        ("the content thumbnail", dict(button_operator=NS(index=tint_i, part='LAYER', effect=-1)), (tint.uid, False, -1)),
+        ("a property of the layer's channel", dict(button_pointer=LY.entry_of(tint, 'BASE_COLOR')), (tint.uid, False, -1)),
+        ("a property of an effect", dict(button_pointer=tint.mask_stack[1]), (tint.uid, True, 1)),
+        ("the row itself", dict(button_pointer=rw_mat), ("", False, -1)),
+        ("nothing", {}, ("", False, -1))):
+    check(LY.hovered(NS(**ctx_), rw_mat) == want, "a right-click on %s: %s" % (what, LY.hovered(NS(**ctx_), rw_mat)))
+check(LY.hovered_layer(NS(button_operator=NS(index=tint_i, part='MASK', effect=-1)), rw_mat) == tint.uid, "(hovered_layer still says the layer)")
+
+# --- The mask menu opens for the mask thumbnail, an effect row, and the effects of the Mask panel; not the layer menu
+MASK_MENU = ["Add Fill", "Add Paint (White)", "Add Paint (Black)", "M3D_MT_mask_generator", "Add Levels", "M3D_MT_mask_filter", "Add Color Selection",
+             "Invert Mask", "Toggle Mask", "M3D_MT_mask_clear", "Copy Mask", "Paste Mask", "Create Smart Mask", "Remove Mask"]
+for pointer, pick in (("mask", -1), ("effect_button", 0), ("effect", 0), ("mask_list", 0)):
+    log = []
+    LY.draw_list_menu(NS(layout=Rec(log)), MenuCtx(tint, pointer))
+    check_calls("mask menu (%s)" % pointer, log)
+    items = [r._kw["text"] if r._kind == "operator" else r._args[0] for r in log if r._kind in {"operator", "menu"}]
+    ops = [r for r in log if r._kind == "operator"]
+    check(items == MASK_MENU, "right-click (%s): the mask menu, not the layer menu: %s" % (pointer, items))
+    check(all(r._args[0] == "m3d.layer_do" and r.values().get("uid") == tint.uid and r.values().get("pick") == pick for r in ops) and LY._menu_target["uid"] == tint.uid
+          and not {r.values().get("action") for r in ops} & {'CUT', 'DELETE', 'DUPLICATE', 'GROUP'},
+          "...every command is for the layer of the mask (and for the effect under the pointer: %d)" % pick)
+actions = [r.values().get("action") for r in log if r._kind == "operator"]
+check(actions == ['EFFECT'] * 5 + ['MASK_INVERT', 'MASK_TOGGLE', 'MASK_COPY', 'MASK_PASTE', 'SMART_MASK', 'MASK_REMOVE'],
+      "...Add Fill, Paint, Levels and Color Selection, Invert, Toggle, Copy, Paste, Create Smart Mask, Remove: %s" % actions)
+log = []
+LY.draw_list_menu(NS(layout=Rec(log)), MenuCtx(tint, "layer"))
+check([r._args[0] for r in log if r._kind == "menu"] == ["M3D_MT_layer_ctx_effect_add", "M3D_MT_layer_ctx_mask_add"] and any(r.values().get("action") == 'DELETE' for r in log if r._kind == "operator"),
+      "a right-click on the layer's own parts is still the layer menu")
+LY._menu_target.update(uid=tint.uid, pick=-1)
+log = []
+LY.M3D_MT_mask_clear.draw(NS(layout=Rec(log)), rw_ctx)
+check_calls("Clear Mask menu", log)
+check([(r._kw["text"], r.values().get("action"), r.values().get("uid")) for r in log if r._kind == "operator"]
+      == [("White (Show All)", 'MASK_CLEAR_WHITE', tint.uid), ("Black (Hide All)", 'MASK_CLEAR_BLACK', tint.uid)], "Clear Mask asks which: white or black")
+LY._menu_target.update(uid=None, pick=-1)
+log = []
+LY.M3D_MT_mask_clear.draw(NS(layout=Rec(log)), rw_ctx)
+check_calls("Clear Mask menu (panel)", log)
+check([(r._args[0], r.values().get("fill")) for r in log if r._kind == "operator"] == [("m3d.layer_mask_clear", 'WHITE'), ("m3d.layer_mask_clear", 'BLACK')], "...and in the Mask panel's menu")
+log = []
+LY.M3D_MT_mask_more.draw(NS(layout=Rec(log)), rw_ctx)
+check_calls("Mask panel menu", log)
+ops = [r for r in log if r._kind == "operator"]
+check([r._args[0] for r in ops] == ["m3d.mask_effect_add"] * 5 + ["m3d.layer_mask_invert", "m3d.layer_pick", "m3d.layer_mask_copy", "m3d.layer_mask_paste", "m3d.library_save", "m3d.layer_mask_remove"]
+      and ops[6].values() == {"part": 'MASK', "action": 'TOGGLE'} and ops[9].values() == {"kind": 'MASK'}
+      and [r._args[0] for r in log if r._kind == "menu"] == ["M3D_MT_mask_generator", "M3D_MT_mask_filter", "M3D_MT_mask_clear"],
+      "the Mask panel's own menu has the same commands, as the operators themselves")
+select(rw_mat, "Tint")
+check(any(r._kind == "menu" and r._args[0] == "M3D_MT_mask_more" for r in draw_stub(T.PROPERTIES_PT_m3d_tx_mask, TCtx())), "the Mask panel has the menu button")
+
+# --- Every command of the mask menu works on a fill layer's black mask and on a paint layer's mask
+cm_ob, cm_mat = fresh_cube("Mask3g", '64')
+bpy.ops.m3d.layer_add(kind='PAINT')
+LY.active_layer(cm_mat).name = "P"
+bpy.ops.m3d.layer_mask_add(fill='WHITE')
+ramp = np.ones((64, 64, 4), np.float32)
+ramp[..., :3] = np.linspace(0.0, 1.0, 64, dtype=np.float32)[None, :, None]
+LY.write_pixels(LY.paint_effect(named(cm_mat, "P")).image, ramp)
+bpy.ops.m3d.layer_add(kind='FILL')
+LY.active_layer(cm_mat).name = "F"
+bpy.ops.m3d.layer_mask_add(fill='BLACK')
+bpy.ops.m3d.layer_add(kind='PAINT')
+LY.active_layer(cm_mat).name = "Other"
+LY._mask_clip.update(mat="", uid="")
+check(LY.clip_mask() is None and not bpy.ops.m3d.layer_mask_paste.poll(), "Paste Mask needs a copied mask")
+check(all(a in LY.LAYER_ACTIONS for a in ('MASK_INVERT', 'MASK_TOGGLE', 'MASK_CLEAR_WHITE', 'MASK_CLEAR_BLACK', 'MASK_COPY', 'MASK_PASTE', 'MASK_REMOVE', 'SMART_MASK')),
+      "every mask command is a layer command")
+
+
+def mask_do(name, action, **kw):
+    """A command of the mask menu on the layer `name`, as the menu runs it: the right-click is on a layer that is not the active one."""
+    cm_mat.m3d_layer_index = LY.index_of(cm_mat, named(cm_mat, "Other").uid)
+    return bpy.ops.m3d.layer_do(action=action, uid=named(cm_mat, name).uid, **kw)
+
+
+def mask_commands(name):
+    layer = named(cm_mat, name)
+    start = [e.kind for e in layer.mask_stack]
+    for text, kind, fill in (("Add Fill", 'FILL', 'WHITE'), ("Add Paint (White)", 'PAINT', 'WHITE'), ("Add Paint (Black)", 'PAINT', 'BLACK'),
+                             ("Add Generator: Noise", 'NOISE', 'WHITE'), ("Add Generator: Edges", 'EDGES', 'WHITE'), ("Add Levels", 'LEVELS', 'WHITE'),
+                             ("Add Filter: Blur", 'BLUR', 'WHITE'), ("Add Filter: Invert", 'INVERT', 'WHITE'), ("Add Filter: Sharpen", 'SHARPEN', 'WHITE'),
+                             ("Add Color Selection", 'COLORID', 'WHITE')):
+        n = len(layer.mask_stack)
+        res = mask_do(name, 'EFFECT', effect=kind, fill=fill)
+        e = LY.active_effect(layer)
+        check(res == {'FINISHED'} and len(layer.mask_stack) == n + 1 and e is not None and e.kind == kind and LY.active_layer(cm_mat).uid == layer.uid,
+              "%s: %s adds a %s effect to the mask and selects the layer (%s, %d effects)" % (name, text, kind, res, len(layer.mask_stack)))
+    kinds = [e.kind for e in layer.mask_stack]
+    check(kinds[:len(start)] == start and kinds[len(start):] == ['FILL', 'PAINT', 'PAINT', 'NOISE', 'EDGES', 'LEVELS', 'BLUR', 'INVERT', 'SHARPEN', 'COLORID'],
+          "%s: the effects are on the mask, each above the one before: %s" % (name, kinds))
+    n = len(layer.mask_stack)
+    check(mask_do(name, 'EFFECT', effect='FILL', pick=0) == {'FINISHED'} and layer.mask_stack[1].kind == 'FILL' and layer.mask_index == 1 and len(layer.mask_stack) == n + 1,
+          "%s: a command from an effect row puts the new effect above that effect" % name)
+    top = len(layer.mask_stack)
+    check(mask_do(name, 'MASK_INVERT') == {'FINISHED'} and layer.mask_stack[-1].kind == 'INVERT' and len(layer.mask_stack) == top + 1 and LY.active_layer(cm_mat).uid == layer.uid,
+          "%s: Invert Mask adds an Invert effect on top" % name)
+    check(mask_do(name, 'MASK_INVERT') == {'FINISHED'} and len(layer.mask_stack) == top, "%s: ...and takes it away again" % name)
+    check(layer.use_mask and mask_do(name, 'MASK_TOGGLE') == {'FINISHED'} and not layer.use_mask and mask_do(name, 'MASK_TOGGLE') == {'FINISHED'} and layer.use_mask,
+          "%s: Toggle Mask switches the mask off and on" % name)
+    owned = [e.image.name for e in layer.mask_stack if e.kind in MK.OWNED and e.image is not None]
+    check(mask_do(name, 'MASK_CLEAR_BLACK') == {'FINISHED'} and [e.kind for e in layer.mask_stack] == ['PAINT'] and np.abs(MK.stack_value(layer, 8)).max() < 1e-6
+          and read(layer.mask_stack[0].image)[:, :3].max() == 0.0, "%s: Clear Mask to black leaves one black Paint effect (the layer is hidden)" % name)
+    check(not [n for n in owned if n in bpy.data.images and bpy.data.images[n] != layer.mask_stack[0].image], "%s: ...the images of the effects are gone" % name)
+    check(mask_do(name, 'MASK_CLEAR_WHITE') == {'FINISHED'} and [e.kind for e in layer.mask_stack] == ['PAINT'] and np.abs(MK.stack_value(layer, 8) - 1.0).max() < 1e-5,
+          "%s: Clear Mask to white shows the layer everywhere" % name)
+    check(tuple(layer.mask_stack[0].image.size) == (64, 64), "%s: ...at the size the mask had" % name)
+
+
+mask_commands("F")   # the black mask of a fill layer
+mask_commands("P")   # the mask of a paint layer
+# Copy and Paste: from the paint layer's mask to the fill layer's, from a layer to itself (refused), to a layer without a mask
+P, F, Other = named(cm_mat, "P"), named(cm_mat, "F"), named(cm_mat, "Other")
+LY.write_pixels(LY.paint_effect(P).image, ramp)
+mask_do("P", 'MASK_INVERT')
+P.mask_stack[1].opacity = 0.5
+check(mask_do("P", 'MASK_COPY') == {'FINISHED'} and LY.clip_mask() == (cm_mat, P) and LY.active_layer(cm_mat).uid == P.uid, "Copy Mask takes the mask of the layer under the pointer")
+old_f = [e.image.name for e in F.mask_stack if e.image is not None]
+check(mask_do("F", 'MASK_PASTE') == {'FINISHED'}, "Paste Mask puts the copied mask on another layer")
+check([e.kind for e in F.mask_stack] == [e.kind for e in P.mask_stack] and abs(F.mask_stack[1].opacity - 0.5) < 1e-6
+      and np.abs(MK.stack_value(F, 16) - MK.stack_value(P, 16)).max() < 1e-6, "...the same effects: %s" % [e.kind for e in F.mask_stack])
+check(LY.paint_effect(F).image != LY.paint_effect(P).image and np.array_equal(read(LY.paint_effect(F).image), read(LY.paint_effect(P).image))
+      and not [n for n in old_f if n in bpy.data.images], "...with its own copy of the pixels, in place of the old mask (whose image is gone)")
+check(F.use_mask and F.paint_mask, "...and it is on")
+check(mask_do("P", 'MASK_PASTE') == {'CANCELLED'} and len(P.mask_stack) == 2, "a mask is not pasted on its own layer")
+check(mask_do("Other", 'MASK_PASTE') == {'FINISHED'} and len(Other.mask_stack) == 2, "Paste Mask makes the mask of a layer that has none")
+LY.remove_layers(cm_mat, {P.uid})
+LY.rebuild_all(cm_mat)
+check(LY.clip_mask() is None and not bpy.ops.m3d.layer_mask_paste.poll(), "a copied mask whose layer was deleted is not pasted")
+# Create Smart Mask, Remove Mask
+check(LY.LAYER_ACTIONS['SMART_MASK'] == ("library_save", {"kind": 'MASK'}, True), "Create Smart Mask is the Save to Library of the mask (it asks for a name)")
+F = named(cm_mat, "F")
+cm_mat.m3d_layer_index = LY.index_of(cm_mat, F.uid)
+check(bpy.ops.m3d.library_save(kind='MASK', name="Menu Mask") == {'FINISHED'}, "(the mask of the layer is saved)")
+owned = [e.image.name for e in F.mask_stack if e.kind in MK.OWNED and e.image is not None]
+check(mask_do("F", 'MASK_REMOVE') == {'FINISHED'} and not F.mask_stack and not F.paint_mask and LY.active_layer(cm_mat).uid == F.uid and not [n for n in owned if n in bpy.data.images],
+      "Remove Mask takes the mask and its images away")
+check(mask_do("F", 'MASK_REMOVE') == {'CANCELLED'}, "...and there is nothing to remove then")
+check(mask_do("F", 'EFFECT', effect='FILL') == {'FINISHED'} and [e.kind for e in F.mask_stack] == ['FILL'], "Add Fill on a layer without a mask makes the mask a Fill effect")
+# Copy and Paste across materials
+check(mask_do("F", 'MASK_COPY') == {'FINISHED'}, "(the Fill mask is copied)")
+cm_other_ob, cm_other = fresh_cube("Mask3h", '64')
+bpy.ops.m3d.layer_add(kind='PAINT')
+check(bpy.ops.m3d.layer_mask_paste() == {'FINISHED'} and [e.kind for e in LY.active_layer(cm_other).mask_stack] == ['FILL'], "Paste Mask works in another material")
+rw_tex.props_mode = 'AUTO'
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

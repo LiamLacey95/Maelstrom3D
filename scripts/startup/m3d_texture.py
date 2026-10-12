@@ -3688,27 +3688,7 @@ class M3D_MT_mask_add(Menu):
     bl_label = "Add Mask Effect"
 
     def draw(self, _context):
-        layout = self.layout
-
-        def add(kind, text=None, **props):
-            o = layout.operator("m3d.mask_effect_add", text=text or MK.KIND_BY_ID[kind].label,
-                                icon=MK.KIND_BY_ID[kind].icon)
-            o.kind = kind
-            for key, value in props.items():
-                setattr(o, key, value)
-
-        layout.label(text="Paint and Fill")
-        add('PAINT', "Paint (White)", fill='WHITE')
-        add('PAINT', "Paint (Black)", fill='BLACK')
-        add('FILL')
-        layout.separator()
-        layout.label(text="Generators (from the mesh)")
-        for kind in ('EDGES', 'CAVITY', 'TOPDOWN', 'THICKNESS', 'COLORID', 'NOISE'):
-            add(kind)
-        layout.separator()
-        layout.label(text="Filters (change everything below)")
-        for kind in ('LEVELS', 'BLUR', 'INVERT', 'SHARPEN'):
-            add(kind)
+        L.draw_effect_items(self.layout)
 
 
 def draw_mask_stack(layout, context, mat, layer, explain=True):
@@ -3737,6 +3717,7 @@ def draw_mask_stack(layout, context, mat, layer, explain=True):
     row = layout.row(align=True)
     row.menu("M3D_MT_mask_add", icon='ADD')
     row.operator("m3d.library_save", text="", icon='ASSET_MANAGER').kind = 'MASK'
+    row.menu("M3D_MT_mask_more", text="", icon='DOWNARROW_HLT')
     row = layout.row(align=True)
     row.operator("m3d.layer_paint_mask", text="Paint Mask", icon='BRUSH_DATA', depress=layer.paint_mask)
     row.prop(mat, "m3d_show_mask", text="Show Mask", toggle=True, icon='HIDE_OFF')

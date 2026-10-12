@@ -32,7 +32,7 @@ before that have one blend and one opacity for all channels: `upgrade` copies th
 The list rows draw a content thumbnail (the image of the channel the panel's dropdown picks, a swatch for a fill) and a mask
 thumbnail as preview icons made on a timer from a small numpy downscale: drawing only asks for them, and the depsgraph hook
 below makes the ones whose image was painted again (see "Thumbnails"). The right-click menu of the list is an item of
-UI_MT_list_item_context_menu; its commands run through m3d.layer_do, which selects the layer under the pointer first. A UI list has
+UI_MT_button_context_menu; its commands run through m3d.layer_do, which selects the layer under the pointer first. A UI list has
 no drag and drop, so the arrows (m3d.layer_move) order the layers.
 
 The Layers page (panels) is in m3d_texture.py.
@@ -2177,17 +2177,23 @@ def copy_layer(mat, uid, source=None):
             b.blend, b.opacity = a.blend, a.opacity
             if a.image is not None:
                 b.image = copy_image(a.image, image_name(mat, new, ch.label))
-        for e in src.mask_stack:   # Paint images are copied; the blur caches are made again; baked maps are shared.
-            copy = new.mask_stack.add()
-            MK.copy_params(e, copy)
-            copy.uid = MK.new_uid()
-            copy.image2 = e.image2
-            if e.kind == 'PAINT':
-                copy.image = copy_image(e.image, image_name(mat, new, "Mask"))
-            elif e.kind != 'BLUR':
-                copy.image = e.image
-        new.mask_index = src.mask_index
+        copy_mask(mat, src, new)
     return new
+
+
+def copy_mask(mat, src, dst):
+    """Add copies of the mask effects of the layer `src` to the mask of `dst` (a layer of `mat`): Paint images are copied, the
+    blur caches are made again, baked maps are shared."""
+    for e in src.mask_stack:
+        copy = dst.mask_stack.add()
+        MK.copy_params(e, copy)
+        copy.uid = MK.new_uid()
+        copy.image2 = e.image2
+        if e.kind == 'PAINT':
+            copy.image = copy_image(e.image, image_name(mat, dst, "Mask"))
+        elif e.kind != 'BLUR':
+            copy.image = e.image
+    dst.mask_index = src.mask_index
 
 
 def clone_layers(mat, uid, anchor_uid, source=None):
@@ -2712,6 +2718,93 @@ class M3D_OT_layer_mask_invert(_ActiveLayerOp, Operator):
         return _done(context, mat)
 
 
+class M3D_OT_layer_mask_clear(_ActiveLayerOp, Operator):
+    """Clear the active layer's mask: every effect goes, and a new Paint effect starts white (the layer shows everywhere) or
+    black (hidden everywhere)"""
+    bl_idname = "m3d.layer_mask_clear"
+    bl_label = "Clear Mask"
+
+    fill: EnumProperty(name="Start", default='WHITE', items=(
+        ('WHITE', "White (Show All)", "The layer shows everywhere; paint black to hide it"),
+        ('BLACK', "Black (Hide All)", "The layer is hidden; paint white to show it")))
+
+    @classmethod
+    def poll(cls, context):
+        return super().poll(context) and bool(active_layer(mesh_of(context).active_material).mask_stack)
+
+    def execute(self, context):
+        mat = self.material(context)
+        layer = active_layer(mat)
+        white = self.fill == 'WHITE'
+        old = paint_effect(layer)
+        size = max(image_size(old.image)) if old is not None and old.image is not None else new_size(context, mat)
+        images = MK.owned_images(layer)
+        with muted():
+            layer.mask_stack.clear()
+            e = add_effect(layer, 'PAINT', white=white)
+            e.image = make_mask_image(mat, layer, size, white)
+            layer.mask_index = 0
+        rebuild_all(mat)
+        release(images)
+        return _done(context, mat)
+
+
+_mask_clip = {"mat": "", "uid": ""}   # the layer Copy Mask took the mask of: the name of its material and its uid
+
+
+def clip_mask():
+    """(material, layer) whose mask the mask clipboard holds, None when there is none (or the layer or its mask went since)."""
+    mat = bpy.data.materials.get(_mask_clip["mat"])
+    layer = layer_by_uid(mat, _mask_clip["uid"]) if mat is not None and _mask_clip["uid"] else None
+    return (mat, layer) if layer is not None and layer.mask_stack else None
+
+
+class M3D_OT_layer_mask_copy(_ActiveLayerOp, Operator):
+    """Copy the active layer's mask (all its effects) to the mask clipboard: Paste Mask puts a copy on a layer, also in another
+    material"""
+    bl_idname = "m3d.layer_mask_copy"
+    bl_label = "Copy Mask"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return super().poll(context) and bool(active_layer(mesh_of(context).active_material).mask_stack)
+
+    def execute(self, context):
+        mat = self.material(context)
+        layer = active_layer(mat)
+        _mask_clip.update(mat=mat.name, uid=layer.uid)
+        self.report({'INFO'}, "Copied the mask of %s: Paste Mask puts it on the active layer" % layer.name)
+        return {'FINISHED'}
+
+
+class M3D_OT_layer_mask_paste(_ActiveLayerOp, Operator):
+    """Put a copy of the copied mask on the active layer, in place of its own mask (the copy has its own paint images)"""
+    bl_idname = "m3d.layer_mask_paste"
+    bl_label = "Paste Mask"
+
+    @classmethod
+    def poll(cls, context):
+        return super().poll(context) and clip_mask() is not None
+
+    def execute(self, context):
+        mat = self.material(context)
+        layer = active_layer(mat)
+        src_mat, src = clip_mask()
+        if src.uid == layer.uid and src_mat == mat:
+            self.report({'WARNING'}, "Pick another layer to paste the mask on")
+            return {'CANCELLED'}
+        images = MK.owned_images(layer)
+        with muted():
+            layer.mask_stack.clear()
+            copy_mask(mat, src, layer)
+            layer.use_mask = True
+            layer.paint_mask = paint_effect(layer) is not None
+        rebuild_all(mat)
+        release(images)
+        return _done(context, mat)
+
+
 class M3D_OT_layer_paint_mask(_ActiveLayerOp, Operator):
     """Switch between painting the active layer's mask (its selected Paint effect; one is added when it has none) and
     its channel"""
@@ -2999,7 +3092,7 @@ class M3D_OT_layer_pick(_LayerOp, Operator):
     def description(cls, _context, props):
         if props.part == 'MASK':
             return ("Select the layer's mask: Properties shows it. Alt+click shows the mask on its own (Show Mask), "
-                    "Shift+click switches it off and on")
+                    "Shift+click switches it off and on, right-click opens the mask's commands")
         if props.part == 'EFFECT':
             return "Select this effect of the mask: Properties shows it"
         return "Select the layer: Properties shows its settings"
@@ -3155,15 +3248,23 @@ LAYER_ACTIONS = {
     'MASK_WHITE': ("layer_mask_add", {"fill": 'WHITE'}, False), 'MASK_BLACK': ("layer_mask_add", {"fill": 'BLACK'}, False),
     'MASK_IMAGE': ("layer_mask_image", {}, True), 'MASK_COLORID': ("mask_effect_add", {"kind": 'COLORID'}, False),
     'EFFECT': ("mask_effect_add", {}, False),
+    'MASK_INVERT': ("layer_mask_invert", {}, False), 'MASK_TOGGLE': ("layer_pick", {"part": 'MASK', "action": 'TOGGLE'}, False),
+    'MASK_CLEAR_WHITE': ("layer_mask_clear", {"fill": 'WHITE'}, False), 'MASK_CLEAR_BLACK': ("layer_mask_clear", {"fill": 'BLACK'}, False),
+    'MASK_COPY': ("layer_mask_copy", {}, False), 'MASK_PASTE': ("layer_mask_paste", {}, False),
+    'MASK_REMOVE': ("layer_mask_remove", {}, False),
 }
 
 
-def run_action(op, context, action, uid="", effect="", fill=""):
-    """Run LAYER_ACTIONS[action] on the layer `uid` (the active one without): that layer is selected first."""
+def run_action(op, context, action, uid="", effect="", fill="", pick=-1):
+    """Run LAYER_ACTIONS[action] on the layer `uid` (the active one without): that layer is selected first, and the effect of its
+    mask `pick` (-1: the selection stays)."""
     mat = _LayerOp.material(context)
     target = layer_by_uid(mat, uid) if uid else None
     if target is not None and target != active_layer(mat):
         mat.m3d_layer_index = index_of(mat, uid)
+    layer = active_layer(mat)
+    if layer is not None and 0 <= pick < len(layer.mask_stack) and layer.mask_index != pick:
+        layer.mask_index = pick
     name, props, invoke = LAYER_ACTIONS[action]
     props = dict(props)
     if action == 'EFFECT':
@@ -3186,9 +3287,10 @@ class M3D_OT_layer_do(_LayerOp, Operator):
     uid: StringProperty(options={'SKIP_SAVE', 'HIDDEN'}, description="The layer (empty: the active one)")
     effect: StringProperty(options={'SKIP_SAVE', 'HIDDEN'}, description="The kind of the effect to add (action EFFECT)")
     fill: StringProperty(options={'SKIP_SAVE', 'HIDDEN'}, description="WHITE or BLACK: what a new Paint effect starts as")
+    pick: IntProperty(default=-1, options={'SKIP_SAVE', 'HIDDEN'}, description="The effect of the layer's mask to select first (-1: leave it)")
 
     def execute(self, context):
-        return run_action(self, context, self.action, self.uid, self.effect, self.fill)
+        return run_action(self, context, self.action, self.uid, self.effect, self.fill, self.pick)
 
 
 class M3D_OT_layer_key(_LayerOp, Operator):
@@ -3380,13 +3482,26 @@ def thumbs_clear():
 # UI list of the stack (top layer first)
 
 KIND_ICONS = {'PAINT': 'IMAGE_DATA', 'FILL': 'COLOR', 'FOLDER': 'FILE_FOLDER'}
-ROW = 1.7   # height of a row in widget heights; the thumbnails are as wide (a preview is drawn at the size of its button from 1.5 up)
+ROW = 1.4           # height of a layer row in widget heights; its thumbnails are as wide (a preview is drawn at the size of its button from 1.5 up: icon sized below)
+EFFECT_ROW = 1.0    # height of a row of the mask's effects
+LOOK_UNITS = 3.6    # widget widths of the right column of a layer row (the blend mode over the opacity) ...
+EFFECT_LOOK_UNITS = 6.2   # ... and of an effect row (blend mode, opacity and the x), whatever the width of the editor
+LIST_MARGIN = 3.6   # widget widths of the editor the list does not have (the panel margins, the arrows beside it, the scroll bar)
 
 
 def draw_look(layout, entry):
     """Blend mode (abbreviated; a menu of all modes) over opacity, of one channel entry."""
     layout.prop_menu_enum(entry, "blend", text=BLEND_SHORT[entry.blend])
     layout.prop(entry, "opacity", text="", slider=True)
+
+
+def split_factor(context, units, default):
+    """The share of a list row its left side gets so that the column at the right is `units` widget widths wide, in a narrow
+    editor as in a wide one (`default` without a region to measure)."""
+    region = getattr(context, "region", None)
+    unit = 20 * (bpy.context.preferences.system.ui_scale or 1.0)
+    width = region.width / unit - LIST_MARGIN if region is not None else 0
+    return min(max(1.0 - units / width, 0.4), 0.85) if width > units else default
 
 
 class M3D_UL_layers(UIList):
@@ -3405,27 +3520,32 @@ class M3D_UL_layers(UIList):
             return False
         return [0 if hidden(l) else self.bitflag_filter_item for l in layers], []
 
-    def draw_item(self, _context, layout, _data, item, _icon, _active_data, _active_propname, index):
-        """eye, folder arrow, content thumbnail, mask thumbnail, name; at the right the blend mode over the opacity of the
-        channel picked in the panel header. The active layer shows its mask's effects as rows under it."""
+    def draw_item(self, context, layout, _data, item, _icon, _active_data, _active_propname, index):
+        """One line: eye, folder arrow, content thumbnail, mask thumbnail, name; at the right the blend mode over the opacity of
+        the channel picked in the panel header. A column has the same width in every row (a stack with no folder or no mask has
+        no arrow or mask column), so the names line up. The active layer shows the effects of its mask as thin rows under it."""
         mat = item.id_data
         ch_id = mat.m3d_row_channel
         tex = getattr(bpy.context.scene, "m3d_tex", None)
         on_mask = tex is not None and tex.props_mode == 'MASK'
         active = index == mat.m3d_layer_index
         editable = not in_frozen(item)   # (a frozen folder's layers are kept, not editable)
+        folders = any(l.kind == 'FOLDER' for l in mat.m3d_layers)
+        masks = any(l.mask_stack for l in mat.m3d_layers)
+        depth = depth_of(item)
         col = layout.column(align=True)
-        split = col.split(factor=0.68, align=True)   # (a split keeps the blend modes in one column, whatever the indent)
+        split = col.split(factor=split_factor(context, LOOK_UNITS, 0.72), align=True)   # (a split keeps the blend modes in one column, whatever the indent)
         row = split.row(align=True)
         row.enabled = editable
         row.scale_y = ROW
-        depth = depth_of(item)
         if depth:
             row.separator(factor=2.0 * depth)
         folder = item.kind == 'FOLDER'
         row.prop(item, "visible", text="", icon='HIDE_OFF' if item.visible else 'HIDE_ON', emboss=False)
         if folder:
             row.prop(item, "expanded", text="", icon='TRIA_DOWN' if item.expanded else 'TRIA_RIGHT', emboss=False)
+        elif folders:
+            row.label(text="", icon='BLANK1')
         sub = row.row(align=True)
         sub.scale_x = ROW
         spec, icon = content_thumb(mat, item, ch_id)
@@ -3438,22 +3558,25 @@ class M3D_UL_layers(UIList):
             sub.active = False
             op = sub.operator("m3d.layer_pick", text="", icon=KIND_ICONS[item.kind], emboss=shown)
         op.index = index
-        if item.mask_stack:
+        if item.mask_stack or masks:
             sub = row.row(align=True)
             sub.scale_x = ROW
-            sub.active = item.use_mask
-            spec, icon = mask_thumb(mat, item)
-            shown = active and on_mask
-            if spec is not None:
-                op = sub.operator("m3d.layer_pick", text="", icon_value=icon, emboss=shown)
-            else:
-                op = sub.operator("m3d.layer_pick", text="", icon=MK.KIND_BY_ID[item.mask_stack[len(item.mask_stack) - 1].kind].icon,
-                                  emboss=shown)
-            op.part, op.index = 'MASK', index
+            if item.mask_stack:
+                sub.active = item.use_mask
+                spec, icon = mask_thumb(mat, item)
+                shown = active and on_mask
+                if spec is not None:
+                    op = sub.operator("m3d.layer_pick", text="", icon_value=icon, emboss=shown)
+                else:
+                    op = sub.operator("m3d.layer_pick", text="", icon=MK.KIND_BY_ID[item.mask_stack[len(item.mask_stack) - 1].kind].icon,
+                                      emboss=shown)
+                op.part, op.index = 'MASK', index
+            else:   # (the place of a mask thumbnail)
+                sub.label(text="", icon='BLANK1')
         row.prop(item, "name", text="", emboss=False)
         if folder:
             op = row.operator("m3d.layer_unfreeze" if item.frozen else "m3d.layer_freeze", text="", icon='FREEZE',
-                              depress=item.frozen)
+                              emboss=item.frozen, depress=item.frozen)
             op.index = index
         look = split.column(align=True)
         look.enabled = editable
@@ -3462,18 +3585,27 @@ class M3D_UL_layers(UIList):
         if active and item.mask_stack:
             for i in reversed(range(len(item.mask_stack))):
                 effect = item.mask_stack[i]
-                sub = col.split(factor=0.68, align=True)
+                sub = col.split(factor=split_factor(context, EFFECT_LOOK_UNITS, 0.62), align=True)
                 sub.enabled = editable
+                sub.scale_y = EFFECT_ROW
                 left = sub.row(align=True)
-                left.separator(factor=2.0 * depth + 4.0)
+                if depth:
+                    left.separator(factor=2.0 * depth)
+                for _blank in range(2 if folders else 1):   # (under the layer's eye and arrow: the effects are under its thumbnails)
+                    left.label(text="", icon='BLANK1')
                 left.prop(effect, "visible", text="", icon='HIDE_OFF' if effect.visible else 'HIDE_ON', emboss=False)
-                left.label(text="", icon=MK.KIND_BY_ID[effect.kind].icon)
-                op = left.operator("m3d.layer_pick", text=effect.name, emboss=on_mask and i == item.mask_index, translate=False)
+                name = left.row(align=True)
+                name.alignment = 'LEFT'   # (the text of a button is centered: this makes the button as wide as its text, at the left)
+                op = name.operator("m3d.layer_pick", text=effect.name, icon=MK.KIND_BY_ID[effect.kind].icon,
+                                   emboss=on_mask and i == item.mask_index, translate=False)
                 op.part, op.index, op.effect = 'EFFECT', index, i
                 right = sub.row(align=True)
-                if effect.kind not in MK.FILTERS:   # A filter changes what is below it: only how much is left to say.
-                    right.prop_menu_enum(effect, "blend", text=BLEND_SHORT[effect.blend])
-                right.prop(effect, "opacity", text="", slider=True)
+                pair = right.split(factor=0.5, align=True)
+                if effect.kind in MK.FILTERS:   # A filter changes what is below it: only how much is left to say.
+                    pair.label(text="")
+                else:
+                    pair.prop_menu_enum(effect, "blend", text=BLEND_SHORT[effect.blend])
+                pair.prop(effect, "opacity", text="", slider=True)
                 right.operator("m3d.mask_effect_remove", text="", icon='X', emboss=False).index = i
 
 
@@ -3491,9 +3623,13 @@ class M3D_UL_mask_effects(UIList):
 
 
 # -----------------------------------------------------------------------------
-# Menus of the Layers panel, and the right-click menu of the list (items of UI_MT_list_item_context_menu, for this list only)
+# Menus of the Layers panel, and the right-click menu of the list (items of UI_MT_button_context_menu, for this list only: the list item
+# menu opens only over the top widget height of a row, and a row is taller than that, with the effect rows under it)
 
-_menu_target = {"uid": ""}   # the layer the list menu in progress is for (set when it is drawn; "" is the active one)
+_menu_target = {"uid": "", "pick": -1}   # the layer the menu in progress is for (set when it is drawn; "" is the active one, None
+# the operators themselves, no layer command) and the effect of its mask the pointer was on (-1: none)
+GENERATORS = ('EDGES', 'CAVITY', 'TOPDOWN', 'THICKNESS', 'NOISE')
+FILTER_KINDS = ('BLUR', 'INVERT', 'SHARPEN')
 
 
 def effect_entry(layout, text, kind, uid, fill='WHITE'):
@@ -3504,39 +3640,92 @@ def effect_entry(layout, text, kind, uid, fill='WHITE'):
         op.kind, op.fill = kind, fill
     else:
         op = layout.operator("m3d.layer_do", text=text, icon=icon)
-        op.action, op.uid, op.effect, op.fill = 'EFFECT', uid, kind, fill
+        op.action, op.uid, op.effect, op.fill, op.pick = 'EFFECT', uid, kind, fill, _menu_target["pick"]
 
 
-def draw_effect_items(layout, uid=None):
-    """Add Effect (to the layer's mask): Generator, Paint, Fill, Levels, Filter, Color ID."""
-    layout.label(text="Generator")
-    for kind in ('EDGES', 'CAVITY', 'TOPDOWN', 'THICKNESS', 'NOISE'):
-        effect_entry(layout, MK.KIND_BY_ID[kind].label, kind, uid)
-    layout.separator()
-    effect_entry(layout, "Paint (White)", 'PAINT', uid, 'WHITE')
-    effect_entry(layout, "Paint (Black)", 'PAINT', uid, 'BLACK')
-    effect_entry(layout, "Fill", 'FILL', uid)
-    effect_entry(layout, "Levels", 'LEVELS', uid)
-    layout.separator()
-    layout.label(text="Filter")
-    for kind in ('BLUR', 'INVERT', 'SHARPEN'):
-        effect_entry(layout, MK.KIND_BY_ID[kind].label, kind, uid)
-    layout.separator()
-    effect_entry(layout, "Color ID", 'COLORID', uid)
+def action_entry(layout, text, action, uid, icon='NONE'):
+    """One item that runs LAYER_ACTIONS[action]: its operator for the active layer (`uid` None), or the layer command for `uid`."""
+    if uid is None:
+        name, props, _invoke = LAYER_ACTIONS[action]
+        op = layout.operator("m3d." + name, text=text, icon=icon)
+        for key, value in props.items():
+            setattr(op, key, value)
+    else:
+        op = layout.operator("m3d.layer_do", text=text, icon=icon)
+        op.action, op.uid, op.pick = action, uid, _menu_target["pick"]
+
+
+def draw_effect_items(layout, uid=None, pick=-1):
+    """Add to the mask: Fill, Paint, Generator (a menu), Levels, Filter (a menu), Color Selection. The first effect of a layer without
+    a mask makes the mask. `pick`: the effect of the mask the new one goes above (-1: the selected one)."""
+    _menu_target.update(uid=uid, pick=pick)
+    effect_entry(layout, "Add Fill", 'FILL', uid)
+    effect_entry(layout, "Add Paint (White)", 'PAINT', uid, 'WHITE')
+    effect_entry(layout, "Add Paint (Black)", 'PAINT', uid, 'BLACK')
+    layout.menu("M3D_MT_mask_generator", icon='MOD_NOISE')
+    effect_entry(layout, "Add Levels", 'LEVELS', uid)
+    layout.menu("M3D_MT_mask_filter", icon='MOD_SMOOTH')
+    effect_entry(layout, "Add Color Selection", 'COLORID', uid)
 
 
 def draw_mask_items(layout, uid=None):
-    """Add Mask: white, black, with color selection (Color ID), from an image."""
+    """Add Mask: white, black, from an image."""
     if uid is None:
         layout.operator("m3d.layer_mask_add", text="White Mask", icon='ADD').fill = 'WHITE'
         layout.operator("m3d.layer_mask_add", text="Black Mask", icon='ADD').fill = 'BLACK'
-        layout.operator("m3d.mask_effect_add", text="Mask with Color Selection", icon='COLOR').kind = 'COLORID'
         layout.operator("m3d.layer_mask_image", text="Image Mask...", icon='IMAGE_DATA')
         return
     for text, action, icon in (("White Mask", 'MASK_WHITE', 'ADD'), ("Black Mask", 'MASK_BLACK', 'ADD'),
-                               ("Mask with Color Selection", 'MASK_COLORID', 'COLOR'), ("Image Mask...", 'MASK_IMAGE', 'IMAGE_DATA')):
-        op = layout.operator("m3d.layer_do", text=text, icon=icon)
-        op.action, op.uid = action, uid
+                               ("Image Mask...", 'MASK_IMAGE', 'IMAGE_DATA')):
+        action_entry(layout, text, action, uid, icon)
+
+
+def draw_mask_menu(layout, uid=None, pick=-1):
+    """The commands of a mask (the menu of its thumbnail, of its effect rows and of the Mask panel): the Add items, then Invert,
+    Toggle, Clear (a menu), Copy, Paste, Create Smart Mask and Remove."""
+    draw_effect_items(layout, uid, pick)
+    layout.separator()
+    action_entry(layout, "Invert Mask", 'MASK_INVERT', uid, 'ARROW_LEFTRIGHT')
+    action_entry(layout, "Toggle Mask", 'MASK_TOGGLE', uid, 'HIDE_OFF')
+    layout.menu("M3D_MT_mask_clear", icon='LOOP_BACK')
+    layout.separator()
+    action_entry(layout, "Copy Mask", 'MASK_COPY', uid, 'COPYDOWN')
+    action_entry(layout, "Paste Mask", 'MASK_PASTE', uid, 'PASTEFLIPDOWN')
+    action_entry(layout, "Create Smart Mask", 'SMART_MASK', uid, 'MOD_MASK')
+    layout.separator()
+    action_entry(layout, "Remove Mask", 'MASK_REMOVE', uid, 'TRASH')
+
+
+class M3D_MT_mask_generator(Menu):
+    bl_label = "Add Generator"
+
+    def draw(self, _context):
+        for kind in GENERATORS:
+            effect_entry(self.layout, MK.KIND_BY_ID[kind].label, kind, _menu_target["uid"])
+
+
+class M3D_MT_mask_filter(Menu):
+    bl_label = "Add Filter"
+
+    def draw(self, _context):
+        for kind in FILTER_KINDS:
+            effect_entry(self.layout, MK.KIND_BY_ID[kind].label, kind, _menu_target["uid"])
+
+
+class M3D_MT_mask_clear(Menu):
+    bl_label = "Clear Mask"
+
+    def draw(self, _context):
+        action_entry(self.layout, "White (Show All)", 'MASK_CLEAR_WHITE', _menu_target["uid"])
+        action_entry(self.layout, "Black (Hide All)", 'MASK_CLEAR_BLACK', _menu_target["uid"])
+
+
+class M3D_MT_mask_more(Menu):
+    """The "..." menu of the Mask panel: the commands of the mask."""
+    bl_label = "Mask Commands"
+
+    def draw(self, _context):
+        draw_mask_menu(self.layout)
 
 
 class M3D_MT_layer_effect_add(Menu):
@@ -3551,6 +3740,8 @@ class M3D_MT_layer_mask_add(Menu):
 
     def draw(self, _context):
         draw_mask_items(self.layout)
+        self.layout.separator()
+        draw_effect_items(self.layout)
 
 
 class M3D_MT_layer_ctx_effect_add(Menu):
@@ -3565,6 +3756,8 @@ class M3D_MT_layer_ctx_mask_add(Menu):
 
     def draw(self, _context):
         draw_mask_items(self.layout, _menu_target["uid"])
+        self.layout.separator()
+        draw_effect_items(self.layout, _menu_target["uid"])
 
 
 class M3D_MT_layer_more(Menu):
@@ -3593,9 +3786,10 @@ class M3D_MT_layer_more(Menu):
         layout.operator("m3d.layer_paste", text="Paste", icon='PASTEFLIPDOWN')
 
 
-def hovered_layer(context, mat):
-    """uid of the layer a right-click was on (the button under the pointer belongs to it: a property of the layer, of one of its
-    channels or effects, or one of the row's own buttons). Empty: unknown (the active layer is meant)."""
+def hovered(context, mat):
+    """What a right-click in a list of layers or mask effects was on: (uid of the layer, is it its mask, index of the effect of the
+    mask). The button under the pointer tells: a property of the layer, of one of its channels or effects (its data path), or a button
+    of the row (its operator's layer, part and effect: the thumbnails). Empty uid: unknown (the active layer is meant)."""
     ptr = getattr(context, "button_pointer", None)
     path = ""
     if ptr is not None:
@@ -3603,30 +3797,46 @@ def hovered_layer(context, mat):
             path = ptr.path_from_id()
         except (ValueError, AttributeError, TypeError):
             path = ""
+    op = getattr(context, "button_operator", None)
     match = re.search(r"m3d_layers\[(\d+)\]", path)
-    index = int(match.group(1)) if match else getattr(getattr(context, "button_operator", None), "index", -1)
-    return mat.m3d_layers[index].uid if isinstance(index, int) and 0 <= index < len(mat.m3d_layers) else ""
+    index = int(match.group(1)) if match else getattr(op, "index", -1)
+    uid = mat.m3d_layers[index].uid if isinstance(index, int) and 0 <= index < len(mat.m3d_layers) else ""
+    effect = re.search(r"mask_stack\[(\d+)\]", path)
+    if effect:
+        return uid, True, int(effect.group(1))
+    part = getattr(op, "part", 'LAYER')
+    return uid, part in {'MASK', 'EFFECT'}, getattr(op, "effect", -1) if part == 'EFFECT' else -1
+
+
+def hovered_layer(context, mat):
+    """uid of the layer a right-click was on (empty: unknown, the active layer is meant)."""
+    return hovered(context, mat)[0]
 
 
 def draw_list_menu(self, context):
-    """Cut / Copy / Paste, Duplicate, Delete, Group, Add Effect / Mask, Create Smart Material / Mask, Merge Down, Flatten, Freeze:
-    the commands of the layer the right-click was on (they select it first)."""
+    """On a layer: Cut / Copy / Paste, Duplicate, Delete, Group, Add Effect / Mask, Create Smart Material / Mask, Merge Down, Flatten,
+    Freeze. On the mask thumbnail, an effect row of the mask or in the Mask panel: the commands of the mask (draw_mask_menu). They
+    are the commands of the layer the right-click was on (they select it first)."""
     ui_list = getattr(context, "ui_list", None)
-    if ui_list is None or ui_list.bl_idname != "M3D_UL_layers":
+    if ui_list is None or ui_list.bl_idname not in {"M3D_UL_layers", "M3D_UL_mask_effects"}:
         return
     ob = mesh_of(context)
     mat = ob.active_material if ob is not None else None
     if mat is None or not len(mat.m3d_layers):
         return
-    layout, uid = self.layout, hovered_layer(context, mat)
+    layout = self.layout
+    uid, mask, effect = hovered(context, mat)
     layer = layer_by_uid(mat, uid) if uid else active_layer(mat)
     if layer is None:
         return
-    _menu_target["uid"] = uid
+    if mask or ui_list.bl_idname == "M3D_UL_mask_effects":
+        layout.separator()
+        draw_mask_menu(layout, uid, effect)
+        return
+    _menu_target.update(uid=uid, pick=-1)
 
     def item(text, action, icon='NONE'):
-        op = layout.operator("m3d.layer_do", text=text, icon=icon)
-        op.action, op.uid = action, uid
+        action_entry(layout, text, action, uid, icon)
 
     layout.separator()
     item("Cut", 'CUT', 'PASTEDOWN')
@@ -3669,6 +3879,9 @@ classes = (
     M3D_OT_layer_mask_add,
     M3D_OT_layer_mask_remove,
     M3D_OT_layer_mask_invert,
+    M3D_OT_layer_mask_clear,
+    M3D_OT_layer_mask_copy,
+    M3D_OT_layer_mask_paste,
     M3D_OT_layer_paint_mask,
     M3D_OT_mask_effect_add,
     M3D_OT_mask_effect_remove,
@@ -3693,6 +3906,10 @@ classes = (
     M3D_MT_layer_mask_add,
     M3D_MT_layer_ctx_effect_add,
     M3D_MT_layer_ctx_mask_add,
+    M3D_MT_mask_generator,
+    M3D_MT_mask_filter,
+    M3D_MT_mask_clear,
+    M3D_MT_mask_more,
     M3D_MT_layer_more,
 )
 
@@ -3794,7 +4011,7 @@ def register():
                                        "in the viewport (the mesh's AO mesh map)")
     mat.m3d_unlit = BoolProperty(name="Unlit", default=False, update=_show_mask_changed,
                                  description="Show the Base Color flat, without lighting (the viewport type Unlit)")
-    bpy.types.UI_MT_list_item_context_menu.append(draw_list_menu)
+    bpy.types.UI_MT_button_context_menu.prepend(draw_list_menu)
     bpy.app.handlers.load_post.append(load_post)
     bpy.app.handlers.undo_post.append(undo_post)
     bpy.app.handlers.redo_post.append(undo_post)
@@ -3812,7 +4029,7 @@ def unregister():
     bpy.app.handlers.redo_post.remove(undo_post)
     bpy.app.handlers.undo_post.remove(undo_post)
     bpy.app.handlers.load_post.remove(load_post)
-    bpy.types.UI_MT_list_item_context_menu.remove(draw_list_menu)
+    bpy.types.UI_MT_button_context_menu.remove(draw_list_menu)
     del bpy.types.Material.m3d_unlit, bpy.types.Material.m3d_baked_ao, bpy.types.Material.m3d_baked_normal
     del bpy.types.Material.m3d_size, bpy.types.Material.m3d_depth, bpy.types.Material.m3d_off
     thumbs_clear()

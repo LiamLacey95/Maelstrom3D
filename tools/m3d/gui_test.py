@@ -3814,7 +3814,7 @@ def lay_move_check():
     m = lay_mat()
     check(lay_names() == ["Base", "Fill Layer", "Paint Layer"] and m.m3d_layer_index == 1, "Move Layer Down: %s" % lay_names())
     check(m.texture_paint_images[m.paint_active_slot] == LY.paint_effect(m.m3d_layers[1]).image, "the brush follows the moved layer (its mask)")
-    top = LY.principled_of(m).inputs["Base Color"].links[0].from_node
+    top = LY.base_source(m).node   # (past the AO multiply the baked AO map puts in front of the shader)
     check(top.name == LY.part('BASE_COLOR', m.m3d_layers[2].uid, "mix"), "the Paint Layer is on top of the Base Color chain")
     check(np.array_equal(px(lay_image(2)), GIZMO["stroked"]), "moving layers keeps their pixels")
     m.m3d_layer_index = 2
@@ -3848,8 +3848,18 @@ def lay_merge_check():
 @step
 def lay_export_check():
     files = sorted(os.listdir(GIZMO["out2"]))
-    check(files == ["T_Crate_BC.png", "T_Crate_ORM.png"], "export of a stack wrote the Unreal files (%s)" % files)
     m = lay_mat()
+    # (the set has the baked normal map of the bake in the dock: it is the base of the Normal, so the Normal is written, as the 3D view shows it)
+    check(LY.baked_image(m, "Normal") is not None, "the texture set has its baked normal map")
+    check(files == ["T_Crate_BC.png", "T_Crate_N.png", "T_Crate_ORM.png"], "export of a stack wrote the Unreal files (%s)" % files)
+    img = bpy.data.images.load(os.path.join(GIZMO["out2"], "T_Crate_N.png"))
+    img.colorspace_settings.name = 'Non-Color'
+    file_n = px(img)[:, :3]
+    want_n = LY.flatten_normal(m, 128)[..., :3].reshape(-1, 3).copy()
+    want_n[:, 1] = 1.0 - want_n[:, 1]   # (the Unreal normal map is DirectX)
+    check(file_n.shape == want_n.shape and np.abs(file_n - want_n).max() < 3 / 255,
+          "the exported normal is the baked normal under the layers' (largest difference %.4f)" % np.abs(file_n - want_n).max())
+    bpy.data.images.remove(img)
     img = bpy.data.images.load(os.path.join(GIZMO["out2"], "T_Crate_BC.png"))
     img.colorspace_settings.name = 'Non-Color'
     file_px = px(img)[:, :3]
@@ -4702,17 +4712,17 @@ def mk_open_fill():
 
 @step
 def mk_key_fill():
-    mk_key('F')
+    mk_key('A')   # (the access key of Add Fill: the first letter of the first word)
 
 
-step(wait_until(lambda: len(mk_layer().mask_stack) >= 1, "Fill from the Add menu (F key)"))
+step(wait_until(lambda: len(mk_layer().mask_stack) >= 1, "Fill from the Add menu (A key)"))
 
 
 @step
 def mk_fill_check():
     layer = mk_layer()
     check([e.kind for e in layer.mask_stack] == ['FILL'] and layer.mask_stack[0].value == 0.0 and layer.mask_index == 0,
-          "F in the Add menu added a black Fill effect: %s" % [e.kind for e in layer.mask_stack])
+          "Add Fill in the Add menu added a black Fill effect: %s" % [e.kind for e in layer.mask_stack])
     check(np.abs(LY.composite(lay_mat(), 'BASE_COLOR', 128) - GIZMO["mk_base"]).max() < 1e-5, "a black Fill hides the layer: the result is the base layer alone")
     layer.mask_stack[0].value = 1.0
     shown = LY.composite(lay_mat(), 'BASE_COLOR', 128)
@@ -4723,11 +4733,16 @@ def mk_fill_check():
 
 
 @step
+def mk_key_generator():
+    mk_key('G')   # (Add Generator opens its menu)
+
+
+@step
 def mk_key_edges():
     mk_key('E')
 
 
-step(wait_until(lambda: len(mk_layer().mask_stack) >= 2, "Edges from the Add menu (E key, bakes the Curvature map)", tries=60))
+step(wait_until(lambda: len(mk_layer().mask_stack) >= 2, "Edges from the Add Generator menu (E key, bakes the Curvature map)", tries=60))
 
 
 @step
@@ -6082,19 +6097,23 @@ step(wait_until(lambda: bpy.context.mode == 'PAINT_TEXTURE' and tex4_2d()[2].ima
 @step
 def tex4_ctx_paint():
     check(m3d_texture.props_context(bpy.context) == 'PAINT' and window().workspace.m3d_layout == 1, "a Paint Layer: Properties - Paint")
-    check(tex4_sections() == {"pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_material", "pp_advanced", "pp_cursor"},
-          "Properties - Paint with the Paint tool shows previews, Brush, Alpha, Stencil, Material, Advanced, Cursor: %s" % sorted(tex4_sections()))
+    check(tex4_sections() == {"pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_material", "pp_more"},
+          "Properties - Paint with the Paint tool shows previews, Brush, Alpha, Stencil, Material and the More Settings button: %s" % sorted(tex4_sections()))
+    bpy.context.scene.m3d_tex.props_more = True
+    check(tex4_sections() == {"pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_material", "pp_advanced", "pp_cursor", "pp_more"},
+          "...More Settings adds Advanced and Cursor: %s" % sorted(tex4_sections()))
+    bpy.context.scene.m3d_tex.props_more = False
     check(not tracebacks(), "Python error drawing Properties - Paint")
 
 
 def _tex4_tool_steps():
     sections = {
-        'ERASER': {"pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_material", "pp_advanced", "pp_cursor"},
-        'PROJECTION': {"pp_preview", "pp_projection", "pp_brush", "pp_material", "pp_advanced", "pp_cursor"},
+        'ERASER': {"pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_material", "pp_more"},
+        'PROJECTION': {"pp_preview", "pp_projection", "pp_brush", "pp_material", "pp_more"},
         'POLYFILL': {"pp_preview", "pp_polyfill", "pp_material"},
-        'SMUDGE': {"pp_preview", "pp_brush", "pp_advanced", "pp_cursor"},
-        'CLONE': {"pp_preview", "pp_brush", "pp_clone", "pp_advanced", "pp_cursor"},
-        'PAINT': {"pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_material", "pp_advanced", "pp_cursor"},
+        'SMUDGE': {"pp_preview", "pp_brush", "pp_more"},
+        'CLONE': {"pp_preview", "pp_brush", "pp_clone", "pp_more"},
+        'PAINT': {"pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_material", "pp_more"},
     }
     for tool, want in sections.items():
         def pick(tool=tool):
@@ -6272,7 +6291,7 @@ def tex4_ctx_generator():
 
 @step
 def tex4_ctx_mask_paint():
-    check(tex4_sections() == {"mk_stack", "mk_effect", "pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_gray", "pp_advanced", "pp_cursor"},
+    check(tex4_sections() == {"mk_stack", "mk_effect", "pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_gray", "pp_more"},
           "painting the mask: the Paint sections follow the mask's, with the grays (%s)" % sorted(tex4_sections()))
     check(not tracebacks(), "Python error drawing Properties - Mask while the mask is painted")
     LY.active_layer(tex_mat()).paint_mask = False
@@ -6518,7 +6537,7 @@ def s3e_setup():
     LY.draw_look = recorded
     LY.thumbs_clear()
     S3E["real_menu"] = LY.draw_list_menu
-    bpy.types.UI_MT_list_item_context_menu.remove(LY.draw_list_menu)
+    bpy.types.UI_MT_button_context_menu.remove(LY.draw_list_menu)
 
     def menu_spy(self, context):
         mat = bpy.context.active_object.active_material
@@ -6526,7 +6545,7 @@ def s3e_setup():
         S3E["menu"].append((ui_list.bl_idname if ui_list is not None else None, LY.hovered_layer(context, mat) if mat is not None else ""))
         S3E["real_menu"](self, context)
     S3E["menu_spy"] = menu_spy
-    bpy.types.UI_MT_list_item_context_menu.append(menu_spy)
+    bpy.types.UI_MT_button_context_menu.append(menu_spy)
     bpy.utils.register_class(M3D_OT_test_probe)
     km = bpy.context.window_manager.keyconfigs.addon.keymaps.new(name="Window", space_type='EMPTY', region_type='WINDOW')
     S3E["km"], S3E["kmi"] = km, km.keymap_items.new("m3d.test_probe", 'F19', 'PRESS')
@@ -6648,8 +6667,8 @@ def s3e_find_rows():
 @step
 def s3e_rows_find():
     S3E["rows"] = s3e_find_rows()
-    eyes = {text for text in S3E["probes"].values() if "mask_stack[" in text and text.endswith(".visible")}
-    check(len(eyes) == 2, "the active layer (Fill B) lists the two effects of its mask, each with an eye (%s)" % sorted(eyes))
+    effects = {text for text in S3E["probes"].values() if "layer_pick(part='EFFECT'" in text}
+    check(len(effects) == 2, "the active layer (Fill B) lists the two effects of its mask, each a row with a button that selects it (%s)" % sorted(effects))
     # Paint C (the top row) active: another layer's list rows do not move when a thumbnail further down is clicked
     s3e_mat().m3d_layer_index = 2
     tex4_redraw()
@@ -6864,12 +6883,335 @@ step(wait_until(lambda: len(s3e_mat().m3d_layers) == S3E["count"] - 1, "Delete o
 def s3e_done():
     check(not tracebacks(), "Python error in the layer stack tests")
     LY.draw_look = S3E["real_look"]
-    bpy.types.UI_MT_list_item_context_menu.remove(S3E["menu_spy"])
-    bpy.types.UI_MT_list_item_context_menu.append(S3E["real_menu"])
+    bpy.types.UI_MT_button_context_menu.remove(S3E["menu_spy"])
+    bpy.types.UI_MT_button_context_menu.append(S3E["real_menu"])
     S3E["km"].keymap_items.remove(S3E["kmi"])
     bpy.utils.unregister_class(M3D_OT_test_probe)
     check(window().workspace.m3d_layout == 1, "the Texture workspace is still the new layout")
     for image in [i for i in bpy.data.images if i.name.startswith("Stack3e")]:
+        bpy.data.images.remove(image)
+
+
+# ----------------------------------------------------------------------------------------------------
+# The compact layer rows and the mask menu in the real window: a stack with a folder, a fill with a black mask and two more mask effects (their
+# rows are under it), and a paint layer. A real right-click on the fill's mask thumbnail opens the mask menu (not the layer menu) for that layer,
+# and its Add Fill adds a Fill effect to the mask. Pictures: F:/AI/m3d_layers_compact.png, F:/AI/m3d_mask_menu.png.
+
+S3F = {"menu": []}
+
+
+@step
+def s3f_enter():
+    restore_window()
+    lb_sandbox()
+    if window().workspace.name != "Texture":
+        bpy.ops.m3d.workspace(kind='TEXTURE')
+
+
+step(wait_until(lambda: window().workspace.name == "Texture" and len([a for a in window().screen.areas if a.type == 'IMAGE_EDITOR']) == 1
+                and len(props_areas()) == 6, "the Texture workspace for the compact layer rows", tries=30))
+
+
+@step
+def s3f_setup():
+    # A cube with: Paint Base, Fill Tint (a black mask and its Noise and Levels effects), a folder Group with Inner in it, Paint Top.
+    if bpy.context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    for ob in list(bpy.data.objects):
+        bpy.data.objects.remove(ob)
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.m3d.add_primitive(kind='CUBE')
+    bpy.context.active_object.name = "Stack3f"
+    bpy.ops.m3d.tex_add_material()
+    bpy.context.scene.m3d_tex.resolution = '64'
+    bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+    mat = s3e_mat()
+    bpy.ops.m3d.layer_add(kind='PAINT')
+    LY.active_layer(mat).name = "Paint Base"
+    bpy.ops.m3d.tex_channel(channel='BASE_COLOR')
+    LY.write_pixels(LY.entry_of(LY.active_layer(mat), 'BASE_COLOR').image, np.tile(np.array([0.9, 0.3, 0.2, 1.0], np.float32), (64 * 64, 1)))
+    bpy.ops.m3d.layer_add(kind='FILL')
+    LY.active_layer(mat).name = "Fill Tint"
+    LY.active_layer(mat).channels[0].color = (0.1, 0.5, 0.9, 1.0)
+    bpy.ops.m3d.layer_mask_add(fill='BLACK')
+    bpy.ops.m3d.mask_effect_add(kind='NOISE')
+    bpy.ops.m3d.mask_effect_add(kind='LEVELS')
+    bpy.ops.m3d.layer_add(kind='PAINT')
+    LY.active_layer(mat).name = "Inner"
+    bpy.ops.m3d.tex_channel(channel='BASE_COLOR')
+    bpy.ops.m3d.layer_folder_add(group=True)
+    LY.active_layer(mat).name = "Group"
+    bpy.ops.m3d.layer_add(kind='PAINT')
+    LY.active_layer(mat).name = "Paint Top"
+    bpy.ops.m3d.tex_channel(channel='BASE_COLOR')
+    mat.m3d_row_channel = 'BASE_COLOR'
+    mat.m3d_layer_index = LY.index_of(mat, s3e_layer("Fill Tint").uid)
+    bpy.context.scene.m3d_tex.props_mode = 'AUTO'
+    LY.thumbs_clear()
+    S3F["real_menu"] = LY.draw_list_menu
+    bpy.types.UI_MT_button_context_menu.remove(LY.draw_list_menu)
+
+    def menu_spy(self, context):
+        mat_ = bpy.context.active_object.active_material
+        ui_list = getattr(context, "ui_list", None)
+        S3F["menu"].append((ui_list.bl_idname if ui_list is not None else None, LY.hovered(context, mat_) if mat_ is not None else None))
+        S3F["real_menu"](self, context)
+    S3F["menu_spy"] = menu_spy
+    bpy.types.UI_MT_button_context_menu.append(menu_spy)
+    bpy.utils.register_class(M3D_OT_test_probe)
+    km = bpy.context.window_manager.keyconfigs.addon.keymaps.new(name="Window", space_type='EMPTY', region_type='WINDOW')
+    S3F["km"], S3F["kmi"] = km, km.keymap_items.new("m3d.test_probe", 'F19', 'PRESS')
+    lay_show_tab()
+    tex4_redraw()
+
+
+def s3f_rows_ready():
+    tex4_redraw()
+    return not LY._thumbs["todo"] and len(LY._thumbs["made"]) >= 3
+
+
+step(wait_until(s3f_rows_ready, "the rows and their thumbnails", tries=40))
+
+
+@step
+def s3f_rows_shot():
+    check(not tracebacks(), "Python error drawing the compact layer rows")
+    e_screenshot("F:/AI/m3d_layers_compact.png")
+
+
+def s3f_locate(tag, layer_name):
+    """Steps that find the thumbnails of a layer (and the buttons of its mask's effect rows) by hovering the list and asking what is under the
+    pointer: S3F[tag] = {"content": xy, "mask": xy, "effects": {index: xy}}."""
+    import re
+
+    def column():
+        area, region = s3e_region()
+        scale = bpy.context.preferences.system.ui_scale or 1.0
+        S3F["region"] = (region.x, region.y, region.width, region.height, scale)
+        s3e_scan([(region.x + int(36 * scale) + dx, y) for dx in (0, 6) for y in range(region.y + region.height - 12, region.y + 12, -5)])
+
+    def row():
+        mat = s3e_mat()
+        eyes = {}
+        for (x, y), text in S3E["probes"].items():
+            m = re.search(r"m3d_layers\[(\d+)\]\.visible$", text)
+            if m:
+                eyes.setdefault(int(m.group(1)), []).append((x, y))
+        check(set(eyes) == set(range(len(mat.m3d_layers))), "%s: an eye for each of the %d layers (found %s)" % (tag, len(mat.m3d_layers), sorted(eyes)))
+        index = LY.index_of(mat, s3e_layer(layer_name).uid)
+        S3F[tag] = {"index": index}
+        if index not in eyes:
+            s3e_scan([])
+            return
+        x0, y0, w, _h, scale = S3F["region"]
+        top = s3e_top_center(eyes[index], 30)[1]
+        points = [(x, top) for x in range(x0 + 10, x0 + int(w * 0.7), 5)]
+        points += [(x0 + int(104 * scale), y) for y in range(top - 6, top - int(110 * scale), -4)]   # (the effect rows are under the row)
+        s3e_scan(points)
+
+    def found():
+        index = S3F[tag]["index"]
+        hits = s3e_hits(r"layer_pick\(part='MASK', index=%d\)" % index)
+        content = s3e_hits(r"layer_pick\(index=%d\)" % index)
+        S3F[tag]["mask"] = s3e_center(hits) if hits else None
+        S3F[tag]["content"] = s3e_center(content) if content else None
+        effects = {}
+        for (x, y), text in S3E["probes"].items():
+            m = re.search(r"layer_pick\(part='EFFECT', index=%d, effect=(\d+)\)" % index, text)
+            if m:
+                effects.setdefault(int(m.group(1)), []).append((x, y))
+        S3F[tag]["effects"] = {i: s3e_center(points) for i, points in effects.items()}
+        check(bool(hits), "%s: the mask thumbnail of %s is a button of its row (found at %d points)" % (tag, layer_name, len(hits)))
+        check(bool(content), "%s: ...and so is its content thumbnail (found at %d points)" % (tag, len(content)))
+        if hits and content:
+            check(max(x for x, _y in content) < min(x for x, _y in hits), "%s: the content thumbnail is left of the mask thumbnail" % tag)
+
+    for fn, name in ((column, "column"), (row, "row"), (found, "found")):
+        fn.__name__ = "s3f_%s_%s" % (tag, name)
+    step(column)
+    step(wait_until(s3e_scanned, "the probes of the list (%s)" % tag, tries=60))
+    step(row)
+    step(wait_until(s3e_scanned, "the probes of the row of %s (%s)" % (layer_name, tag), tries=60))
+    step(found)
+
+
+def s3f_settle():
+    """Steps after a menu was closed: the pointer goes to an empty place of the dock, the windows are drawn again."""
+    def move():
+        area, region = s3e_region()
+        xy = (region.x + region.width // 2, region.y + 14)
+        event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]))
+        event('MOUSEMOVE', xy=xy)
+        tex4_redraw()
+    S3F["settles"] = S3F.get("settles", 0) + 1
+    move.__name__ = "s3f_settle_%d" % S3F["settles"]
+    step(move)
+    step(move)
+
+
+def s3f_click(tag, what, button):
+    """Steps: move to the button `what` ("mask", "content" or an effect index) of S3F[tag] and press the mouse button there (the menu spy is cleared first)."""
+    def go():
+        xy = S3F[tag][what] if what in {"mask", "content"} else S3F[tag]["effects"].get(what)
+        S3F["xy"] = xy
+        S3F["menu"].clear()
+        check(xy is not None, "%s: the button %s is there to click" % (tag, what))
+        if xy:
+            event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]))
+            event('MOUSEMOVE', xy=xy)
+            event(button, 'PRESS', xy)
+            event(button, 'RELEASE', xy)
+    go.__name__ = "s3f_%s_%s_click" % (tag, what)
+    step(go)
+
+
+s3f_locate("a", "Fill Tint")
+s3f_click("a", "mask", 'RIGHTMOUSE')
+step(wait_until(lambda: S3F["xy"] is None or bool(S3F["menu"]), "the right-click menu to open on the mask thumbnail", tries=20))
+
+
+@step
+def s3f_a_menu():
+    fill = s3e_layer("Fill Tint")
+    check(set(S3F["a"]["effects"]) == {0, 1, 2}, "the three effect rows of the mask are buttons (found %s)" % sorted(S3F["a"]["effects"]))
+    check(bool(S3F["menu"]) and S3F["menu"][0] == ("M3D_UL_layers", (fill.uid, True, -1)),
+          "a real right-click on the mask thumbnail of Fill Tint opens the mask menu for that layer (%s)" % (S3F["menu"][:1],))
+    check(not tracebacks(), "Python error opening the mask menu")
+    for _i in range(3):   # (the key presses highlight Add Fill and take the tooltip of the first item away)
+        event('DOWN_ARROW', 'PRESS', S3F["xy"])
+        event('DOWN_ARROW', 'RELEASE', S3F["xy"])
+
+
+@step
+def s3f_a_menu_shot():
+    e_screenshot("F:/AI/m3d_mask_menu.png")
+    event('ESC', 'PRESS', S3F["xy"])
+    event('ESC', 'RELEASE', S3F["xy"])
+
+
+# a right-click on an effect row: the mask menu, for the effect under the pointer
+s3f_settle()
+s3f_click("a", 1, 'RIGHTMOUSE')
+step(wait_until(lambda: S3F["xy"] is None or bool(S3F["menu"]), "the right-click menu to open on an effect row", tries=20))
+
+
+@step
+def s3f_a_effect_menu():
+    fill = s3e_layer("Fill Tint")
+    check(bool(S3F["menu"]) and S3F["menu"][0] == ("M3D_UL_layers", (fill.uid, True, 1)),
+          "a right-click on the Noise effect row opens the mask menu for that effect (%s)" % (S3F["menu"][:1],))
+    check(not tracebacks(), "Python error opening the mask menu from an effect row")
+    event('ESC', 'PRESS', S3F["xy"])
+    event('ESC', 'RELEASE', S3F["xy"])
+
+
+# a right-click on the content thumbnail: the layer menu
+s3f_settle()
+s3f_click("a", "content", 'RIGHTMOUSE')
+step(wait_until(lambda: S3F["xy"] is None or bool(S3F["menu"]), "the right-click menu to open on the content thumbnail", tries=20))
+
+
+@step
+def s3f_a_layer_menu():
+    fill = s3e_layer("Fill Tint")
+    check(bool(S3F["menu"]) and S3F["menu"][0] == ("M3D_UL_layers", (fill.uid, False, -1)),
+          "a right-click on the content thumbnail opens the layer menu (%s)" % (S3F["menu"][:1],))
+    event('ESC', 'PRESS', S3F["xy"])
+    event('ESC', 'RELEASE', S3F["xy"])
+
+
+s3f_settle()
+
+
+@step
+def s3f_other_active():
+    # Another layer is the active one: the right-click is on a layer that is not
+    mat = s3e_mat()
+    mat.m3d_layer_index = LY.index_of(mat, s3e_layer("Paint Top").uid)
+    S3F["count"] = len(s3e_layer("Fill Tint").mask_stack)
+    tex4_redraw()
+
+
+s3f_locate("b", "Fill Tint")
+s3f_click("b", "mask", 'RIGHTMOUSE')
+step(wait_until(lambda: S3F["xy"] is None or bool(S3F["menu"]), "the right-click menu to open on the mask thumbnail of another layer", tries=20))
+
+
+@step
+def s3f_b_menu():
+    fill = s3e_layer("Fill Tint")
+    mat = s3e_mat()
+    check(bool(S3F["menu"]) and S3F["menu"][0] == ("M3D_UL_layers", (fill.uid, True, -1)) and LY.active_layer(mat).name == "Paint Top",
+          "the mask thumbnail of a layer that is not the active one opens the mask menu for it (%s)" % (S3F["menu"][:1],))
+    # (the menu starts with Blender's own items: Add to Quick Favorites under the pointer, Online Manual, Add to Shelf; then Add Fill)
+    for key in ('DOWN_ARROW', 'DOWN_ARROW', 'DOWN_ARROW', 'RET'):
+        event(key, 'PRESS', S3F["xy"])
+        event(key, 'RELEASE', S3F["xy"])
+
+
+step(wait_until(lambda: len(s3e_layer("Fill Tint").mask_stack) > S3F["count"], "Add Fill to add an effect to the mask", tries=20))
+
+
+@step
+def s3f_b_added():
+    mat = s3e_mat()
+    fill = s3e_layer("Fill Tint")
+    check([e.kind for e in fill.mask_stack] == ['PAINT', 'NOISE', 'LEVELS', 'FILL'] and LY.active_effect(fill).kind == 'FILL',
+          "Add Fill in the mask menu added a Fill effect to the mask, above the selected effect: %s" % [e.kind for e in fill.mask_stack])
+    check(LY.active_layer(mat).name == "Fill Tint", "...and selected the layer the menu was for")
+    check(not tracebacks(), "Python error running Add Fill from the mask menu")
+    tex4_redraw()
+
+
+# the effects of the Mask panel (Properties): a right-click on one of its rows opens the mask menu too
+@step
+def s3f_props_scan():
+    area = tex_roles()["props"]
+    region = next(r for r in area.regions if r.type == 'WINDOW')
+    S3F["props_region"] = region
+    s3e_scan([(region.x + int(region.width * f), y) for f in (0.74, 0.78) for y in range(region.y + region.height - 8, region.y + 8, -4)])
+
+
+step(wait_until(s3e_scanned, "the probes of the Properties editor", tries=60))
+
+
+@step
+def s3f_props_click():
+    import re
+    hits = [xy for xy, text in S3E["probes"].items() if re.search(r"mask_stack\[1\]\.opacity$", text)]
+    check(bool(hits), "the opacity of the second effect is a button in the Mask panel's list (found at %d points)" % len(hits))
+    S3F["xy"] = s3e_center(hits) if hits else None
+    S3F["menu"].clear()
+    if S3F["xy"]:
+        xy = S3F["xy"]
+        event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]))
+        event('MOUSEMOVE', xy=xy)
+        event('RIGHTMOUSE', 'PRESS', xy)
+        event('RIGHTMOUSE', 'RELEASE', xy)
+
+
+step(wait_until(lambda: S3F["xy"] is None or bool(S3F["menu"]), "the right-click menu to open on an effect of the Mask panel", tries=20))
+
+
+@step
+def s3f_props_menu():
+    fill = s3e_layer("Fill Tint")
+    check(bool(S3F["menu"]) and S3F["menu"][0] == ("M3D_UL_mask_effects", (fill.uid, True, 1)),
+          "a right-click on an effect of the Mask panel opens the mask menu for that effect (%s)" % (S3F["menu"][:1],))
+    check(not tracebacks(), "Python error opening the mask menu from the Mask panel")
+    event('ESC', 'PRESS', S3F["xy"] or (200, 200))
+    event('ESC', 'RELEASE', S3F["xy"] or (200, 200))
+
+
+@step
+def s3f_done():
+    check(not tracebacks(), "Python error in the compact layer rows tests")
+    bpy.types.UI_MT_button_context_menu.remove(S3F["menu_spy"])
+    bpy.types.UI_MT_button_context_menu.append(S3F["real_menu"])
+    S3F["km"].keymap_items.remove(S3F["kmi"])
+    bpy.utils.unregister_class(M3D_OT_test_probe)
+    for image in [i for i in bpy.data.images if i.name.startswith("Stack3f")]:
         bpy.data.images.remove(image)
 
 
@@ -9182,7 +9524,28 @@ def bgg_tab_check():
     groups = HPR.all_groups(bpy.context)
     check(list(groups) == ["Rock", "Shield", "Sword"] and [len(x) for x in groups["Sword"]] == [1, 2], "three groups, the sword with a floater: %s" % {g: [len(x) for x in v] for g, v in groups.items()})
     check(bgg_group_state("Sword") == 'NONE', "nothing is baked yet")
-    check(bpy.context.scene.m3d_bake_groups.get("Sword") is not None, "the settings of the group were made for the panel (a moment after it was drawn)")
+    check(bpy.context.scene.m3d_bake_groups.get("Sword") is None, "(Advanced is closed: the Group Settings are not drawn, so nothing is made for them)")
+    # A panel of the dock that draws the Group Settings as Advanced does when it is open.
+    GIZMO["bgg_probe"] = type("PROPERTIES_PT_m3d_gui_group_probe", (bpy.types.Panel,), {
+        "bl_label": "Group Settings Probe", "bl_space_type": 'PROPERTIES', "bl_region_type": 'WINDOW', "bl_context": "modeling_toolkit",
+        "poll": classmethod(lambda cls, context: context.workspace.m3d_page_right == "tex_bake" and context.active_object is not None
+                            and context.active_object.m3d_pair.group != ""),
+        "draw": lambda self, context: BGR.draw_group_settings(self.layout, context)})
+    bpy.utils.register_class(GIZMO["bgg_probe"])
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+step(wait_until(lambda: bpy.context.scene.m3d_bake_groups.get("Sword") is not None, "the settings of the group to be made for the open Group Settings"))
+
+
+@step
+def bgg_probe_check():
+    check(bpy.context.scene.m3d_bake_groups.get("Sword") is not None, "the Group Settings were made a moment after they were drawn (not by the drawing)")
+    check(not tracebacks(), "Python error drawing the Group Settings")
+    bpy.utils.unregister_class(GIZMO.pop("bgg_probe"))
+    for a in window().screen.areas:
+        a.tag_redraw()
 
 
 @step
