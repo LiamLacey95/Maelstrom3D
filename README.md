@@ -9,7 +9,12 @@ Artists who learned on Autodesk® Maya® will find the hotkeys and layout famili
 Maelstrom3D is a fork of [Blender](https://www.blender.org) (branch `maelstrom3d`, based on the `v5.2.2` LTS
 release). Everything is set up out of the box.
 
-**Download (Windows x64)** from [Releases](../../releases):
+> [!WARNING]
+> **Early alpha.** Maelstrom3D is in early development and is not yet a beta: workspaces, tools and layouts still
+> change from one release to the next, many parts have had little testing, and you will find bugs. Keep backups of your
+> work and don't rely on it for production yet. Bug reports and feedback are welcome in [Issues](../../issues).
+
+**Download (Windows x64)** from [Releases](../../releases) (alpha pre-releases):
 - **Installer** (`...-setup.exe`): installs for your user (no admin needed), adds a Start menu entry and an uninstaller.
 - **Portable** (`...-portable.zip`): unzip anywhere (a USB stick works) and run `Maelstrom3D.exe`; settings stay in its
   `portable` folder.
@@ -44,14 +49,17 @@ Maelstrom3D keeps its settings apart from Blender's (`%APPDATA%\Maelstrom3D`), s
 - **Marking menus:** right-click, Shift / Ctrl / Ctrl+Shift right-click, Q / W / E / R / A / H + left click,
   Shift+S keys and tangents.
 - **Look:** mid-grey UI with a blue highlight, gradient viewport, green / white selection, square widgets.
-- **Sculpt workflow (F2):** brush tray, Multires / Voxel Remesh / QuadriFlow / Dyntopo, mask and face set tools, mesh filters,
-  color paint, display options and a mesh list, Shift+1-7 brush keys.
+- **Sculpt workflow (F2):** brush tray, Multires / Voxel Remesh (a Detail slider with the face count) / Auto Retopology /
+  Dynamic Detail, mask (with its own colour) and face set tools, mesh filters, vertex color paint, display options, a mesh
+  list with high poly / low poly pairs, Shift+1-7 brush keys, the active brush's keys in the status bar.
 - **UV workflow (F3):** UV Editor and 3D view with a dock of Unwrap, Arrange, Check, Create and UDIM tabs, Cut / Sew / Unfold /
   Optimize / Layout, Auto Unwrap, texel density read / set / match, distortion and checker map, UV marking menus.
-- **Texture workflow (F4):** 3D view and paint view with a brush tray, paint channels (Base Color, Roughness, Metallic, Normal,
-  Height, Emission), a paint layer stack (Paint and Fill layers, masks, blend modes, Merge Down, Flatten), Bake (Normal, AO,
-  Curvature, Position, Thickness), Export (glTF, Unreal ORM, Unity; layers are flattened), HDRI and channel view, painted
-  images saved with the file, C / Shift+C channel keys.
+- **Texture workflow (F4):** laid out like dedicated painting tools: tool strip, Assets (materials, smart materials, smart
+  masks, brushes, alphas, environments), 3D and 2D views, Texture Sets, a layer stack (paint and fill layers, folders,
+  masks with effects, blend mode and opacity per channel) and Properties that follow what you pick; one stroke paints
+  every enabled channel (Base Color, Roughness, Metallic, Height, ...). Bake Mesh Maps (Normal, AO, Curvature, Position,
+  Thickness, ID, World Normal) runs in the background, on the GPU when there is one, with a see-through high poly and a
+  cage check; Export Textures (glTF, Unreal, Unity).
 - **Rigging workflow (F5):** Outliner with the bone hierarchy, a large viewport and a dock of Skeleton, Controls & Constraints, Skin,
   Drive, Test and Collections tabs that follows the mode; Joint tool, Orient Joint, control shapes with colors, IK with pole,
   bind with envelope fall back, weight tools (flood, smooth, normalize, limit, clean, mirror, transfer, weight table), Driven Key,

@@ -238,9 +238,9 @@ Retopology builds the low poly from a high poly you already have, either by draw
   Edit Mode and picks the **Quad Draw** tool. **Shift+click** on the surface adds the first point. **Shift+drag** from a point adds the next point and an edge to it; from the middle point of two edges it adds a
   quad. A plain **drag** on a point moves it, **Ctrl+click** on a point deletes it. Points always land on the surface, also when you move them. The Modeling Toolkit says "Make Live first" under its tools until a surface is live.
   (Poly Build's own Ctrl+click is changed to Shift+click: with Ctrl held, a move snaps the other way round, which would leave the new point off the surface.)
-- **Auto Low Poly** makes the low poly for you from a copy of the high poly: `<group>_low`, paired with it, with the high poly untouched. **Method**: **QuadriFlow** (quads) or **Decimate** (triangles), **Faces**
-  (2,000 by default; the result is about that many), and for QuadriFlow **Preserve Sharp** and **Preserve Boundary**. A high poly over 300,000 faces is voxel remeshed to about that first (decimated instead with Preserve
-  Boundary, since a voxel remesh closes open borders), since QuadriFlow on millions of faces takes very long. A Multires high poly is copied as it shows in the viewport. QuadriFlow needs a closed mesh without loose edges or flipped faces; when it cannot remesh, nothing is
+- **Auto Low Poly** makes the low poly for you from a copy of the high poly: `<group>_low`, paired with it, with the high poly untouched. **Method**: **Auto Retopology** (quads) or **Decimate** (triangles), **Faces**
+  (2,000 by default; the result is about that many), and for Auto Retopology **Preserve Sharp** and **Preserve Boundary**. A high poly over 300,000 faces is voxel remeshed to about that first (decimated instead with Preserve
+  Boundary, since a voxel remesh closes open borders), since Auto Retopology on millions of faces takes very long. A Multires high poly is copied as it shows in the viewport. Auto Retopology needs a closed mesh without loose edges or flipped faces; when it cannot remesh, nothing is
   added and the message suggests Voxel Remesh on the high poly first, or Decimate. The new low poly has no UVs: unwrap it in the UV workspace (F3).
 
 ## Texture (F4)
