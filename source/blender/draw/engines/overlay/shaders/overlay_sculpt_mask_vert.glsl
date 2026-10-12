@@ -16,7 +16,8 @@ void main()
   gl_Position = drw_point_world_to_homogenous(world_pos);
 
   faceset_color = mix(float3(1.0f), fset, face_sets_opacity);
-  mask_color = 1.0f - (msk * mask_opacity);
+  /* Maelstrom3D: the mask tints the surface towards `mask_tint` (black: darkens it, Blender's look). */
+  mask_color = mix(float3(1.0f), mask_tint, msk * mask_opacity);
 
   view_clipping_distances(world_pos);
 }

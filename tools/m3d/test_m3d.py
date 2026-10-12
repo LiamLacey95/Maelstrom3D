@@ -637,7 +637,8 @@ check(W.dock_tabs('SCULPT', 'LEFT') == sc_tabs['LEFT'] and W.dock_tabs('SCULPT',
 for tab in (*sc_tabs['RIGHT'], *sc_tabs['LEFT']):
     check(tab.context == 'MODELING_TOOLKIT' and tab.page == tab.id, "Sculpt page tab " + tab.id)
 pages = {t.page for side in sc_tabs.values() for t in side}
-check({c.page for c in S.classes if hasattr(c, "page")} == pages, "every Sculpt page has panels and the other way round")
+check({c.page for c in S.classes if hasattr(c, "page")} == pages | {"sculpt_start"},
+      "every Sculpt page has panels and the other way round (and the start card)")
 check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in S.classes), "Sculpt classes registered")
 
 # Brush grid and Shift+1..7 resolve to assets in the essentials file.
@@ -688,9 +689,14 @@ def shown(page):
     return [c.__name__ for c in page_panels(page) if c.poll(ctx) and c is not S.PROPERTIES_PT_m3d_sc_custom]   # (Custom is always there.)
 
 
+# Without a mesh: no page panels, the dock shows the start card alone, the tray nothing, no tabs.
 for page in S.GATES:
     names = shown(page)
-    check(len(names) == 1 and names[0].endswith("_gate"), "%s without a mesh shows its message only: %s" % (page, names))
+    check(names == [], "%s without a mesh shows none of its panels: %s" % (page, names))
+check(S.pages_shown(SCtx('RIGHT'), "sculpt_mask") == {"sculpt_start"} and S.pages_shown(SCtx('LEFT'), "sculpt_brushes") == set(),
+      "without a mesh the dock shows the start card, the tray nothing")
+sculpt_ws.m3d_page_right = "sculpt_geometry"
+check(S.PROPERTIES_PT_m3d_sc_start.poll(SCtx('RIGHT')) and not S.PROPERTIES_PT_m3d_sc_start.poll(SCtx('LEFT')), "start card in the dock")
 bpy.ops.m3d.sculpt_add_mesh(kind='CUBE')
 check(bpy.context.mode == 'SCULPT' and bpy.context.active_object.type == 'MESH', "Add Sphere / Cube starts sculpting")
 bpy.ops.object.mode_set(mode='OBJECT')
@@ -954,7 +960,7 @@ def phase1b():
         check({"size", "strength"} <= names or {"unprojected_size", "strength"} <= names, "Status Line %d: Size and Strength" % width)
         check(any(o == brush and n in {"size", "unprojected_size"} for o, n in props), "Status Line %d: Size is the brush's" % width)
         check(any(r._kind == "prop_enum" and r._args[1] == "direction" for r in log), "Status Line %d: Add / Subtract" % width)
-        check(("hardness" in names) == (tier == 2) and ("remesh_voxel_size" in names) == (tier == 2), "Status Line %d: wide extras" % width)
+        check(("hardness" in names) == (tier == 2) and ("m3d_voxel_detail" in names) == (tier == 2), "Status Line %d: wide extras" % width)
         check({"M3D_PT_sculpt_brush", "M3D_PT_sculpt_remesh", "M3D_PT_sculpt_shading", "M3D_PT_sculpt_automasking"} <= set(popovers),
               "Status Line %d: popovers %s" % (width, popovers))
         check(any(r._kind == "prop" and r._args[1] == "use_smooth_stroke" for r in log), "Status Line %d: Lazy Mouse" % width)
@@ -1104,14 +1110,173 @@ def phase1b():
     # The tray: essentials first (open), the rest closed.
     tray = [c for c in S.classes if getattr(c, "page", None) == "sculpt_brushes" and hasattr(c, "poll")]
     order = [c.bl_label for c in tray if c.__name__.startswith("PROPERTIES_PT_m3d_sc_") and not c.__name__.endswith("_gate")]
-    check(order[:6] == ["Brush Asset", "Brushes", "Size and Strength", "Lazy Mouse", "Stroke Type", "Alpha"], "tray order: %s" % order)
+    top = [c.bl_label for c in tray if not getattr(c, "bl_parent_id", "") and not c.__name__.endswith("_gate")]
+    check(top == ["Brushes", "Size and Strength", "Lazy Mouse", "Stroke Type", "Alpha", "More Brush Settings"], "tray order: %s" % top)
+    more = {c.bl_label for c in tray if getattr(c, "bl_parent_id", "") == "PROPERTIES_PT_m3d_sc_more_brush"}
+    check(more == {"Alpha Settings", "Brush Options", "Falloff", "Stroke Options", "Cursor", "Advanced", "Custom Shelf"},
+          "More Brush Settings holds the rest: %s" % more)
     closed = {c.bl_label for c in tray if 'DEFAULT_CLOSED' in getattr(c, "bl_options", ())}
-    check({"Alpha Settings", "Brush Settings", "Falloff", "Stroke Options", "Advanced", "Custom"} <= closed
+    check(more | {"More Brush Settings"} <= closed
           and not closed & {"Brushes", "Size and Strength", "Lazy Mouse", "Stroke Type", "Alpha"}, "tray: closed panels %s" % closed)
     bpy.ops.object.mode_set(mode='OBJECT')
 
 
 phase1b()
+
+
+# ----------------------------------------------------------------------------------------------------
+# Phase 1c: the Sculpt review: one face count, the Detail slider, Multires in plain words, blocked blocks as one line, the
+# toolbar without the tray's brushes, Tool Settings on the tabs, the status bar hints, the mask color, the tab and gear changes.
+
+
+def phase1c():
+    import math
+    from bl_ui.space_toolsystem_toolbar import VIEW3D_PT_tools_active
+    if bpy.context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.m3d.add_primitive(kind='SPHERE')
+    ob = bpy.context.active_object
+    me = ob.data
+    ctx = SCtx()
+
+    def texts(log):
+        return [r._kw.get("text", "") for r in log if "text" in getattr(r, "_kw", {})]
+
+    # The start card (no active mesh): Sphere / Cube / Plane, Import, F1, the scene's meshes; no tabs.
+    bpy.context.view_layer.objects.active = None
+    log = []
+    S.PROPERTIES_PT_m3d_sc_start.draw(type("Inst", (), {"layout": Rec(log)})(), SCtx('RIGHT'))
+    check([r.values().get("kind") for r in log if r._kind == "operator" and r._args[0] == "m3d.sculpt_add_mesh"] == ['SPHERE', 'CUBE', 'PLANE']
+          and any(r._kind == "menu" and r._args[0] == "TOPBAR_MT_file_import" for r in log)
+          and any(r._kind == "operator" and r._args[0] == "m3d.workspace" and r.values().get("kind") == 'MODEL' for r in log)
+          and any(r._kind == "operator" and r.values().get("action") == 'START' and r.values().get("name") == ob.name for r in log),
+          "start card: Sphere / Cube / Plane, Import, Use a mesh from F1 Modeling, the meshes")
+    log = []
+    S.draw_dock_header(Rec(log), SCtx('RIGHT'))
+    check(log == [], "no tabs without a mesh")
+    bpy.ops.m3d.sculpt_object(name=ob.name, action='START')
+    check(bpy.context.active_object == ob and bpy.context.mode == 'SCULPT', "a mesh of the start card is sculpted")
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    # Counts shown as estimates.
+    check([S.short_count(n) for n in (950, 1250, 24000, 240000, 1250000, 25000000)] == ["950", "1.2k", "24k", "240k", "1.2M", "25M"],
+          "short counts: %s" % [S.short_count(n) for n in (950, 1250, 24000, 240000, 1250000, 25000000)])
+    # Detail: the voxel size as the face count it gives (surface area / voxel size^2), a log scale both ways.
+    area = S.surface_area(me)
+    check(abs(area - sum(p.area for p in me.polygons)) < 1e-3 * area and area > 1.0, "surface area %s" % area)
+    me.remesh_voxel_size = 0.1
+    grid_area = S.surface_area(me, grid=True)
+    check(1.4 < grid_area / area < 1.6, "a sphere's area seen by the voxel grid is about 1.5 times its area: %s" % (grid_area / area))
+    check(abs(S.voxel_faces(me) - grid_area / 0.01) < 1.0, "faces from the voxel size")
+    for detail in (0.0, 30.0, 100.0):
+        me.m3d_voxel_detail = detail
+        want = S.DETAIL_FACES[0] * (S.DETAIL_FACES[1] / S.DETAIL_FACES[0]) ** (detail / 100.0)
+        check(abs(me.m3d_voxel_detail - detail) < 0.01 and abs(S.voxel_faces(me) / want - 1.0) < 0.01,
+              "Detail %s: %s faces (%s)" % (detail, S.voxel_faces(me), me.m3d_voxel_detail))
+    me.m3d_voxel_detail = 30.0
+    estimate = S.voxel_faces(me)
+    bpy.ops.object.voxel_remesh()
+    check(0.85 < len(me.polygons) / estimate < 1.15, "the estimate is near what Voxel Remesh gives: %d for ~%d" % (len(me.polygons), estimate))
+    log = []
+    S.draw_voxel(RecP(log), ctx)
+    check(any(r._kind == "prop" and r._args[1] == "m3d_voxel_detail" and r._kw["text"].endswith(" faces") for r in log)
+          and any(getattr(r, "idname", "") == "m3d_voxel_advanced" and r.closed for r in log), "Voxel Remesh: Detail, the size under Advanced")
+    # Multires: plain words, one face count, the blocks it stops are one line with Apply Multires.
+    bpy.ops.m3d.multires_subdivide(mode='CATMULL_CLARK')
+    mod = S.multires_of(ob)
+    check(S.face_count(ob) == len(me.loops), "face count at level 1: one face per corner of the base")
+    log = []
+    S.draw_multires(RecP(log), ctx)
+    words = texts(log)
+    check({"Subdivide (smooth)", "Subdivide (keep shape)", "Display level", "Sculpt level", "Delete higher levels",
+           "Rebuild lower levels", "Apply base shape"} <= set(words) and not any("modifier" in w for w in words), "Multires words: %s" % words)
+    check(any(getattr(r, "idname", "") == "m3d_multires_advanced" for r in log), "Linear and the render level under Advanced")
+    for draw in (S.draw_voxel, S.draw_quadriflow, S.draw_dyntopo):
+        log = []
+        draw(Rec(log), ctx)
+        check([r._args[0] for r in log if r._kind == "operator"] == ["m3d.multires_apply"] and not [r for r in log if r._kind == "prop"],
+              "%s with Multires: one line and Apply Multires" % draw.__name__)
+    mod.sculpt_levels = 1
+    faces = S.face_count(ob)
+    check(bpy.ops.m3d.multires_apply() == {'FINISHED'} and S.multires_of(ob) is None and len(ob.data.polygons) == faces,
+          "Apply Multires keeps the level being sculpted (%d faces, %d)" % (len(ob.data.polygons), faces))
+    check(S.PROPERTIES_PT_m3d_sc_quadriflow.bl_label == "Auto Retopology (quads)" and S.PROPERTIES_PT_m3d_sc_dyntopo.bl_label == "Dynamic Detail"
+          and {"Auto Retopology (quads)", "Dynamic Detail"} <= {e.get("label") for e in m3d_ui.MENUS["M3D_MT_remesh"][1]}, "plain names for QuadriFlow and Dyntopo")
+
+    bpy.ops.object.mode_set(mode='SCULPT')
+    bpy.ops.brush.asset_activate(**S.brush_props("Draw"))
+    brush = bpy.context.tool_settings.sculpt.brush
+    # Lazy Mouse: its settings only while it is on.
+    brush.use_smooth_stroke = False
+    log = []
+    S.PROPERTIES_PT_m3d_sc_lazy.draw(type("Inst", (), {"layout": Rec(log)})(), ctx)
+    S.draw_lazy(Rec(log), brush)
+    check(not [r for r in log if r._kind == "prop" and r._args[1] != "use_smooth_stroke"], "Lazy Mouse off: no radius or factor")
+    # The tray: one line for the active brush (the library popup and the brush menu), no Mirror (the Status Line has it).
+    log = []
+    S.PROPERTIES_PT_m3d_sc_grid.draw(type("Inst", (), {"layout": Rec(log)})(), ctx)
+    check(any(r._kind == "operator" and r._args[0] == "wm.call_asset_shelf_popover" and r._kw.get("text", "").endswith(brush.name) for r in log)
+          and any(r._kind == "menu" and r._args[0] == "VIEW3D_MT_brush_context_menu" for r in log), "the brush line")
+    log = []
+    S.PROPERTIES_PT_m3d_sc_tuning.draw(type("Inst", (), {"layout": Rec(log)})(), ctx)
+    check(not [r for r in log if r._kind == "prop" and r._args[1].startswith("use_mirror")], "no Mirror in the tray")
+    # The toolbar leaves out the brushes the docks have; the tools of the Tool Settings panels exist.
+    sculpt_tools = {t.idname for t in ToolSelectPanelHelper._tools_flatten(VIEW3D_PT_tools_active.tools_from_context(bpy.context, 'SCULPT')) if t}
+    check(S.toolbar_hidden(SCtx()) == S.TRAY_TOOLS and S.TRAY_TOOLS <= sculpt_tools, "toolbar: the tray's brushes are left out")
+    check(S.toolbar_hidden(NS(mode='OBJECT', workspace=sculpt_ws)) == frozenset(), "...only in Sculpt Mode")
+    check(set().union(*S.PAGE_TOOLS.values()) <= sculpt_tools and len(S.TOOL_PANELS) == len(S.PAGE_TOOLS), "Tool Settings panels: real tools")
+    # Status bar: the keys of the active brush tool, from the keymap.
+    tool = NS(use_brushes=True)
+    ws_ = NS(m3d_kind='SCULPT', name="Sculpt", tools=NS(from_space_view3d_mode=lambda mode: tool))
+    for kind, mode, want in (('SCULPT', 'SCULPT', ["Sculpt", "Smooth", "Mask", "Unmask", "Hide", "Size", "Strength", "Add / Subtract"]),
+                             ('TEXTURE', 'PAINT_TEXTURE', ["Paint", "Size / Hardness", "Flow / Angle", "Turn Environment", "Picker", "Swap Colors"])):
+        ws_.m3d_kind = kind
+        sctx = NS(window=NS(modal_operators=[]), mode=mode, workspace=ws_, window_manager=bpy.context.window_manager,
+                  tool_settings=bpy.context.tool_settings)
+        log = []
+        m3d_ui.draw_status_hints(Rec(log), sctx)
+        drawn = [r._kw["text"] for r in log if r._kind == "template_event_from_keymap_item"]
+        check(drawn == want, "%s status hints: %s" % (kind, drawn))
+        numbered = [r._kw["text"] for r in log if r._kind == "label"]
+        check(numbered == (["Shift+1-7 Brushes"] if kind == 'SCULPT' else ["1-6 Tools"]), "%s numbered keys: %s" % (kind, numbered))
+        picker = [r._args[0] for r in log if r._kind == "template_event_from_keymap_item" and r._kw["text"] == "Picker"]
+        check(kind == 'SCULPT' or (picker and picker[0].type == 'P'), "the picker hint shows P (the keymap's own key)")
+        log = []
+        tool.use_brushes = False
+        m3d_ui.draw_status_hints(Rec(log), sctx)
+        sctx.window.modal_operators = [1]
+        tool.use_brushes = True
+        m3d_ui.draw_status_hints(Rec(log), sctx)
+        check(log == [], "%s: no hints for other tools or while an operator runs" % kind)
+    # Mask tab: the mask's color (black: Blender's look) and opacity; the Display tab keeps the other overlays.
+    overlay = S.viewport(bpy.context).overlay
+    check("sculpt_mode_mask_color" in overlay.bl_rna.properties and tuple(overlay.sculpt_mode_mask_color) == (0.0, 0.0, 0.0),
+          "mask color, black by default")
+    log = []
+    S.PROPERTIES_PT_m3d_sc_mask.draw(type("Inst", (), {"layout": Rec(log)})(), ctx)
+    names = [r._args[1] for r in log if r._kind == "prop"]
+    check({"show_sculpt_mask", "sculpt_mode_mask_color", "sculpt_mode_mask_opacity"} <= set(names), "Mask tab: color and opacity")
+    check(any("Ctrl+drag clears" in t for t in texts(log)), "Mask tab: Ctrl+drag off the mesh clears")
+    log = []
+    S.PROPERTIES_PT_m3d_sc_overlays.draw(type("Inst", (), {"layout": Rec(log)})(), ctx)
+    check("sculpt_mode_mask_opacity" not in [r._args[1] for r in log if r._kind == "prop"], "the mask opacity is in one place")
+    # Face sets in one row; vertex colors in plain words.
+    log = []
+    S.PROPERTIES_PT_m3d_sc_fs_init.draw(type("Inst", (), {"layout": Rec(log)})(), ctx)
+    check([r._args[1] for r in log if r._kind == "prop"] == ["mode"] and "Make" in texts(log), "Make Face Sets: one menu and the button")
+    log = []
+    S.PROPERTIES_PT_m3d_sc_paint.draw(type("Inst", (), {"layout": Rec(log)})(), ctx)
+    check("Add Vertex Colors" in texts(log) and any("F4 Texture" in t for t in texts(log)), "Paint tab: vertex colors, textures in F4")
+    # The navigation bar shows only with All Settings in Sculpt and Texture; the gear is an icon with its tooltip.
+    check(W.NAV_BAR_ONLY_IN_ALL_SETTINGS == {'SCULPT', 'TEXTURE'} and W.sync_nav_bar(ctx, False) is None, "navigation bar rule")
+    log = []
+    m3d_ui.draw_workspace_picker(Rec(log), bpy.context)
+    gear = [r for r in log if r._kind == "popover"]
+    check(gear and gear[0]._kw.get("text") == "" and W.M3D_PT_workspace_settings.__doc__.startswith("Workspace settings"), "gear: icon only")
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+
+phase1c()
 
 # ----------------------------------------------------------------------------------------------------
 # Phase 2: UV workspace (tabs, pages, buttons, texel density, Auto Unwrap, checker, keys).

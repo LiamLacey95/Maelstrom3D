@@ -18,12 +18,12 @@ import bpy.utils.previews
 from bpy.types import Operator, Panel
 from mathutils import Vector
 from bl_ui.properties_paint_common import (
-    BrushSelectPanel, ColorPalettePanel, DisplayPanel, FalloffPanel, SmoothStrokePanel, StrokePanel,
+    ColorPalettePanel, DisplayPanel, FalloffPanel, SmoothStrokePanel, StrokePanel,
     UnifiedPaintPanel, brush_settings, brush_settings_advanced, brush_texture_settings)
 
 import m3d_pair
 from m3d_mode import _button
-from m3d_workspace import _PagePanel
+from m3d_workspace import HEADERS, PAGE_SETS, _PagePanel, current_kind, draw_tab_row, side_of
 
 # -----------------------------------------------------------------------------
 # Brushes
@@ -355,6 +355,68 @@ def multires_of(ob):
     return next((m for m in ob.modifiers if m.type == 'MULTIRES'), None)
 
 
+def face_count(ob):
+    """Faces being sculpted: the mesh's, or with Multires the level being sculpted (O(1): each base corner becomes
+    4^(level - 1) faces). The viewport's statistics count the same."""
+    mod = multires_of(ob)
+    mesh = ob.data
+    return len(mesh.loops) * 4 ** (mod.sculpt_levels - 1) if mod is not None and mod.sculpt_levels else len(mesh.polygons)
+
+
+def short_count(n):
+    """240000 -> "240k", 1250000 -> "1.2M" (counts shown as an estimate)."""
+    if n >= 1e6:
+        return "%.1fM" % (n / 1e6) if n < 1e7 else "%dM" % round(n / 1e6)
+    return "%dk" % round(n / 1e3) if n >= 1e4 else "%.1fk" % (n / 1e3) if n >= 1e3 else "%d" % n
+
+
+# --- Voxel Remesh detail: the voxel size as the face count it gives (a voxel remesh covers the surface with the faces of
+# the voxel grid: a face of the mesh adds its area seen along each axis, area * (|nx| + |ny| + |nz|), over the voxel size^2)
+
+_areas = {}   # mesh pointer -> (key, surface area); see surface_area
+DETAIL_FACES = (1e3, 5e6)   # Detail 0 and 100: the face counts at the ends of the slider (a log scale between them)
+
+
+def surface_area(mesh, grid=False):
+    """Surface area of the mesh (object space, what Voxel Remesh works in); `grid`: the area the voxel grid sees, each face's
+    area seen along the three axes (1.5 times the area on a sphere, the same on an axis-aligned box). Kept per mesh while its
+    vertex and face counts stay the same: strokes change it a little, an estimate doesn't mind, and reading the areas of a
+    sculpt takes long (~75 ms for 330k faces), so it is not read again while it is sculpted."""
+    import numpy as np
+    key = (len(mesh.vertices), len(mesh.polygons))
+    cached = _areas.get(mesh.as_pointer())
+    if cached is None or cached[0] != key:
+        n = len(mesh.polygons)
+        areas, normals = np.empty(n, np.float32), np.empty(3 * n, np.float32)
+        mesh.polygons.foreach_get("area", areas)
+        mesh.polygons.foreach_get("normal", normals)
+        seen = np.abs(normals.reshape(n, 3)).sum(axis=1)
+        cached = _areas[mesh.as_pointer()] = (key, float(areas.sum(dtype=np.float64)),
+                                              float((areas * seen).sum(dtype=np.float64)))
+    return cached[2] if grid else cached[1]
+
+
+def voxel_faces(mesh, size=None):
+    """About how many faces Voxel Remesh gives at this voxel size (the mesh's own by default)."""
+    size = size or mesh.remesh_voxel_size
+    return surface_area(mesh, grid=True) / (size * size) if size > 0 else 0
+
+
+def _detail_get(mesh):
+    import math
+    faces = voxel_faces(mesh)
+    lo, hi = (math.log10(f) for f in DETAIL_FACES)
+    return min(max((math.log10(faces) - lo) / (hi - lo) * 100.0, 0.0), 100.0) if faces > 0 else 0.0
+
+
+def _detail_set(mesh, value):
+    lo, hi = DETAIL_FACES
+    faces = lo * (hi / lo) ** (value / 100.0)
+    area = surface_area(mesh, grid=True)
+    if area > 0:
+        mesh.remesh_voxel_size = max((area / faces) ** 0.5, 0.0001)
+
+
 def ready(context, need):
     """Can a page with this need be used: None always, 'MESH' with an active mesh, 'SCULPT' also in Sculpt Mode."""
     if need is None:
@@ -371,6 +433,16 @@ def viewport(context):
 
 def brush_mode(context):
     return UnifiedPaintPanel.get_brush_mode(context)
+
+
+# Brush tools of the viewport's toolbar that the docks already have (the brush tray's tiles and its brush line, the Paint
+# tab's color brushes): the Sculpt workspace's toolbar leaves them out (picking a brush there still makes them active).
+TRAY_TOOLS = frozenset({"builtin.brush", "builtin_brush.mask", "builtin_brush.draw_face_sets", "builtin_brush.paint"})
+
+
+def toolbar_hidden(context):
+    """The tools the toolbar leaves out here (bl_ui.space_toolsystem_common draws the toolbar)."""
+    return TRAY_TOOLS if context.mode == 'SCULPT' and current_kind(context) == 'SCULPT' else frozenset()
 
 
 def active_tool(context):
@@ -466,13 +538,12 @@ def draw_direction(layout, brush, labels=True):
 
 
 def draw_lazy(layout, brush, label=True):
-    """Lazy Mouse (Stabilize Stroke): the toggle and the radius the stroke lags behind the cursor by."""
+    """Lazy Mouse (Stabilize Stroke): the toggle and, while it is on, the radius the stroke lags behind the cursor by."""
     if brush.brush_capabilities.has_smooth_stroke:
         row = layout.row(align=True)
         row.prop(brush, "use_smooth_stroke", text="Lazy Mouse" if label else "", icon='MOD_SMOOTH', toggle=True)
-        sub = row.row(align=True)
-        sub.active = brush.use_smooth_stroke
-        sub.prop(brush, "smooth_stroke_radius", text="Radius" if label else "", slider=True)
+        if brush.use_smooth_stroke:
+            row.prop(brush, "smooth_stroke_radius", text="Radius" if label else "", slider=True)
 
 
 # -----------------------------------------------------------------------------
@@ -513,21 +584,22 @@ class M3D_OT_sculpt_tool(Operator):
 
 
 class M3D_OT_multires_subdivide(Operator):
-    """Add a Multires level (the Multires modifier is added first when the mesh has none)"""
+    """Add a detail level to sculpt on (the first one adds Multires to the mesh)"""
     bl_idname = "m3d.multires_subdivide"
     bl_label = "Multires Subdivide"
     bl_options = {'REGISTER', 'UNDO'}
 
     mode: bpy.props.EnumProperty(items=(
-        ('CATMULL_CLARK', "Subdivide", "Smooth subdivision (Catmull-Clark)"),
-        ('SIMPLE', "Simple", "Subdivide without smoothing the shape"),
-        ('LINEAR', "Linear", "Subdivide the faces linearly, keeping corners sharp"),
+        ('CATMULL_CLARK', "Subdivide (smooth)", "Add a level, rounding the shape"),
+        ('SIMPLE', "Subdivide (keep shape)", "Add a level without rounding the shape"),
+        ('LINEAR', "Subdivide (linear)", "Add a level, keeping corners and the shape exactly"),
     ))
 
     @classmethod
     def description(cls, _context, props):
-        return {'CATMULL_CLARK': "Add a Multires level, smoothing the shape", 'SIMPLE': "Add a Multires level without "
-                "smoothing the shape", 'LINEAR': "Add a Multires level, keeping corners sharp"}[props.mode]
+        return {'CATMULL_CLARK': "Add a detail level, rounding the shape (the usual one)",
+                'SIMPLE': "Add a detail level without rounding the shape",
+                'LINEAR': "Add a detail level, keeping corners and the shape exactly"}[props.mode]
 
     @classmethod
     def poll(cls, context):
@@ -536,7 +608,7 @@ class M3D_OT_multires_subdivide(Operator):
     def execute(self, context):
         ob = mesh_of(context)
         if ob.use_dynamic_topology_sculpting:
-            self.report({'WARNING'}, "Turn off Dyntopo to use Multires")
+            self.report({'WARNING'}, "Turn off Dynamic Detail to subdivide")
             return {'CANCELLED'}
         try:
             if multires_of(ob) is None:
@@ -609,22 +681,22 @@ class M3D_OT_multires_level(Operator):
 
 
 class M3D_OT_multires_edit(Operator):
-    """Delete the higher Multires levels, Unsubdivide, or Apply Base"""
+    """Delete the higher levels, rebuild lower levels, or apply the sculpted shape to the base"""
     bl_idname = "m3d.multires_edit"
     bl_label = "Multires Edit"
     bl_options = {'REGISTER', 'UNDO'}
 
     action: bpy.props.EnumProperty(items=(
-        ('DELETE_HIGHER', "Delete Higher", "Delete the levels above the current one"),
-        ('UNSUBDIVIDE', "Unsubdivide", "Rebuild a lower level from the highest one"),
-        ('APPLY_BASE', "Apply Base", "Copy the sculpted shape to the base mesh and keep the detail"),
+        ('DELETE_HIGHER', "Delete higher levels", "Delete the levels above the current one"),
+        ('UNSUBDIVIDE', "Rebuild lower levels", "Rebuild a lower level from the lowest one"),
+        ('APPLY_BASE', "Apply base shape", "Copy the sculpted shape to the base mesh and keep the detail"),
     ))
 
     @classmethod
     def description(cls, _context, props):
-        return {'DELETE_HIGHER': "Delete the Multires levels above the current one",
-                'UNSUBDIVIDE': "Rebuild a lower Multires level from the highest one",
-                'APPLY_BASE': "Apply the sculpted shape to the base mesh and keep the detail"}[props.action]
+        return {'DELETE_HIGHER': "Delete the detail levels above the current one",
+                'UNSUBDIVIDE': "Rebuild a lower detail level under the lowest one (for a mesh that came in already dense)",
+                'APPLY_BASE': "Move the base mesh to the sculpted shape, keeping the detail on the levels"}[props.action]
 
     @classmethod
     def poll(cls, context):
@@ -641,6 +713,37 @@ class M3D_OT_multires_edit(Operator):
         except RuntimeError as err:
             self.report({'WARNING'}, str(err).strip())
             return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+class M3D_OT_multires_apply(Operator):
+    """Make the sculpted detail the mesh itself (Multires is removed): Voxel Remesh, Auto Retopology and Dynamic Detail
+    work again"""
+    bl_idname = "m3d.multires_apply"
+    bl_label = "Apply Multires"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = mesh_of(context)
+        return ob is not None and multires_of(ob) is not None
+
+    def execute(self, context):
+        ob = mesh_of(context)
+        mode = ob.mode
+        if mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')   # (Apply works in Object Mode only)
+        mod = multires_of(ob)
+        mod.levels = mod.render_levels = mod.sculpt_levels   # the level being sculpted is the one kept
+        try:
+            with context.temp_override(active_object=ob, object=ob):
+                bpy.ops.object.modifier_apply(modifier=mod.name)
+        except RuntimeError as err:
+            self.report({'WARNING'}, str(err).replace("Error: ", "").strip())
+            return {'CANCELLED'}
+        finally:
+            if mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode=mode)
         return {'FINISHED'}
 
 
@@ -670,13 +773,15 @@ class M3D_OT_sculpt_object(Operator):
         ('VISIBLE', "Show / Hide", "Show or hide this mesh in the viewport"),
         ('SOLO', "Solo", "Hide every other mesh (again: show them)"),
         ('DUPLICATE', "Duplicate", "Append a copy of this mesh and sculpt it"),
+        ('START', "Sculpt", "Make this the active mesh and sculpt it"),
     ))
 
     @classmethod
     def description(cls, _context, props):
         return {'SELECT': "Make this the active mesh", 'VISIBLE': "Show or hide this mesh in the viewport",
                 'SOLO': "Hide every other mesh; click again to show them",
-                'DUPLICATE': "Append a copy of this mesh and sculpt it"}[props.action]
+                'DUPLICATE': "Append a copy of this mesh and sculpt it",
+                'START': "Sculpt this mesh"}[props.action]
 
     def execute(self, context):
         ob = bpy.data.objects.get(self.name)
@@ -697,6 +802,8 @@ class M3D_OT_sculpt_object(Operator):
         elif self.action == 'DUPLICATE':
             bpy.ops.object.mode_set(mode='OBJECT')
             bpy.ops.object.duplicate()
+            bpy.ops.object.mode_set(mode='SCULPT')
+        elif self.action == 'START' and context.mode != 'SCULPT':
             bpy.ops.object.mode_set(mode='SCULPT')
         return {'FINISHED'}
 
@@ -1102,44 +1209,74 @@ class _BrushPage(_PagePanel):
 
 
 def _gate(page, need):
-    """The panel a page shows instead of its own when there is nothing to work on: what to do next."""
+    """The panel a page shows instead of its own outside Sculpt Mode: how to get there. (Without a mesh the docks show
+    the start card instead, see pages_shown.)"""
     def draw(self, context):
         col = self.layout.column(align=True)
-        if mesh_of(context) is None:
-            col.label(text="Select a mesh to sculpt")
-            col.operator("m3d.sculpt_add_mesh", text="Add Sphere", icon='MESH_UVSPHERE').kind = 'SPHERE'
-        else:
-            col.label(text="Enter Sculpt Mode to use these tools")
-            _button(col, context, "Sculpt Mode", "object.mode_set", 'SCULPTMODE_HLT', {"mode": 'SCULPT'})
+        col.label(text="Enter Sculpt Mode to use these tools")
+        _button(col, context, "Sculpt Mode", "object.mode_set", 'SCULPTMODE_HLT', {"mode": 'SCULPT'})
     return type("PROPERTIES_PT_m3d_sc_%s_gate" % page, (_PagePanel, Panel), {
         "bl_label": "Sculpt", "bl_options": {'HIDE_HEADER'}, "page": "sculpt_" + page,
-        "page_poll": classmethod(lambda cls, context: not ready(context, need)), "draw": draw})
+        "page_poll": classmethod(lambda cls, context: mesh_of(context) is not None and not ready(context, need)),
+        "draw": draw})
+
+
+START_MESHES = (("Sphere", 'SPHERE', 'MESH_UVSPHERE'), ("Cube", 'CUBE', 'MESH_CUBE'), ("Plane", 'PLANE', 'MESH_PLANE'))
+
+
+class PROPERTIES_PT_m3d_sc_start(_PagePanel, Panel):
+    """The start card: all the dock shows while there is no mesh to sculpt (no tabs, the tray stays empty)"""
+    page = "sculpt_start"
+    bl_label = "Start Sculpting"
+    bl_options = {'HIDE_HEADER'}
+
+    def draw(self, context):
+        col = self.layout.column()
+        col.label(text="Start with a mesh to sculpt", icon='SCULPTMODE_HLT')
+        row = col.row(align=True)
+        row.scale_y = 1.5
+        for label, kind, icon in START_MESHES:
+            row.operator("m3d.sculpt_add_mesh", text=label, icon=icon).kind = kind
+        sub = col.column(align=True)
+        sub.menu("TOPBAR_MT_file_import", text="Import...", icon='IMPORT')
+        sub.operator("m3d.workspace", text="Use a mesh from F1 Modeling", icon='EDITMODE_HLT').kind = 'MODEL'
+        meshes = [o for o in context.view_layer.objects if o.type == 'MESH']
+        if meshes:
+            col.separator()
+            col.label(text="Or sculpt a mesh of the scene:")
+            sub = col.column(align=True)
+            for ob in meshes:
+                o = sub.operator("m3d.sculpt_object", text=ob.name, icon='MESH_DATA')
+                o.name, o.action = ob.name, 'START'
+
+
+def pages_shown(context, page):
+    """The pages a Sculpt editor draws (m3d_workspace.PAGE_SETS): its own, or without a mesh to sculpt the start card in
+    the dock and nothing in the tray."""
+    if mesh_of(context) is None:
+        return {"sculpt_start"} if side_of(context) == 'RIGHT' else set()
+    return {page}
 
 
 # --- Left tray: brushes
 
-class PROPERTIES_PT_m3d_sc_brush(_BrushPage, BrushSelectPanel, Panel):
-    page = "sculpt_brushes"
-
-
 class PROPERTIES_PT_m3d_sc_grid(_Page, Panel):
+    """The active brush on one line (a click opens every brush of the library, the arrow the brush's menu: save, revert...),
+    then a tile per brush"""
     page = "sculpt_brushes"
     bl_label = "Brushes"
 
     def draw(self, context):
-        brush_tiles(self.layout, context, BRUSH_ASSET, BRUSHES)
-
-
-class PROPERTIES_PT_m3d_sc_custom(_PagePanel, Panel):
-    """The Custom shelf of this workspace: the top bar's shelf is hidden in Sculpt"""
-    page = "sculpt_brushes"
-    bl_label = "Custom"
-    bl_options = {'DEFAULT_CLOSED'}
-
-    def draw(self, context):
-        import m3d_edit
-        from m3d_user import draw_custom_shelf
-        draw_custom_shelf(self.layout, context, 'SCULPT', m3d_edit.editing(), tray=True)
+        layout = self.layout
+        brush = sculpt_brush(context)
+        if brush is not None:
+            # (the stock selector, template_asset_shelf_popover, is a big preview tile outside headers)
+            row = layout.row(align=True)
+            name = ("* " if brush.has_unsaved_changes else "") + brush.name
+            row.operator("wm.call_asset_shelf_popover", text=name, icon_value=brush.preview.icon_id if brush.preview else 0,
+                         ).name = "VIEW3D_AST_brush_sculpt"
+            row.menu("VIEW3D_MT_brush_context_menu", icon='DOWNARROW_HLT', text="")
+        brush_tiles(layout, context, BRUSH_ASSET, BRUSHES)
 
 
 class PROPERTIES_PT_m3d_sc_tuning(_Page, Panel):
@@ -1149,21 +1286,18 @@ class PROPERTIES_PT_m3d_sc_tuning(_Page, Panel):
     def draw(self, context):
         layout = self.layout
         split_props(layout)
-        mesh = mesh_of(context).data
         brush = sculpt_brush(context)
-        if brush is not None:
-            col = layout.column()
-            draw_size_strength(col, context, brush)
-            draw_hardness(col, brush)
-            draw_direction(layout, brush)
-        else:
+        if brush is None:
             layout.label(text="Pick a brush above")
-        row = layout.row(align=True, heading="Mirror")
-        for axis in "xyz":
-            row.prop(mesh, "use_mirror_" + axis, text=axis.upper(), toggle=True)
+            return
+        col = layout.column()
+        draw_size_strength(col, context, brush)
+        draw_hardness(col, brush)
+        draw_direction(layout, brush)
 
 
 class PROPERTIES_PT_m3d_sc_lazy(_BrushPage, Panel):
+    """Lazy Mouse: the stroke lags behind the cursor by the radius (its settings show while it is on)"""
     page = "sculpt_brushes"
     bl_label = "Lazy Mouse"
 
@@ -1176,11 +1310,12 @@ class PROPERTIES_PT_m3d_sc_lazy(_BrushPage, Panel):
         self.layout.prop(sculpt_brush(context), "use_smooth_stroke", text="")
 
     def draw(self, context):
+        brush = sculpt_brush(context)
+        if not brush.use_smooth_stroke:
+            return
         layout = self.layout
         split_props(layout)
-        brush = sculpt_brush(context)
         col = layout.column()
-        col.active = brush.use_smooth_stroke
         col.prop(brush, "smooth_stroke_radius", text="Radius", slider=True)
         col.prop(brush, "smooth_stroke_factor", text="Factor", slider=True)
 
@@ -1204,10 +1339,25 @@ class PROPERTIES_PT_m3d_sc_alpha(_BrushPage, Panel):
         layout.operator("m3d.alpha_load", text="Load Alpha...", icon='FILE_FOLDER')
 
 
-class PROPERTIES_PT_m3d_sc_alpha_settings(_BrushPage, Panel):
+class PROPERTIES_PT_m3d_sc_more_brush(_PagePanel, Panel):
+    """The rest of the brush settings and the Custom shelf, one section each (closed until needed)"""
     page = "sculpt_brushes"
-    bl_label = "Alpha Settings"
+    bl_label = "More Brush Settings"
     bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, _context):
+        pass
+
+
+class _MoreBrush(_BrushPage):
+    """A section of More Brush Settings."""
+    page = "sculpt_brushes"
+    bl_parent_id = "PROPERTIES_PT_m3d_sc_more_brush"
+    bl_options = {'DEFAULT_CLOSED'}
+
+
+class PROPERTIES_PT_m3d_sc_alpha_settings(_MoreBrush, Panel):
+    bl_label = "Alpha Settings"
 
     def draw(self, context):
         brush = sculpt_brush(context)
@@ -1217,39 +1367,46 @@ class PROPERTIES_PT_m3d_sc_alpha_settings(_BrushPage, Panel):
         brush_texture_settings(self.layout.column(), brush, context.sculpt_object)
 
 
-class PROPERTIES_PT_m3d_sc_more(_BrushPage, Panel):
-    page = "sculpt_brushes"
-    bl_label = "Brush Settings"
-    bl_options = {'DEFAULT_CLOSED'}
+class PROPERTIES_PT_m3d_sc_more(_MoreBrush, Panel):
+    bl_label = "Brush Options"
 
     def draw(self, context):
         split_props(self.layout)
         brush_settings(self.layout.column(), context, UnifiedPaintPanel.paint_settings(context).brush, popover=True)
 
 
-class PROPERTIES_PT_m3d_sc_falloff(_BrushPage, FalloffPanel, Panel):
-    page = "sculpt_brushes"
+class PROPERTIES_PT_m3d_sc_falloff(_MoreBrush, FalloffPanel, Panel):
+    pass
 
 
-class PROPERTIES_PT_m3d_sc_stroke(_BrushPage, StrokePanel, Panel):
-    page = "sculpt_brushes"
+class PROPERTIES_PT_m3d_sc_stroke(_MoreBrush, StrokePanel, Panel):
     bl_label = "Stroke Options"
 
 
-class PROPERTIES_PT_m3d_sc_cursor(_BrushPage, DisplayPanel, Panel):
-    page = "sculpt_brushes"
+class PROPERTIES_PT_m3d_sc_cursor(_MoreBrush, DisplayPanel, Panel):
     bl_label = "Cursor"
 
 
-class PROPERTIES_PT_m3d_sc_advanced(_BrushPage, Panel):
-    page = "sculpt_brushes"
+class PROPERTIES_PT_m3d_sc_advanced(_MoreBrush, Panel):
     bl_label = "Advanced"
-    bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
         split_props(self.layout)
         settings = UnifiedPaintPanel.paint_settings(context)
         brush_settings_advanced(self.layout.column(), context, settings, settings.brush, self.is_popover)
+
+
+class PROPERTIES_PT_m3d_sc_custom(_PagePanel, Panel):
+    """The Custom shelf of this workspace: the top bar's shelf is hidden in Sculpt"""
+    page = "sculpt_brushes"
+    bl_label = "Custom Shelf"
+    bl_parent_id = "PROPERTIES_PT_m3d_sc_more_brush"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        import m3d_edit
+        from m3d_user import draw_custom_shelf
+        draw_custom_shelf(self.layout, context, 'SCULPT', m3d_edit.editing(), tray=True)
 
 
 # --- Geometry
@@ -1259,70 +1416,97 @@ class _Geometry(_Page):
     need = 'MESH'
 
 
+def blocked(layout, context, ob, dyntopo=True):
+    """A block that can't be used on this mesh draws one line instead: why, and the button that changes it. True when
+    it is blocked: by Multires levels, or (`dyntopo`) by Dynamic Detail being on."""
+    if multires_of(ob) is not None:
+        row = layout.row(align=True)
+        row.label(text="Not with Multires levels", icon='INFO')
+        _button(row, context, "Apply Multires", "m3d.multires_apply", 'NONE', {})
+        return True
+    if dyntopo and ob.use_dynamic_topology_sculpting:
+        dyntopo_off(layout, context)
+        return True
+    return False
+
+
+def dyntopo_off(layout, context):
+    row = layout.row(align=True)
+    row.label(text="Not while Dynamic Detail is on", icon='INFO')
+    _button(row, context, "Turn Off", "sculpt.dynamic_topology_toggle", 'NONE', {})
+
+
 def draw_multires(layout, context):
-    """Multires: Subdivide, the level (with Lower / Higher), the three level sliders, Delete Higher / Unsubdivide /
-    Apply Base (the Multires dock panel and the Remesh popover)."""
+    """Multires: Subdivide (smooth / keep shape), the level (with Lower / Higher), the display and sculpt levels, Delete
+    higher levels / Rebuild lower levels / Apply base shape; Subdivide (linear), the render level and Apply Multires under
+    Advanced (the Multires dock panel and the Remesh popover)."""
     ob = mesh_of(context)
     mod = multires_of(ob)
-    dyntopo = ob.use_dynamic_topology_sculpting
-    if dyntopo:
-        reason(layout, "Turn off Dyntopo to use Multires")
-    col = layout.column()
-    col.enabled = not dyntopo
-    row = col.row(align=True)
-    for label, mode in (("Subdivide", 'CATMULL_CLARK'), ("Simple", 'SIMPLE'), ("Linear", 'LINEAR')):
+    if ob.use_dynamic_topology_sculpting:
+        dyntopo_off(layout, context)
+        return
+    row = layout.row(align=True)
+    for label, mode in (("Subdivide (smooth)", 'CATMULL_CLARK'), ("Subdivide (keep shape)", 'SIMPLE')):
         row.operator("m3d.multires_subdivide", text=label).mode = mode
     if mod is None:
-        col.label(text="The first Subdivide adds a Multires modifier")
-        return
-    split_props(col)
-    row = col.row(align=True)
-    row.operator("m3d.multires_level", text="Lower", icon='TRIA_LEFT').delta = -1
-    row.label(text="Level %d of %d" % (mod.sculpt_levels, mod.total_levels))
-    row.operator("m3d.multires_level", text="Higher", icon='TRIA_RIGHT').delta = 1
-    sub = col.column(align=True)
-    sub.prop(mod, "levels", text="Viewport")
-    sub.prop(mod, "sculpt_levels", text="Sculpt")
-    sub.prop(mod, "render_levels", text="Render")
-    col.separator()
-    flow = col.grid_flow(columns=1, align=True)
-    for action, label in (('DELETE_HIGHER', "Delete Higher"), ('UNSUBDIVIDE', "Unsubdivide"),
-                          ('APPLY_BASE', "Apply Base")):
-        flow.operator("m3d.multires_edit", text=label).action = action
+        layout.label(text="Adds detail levels to sculpt on and step between")
+    else:
+        split_props(layout)
+        row = layout.row(align=True)
+        row.operator("m3d.multires_level", text="Lower", icon='TRIA_LEFT').delta = -1
+        row.label(text="Level %d of %d" % (mod.sculpt_levels, mod.total_levels))
+        row.operator("m3d.multires_level", text="Higher", icon='TRIA_RIGHT').delta = 1
+        col = layout.column(align=True)
+        col.prop(mod, "levels", text="Display level")
+        col.prop(mod, "sculpt_levels", text="Sculpt level")
+        flow = layout.grid_flow(columns=1, align=True)
+        for action, label in (('DELETE_HIGHER', "Delete higher levels"), ('UNSUBDIVIDE', "Rebuild lower levels"),
+                              ('APPLY_BASE', "Apply base shape")):
+            flow.operator("m3d.multires_edit", text=label).action = action
+    header, body = layout.panel("m3d_multires_advanced", default_closed=True)
+    header.label(text="Advanced")
+    if body:
+        body.operator("m3d.multires_subdivide", text="Subdivide (linear)").mode = 'LINEAR'
+        if mod is not None:
+            split_props(body)
+            body.prop(mod, "render_levels", text="Render level")
+            body.operator("m3d.multires_apply")
+
+
+def draw_voxel_detail(layout, mesh, text="Detail: "):
+    """The Detail slider: the voxel size as the face count Voxel Remesh gives (a log scale, DETAIL_FACES)."""
+    layout.prop(mesh, "m3d_voxel_detail", text="%s~%s faces" % (text, short_count(voxel_faces(mesh))), slider=True)
 
 
 def draw_voxel(layout, context):
-    """Voxel Remesh: the voxel size, its options and the button."""
-    split_props(layout)
+    """Voxel Remesh: the Detail slider and the button; the voxel size and the options under Advanced."""
     ob = mesh_of(context)
+    if blocked(layout, context, ob):
+        return
     mesh = ob.data
-    if multires_of(ob) is not None:
-        reason(layout, "Voxel Remesh does not work with Multires")
-    elif ob.use_dynamic_topology_sculpting:
-        reason(layout, "Turn off Dyntopo to use Voxel Remesh")
-    col = layout.column()
-    col.enabled = multires_of(ob) is None and not ob.use_dynamic_topology_sculpting
-    row = col.row(align=True)
-    row.prop(mesh, "remesh_voxel_size")
-    _button(row, context, "", "sculpt.sample_detail_size", 'EYEDROPPER', {"mode": 'VOXEL'})
-    col.prop(mesh, "remesh_voxel_adaptivity")
-    col.prop(mesh, "use_remesh_fix_poles")
-    sub = col.column(heading="Preserve", align=True)
-    sub.prop(mesh, "use_remesh_preserve_volume", text="Volume")
-    sub.prop(mesh, "use_remesh_preserve_attributes", text="Attributes")
-    _button(col, context, "Voxel Remesh", "object.voxel_remesh", 'MOD_REMESH', {})
+    draw_voxel_detail(layout, mesh)
+    _button(layout, context, "Voxel Remesh", "object.voxel_remesh", 'MOD_REMESH', {})
+    header, body = layout.panel("m3d_voxel_advanced", default_closed=True)
+    header.label(text="Advanced")
+    if body:
+        split_props(body)
+        row = body.row(align=True)
+        row.prop(mesh, "remesh_voxel_size")
+        _button(row, context, "", "sculpt.sample_detail_size", 'EYEDROPPER', {"mode": 'VOXEL'})
+        body.prop(mesh, "remesh_voxel_adaptivity")
+        body.prop(mesh, "use_remesh_fix_poles")
+        sub = body.column(heading="Preserve", align=True)
+        sub.prop(mesh, "use_remesh_preserve_volume", text="Volume")
+        sub.prop(mesh, "use_remesh_preserve_attributes", text="Attributes")
 
 
 def draw_quadriflow(layout, context):
-    """QuadriFlow: the target (face count, ratio or edge length), its options and the button."""
+    """Auto Retopology (quads): the mesh rebuilt as even quads; the target (face count, ratio or edge length), its options
+    and the button."""
+    if blocked(layout, context, mesh_of(context)):
+        return
     split_props(layout)
-    ob = mesh_of(context)
-    if multires_of(ob) is not None:
-        reason(layout, "QuadriFlow does not work with Multires")
-    elif ob.use_dynamic_topology_sculpting:
-        reason(layout, "Turn off Dyntopo to use QuadriFlow")
     col = layout.column()
-    col.enabled = multires_of(ob) is None and not ob.use_dynamic_topology_sculpting
     props = context.window_manager.operator_properties_last("object.quadriflow_remesh")
     col.prop(props, "mode")
     col.prop(props, {'RATIO': "target_ratio", 'EDGE': "target_edge_length", 'FACES': "target_faces"}[props.mode])
@@ -1332,40 +1516,41 @@ def draw_quadriflow(layout, context):
     col.prop(props, "smooth_normals")
     col.label(text="Replaces the mesh (UVs and Face Sets are lost)", icon='INFO')
     col.operator_context = 'EXEC_DEFAULT'
-    _button(col, context, "QuadriFlow Remesh", "object.quadriflow_remesh", 'MOD_REMESH', {})
+    _button(col, context, "Auto Retopology", "object.quadriflow_remesh", 'MOD_REMESH', {})
 
 
 def draw_dyntopo(layout, context):
-    """Dyntopo: the toggle and the detail size (how it is measured follows the Detailing method)."""
-    split_props(layout)
+    """Dynamic Detail (dynamic topology: strokes add and remove faces as they go): the switch and, while it is on, the
+    detail size (how it is measured follows the Detailing method)."""
     ob = mesh_of(context)
+    if blocked(layout, context, ob, dyntopo=False):
+        return
+    if context.mode != 'SCULPT':
+        reason(layout, "Enter Sculpt Mode to use Dynamic Detail")
+        return
+    split_props(layout)
     sculpt = context.tool_settings.sculpt
-    if multires_of(ob) is not None:
-        reason(layout, "Dyntopo does not work with Multires")
-    elif context.mode != 'SCULPT':
-        reason(layout, "Enter Sculpt Mode to use Dyntopo")
     on = ob.use_dynamic_topology_sculpting
-    col = layout.column()
-    col.enabled = multires_of(ob) is None and context.mode == 'SCULPT'
-    _button(col, context, "Disable Dyntopo" if on else "Enable Dyntopo", "sculpt.dynamic_topology_toggle",
-            'CHECKBOX_HLT' if on else 'CHECKBOX_DEHLT', {}, depress=on)
+    _button(layout, context, "Turn Off Dynamic Detail" if on else "Turn On Dynamic Detail",
+            "sculpt.dynamic_topology_toggle", 'CHECKBOX_HLT' if on else 'CHECKBOX_DEHLT', {}, depress=on)
     if not on:
-        col.label(text="Turning it on removes UVs and Face Sets", icon='ERROR')
-    sub = col.column()
-    sub.active = on
+        layout.label(text="Strokes add and remove faces as they go")
+        layout.label(text="Turning it on removes UVs and Face Sets", icon='ERROR')
+        return
+    col = layout.column()
     method = sculpt.detail_type_method
     if method in {'CONSTANT', 'MANUAL'}:
-        row = sub.row(align=True)
+        row = col.row(align=True)
         row.prop(sculpt, "constant_detail_resolution")
         _button(row, context, "", "sculpt.sample_detail_size", 'EYEDROPPER', {"mode": 'DYNTOPO'})
     elif method == 'BRUSH':
-        sub.prop(sculpt, "detail_percent")
+        col.prop(sculpt, "detail_percent")
     else:
-        sub.prop(sculpt, "detail_size")
-    sub.prop(sculpt, "detail_refine_method", text="Refine Method")
-    sub.prop(sculpt, "detail_type_method", text="Detailing")
+        col.prop(sculpt, "detail_size")
+    col.prop(sculpt, "detail_refine_method", text="Refine Method")
+    col.prop(sculpt, "detail_type_method", text="Detailing")
     if method in {'CONSTANT', 'MANUAL'}:
-        _button(sub, context, "Flood Fill Detail", "sculpt.detail_flood_fill", 'NONE', {})
+        _button(col, context, "Flood Fill Detail", "sculpt.detail_flood_fill", 'NONE', {})
 
 
 class PROPERTIES_PT_m3d_sc_multires(_Geometry, Panel):
@@ -1383,7 +1568,7 @@ class PROPERTIES_PT_m3d_sc_voxel(_Geometry, Panel):
 
 
 class PROPERTIES_PT_m3d_sc_quadriflow(_Geometry, Panel):
-    bl_label = "QuadriFlow"
+    bl_label = "Auto Retopology (quads)"
     bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
@@ -1391,7 +1576,7 @@ class PROPERTIES_PT_m3d_sc_quadriflow(_Geometry, Panel):
 
 
 class PROPERTIES_PT_m3d_sc_dyntopo(_Geometry, Panel):
-    bl_label = "Dyntopo"
+    bl_label = "Dynamic Detail"
     bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
@@ -1443,8 +1628,21 @@ class PROPERTIES_PT_m3d_sc_mask(_Mask, Panel):
         big.scale_y = 1.8
         _button(big, context, label + " Mask", idname, icon, props)
         grid(layout, context, MASK_FILL[1:], columns=2)
-        layout.label(text="Ctrl+drag: mask | +Alt: unmask | click off the mesh: invert")
-        layout.label(text="Expand: Shift+A over the mesh (Shift+W: face sets)")
+        col = layout.column(align=True)
+        col.label(text="Ctrl+drag: mask | Ctrl+Alt+drag: unmask")
+        col.label(text="Off the mesh: Ctrl+drag clears, Ctrl+click inverts")
+        col.label(text="Expand: Shift+A over the mesh (Shift+W: face sets)")
+        space = viewport(context)
+        if space is not None:
+            # How the mask shows (the viewport's mask overlay): on / off, its color and opacity.
+            overlay = space.overlay
+            row = layout.row(align=True)
+            row.prop(overlay, "show_sculpt_mask", text="Show Mask", toggle=True)
+            if overlay.show_sculpt_mask:
+                sub = row.row(align=True)
+                sub.ui_units_x = 2
+                sub.prop(overlay, "sculpt_mode_mask_color", text="")
+                row.prop(overlay, "sculpt_mode_mask_opacity", text="Opacity", slider=True)
 
 
 class PROPERTIES_PT_m3d_sc_mask_filter(_Mask, Panel):
@@ -1476,6 +1674,7 @@ class _FaceSets(_Page):
     page = "sculpt_face_sets"
 
 
+# Every way of making face sets (the Make Face Sets menu is the operator's own list; the tests run each)
 FACE_SET_INIT = tuple((label, "sculpt.face_sets_init", 'NONE', {"mode": mode}) for label, mode in (
     ("Loose Parts", 'LOOSE_PARTS'), ("Materials", 'MATERIALS'), ("Normals", 'NORMALS'), ("UV Seams", 'UV_SEAMS'),
     ("Creases", 'CREASES'), ("Sharp Edges", 'SHARP_EDGES'), ("Bevel Weights", 'BEVEL_WEIGHT'),
@@ -1492,10 +1691,16 @@ FACE_SET_VISIBILITY = (
 
 
 class PROPERTIES_PT_m3d_sc_fs_init(_FaceSets, Panel):
-    bl_label = "Initialize"
+    """Make face sets from a part of the mesh: loose parts, materials, UV seams... (one menu and the button)"""
+    bl_label = "Make Face Sets"
 
     def draw(self, context):
-        grid(self.layout, context, FACE_SET_INIT)
+        props = context.window_manager.operator_properties_last("sculpt.face_sets_init")
+        row = self.layout.row(align=True)   # [Face Sets from Loose Parts v] [Make]
+        sub = row.row(align=True)
+        sub.scale_x = 2.0
+        sub.prop(props, "mode", text="")
+        _button(row, context, "Make", "sculpt.face_sets_init", 'NONE', {"mode": props.mode})
 
 
 class PROPERTIES_PT_m3d_sc_fs_create(_FaceSets, Panel):
@@ -1546,12 +1751,6 @@ class PROPERTIES_PT_m3d_sc_filters(_Deform, Panel):
     def draw(self, context):
         layout = self.layout
         tools_grid(layout, context, MESH_FILTERS)
-        if tool_is_active(context, "builtin.mesh_filter", "", {}):
-            split_props(layout)
-            props = active_tool(context).operator_properties("sculpt.mesh_filter")
-            col = layout.column()
-            col.prop(props, "strength")
-            col.prop(props, "deform_axis")
         layout.label(text="Pick a filter, then drag in the viewport")
 
 
@@ -1562,8 +1761,11 @@ class PROPERTIES_PT_m3d_sc_symmetrize(_Deform, Panel):
         layout = self.layout
         split_props(layout)
         layout.prop(context.tool_settings.sculpt, "symmetrize_direction", text="Direction")
-        layout.prop(context.window_manager.operator_properties_last("sculpt.symmetrize"), "merge_tolerance")
         layout.operator("sculpt.symmetrize", icon='MOD_MIRROR')
+        header, body = layout.panel("m3d_symmetrize_advanced", default_closed=True)
+        header.label(text="Advanced")
+        if body:
+            body.prop(context.window_manager.operator_properties_last("sculpt.symmetrize"), "merge_tolerance")
 
 
 class PROPERTIES_PT_m3d_sc_pivot(_Deform, Panel):
@@ -1598,13 +1800,14 @@ class PROPERTIES_PT_m3d_sc_paint(_Paint, Panel):
         layout = self.layout
         split_props(layout)
         mesh = mesh_of(context).data
+        layout.label(text="These paint vertex colors; paint textures in F4 Texture")
         grid(layout, context, [(label, "brush.asset_activate", 'NONE', brush_props(name))
                                for label, name in PAINT_BRUSHES], columns=3,
              active=lambda idname, props: is_active(context, idname, props))
         if mesh.color_attributes.active_color is None:
-            layout.label(text="This mesh has no color attribute", icon='ERROR')
+            layout.label(text="This mesh has no vertex colors yet", icon='ERROR')
             layout.operator_context = 'EXEC_DEFAULT'   # No options dialog: the defaults are what you want.
-            _button(layout, context, "Add Color Attribute", "geometry.color_attribute_add", 'ADD',
+            _button(layout, context, "Add Vertex Colors", "geometry.color_attribute_add", 'ADD',
                     {"name": "Color", "domain": 'POINT', "data_type": 'BYTE_COLOR', "color": (0.8, 0.8, 0.8, 1.0)})
         settings = UnifiedPaintPanel.paint_settings(context)
         brush = settings.brush if settings else None
@@ -1683,18 +1886,13 @@ class PROPERTIES_PT_m3d_sc_overlays(_Display, Panel):
         if space is None:
             return
         overlay = space.overlay
-        for flag, opacity, label in (("show_sculpt_mask", "sculpt_mode_mask_opacity", "Mask"),
-                                     ("show_sculpt_face_sets", "sculpt_mode_face_sets_opacity", "Face Sets")):
+        # (the mask's look is on the Mask tab)
+        for flag, opacity, label in (("show_sculpt_face_sets", "sculpt_mode_face_sets_opacity", "Face Sets"),
+                                     ("show_wireframes", "wireframe_opacity", "Wireframe")):
             row = layout.row(align=True)
             row.prop(overlay, flag, text=label, toggle=True)
-            sub = row.row(align=True)
-            sub.active = getattr(overlay, flag)
-            sub.prop(overlay, opacity, text="Opacity")
-        row = layout.row(align=True)
-        row.prop(overlay, "show_wireframes", text="Wireframe", toggle=True)
-        sub = row.row(align=True)
-        sub.active = overlay.show_wireframes
-        sub.prop(overlay, "wireframe_opacity", text="Opacity")
+            if getattr(overlay, flag):
+                row.prop(overlay, opacity, text="Opacity")
 
 
 class PROPERTIES_PT_m3d_sc_performance(_Display, Panel):
@@ -1740,7 +1938,7 @@ class PROPERTIES_PT_m3d_sc_objects(_Page, Panel):
             o = row.operator("m3d.sculpt_object", text="", icon='HIDE_ON' if hidden else 'HIDE_OFF')
             o.name, o.action = ob.name, 'VISIBLE'
             sub = row.row(align=True)
-            o = sub.operator("m3d.sculpt_object", text="%s  (%s faces)" % (ob.name, format(len(ob.data.polygons), ",")),
+            o = sub.operator("m3d.sculpt_object", text="%s  (%s faces)" % (ob.name, format(face_count(ob), ",")),
                              depress=ob is context.active_object)
             o.name, o.action = ob.name, 'SELECT'
             sub.active = not hidden
@@ -1754,6 +1952,46 @@ GATES = {"sculpt_brushes": 'SCULPT', "sculpt_geometry": 'MESH', "sculpt_mask": '
          "sculpt_deform": 'SCULPT', "sculpt_paint": 'SCULPT'}
 # Registered first so a page's message comes before its panels (they are never shown together).
 PAGE_GATES = tuple(_gate(page[len("sculpt_"):], need) for page, need in GATES.items())
+PAGE_SETS['SCULPT'] = pages_shown
+
+
+def draw_dock_header(layout, context):
+    """Header of the tray and the dock: their tabs, none while there is no mesh to sculpt (the start card is all there is)."""
+    if mesh_of(context) is not None:
+        draw_tab_row(layout, context)
+
+
+HEADERS[('SCULPT', 'LEFT')] = HEADERS[('SCULPT', 'RIGHT')] = draw_dock_header
+
+# The tools whose settings a page shows while one of them is the active tool (Sculpt's viewport has no tool settings row;
+# All Settings > Tool has them too).
+PAGE_TOOLS = {
+    "sculpt_mask": {"builtin.box_mask", "builtin.lasso_mask", "builtin.line_mask", "builtin.polyline_mask",
+                    "builtin.mask_by_color", "builtin.box_hide", "builtin.lasso_hide", "builtin.line_hide",
+                    "builtin.polyline_hide"},
+    "sculpt_face_sets": {"builtin.face_set_edit", "builtin.box_face_set", "builtin.lasso_face_set",
+                         "builtin.line_face_set", "builtin.polyline_face_set"},
+    "sculpt_deform": {"builtin.mesh_filter", "builtin.cloth_filter", "builtin.box_trim", "builtin.lasso_trim",
+                      "builtin.line_trim", "builtin.polyline_trim", "builtin.line_project"},
+    "sculpt_paint": {"builtin.color_filter"},
+}
+
+
+def _tool_panel(page, tools):
+    """Tool Settings of a page: the settings of the active tool when it is one of `tools`."""
+    def draw(self, context):
+        from bl_ui.space_toolsystem_common import ToolSelectPanelHelper
+        layout = self.layout
+        split_props(layout)
+        ToolSelectPanelHelper.draw_active_tool_header(context, layout.column(), show_tool_icon_always=True,
+                                                      tool_key=('VIEW_3D', 'SCULPT'))
+    return type("PROPERTIES_PT_m3d_sc_%s_tool" % page[len("sculpt_"):], (_PagePanel, Panel), {
+        "bl_label": "Tool Settings", "page": page, "draw": draw,
+        "page_poll": classmethod(lambda cls, context: ready(context, 'SCULPT')
+                                 and getattr(active_tool(context), "idname", None) in tools)})
+
+
+TOOL_PANELS = tuple(_tool_panel(page, tools) for page, tools in PAGE_TOOLS.items())
 
 
 # -----------------------------------------------------------------------------
@@ -1840,16 +2078,16 @@ class M3D_PT_sculpt_brush(Panel):
         if brush.brush_capabilities.has_smooth_stroke:
             layout.separator()
             layout.prop(brush, "use_smooth_stroke", text="Lazy Mouse")
-            col = layout.column(align=True)
-            col.active = brush.use_smooth_stroke
-            col.prop(brush, "smooth_stroke_radius", text="Radius", slider=True)
-            col.prop(brush, "smooth_stroke_factor", text="Factor", slider=True)
+            if brush.use_smooth_stroke:
+                col = layout.column(align=True)
+                col.prop(brush, "smooth_stroke_radius", text="Radius", slider=True)
+                col.prop(brush, "smooth_stroke_factor", text="Factor", slider=True)
         layout.separator()
         stroke_tiles(layout, context, brush, M3D_PT_sculpt_brush.bl_ui_units_x)
 
 
 class M3D_PT_sculpt_remesh(Panel):
-    """Remesh and topology: Voxel Remesh, QuadriFlow, Multires levels and Dyntopo detail"""
+    """Remesh and topology: Voxel Remesh, Auto Retopology, Multires levels and Dynamic Detail"""
     bl_space_type = 'TOPBAR'
     bl_region_type = 'HEADER'
     bl_label = "Remesh"
@@ -1862,9 +2100,9 @@ class M3D_PT_sculpt_remesh(Panel):
     def draw(self, context):
         layout = self.layout
         for key, label, draw, closed in (("voxel", "Voxel Remesh", draw_voxel, False),
-                                         ("quadriflow", "QuadriFlow", draw_quadriflow, True),
+                                         ("quadriflow", "Auto Retopology (quads)", draw_quadriflow, True),
                                          ("multires", "Multires", draw_multires, True),
-                                         ("dyntopo", "Dyntopo", draw_dyntopo, True)):
+                                         ("dyntopo", "Dynamic Detail", draw_dyntopo, True)):
             header, body = layout.panel("m3d_sculpt_remesh_" + key, default_closed=closed)
             header.label(text=label)
             if body:
@@ -1910,7 +2148,8 @@ def draw_brush_controls(layout, context, brush, tier):
 
 def draw_status_line(layout, context):
     """Sculpt Status Line: file, modes, the brush controls (Size, Strength, Hardness, Add / Subtract, Lazy Mouse), the
-    Remesh popover, face count and Multires level, Dyntopo, symmetry, Auto-Masking, Mask / Face Set overlays, matcap."""
+    Remesh popover (and on a wide window Voxel Remesh's Detail), face count and Multires level, Dynamic Detail, symmetry,
+    Auto-Masking, Mask / Face Set overlays, matcap."""
     from m3d_ui import _call, draw_file_buttons, draw_workspace_picker
     tier = header_tier(context)
     draw_file_buttons(layout)
@@ -1928,18 +2167,15 @@ def draw_status_line(layout, context):
     if brush is not None:
         draw_brush_controls(layout, context, brush, tier)
     layout.popover("M3D_PT_sculpt_remesh", text="Remesh" if tier else "", icon='MOD_REMESH')
-    if tier == 2:
-        # Voxel Remesh in place (the popover has the options, QuadriFlow, Multires and Dyntopo).
+    if tier == 2 and mod is None and not dyntopo:
+        # Voxel Remesh in place (the popover has the options, Auto Retopology, Multires and Dynamic Detail).
         row = layout.row(align=True)
-        row.enabled = mod is None and not dyntopo
         sub = row.row(align=True)
-        sub.ui_units_x = 6
-        sub.prop(mesh, "remesh_voxel_size", text="Voxel")
+        sub.ui_units_x = 7
+        draw_voxel_detail(sub, mesh, text="")
         _button(row, context, "Remesh", "object.voxel_remesh", 'NONE', {})
-    # The mesh data is not updated while Dyntopo changes it, so no count then.
-    # (Multires: the level being sculpted, O(1): each base corner becomes 4^(level - 1) faces)
-    faces = len(mesh.loops) * 4 ** (mod.sculpt_levels - 1) if mod is not None and mod.sculpt_levels else len(mesh.polygons)
-    layout.label(text="Dyntopo" if dyntopo else "%s faces" % format(faces, ","))
+    # The mesh data is not updated while Dynamic Detail changes it, so no count then (the viewport's statistics have it).
+    layout.label(text="Dynamic Detail" if dyntopo else "%s faces" % format(face_count(ob), ","))
     m3d_pair.draw_sculpt_status(layout, context, ob, tier > 0)
     if not uniform_scale(ob):
         row = layout.row(align=True)
@@ -1950,12 +2186,9 @@ def draw_status_line(layout, context):
         row.operator("m3d.multires_level", text="", icon='TRIA_LEFT').delta = -1
         row.label(text="Lv %d/%d" % (mod.sculpt_levels, mod.total_levels))
         row.operator("m3d.multires_level", text="", icon='TRIA_RIGHT').delta = 1
-    if sculpting:
-        row = layout.row(align=True)
-        row.enabled = mod is None
-        _call(row, "sculpt.dynamic_topology_toggle", 'CHECKBOX_HLT' if dyntopo else 'CHECKBOX_DEHLT',
-              "Dyntopo (needs no Multires modifier)" if mod is None else "Dyntopo is off while the mesh has Multires",
-              depress=dyntopo)
+    if sculpting and mod is None:
+        _call(layout.row(align=True), "sculpt.dynamic_topology_toggle", 'CHECKBOX_HLT' if dyntopo else 'CHECKBOX_DEHLT',
+              "Dynamic Detail: strokes add and remove faces as they go", depress=dyntopo)
     row = layout.row(align=True)
     for axis in "xyz":
         row.prop(mesh, "use_mirror_" + axis, text=axis.upper(), toggle=True)
@@ -1977,8 +2210,8 @@ def _voxel_size(row, context):
     ob = mesh_of(context)
     if ob is not None:
         sub = row.row()
-        sub.scale_x = 2.0
-        sub.prop(ob.data, "remesh_voxel_size", text="")
+        sub.scale_x = 2.5
+        draw_voxel_detail(sub, ob.data, text="")
 
 
 SHELF_BRUSHES = [
@@ -2017,6 +2250,7 @@ classes = (
     M3D_OT_sculpt_apply_scale,
     M3D_OT_multires_level,
     M3D_OT_multires_edit,
+    M3D_OT_multires_apply,
     M3D_OT_sculpt_object,
     M3D_OT_sculpt_add_mesh,
     M3D_OT_sculpt_ctrl,
@@ -2026,12 +2260,13 @@ classes = (
     M3D_OT_alpha_load,
     M3D_OT_light_pick,
     *PAGE_GATES,
-    PROPERTIES_PT_m3d_sc_brush,
+    PROPERTIES_PT_m3d_sc_start,
     PROPERTIES_PT_m3d_sc_grid,
     PROPERTIES_PT_m3d_sc_tuning,
     PROPERTIES_PT_m3d_sc_lazy,
     PROPERTIES_PT_m3d_sc_strokes,
     PROPERTIES_PT_m3d_sc_alpha,
+    PROPERTIES_PT_m3d_sc_more_brush,
     PROPERTIES_PT_m3d_sc_alpha_settings,
     PROPERTIES_PT_m3d_sc_more,
     PROPERTIES_PT_m3d_sc_falloff,
@@ -2062,6 +2297,7 @@ classes = (
     PROPERTIES_PT_m3d_sc_overlays,
     PROPERTIES_PT_m3d_sc_performance,
     PROPERTIES_PT_m3d_sc_objects,
+    *TOOL_PANELS,
     M3D_PT_sculpt_automasking,
     M3D_PT_sculpt_shading,
     M3D_PT_sculpt_brush,
@@ -2072,6 +2308,11 @@ classes = (
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    bpy.types.Mesh.m3d_voxel_detail = bpy.props.FloatProperty(
+        name="Detail", subtype='PERCENTAGE', min=0.0, max=100.0, precision=0, get=_detail_get, set=_detail_set,
+        options=set(),
+        description="How fine Voxel Remesh makes the mesh: the voxel size as the number of faces it gives (an estimate "
+                    "from the surface area; the size itself is under Advanced)")
 
 
 def unregister():
@@ -2079,5 +2320,6 @@ def unregister():
     if _previews is not None:
         bpy.utils.previews.remove(_previews)
         _previews = None
+    del bpy.types.Mesh.m3d_voxel_detail
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

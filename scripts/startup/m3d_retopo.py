@@ -364,7 +364,7 @@ class M3D_OT_hp_auto_low(Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     method: EnumProperty(name="Method", default='QUADRIFLOW', items=(
-        ('QUADRIFLOW', "QuadriFlow", "Rebuild the surface as an even mesh of quads"),
+        ('QUADRIFLOW', "Auto Retopology (quads)", "Rebuild the surface as an even mesh of quads"),
         ('DECIMATE', "Decimate", "Collapse the faces of the high poly into fewer triangles")))
     faces: IntProperty(name="Faces", description="About how many faces the low poly gets", default=2000, min=4,
                        soft_max=100000)
@@ -407,14 +407,14 @@ class M3D_OT_hp_auto_low(Operator):
                     done = bpy.ops.object.quadriflow_remesh(mode='FACES', target_faces=self.faces, smooth_normals=True,
                                                             use_preserve_sharp=self.sharp, use_preserve_boundary=self.boundary)
                 if done != {'FINISHED'}:
-                    raise RuntimeError("QuadriFlow found no result")
+                    raise RuntimeError("Auto Retopology found no result")
             else:
                 decimate(context, copy, self.faces)
                 copy.data.shade_smooth()
         except RuntimeError as err:
             discard(copy)
             if self.method == 'QUADRIFLOW':
-                self.report({'ERROR'}, "QuadriFlow could not remesh %s: the mesh must be closed, without loose edges or "
+                self.report({'ERROR'}, "Auto Retopology could not remesh %s: the mesh must be closed, without loose edges or "
                             "flipped faces. Try Voxel Remesh on the high poly first, or use Decimate" % surface.name)
             else:
                 self.report({'ERROR'}, "Decimate failed on %s: %s" % (surface.name, str(err).strip()))

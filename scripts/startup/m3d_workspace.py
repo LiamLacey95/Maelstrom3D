@@ -434,7 +434,9 @@ def draw_dock_tabs(layout, context):
     (the rest are in the "more" menu), then the tab menu. False when the dock shows one of the stock tabs instead."""
     space = context.space_data
     kind, side = tabs_kind(context), side_of(context)
-    if space.context not in {t.context for t in dock_tabs(kind, side)} | DOCK_CONTEXTS:
+    all_settings = space.context not in {t.context for t in dock_tabs(kind, side)} | DOCK_CONTEXTS
+    sync_nav_bar(context, all_settings)
+    if all_settings:
         return False
     drawer = HEADERS.get((kind, side))
     if drawer is not None:
@@ -442,6 +444,39 @@ def draw_dock_tabs(layout, context):
     else:
         draw_tab_row(layout, context)
     return True
+
+
+# Workspaces whose docks show Blender's column of stock tabs (the navigation bar) only with All Settings: the dock's own
+# tabs are in its header.
+NAV_BAR_ONLY_IN_ALL_SETTINGS = {'SCULPT', 'TEXTURE'}
+_nav_pending = set()   # areas (pointers) whose navigation bar is about to be shown or hidden
+
+
+def sync_nav_bar(context, all_settings):
+    """Show the dock's navigation bar while it shows All Settings, hide it otherwise (Sculpt and Texture). Called from the
+    header's draw, which can't change regions: a timer toggles it right after."""
+    area = context.area
+    if not isinstance(area, bpy.types.Area) or current_kind(context) not in NAV_BAR_ONLY_IN_ALL_SETTINGS:
+        return
+    nav = next((r for r in area.regions if r.type == 'NAVIGATION_BAR'), None)
+    key = area.as_pointer()
+    if nav is None or (nav.width > 1) == all_settings or key in _nav_pending:
+        return
+    _nav_pending.add(key)
+    bpy.app.timers.register(lambda: _toggle_nav_bar(key, all_settings), first_interval=0.0)
+
+
+def _toggle_nav_bar(key, show):
+    _nav_pending.discard(key)
+    for win in bpy.context.window_manager.windows:
+        for area in win.screen.areas:
+            if area.as_pointer() == key:
+                nav = next((r for r in area.regions if r.type == 'NAVIGATION_BAR'), None)
+                if nav is not None and (nav.width > 1) != show:
+                    with bpy.context.temp_override(window=win, area=area, region=nav):
+                        bpy.ops.screen.region_toggle(region_type='NAVIGATION_BAR')
+                return None
+    return None
 
 
 class M3D_OT_dock_page(Operator):
@@ -516,7 +551,7 @@ class M3D_MT_dock_tabs(Menu):
 
 
 class M3D_PT_workspace_settings(Panel):
-    """Settings of this workspace: reset it, show or hide its dock tabs, shelf, entry mode, shortcuts, defaults"""
+    """Workspace settings: reset this workspace, show or hide its dock tabs, shelf, entry mode, shortcuts, defaults"""
     bl_space_type = 'TOPBAR'
     bl_region_type = 'HEADER'
     bl_label = "Workspace Settings"

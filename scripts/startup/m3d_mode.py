@@ -1246,9 +1246,9 @@ def m3d_startup_layout(*_args, screens=None):
     if bpy.app.background:
         return  # No UI to set up (changing regions without a window leaks).
     from m3d_workspace import dock_tabs, side_of_area, workspace_kind
-    # (the Texture workspace of the new layout has no tool header: the Status Line is its context toolbar)
-    tool_header = {s.name for ws in bpy.data.workspaces if workspace_kind(ws) in {'SCULPT', 'TEXTURE'}
-                   and not (workspace_kind(ws) == 'TEXTURE' and ws.m3d_layout >= 1) for s in ws.screens}
+    # (Sculpt and the Texture workspace of the new layout have no tool header: the Status Line and the docks have its controls)
+    tool_header = {s.name for ws in bpy.data.workspaces if workspace_kind(ws) == 'TEXTURE' and ws.m3d_layout < 1
+                   for s in ws.screens}
     kind_of = {s.name: workspace_kind(ws) or 'MODEL' for ws in bpy.data.workspaces for s in ws.screens}
     new_texture = {s.name for ws in bpy.data.workspaces if workspace_kind(ws) == 'TEXTURE' and ws.m3d_layout >= 1 for s in ws.screens}
     for screen in screens or bpy.data.screens:

@@ -5459,6 +5459,16 @@ static void rna_def_space_view3d_overlay(BlenderRNA *brna)
   RNA_def_property_range(prop, 0.0f, 1.0f);
   RNA_def_property_update(prop, NC_SPACE | ND_SPACE_VIEW3D, nullptr);
 
+  /* Maelstrom3D: the mask's color (black is Blender's look: the mask darkens the surface). */
+  prop = RNA_def_property(srna, "sculpt_mode_mask_color", PROP_FLOAT, PROP_COLOR_GAMMA);
+  RNA_def_property_float_sdna(prop, nullptr, "overlay.sculpt_mode_mask_color");
+  RNA_def_property_array(prop, 3);
+  RNA_def_property_ui_text(prop,
+                           "Sculpt Mask Color",
+                           "Color the sculpt mask tints the surface with (black darkens it)");
+  RNA_def_property_range(prop, 0.0f, 1.0f);
+  RNA_def_property_update(prop, NC_SPACE | ND_SPACE_VIEW3D, nullptr);
+
   prop = RNA_def_property(srna, "show_sculpt_curves_cage", PROP_BOOLEAN, PROP_NONE);
   RNA_def_property_boolean_sdna(prop, nullptr, "overlay.flag", V3D_OVERLAY_SCULPT_CURVES_CAGE);
   RNA_def_property_ui_text(

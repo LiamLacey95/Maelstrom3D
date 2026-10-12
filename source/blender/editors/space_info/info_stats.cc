@@ -443,10 +443,26 @@ static void stats_object_sculpt(const Object *ob, SceneStats *stats)
           stats->totvertsculpt = ob->runtime->sculpt_session->bm->totvert;
           stats->tottri = ob->runtime->sculpt_session->bm->totface;
           break;
-        case bke::pbvh::Type::Grids:
-          stats->totvertsculpt = BKE_sculpt_get_grid_num_verts(*ob);
+        case bke::pbvh::Type::Grids: {
+          /* Maelstrom3D: the vertices of the subdivided mesh, as the face count counts its faces (the grids repeat the
+           * vertices along their edges, so their own count is about four times as many). Each subdivision makes a
+           * vertex of every vertex, edge and face; an edge gives two edges and each corner one more; each corner a
+           * quad. */
+          const Mesh &base = *id_cast<const Mesh *>(ob->data);
+          const int grid_size = BKE_subdiv_ccg_key_top_level(*ss->subdiv_ccg).grid_size;
+          uint64_t verts = base.verts_num, edges = base.edges_num, faces = base.faces_num;
+          uint64_t corners = base.corners_num;
+          /* A grid is 2^(level - 1) + 1 vertices wide. */
+          for (int width = 1; width + 1 <= grid_size; width *= 2) {
+            verts += edges + faces;
+            edges = 2 * edges + corners;
+            faces = corners;
+            corners *= 4;
+          }
+          stats->totvertsculpt = verts;
           stats->totfacesculpt = BKE_sculpt_get_grid_num_faces(*ob);
           break;
+        }
       }
       break;
     }

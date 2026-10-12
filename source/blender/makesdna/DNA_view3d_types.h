@@ -694,6 +694,10 @@ struct View3DOverlay {
 
   /** Curves sculpt mode settings. */
   float sculpt_curves_cage_opacity = 0;
+
+  /** Maelstrom3D: the color the sculpt mask tints the surface with (black darkens it, Blender's look). */
+  float sculpt_mode_mask_color[3] = {0.0f, 0.0f, 0.0f};
+  char _pad_mask_color[4] = {};
 };
 
 struct View3D_Runtime {

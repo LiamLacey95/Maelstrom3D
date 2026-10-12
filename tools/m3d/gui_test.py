@@ -1178,9 +1178,9 @@ def reset_workspace_check():
     bpy.ops.m3d.workspace(kind='MODEL')
 
 
-# Workspace Settings: the Settings button at the right end of the Status Line (a popover; the rows are clicked at
+# Workspace Settings: the gear button at the right end of the Status Line (a popover; the rows are clicked at
 # fixed offsets from the window's top right: Reset Workspace, then the tabs of the dock).
-WS_SETTINGS_X, WS_SETTINGS_Y = 51, 38           # the button, from the right / top edge (UI scale 1)
+WS_SETTINGS_X, WS_SETTINGS_Y = 24, 38           # the gear button, from the right / top edge (UI scale 1)
 WS_ROWS = {"reset": 78, "tab0": 138, "tab1": 164, "tab2": 189}   # rows of the popover, from the top edge
 WS_ROWS_X = 163                                  # their middle, from the right edge
 
@@ -1926,6 +1926,41 @@ def sculpt_f2_check():
     check(len(icons) == len(m3d_sculpt.BRUSHES) and all(i > 0 for i in icons.values()), "brush tile icons %s" % icons)
     with bpy.context.temp_override(window=window(), area=tray, region=next(r for r in tray.regions if r.type == 'WINDOW')):
         check(m3d_sculpt.PROPERTIES_PT_m3d_sc_custom.poll(bpy.context), "Custom panel is in the Sculpt tray")
+
+
+def nav_width(area):
+    """Width of a Properties editor's navigation bar (its column of stock tabs): 1 or less when hidden."""
+    return next((r.width for r in area.regions if r.type == 'NAVIGATION_BAR'), 0)
+
+
+@step
+def sculpt_layout_check():
+    # The Sculpt layout: no tool settings row over the viewport, no Outliner (the dock is the whole right edge), no
+    # navigation bar beside the pages; All Settings brings the navigation bar back.
+    view = next(a for a in window().screen.areas if a.type == 'VIEW_3D')
+    check(not view.spaces.active.show_region_tool_header, "Sculpt has no tool settings row")
+    check(not any(a.type == 'OUTLINER' for a in window().screen.areas), "Sculpt has no Outliner")
+    tray, dock = sculpt_dock()
+    check(dock.height > 0.9 * view.height, "the dock is the height of the viewport (%s, %s)" % (dock.height, view.height))
+    check(nav_width(tray) <= 1 and nav_width(dock) <= 1, "no navigation bar beside the Sculpt pages (%s, %s)" % (nav_width(tray), nav_width(dock)))
+    toolbar = next(r for r in view.regions if r.type == 'TOOLS')
+    check(toolbar.width > 10, "the toolbar still shows")
+    dock.spaces.active.context = 'OBJECT'   # What the All Settings tab shows.
+    dock.tag_redraw()
+
+
+step(wait_until(lambda: nav_width(sculpt_dock()[1]) > 1, "the navigation bar with All Settings"))
+
+
+@step
+def sculpt_nav_back():
+    check(not tracebacks(), "Python error with All Settings in the Sculpt dock")
+    dock = sculpt_dock()[1]
+    dock.spaces.active.context = 'MODELING_TOOLKIT'
+    dock.tag_redraw()
+
+
+step(wait_until(lambda: nav_width(sculpt_dock()[1]) <= 1, "the navigation bar to go again on a page"))
 
 
 @step
@@ -11124,6 +11159,7 @@ def bq_scene():
     s.use_position = s.use_id = s.use_worldnormal = False
     entry = BGR.settings_of(bpy.context, "Orb")
     entry.extrusion, entry.ray_distance = 0.05, 0.3
+    bpy.context.scene.m3d_tex.bake_gpu = False   # (on a GPU the queue is over before the steps can look at it)
     HPR.park_all(bpy.context)
     for ob in bpy.data.objects:
         ob.select_set(ob.name == "Orb_low")
@@ -11330,6 +11366,7 @@ def bq_done_check():
     check(after[0]["Orb_high"] == BQ["before"][0]["Orb_high"] and after[1:] == BQ["before"][1:], "everything is put back as it was before Bake Mesh Maps was opened: %s vs %s" % (after[1:], BQ["before"][1:]))
     check(not BV._view["on"] and not any(BV.KEY in o for o in bpy.data.objects) and BV.MATERIAL not in bpy.data.materials, "the Bake mode view is gone with the page")
     check(QB.progress()[0] == 0 and QB.text() == "", "no progress is shown when it is over")
+    bpy.context.scene.m3d_tex.bake_gpu = True
     win, area, region = view3d()
     event('MOUSEMOVE', xy=(region.x + 5, region.y + 5))
 

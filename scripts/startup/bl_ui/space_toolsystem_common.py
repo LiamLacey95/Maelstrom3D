@@ -696,10 +696,19 @@ class ToolSelectPanelHelper:
         # Start iteration
         ui_gen.send(None)
 
+        # Maelstrom3D: tools a workspace shows elsewhere (Sculpt: the brushes of the brush tray) are left out here.
+        from m3d_sculpt import toolbar_hidden
+        hidden = toolbar_hidden(context)
+        drawn = False
+
         for item in cls.tools_from_context(context):
             if item is None:
-                ui_gen.send(True)
+                if drawn or not hidden:
+                    ui_gen.send(True)
                 continue
+            if hidden and (item[0] if type(item) is tuple else item).idname in hidden:
+                continue
+            drawn = True
 
             if type(item) is tuple:
                 is_active = False

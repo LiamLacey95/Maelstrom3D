@@ -90,8 +90,9 @@ def phase0_workspaces():
 
 
 def phase1_sculpt():
-    """Sculpt: the brush tray (a Properties editor left of the viewport), wider dock with the Sculpt tabs. The
-    Outliner stays under the dock: the Objects tab lists the meshes to sculpt, the Outliner keeps the hierarchy."""
+    """Sculpt: the brush tray (a Properties editor left of the viewport), wider dock with the Sculpt tabs, the dock the
+    whole height of the right edge (the Outliner is closed: the Objects tab lists the meshes to sculpt). No tool settings row
+    over the viewport: the Status Line, the tray and the tabs have its controls."""
     ws = bpy.data.workspaces["Sculpt"]
     show(ws)
     yield 0.6
@@ -117,10 +118,14 @@ def phase1_sculpt():
         lower = min(areas(screen, 'OUTLINER'), key=lambda a: a.y)
         lower.ui_type = 'PROPERTIES'
         yield 0.3
+    for outliner in areas(screen, 'OUTLINER'):
+        run(bpy.ops.screen.area_close, outliner)   # the dock gets the whole height of the right edge
+        yield 0.3
     view = areas(screen, 'VIEW_3D')[0]
     if view.spaces.active.show_region_asset_shelf:  # The brush tray replaces it (B still opens the brush popover).
         run(bpy.ops.screen.region_toggle, view, region_type='ASSET_SHELF')
         yield 0.3
+    view.spaces.active.show_region_tool_header = False
     tray, dock = areas(screen, 'PROPERTIES')
     tray.spaces.active.context = dock.spaces.active.context = 'MODELING_TOOLKIT'
     ws.m3d_page_left, ws.m3d_page_right = "sculpt_brushes", "sculpt_geometry"

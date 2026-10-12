@@ -20,7 +20,7 @@ named here only to describe compatibility.*
 | Layout | Modeling: Outliner left, Attribute Editor dock right, Time Slider and Command Line bottom. Workspaces (F1-F7 are the first seven): Modeling, Sculpt, UV, Texture, Rigging, Animation, Rendering, Shading, Compositing, Node Editor, Script Editor | `release/datafiles/startup.blend` (from `tools/m3d/build_startup.py`) |
 | Top rows | Four stacked rows: menu bar (menu set dropdown + File/Edit/Create/Select/Modify/Display/Windows + menu-set menus + Help), Status Line (with "Workspace:"), shelf tabs, shelf buttons | `screen_edit.cc`, `space_topbar.cc` (extra top-bar rows), `m3d_ui.py`, `bl_ui/space_topbar.py` |
 | Shelf | Shelf tabs (Curves/Surfaces, Poly Modeling, Sculpting, Rigging, Animation, Rendering, FX, UV, Custom) and large buttons in the top rows; every workspace has a Custom tab (right-click any button, Add to Shelf) | `m3d_ui.py`, `m3d_user.py` |
-| Workspace Settings | **Settings** button next to the workspace picker in the Status Line (top right, same in every workspace): Reset Workspace (back to its factory layout, asks first), show / hide each dock tab of the workspace (also in the dock's own tab menu), **Show Shelf** (the shelf tabs and shelf rows of the top bar, per workspace: on everywhere except Sculpt and Texture; when off the top bar is two rows and the viewport grows), **Click to Edit** (see Customising the interface), Reset Dock Layout, the workspace's entry mode, **Bake on GPU** (Texture workspace: see Bake) with the device it found, Keyboard Shortcuts (Preferences > Keymap), and **Save Layouts as Default** (saves every workspace's layout, and the open scene, as the startup file for new files; File > Defaults has Save Startup File and Load Factory Settings for all). Extra workspaces (Shading, Compositing...) show what applies | `m3d_workspace.py` (`M3D_PT_workspace_settings`), `m3d_ui.py` (`draw_workspace_picker`) |
+| Workspace Settings | The **gear** button next to the workspace picker in the Status Line (top right, same in every workspace; its tooltip says Workspace settings): Reset Workspace (back to its factory layout, asks first), show / hide each dock tab of the workspace (also in the dock's own tab menu), **Show Shelf** (the shelf tabs and shelf rows of the top bar, per workspace: on everywhere except Sculpt and Texture; when off the top bar is two rows and the viewport grows), **Click to Edit** (see Customising the interface), Reset Dock Layout, the workspace's entry mode, **Bake on GPU** (Texture workspace: see Bake) with the device it found, Keyboard Shortcuts (Preferences > Keymap), and **Save Layouts as Default** (saves every workspace's layout, and the open scene, as the startup file for new files; File > Defaults has Save Startup File and Load Factory Settings for all). Extra workspaces (Shading, Compositing...) show what applies | `m3d_workspace.py` (`M3D_PT_workspace_settings`), `m3d_ui.py` (`draw_workspace_picker`) |
 | Viewport | Panel menus (View, Shading, Lighting, Show, Renderer, Panels) and panel toolbar only (Blender's menus under "..."), viewport HUD (camera name, axis triad) | `m3d_ui.py`, `m3d_hud.py`, `bl_ui/space_view3d.py` |
 | Right-hand dock | Tabs on the right edge: Channel Box / Layer Editor, Modeling Toolkit, Tool Settings, then the Attribute Editor tabs (Object, Modifiers, Material, ...). **Primitive inputs:** a polygon primitive (shelf, Create menu, marking menus, `polyCube` ...) lists its size and subdivisions under INPUTS in the Channel Box ("Cube inputs": width / height / depth and the divisions along each, radius and axis / height / cap divisions, torus section radius ...); changing one rebuilds the mesh at once (one undo step). Editing the mesh (components, applied modifiers, sculpting, Freeze Transformations with a scale) **freezes** the inputs: they turn grey with the note "Mesh edited: inputs no longer apply". **Delete History** (button there, or Edit > Delete All History, which also applies modifiers) clears them. Duplicates keep their own inputs. A rebuild resets UVs, face materials to the first slot (slots are kept) and keeps Shade Smooth | `space_buttons.cc`, `buttons_context.cc`, `DNA_space_enums.h`, `rna_space.cc`, `m3d_mode.py`, `m3d_inputs.py` |
 | Editor names | Attribute Editor, Shader Editor, Script Editor, Command Line, Command History, Time Editor | `rna_space.cc`, `node_shader_tree.cc` |
@@ -125,37 +125,45 @@ Difference from Maya: Blender stores cuts as seams, and shells split when you Un
 
 ## Sculpt (F2)
 
-F2 opens the Sculpt workspace and enters Sculpt Mode on the active mesh (with no mesh, the tabs offer to add a sphere).
-Names are Blender's own.
+F2 opens the Sculpt workspace and enters Sculpt Mode on the active mesh. With no mesh to sculpt the dock shows one start
+card (Sphere, Cube, Plane, Import..., **Use a mesh from F1 Modeling**, and the meshes of the scene to pick), the tray stays
+empty and the tabs show once there is a mesh. The viewport has no tool settings row: the Status Line, the tray and the tabs
+have its controls, and the toolbar beside the viewport has only the tools the tray does not (masking, hiding, face set,
+trim, filter, transform and annotate tools; the brushes are the tray's tiles).
 
 | Part | Contents |
 |---|---|
-| Brush tray (left) | Open panels, essentials first: the active brush and its picker; a grid of 15 small brush tiles showing each brush's thumbnail (the name is the tooltip, the active brush is highlighted: Draw, Clay Strips, Clay, Smooth, Grab, Elastic Grab, Snake Hook, Inflate/Deflate, Pinch/Magnify, Crease Sharp, Flatten/Contrast, Scrape/Fill, Layer, Mask, Face Set Paint); **Size and Strength** (Size, Strength, Hardness, Add / Subtract, Mirror X/Y/Z); **Lazy Mouse** (toggle, Radius, Factor: Blender's Stabilize Stroke); **Stroke Type** (a tile with a little picture for each of Dots, Drag Dot, Space, Airbrush, Anchored, Line, Curve); **Alpha** (None, eight starter alphas, every alpha you loaded, and **Load Alpha...**). Closed panels: Alpha Settings (mapping, size, angle), Brush Settings, Falloff, Stroke Options, Cursor, Advanced, Custom (the Custom shelf; arrows to move / remove buttons while editing the interface) |
-| Status Line | Object / Sculpt Mode; the brush controls (see below); the **Remesh** popover; face count, Multires level with Lower / Higher arrows, Dyntopo, Mirror X/Y/Z, Auto-Masking, Mask and Face Set overlays, the **Matcap** popover |
+| Brush tray (left) | Open panels, essentials first: **Brushes**: the active brush on one line (click it for every brush of the library, the arrow for its menu: save, revert, duplicate...) and a grid of 15 small brush tiles showing each brush's thumbnail (the name is the tooltip, the active brush is highlighted: Draw, Clay Strips, Clay, Smooth, Grab, Elastic Grab, Snake Hook, Inflate/Deflate, Pinch/Magnify, Crease Sharp, Flatten/Contrast, Scrape/Fill, Layer, Mask, Face Set Paint); **Size and Strength** (Size, Strength, Hardness, Add / Subtract); **Lazy Mouse** (toggle; Radius and Factor while it is on: Blender's Stabilize Stroke); **Stroke Type** (a tile with a little picture for each of Dots, Drag Dot, Space, Airbrush, Anchored, Line, Curve); **Alpha** (None, eight starter alphas, every alpha you loaded, and **Load Alpha...**). **More Brush Settings** (closed) holds the rest, one closed section each: Alpha Settings (mapping, size, angle), Brush Options, Falloff, Stroke Options, Cursor, Advanced, Custom Shelf (the Custom shelf; arrows to move / remove buttons while editing the interface) |
+| Status Line | Object / Sculpt Mode; the brush controls (see below); the **Remesh** popover; face count, Multires level with Lower / Higher arrows, Dynamic Detail, Mirror X/Y/Z (the only place for symmetry), Auto-Masking, Mask and Face Set overlays, the **Matcap** popover; the gear at the right end is Workspace Settings |
 | Top bar | Only the menu bar and the Status Line: the shelf rows (Sculpt / Remesh / Mask / Custom tabs and the brush buttons) are off in this workspace because the tray and tabs have all of it, and the viewport gets the space. Turn **Show Shelf** on in Workspace Settings to bring them back |
-| Geometry tab | Multires (Subdivide, Simple, Linear, level sliders, Delete Higher, Unsubdivide, Apply Base), Voxel Remesh, QuadriFlow, Dyntopo. Options that cannot work together (Dyntopo and Multires) are greyed with the reason |
-| Mask tab | A big **Invert Mask** button, Clear, Fill, a line listing the Ctrl gestures, filters (Smooth, Sharpen, Grow, Shrink, Contrast), From Cavity / Boundary, Box / Lasso / Line / Polyline Mask, Mask by Color, Hide Masked / Show (with the Ctrl+Shift gestures listed) |
-| Face Sets tab | Initialize (Loose Parts, Materials, Normals, UV Seams, Creases, Sharp Edges, ...), Create from Mask / Visible / Selection, Grow, Shrink, Fair, Delete Geometry, Show All, Randomize Colors |
-| Deform tab | Mesh filters (Smooth, Inflate, Relax, Surface Smooth, Sharpen, Enhance Details, Sphere, Random, Scale), Symmetrize, Set Pivot, trim tools |
-| Paint tab | Color brushes, color picker, palette, Add Color Attribute, color filters |
-| Display tab | Matcap / studio light as a grid of thumbnails, color, cavity, Mask and Face Set overlay opacity, wireframe, low resolution and delayed updates |
-| Objects tab | The scene's meshes: show / hide, pick, solo, append a duplicate; add a sphere, cube or cylinder |
+| Status bar (bottom) | The keys of the active brush, read from the keymap (so they follow your own keys): LMB Sculpt, Shift Smooth, Ctrl Mask, Ctrl+Alt Unmask, Ctrl+Shift Hide, S Size, U Strength, N Add / Subtract, Shift+1-7 Brushes. While a tool or gesture runs, the bar shows that tool's keys instead |
+| Geometry tab | Multires: **Subdivide (smooth)** and **Subdivide (keep shape)**, the level with Lower / Higher, **Display level** and **Sculpt level**, **Delete higher levels**, **Rebuild lower levels** (for a mesh that came in dense), **Apply base shape**; Subdivide (linear), the render level and Apply Multires under Advanced. Voxel Remesh: the **Detail** slider shows the face count the remesh gives ("~240k faces", estimated from the surface area and the voxel size) and the button; the voxel size, its eyedropper and the options are under Advanced. **Auto Retopology (quads)** (rebuilds the mesh as even quads). **Dynamic Detail** (strokes add and remove faces as they go; its detail settings show while it is on). A block that cannot work on this mesh is one line saying why with the button that changes it: **Apply Multires** while the mesh has Multires levels, **Turn Off** while Dynamic Detail is on |
+| Mask tab | A big **Invert Mask** button, Clear, Fill, the Ctrl gestures (Ctrl+drag mask, Ctrl+Alt+drag unmask; off the mesh Ctrl+drag clears and Ctrl+click inverts), **Show Mask** with the mask's **color** (black, the default, darkens the surface; any other color tints it) and **Opacity**; filters (Smooth, Sharpen, Grow, Shrink, Contrast), From Cavity / Boundary, Box / Lasso / Line / Polyline Mask, Mask by Color, Hide Masked / Show (with the Ctrl+Shift gestures listed) |
+| Face Sets tab | **Make Face Sets** from [Loose Parts, Materials, Normals, UV Seams, Edge Creases, Sharp Edges, ...] with **Make**, Create from Mask / Visible / Selection, Grow, Shrink, Fair, Delete Geometry, Show All, Randomize Colors |
+| Deform tab | Mesh filters (Smooth, Inflate, Relax, Surface Smooth, Sharpen, Enhance Details, Sphere, Random, Scale), Symmetrize (the merge distance under Advanced), Set Pivot, trim tools |
+| Paint tab | Color brushes (they paint vertex colors; textures are painted in F4 Texture), color picker, palette, **Add Vertex Colors** when the mesh has none, color filters |
+| Display tab | Matcap / studio light as a grid of thumbnails, color, cavity, Face Set and wireframe overlays (their opacity while they are on), low resolution and delayed updates |
+| Objects tab | The scene's meshes with their face counts: show / hide, pick, solo, append a duplicate; add a sphere, cube or cylinder |
+
+On the Mask, Face Sets, Deform and Paint tabs, **Tool Settings** shows the settings of the active tool when it is one of
+that tab's tools (a mask or hide shape, a trim, a filter, Face Set Edit...). The face count is the same everywhere: with
+Multires it is the level being sculpted, and the viewport's statistics count the vertices of that level too.
 
 **Status Line brush controls** (the top shelf of Sculpt): **Size**, **Strength** (the scene-wide sliders while Unified
 Size / Strength is on), **Hardness** (how far from the centre the brush stays at full strength; the Falloff curve shapes
 the rest), **Add / Subtract** (Brush.direction), **Lazy Mouse**
-(toggle and Radius), and for a color brush the two colors and swap. The **Brush** popover has all of them plus the
-Falloff curve and shape, Lazy Mouse Radius and Factor and the stroke type tiles. The **Remesh** popover has Voxel Remesh
-(size, eyedropper, options, button), QuadriFlow (target face count, ratio or edge length, symmetry, sharp edges,
-boundary, normals), Multires (Subdivide, Lower / Higher, the level sliders, Delete Higher, Unsubdivide, Apply Base) and
-Dyntopo (toggle, detail size and method). On a window wider than about 2200 px the Hardness slider, the Lazy Mouse
-toggle with its Radius, and the Voxel size with a **Remesh** button sit in the Status Line itself; on a narrower one
-(down to about 1500 px) only the sliders and the Add / Subtract buttons do and the popovers have the rest. The **Matcap**
-popover is the thumbnail grid of the matcaps (Studio and Flat are the other lights), plus color and cavity. There are no
-RGB / material-only toggles: in Blender a color brush paints color attributes and a normal brush deforms, so the color
-brushes' two colors are what the Status Line shows.
+(toggle, and its Radius while it is on), and for a color brush the two colors and swap. The **Brush** popover has all of
+them plus the Falloff curve and shape, Lazy Mouse Radius and Factor and the stroke type tiles. The **Remesh** popover has
+Voxel Remesh (Detail, button, size and options under Advanced), Auto Retopology (target face count, ratio or edge length,
+symmetry, sharp edges, boundary, normals), Multires (as on the Geometry tab) and Dynamic Detail (switch, detail size and
+method). On a window wider than about 2200 px the Hardness slider, the Lazy Mouse toggle with its Radius, and Voxel
+Remesh's Detail with a **Remesh** button sit in the Status Line itself (not while the mesh has Multires or Dynamic Detail is
+on); on a narrower one (down to about 1500 px) only the sliders and the Add / Subtract buttons do and the popovers have the
+rest. The **Matcap** popover is the thumbnail grid of the matcaps (Studio and Flat are the other lights), plus color and
+cavity. There are no RGB / material-only toggles: in Blender a color brush paints color attributes and a normal brush
+deforms, so the color brushes' two colors are what the Status Line shows.
 
-**Ctrl is masking** (Maya's Alt+mouse navigation is untouched; Ctrl no longer inverts a stroke). The gesture is decided
+**Ctrl is masking** (the Alt+mouse navigation is untouched; Ctrl no longer inverts a stroke). The gesture is decided
 by what is under the cursor when you press and by whether you click or drag (more than the drag threshold):
 
 | Input | On the mesh | Off the mesh (empty space) |
@@ -181,7 +189,9 @@ at its edge). Blender 5.2 ships no image alphas of its own.
 Tool buttons (mesh filters, trims, Grow / Shrink face set, color filters, Mask by Color) pick the tool: drag in the
 viewport afterwards. Shift+1 ... Shift+7 pick Draw, Clay Strips, Smooth, Grab, Inflate/Deflate, Pinch/Magnify, Crease
 Sharp. Expand stays on Shift+A (mask) and Shift+W (face sets) over the mesh. Space (hold) lists the brushes first.
-"All Settings" at the end of each tab row is Blender's stock Properties tabs (symmetry locks, tiling, gravity, ...).
+"All Settings" at the end of each tab row is Blender's stock Properties tabs (symmetry locks, radial symmetry, tiling,
+gravity, the active tool's settings, ...); the column of stock tabs beside a Sculpt or Texture dock shows only then. Files
+saved with the earlier Sculpt layout keep their Outliner and tool settings row until Reset Workspace.
 
 ## High poly and low poly
 
@@ -265,6 +275,7 @@ view headers are short (see Headers below); everything else of Blender is in the
 | Properties (right, bottom) | Titled by what is selected: **Properties - Paint** (previews, then the sections of the tool: Brush, Alpha, Stencil, Material ...), **Properties - Fill** (the fill's UV transform and its Material), **Properties - Mask** (the effects of the layer's mask and the selected effect; the Paint sections follow while the mask is painted) and **Properties - Folder** (the folder and its mask). The buttons **Auto \| Layer \| Mask** in its header pick the layer's own settings or its mask when the title is not the one you want. The settings that are rarely needed (Advanced, Cursor) are behind **More Settings** at the bottom. See Properties below |
 | Dock strip (far right) | Icons that open a popover: **Display Settings** (the viewport type, AO in viewport, the environment: a thumbnail for each studio HDRI, rotation, exposure, background and blur, Channel View, UV checker), **Shader Settings** (the Principled shader of the active material and its displacement), **History** (the undo steps, a click goes back to that step), **Export Textures** (opens the Export Textures dialog; Ctrl+Shift+E), and **Log** (the Info window with the reports) |
 | Toolbar (top bar) | Left: the controls of the active tool, **Size** and **Flow** (the brush strength) with their pen pressure buttons, **Spacing**, **Lazy Mouse** with its distance, the channel buttons of the brush material (**color height rough metal emit**, shorter on a narrower window; for the tools that paint them), **Symmetry** X Y Z. Polygon Fill shows its fill mode instead of the brush controls; Projection adds the stencil's opacity, **Reset** and **Fit**; when a fill layer is selected the toolbar shows its UV transform (**Tiling**, **Rotation**, **Offset**, **Reset**) instead of the brush. Right: the **viewport type**, the view layout (3D \| 2D, 3D only, 2D only: the last two maximize one view), perspective / orthographic, **Bake Mesh Maps**, **Export Textures**, the workspace picker. There are no shelf rows in this workspace (Show Shelf in Workspace Settings brings them back) |
+| Status bar (bottom) | The keys of the active tool, read from the keymap (so they follow your own keys): LMB with the tool's name (Paint, Eraser, Projection...), Ctrl+RMB Size / Hardness, Ctrl+LMB Flow / Angle, Shift+RMB Turn Environment, P Picker, X Swap Colors, 1-6 Tools. While a tool or gesture runs, the bar shows that tool's keys instead |
 
 **Tools.** Blender has one brush tool for texture painting, and the brush decides what a stroke does, so each tool of the strip picks a brush and a few settings in one click:
 

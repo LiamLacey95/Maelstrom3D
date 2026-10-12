@@ -8,11 +8,14 @@ from bpy.types import Header
 class STATUSBAR_HT_header(Header):
     bl_space_type = 'STATUSBAR'
 
-    def draw(self, _context):
+    def draw(self, context):
         layout = self.layout
 
-        # input status
-        layout.template_input_status()
+        # Maelstrom3D: the keys of the active brush tool in Sculpt and Texture Paint, else the input status.
+        from m3d_ui import draw_status_hints
+        if not draw_status_hints(layout, context):
+            # input status
+            layout.template_input_status()
 
         layout.separator_spacer()
 

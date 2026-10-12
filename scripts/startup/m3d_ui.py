@@ -440,10 +440,10 @@ MENUS = {
     "M3D_MT_face_sets": ("Face Sets", [stock("VIEW3D_MT_face_sets")]),
     "M3D_MT_remesh": ("Remesh", [
         op("Voxel Remesh", "object.voxel_remesh", 'MOD_REMESH', modes={'SCULPT', 'OBJECT'}),
-        op("QuadriFlow Remesh", "object.quadriflow_remesh", 'MOD_REMESH'),
+        op("Auto Retopology (quads)", "object.quadriflow_remesh", 'MOD_REMESH'),
         modifier("Multires", 'MULTIRES', 'MOD_MULTIRES'),
         SEP,
-        op("Dynamic Topology", "sculpt.dynamic_topology_toggle", 'MOD_DYNAMICPAINT', modes={'SCULPT'}),
+        op("Dynamic Detail", "sculpt.dynamic_topology_toggle", 'MOD_DYNAMICPAINT', modes={'SCULPT'}),
         op("Symmetrize", "sculpt.symmetrize", 'MOD_MIRROR', modes={'SCULPT'}),
         op("Sample Detail Size", "sculpt.sample_detail_size", 'EYEDROPPER', modes={'SCULPT'}),
     ]),
@@ -941,7 +941,7 @@ def draw_workspace_picker(layout, context, extra=None):
         extra(layout)
     layout.label(text="Workspace:")
     layout.template_ID(context.window, "workspace", new="workspace.add", unlink="workspace.delete")
-    layout.popover("M3D_PT_workspace_settings", text="Settings", icon='PREFERENCES')
+    layout.popover("M3D_PT_workspace_settings", text="", icon='PREFERENCES')   # (its tooltip: Workspace settings...)
 
 
 def draw_status_line_sculpt(layout, context):
@@ -976,6 +976,82 @@ STATUS_LINES = {'MODEL': draw_status_line_model, 'SCULPT': draw_status_line_scul
 def draw_status_line(layout, context):
     """Status Line of the workspace's kind."""
     STATUS_LINES[current_kind(context)](layout, context)
+
+
+# -----------------------------------------------------------------------------
+# Status bar (the bottom bar): the keys of the active brush tool
+
+def _texture_tool_label(context):
+    tool = m3d_texture.tool_of(context)
+    return m3d_texture.TOOL_BY_ID[tool][1] if tool in m3d_texture.TOOL_BY_ID else "Paint"
+
+
+# kind -> (mode, keymap, hints, (idname of the numbered items, their label)). A hint is (label, operator, options): the
+# keymap's own item for it is drawn, so the hints follow the keys the user set; a label can be a function of the context.
+STATUS_HINTS = {
+    'SCULPT': ('SCULPT', "Sculpt", (
+        ("Sculpt", "sculpt.brush_stroke", {"mode": 'NORMAL', "brush_toggle": 'None'}),
+        ("Smooth", "sculpt.brush_stroke", {"brush_toggle": 'SMOOTH'}),
+        ("Mask", "m3d.sculpt_ctrl", {"mode": 'MASK'}),
+        ("Unmask", "m3d.sculpt_ctrl", {"mode": 'UNMASK'}),
+        ("Hide", "m3d.sculpt_ctrl", {"mode": 'HIDE_OUTSIDE'}),
+        ("Size", "wm.radial_control", {"data_path_primary": "tool_settings.sculpt.brush.size"}),
+        ("Strength", "wm.radial_control", {"data_path_primary": "tool_settings.sculpt.brush.strength"}),
+        ("Add / Subtract", "wm.context_toggle_enum", {"data_path": "tool_settings.sculpt.brush.direction"}),
+    ), ("brush.asset_activate", "Brushes")),
+    'TEXTURE': ('PAINT_TEXTURE', "Image Paint", (
+        (_texture_tool_label, "paint.image_paint", {"mode": 'NORMAL'}),
+        ("Size / Hardness", "m3d.tex_brush_drag", {"mode": 'SIZE_HARDNESS'}),
+        ("Flow / Angle", "m3d.tex_brush_drag", {"mode": 'FLOW_ANGLE'}),
+        ("Turn Environment", "m3d.tex_env_rotate", {}),
+        ("Picker", "paint.sample_color", {"merged": False}),
+        ("Swap Colors", "paint.brush_colors_flip", {}),
+    ), ("m3d.tex_tool", "Tools")),
+}
+
+
+def key_items(context, km_name, idname, props=None):
+    """The active items of the keymap `km_name` (the user's keys) that run `idname` with these option values."""
+    km = context.window_manager.keyconfigs.user.keymaps.get(km_name)
+    return [k for k in km.keymap_items if k.active and k.idname == idname
+            and all(getattr(k.properties, name, None) == value for name, value in (props or {}).items())] if km else []
+
+
+def hint_item(items):
+    """The item a hint shows: the one with the fewest modifier keys, the later one of two (the keymap's own keys come
+    after the stock ones they add to)."""
+    return min(reversed(items), key=lambda k: k.shift + k.ctrl + k.alt + k.oskey)
+
+
+def event_name(kmi):
+    return bpy.types.Event.bl_rna.properties["type"].enum_items[kmi.type].name
+
+
+def draw_status_hints(layout, context):
+    """The keys of the active brush tool in Sculpt and Texture Paint (hints like "LMB Sculpt, Shift Smooth, Ctrl Mask"),
+    taken from the keymap; they stand in for Blender's input status. False (nothing drawn) while an operator runs (the
+    input status shows its keys then) and for the other tools (their keys show when the mouse is over the view)."""
+    hints = STATUS_HINTS.get(current_kind(context))
+    win = context.window
+    if hints is None or context.mode != hints[0] or win is None or len(win.modal_operators):
+        return False
+    tools = context.workspace.tools if context.workspace else None
+    tool = tools.from_space_view3d_mode(context.mode) if tools else None
+    if tool is None or not tool.use_brushes:
+        return False
+    mode, km_name, items, (range_idname, range_label) = hints
+    row = layout.row(align=True)
+    for label, idname, props in items:
+        found = key_items(context, km_name, idname, props)
+        if found:
+            row.template_event_from_keymap_item(hint_item(found), text=label(context) if callable(label) else label)
+            row.separator(factor=2.0)
+    numbered = key_items(context, km_name, range_idname)
+    if len(numbered) > 1:   # "Shift 1-7 Brushes": the first and last key of the row
+        first, last = numbered[0], numbered[-1]
+        mods = "".join(m + "+" for m, on in (("Ctrl", first.ctrl), ("Shift", first.shift), ("Alt", first.alt)) if on)
+        row.label(text="%s%s-%s %s" % (mods, event_name(first), event_name(last), range_label))
+    return True
 
 
 NODE_TAB_CONTEXTS = {'OBJECT', 'DATA', 'MODIFIER', 'MATERIAL', 'CONSTRAINT', 'PHYSICS', 'PARTICLES',
