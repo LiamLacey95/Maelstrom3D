@@ -2445,8 +2445,9 @@ class M3D_OT_layer_folder_add(_LayerOp, Operator):
     @classmethod
     def description(cls, _context, props):
         if props.group:
-            return "Put the active layer into a new folder (a folder blends, fades and masks its layers together)"
-        return "Add an empty folder above the active layer (move layers into it with Move Into Folder or the arrows)"
+            return "Put the active layer into a new folder (a folder blends, fades and masks its layers together). Ctrl+G over the layer list"
+        return ("Add an empty folder above the active layer (move layers into it with Move Into Folder or the arrows); Ctrl+G over the "
+                "layer list puts the active layer into a new one")
 
     def execute(self, context):
         mat = self.material(context)
@@ -2456,7 +2457,7 @@ class M3D_OT_layer_folder_add(_LayerOp, Operator):
 
 
 class M3D_OT_layer_duplicate(_ActiveLayerOp, Operator):
-    """Duplicate the active layer, or the active folder with its layers (images are copied)"""
+    """Duplicate the active layer, or the active folder with its layers (images are copied). Ctrl+D over the layer list"""
     bl_idname = "m3d.layer_duplicate"
     bl_label = "Duplicate Layer"
 
@@ -2469,7 +2470,8 @@ class M3D_OT_layer_duplicate(_ActiveLayerOp, Operator):
 
 
 class M3D_OT_layer_remove(_ActiveLayerOp, Operator):
-    """Delete the active layer, or the active folder with its layers, and their images (images used elsewhere stay)"""
+    """Delete the active layer, or the active folder with its layers, and their images (images used elsewhere stay). Delete over
+    the layer list"""
     bl_idname = "m3d.layer_remove"
     bl_label = "Delete Layer"
 
@@ -3729,6 +3731,8 @@ class M3D_MT_mask_more(Menu):
 
 
 class M3D_MT_layer_effect_add(Menu):
+    """Add an effect to the active layer's mask: a fill, paint, a generator, levels, a filter or a color selection (the first one
+    makes the mask)"""
     bl_label = "Add Effect"
 
     def draw(self, _context):
@@ -3736,6 +3740,7 @@ class M3D_MT_layer_effect_add(Menu):
 
 
 class M3D_MT_layer_mask_add(Menu):
+    """Add a white, black or image mask to the active layer (white shows the layer, black hides it), or an effect to its mask"""
     bl_label = "Add Mask"
 
     def draw(self, _context):
@@ -3761,7 +3766,8 @@ class M3D_MT_layer_ctx_mask_add(Menu):
 
 
 class M3D_MT_layer_more(Menu):
-    """The "..." menu of the Layers panel: what is not a button of its header."""
+    """Merge Down, Flatten, Group (Ctrl+G), Move In / Out of a folder, Freeze, Convert, Cut / Copy / Paste (Ctrl+X / C / V); the
+    keys work with the pointer over the layer list"""
     bl_label = "Layer Commands"
 
     def draw(self, context):
@@ -3998,7 +4004,7 @@ def register():
                                      "(white shows the layer, black hides it)")
     mat.m3d_show_map = StringProperty(name="Show Map", default="", update=_show_mask_changed,
                                       description="Show a baked map (the name of its image) in the 3D view instead of the material")
-    mat.m3d_row_channel = EnumProperty(name="Channel", default='BASE_COLOR', items=CHANNEL_ITEMS,
+    mat.m3d_row_channel = EnumProperty(name="Show Channel", default='BASE_COLOR', items=CHANNEL_ITEMS,
                                        description="The channel the rows of the layer list show: its thumbnails, blend modes "
                                        "and opacities (what the layers do in the other channels is not changed)")
     mat.m3d_off = StringProperty(description="Channels removed from the texture set, separated by | (their layer images are kept)")

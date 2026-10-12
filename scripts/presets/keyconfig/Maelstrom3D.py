@@ -141,7 +141,9 @@ OVERRIDES = {
     # (X), S Stencil (the stencil keys are Blender's: RMB moves, Shift+RMB scales, Ctrl+RMB turns it), X swaps the colors
     # (on a mask: black and white), [ ] the size; Ctrl+RMB drag size (sideways) and hardness (up and down), Ctrl+LMB drag
     # flow and angle, Shift+RMB drag turns the environment; Alt+Q isolates the texture set, Ctrl+Shift+B Bake Mesh Maps,
-    # Ctrl+Shift+E Export Textures, F frames. Polygon Fill's click (m3d.tex_polyfill) goes first: it only runs with that tool.
+    # Ctrl+Shift+E Export Textures, F frames, Ctrl+Space shows the view under the pointer alone and both views again (the panels
+    # stay; outside the Texture workspace it is Blender's maximize). Polygon Fill's click (m3d.tex_polyfill) goes first: it only
+    # runs with that tool.
     "Image Paint": [
         _kmi("m3d.tex_polyfill", 'LEFTMOUSE'),
         *(_kmi("m3d.tex_tool", k, props={"tool": tool}) for k, tool in (
@@ -164,6 +166,7 @@ OVERRIDES = {
         _kmi("m3d.tex_bake_mode", 'B', props={"on": True}, ctrl=True, shift=True),
         _kmi("m3d.tex_export_dialog", 'E', ctrl=True, shift=True),
         _kmi("m3d.tex_frame", 'F'),
+        _kmi("m3d.tex_layout", 'SPACE', props={"mode": 'TOGGLE'}, ctrl=True),
     ],
     # Texture, over the layer list (the Layers tab; m3d.layer_key checks that): Ctrl+C / X / V copy, cut and paste a layer, Ctrl+D
     # duplicates it, Ctrl+G groups it into a folder, Delete deletes it (Ctrl+Shift+V also pastes: Blender's own Ctrl+V takes the button under the
@@ -216,6 +219,8 @@ OVERRIDES = {
         *(("REMOVE", {"type": k, "value": 'PRESS'}, None) for k in ('F1', 'F2', 'F3', 'F4')),  # Zoom ratios.
         _kmi("ed.undo", 'Z', repeat=True),
         _kmi("ed.redo", 'Z', shift=True, repeat=True),
+        # The Texture workspace's 2D view also when it shows a picture (View mode, no Image Paint keys): its view alone / both views.
+        _kmi("m3d.tex_layout", 'SPACE', props={"mode": 'TOGGLE'}, ctrl=True),
     ],
     "UV Editor": [
         _pie("M3D_MT_uv_marking_menu", 'RIGHTMOUSE'),

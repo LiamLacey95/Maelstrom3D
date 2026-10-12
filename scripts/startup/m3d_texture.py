@@ -435,8 +435,8 @@ class M3D_TexSettings(PropertyGroup):
     resolution: EnumProperty(name="Resolution", default='2048', items=SIZES,
                              description="Size of new paint slots (bigger images use more memory)")
     normal_format: EnumProperty(name="Normal Map Format", default='OPENGL', items=(
-        ('OPENGL', "OpenGL", "Green up (Blender, Unity): the normal map as Blender reads it"),
-        ('DIRECTX', "DirectX", "Green down (Unreal): the baked normal map has its green channel flipped, and so has the Normal "
+        ('OPENGL', "OpenGL (Unity, Blender)", "Green up: the normal map as Blender reads it"),
+        ('DIRECTX', "DirectX (Unreal)", "Green down: the baked normal map has its green channel flipped, and so has the Normal "
          "channel in the templates that follow the project")),
         description="How the normal map of this project points its green channel: used by the Normal bake and by the export templates "
                     "that say they follow the project. The painted Normal channel is stored as Blender reads it (OpenGL)")
@@ -470,8 +470,9 @@ class M3D_TexSettings(PropertyGroup):
     view_ao: BoolProperty(name="AO in Viewport", default=True, update=_view_ao_changed,
                           description="Darken the Base Color with the baked AO map in the 3D view (it is only for what you see: the "
                                       "exported Base Color never has the AO in it)")
-    props_more: BoolProperty(name="More", default=False,
-                             description="Also show the advanced brush settings and the cursor settings in Properties - Paint")
+    props_more: BoolProperty(name="More Brush Settings", default=False,
+                             description="Also show the Advanced and Cursor sections of the brush in Properties - Paint (and All "
+                                         "Paint Slots in Texture Set Settings)")
     bake_map: EnumProperty(name="Map", default='NORMAL', items=[(key, BAKE_TEXT[label], "") for key, label, _flag in BAKE_MAPS],
                            description="The mesh map whose settings are shown")
     bake_gpu: BoolProperty(name="Bake on GPU", default=True,
@@ -2678,9 +2679,16 @@ def set_view_type(context, space, kind):
         shading.type = 'MATERIAL'
 
 
+def hide_floor(space):
+    """No floor grid and axis lines in the 3D view: painting shows the model on its environment."""
+    overlay = space.overlay
+    overlay.show_floor = overlay.show_axis_x = overlay.show_axis_y = overlay.show_axis_z = False
+
+
 def apply_view_defaults(space):
     """The 3D view starts as a studio: Material Preview lit by Blender's studio HDRI (ENV_DEFAULT), blurred behind the model as the
-    background (how a dedicated painting tool shows its default environment), full strength, not turned."""
+    background (how a dedicated painting tool shows its default environment), full strength, not turned; no floor grid or axes."""
+    hide_floor(space)
     shading = space.shading
     shading.type = 'MATERIAL'
     shading.use_scene_lights = shading.use_scene_world = False
@@ -2694,14 +2702,16 @@ def apply_view_defaults(space):
 
 def view_defaults_once(win):
     """The 3D view of a Texture workspace of the new layout starts as a studio, once (the workspace remembers it in its custom property
-    m3d_env): after that the view is the user's. True when it set the view."""
+    m3d_env): after that the view is the user's. A view set up before the floor grid went (m3d_env 1) loses the grid and the axes,
+    once. True when it set the view."""
     ws = win.workspace
-    if ws.m3d_layout < 1 or ws.get("m3d_env") is not None:
+    env = ws.get("m3d_env")
+    if ws.m3d_layout < 1 or (env is not None and env >= 2):
         return False
-    ws["m3d_env"] = 1
+    ws["m3d_env"] = 2
     for area in win.screen.areas:
         if area.type == 'VIEW_3D':
-            apply_view_defaults(area.spaces.active)
+            (apply_view_defaults if env is None else hide_floor)(area.spaces.active)
     return True
 
 
@@ -2753,8 +2763,8 @@ class M3D_MT_tex_view_type(Menu):
             self.layout.operator("m3d.tex_view_type", text=label, icon=icon).kind = kind
 
 
-def draw_view_type(layout, context, compact=False):
-    """The viewport type dropdown (in the 3D view's header, and in the toolbar: it acts on the main 3D view)."""
+def draw_view_type(layout, context):
+    """The viewport type dropdown in the 3D view's header."""
     space = view3d_space(context)
     if space is None:
         return
@@ -2762,8 +2772,8 @@ def draw_view_type(layout, context, compact=False):
     kind = view_type_of(space, ob.active_material if ob is not None else None)
     _id, label, icon, _what = VIEW_TYPE_BY_ID[kind]
     row = layout.row()
-    row.ui_units_x = 2.2 if compact else dropdown_units(label)
-    row.menu("M3D_MT_tex_view_type", text="" if compact else label, icon=icon)
+    row.ui_units_x = dropdown_units(label)
+    row.menu("M3D_MT_tex_view_type", text=label, icon=icon)
 
 
 def draw_layout_buttons(layout, context):
@@ -3081,37 +3091,132 @@ def follow(wm):
             fit_view(win, area, region, space)
 
 
+def remember_2d(ws, space):
+    """What the 2D view shows (its image, pin, mode and display mode), kept on the workspace (saved with the file) for the 2D view
+    the layout makes again."""
+    ws["m3d_2d"] = {"image": space.image.name if space.image is not None else "", "pin": space.use_image_pin,
+                    "ui_mode": space.ui_mode, "mode": _shown_2d.get(space_key(space), "")}
+
+
+def setup_2d(context, area):
+    """A 2D view the layout makes again (2D Only, or 3D | 2D after 3D Only): Blender's tool column, tool header, sidebar and asset
+    shelf hidden, as in the startup layout, showing what the 2D view showed (remember_2d)."""
+    space = area.spaces.active
+    space.show_region_toolbar = space.show_region_tool_header = space.show_region_ui = False
+    if space.show_region_asset_shelf:   # (read-only: the region is toggled)
+        with context.temp_override(window=context.window, screen=context.window.screen, area=area):
+            bpy.ops.screen.region_toggle(region_type='ASSET_SHELF')
+    saved = context.workspace.get("m3d_2d") or {}
+    space.image = bpy.data.images.get(saved.get("image", ""))
+    space.ui_mode = saved.get("ui_mode", 'PAINT')
+    space.use_image_pin = bool(saved.get("pin", False)) and space.image is not None
+    if saved.get("mode"):
+        _shown_2d[space_key(space)] = saved["mode"]
+
+
+def area_center(area):
+    return (area.x + area.width // 2, area.y + area.height // 2)
+
+
+def join_views(context, view, image, mode):
+    """3D Only / 2D Only: the 2D view's area is joined into the 3D view's (the panels stay where they are). The 3D view's area stays,
+    so its view is kept (2D Only shows a 2D view in it: the 3D view waits in the area's other spaces). The workspace remembers where
+    the edge was, which side the 3D view was on and what the 2D view showed (custom properties: they are saved with the file).
+    False when the views are not side by side with the same height."""
+    window, ws = context.window, context.workspace
+    if view.y != image.y or view.height != image.height:
+        return False
+    left, right = sorted((view, image), key=lambda a: a.x)
+    ws["m3d_split"] = (right.x - left.x) / float(right.x + right.width - left.x)
+    ws["m3d_3d_left"] = left == view
+    remember_2d(ws, image.spaces.active)
+    region = next(r for r in view.regions if r.type == 'WINDOW')
+    with context.temp_override(window=window, screen=window.screen, area=view, region=region):
+        bpy.ops.screen.area_join(source_xy=area_center(view), target_xy=area_center(image))
+    if mode == '2D':
+        view.ui_type = 'IMAGE_EDITOR'
+        setup_2d(context, view)
+    return True
+
+
+def split_views(context, area):
+    """3D | 2D again: the view's area is split where the edge was; each half shows its view (the area's spaces keep the 3D view as
+    it was; a 2D view that was not kept is set up again)."""
+    window, ws = context.window, context.workspace
+    before = {a.as_pointer() for a in window.screen.areas}
+    region = next(r for r in area.regions if r.type == 'WINDOW')
+    factor = min(max(ws.get("m3d_split", 0.5), 0.1), 0.9)
+    with context.temp_override(window=window, screen=window.screen, area=area, region=region):
+        bpy.ops.screen.area_split(direction='VERTICAL', factor=factor)
+    new = next((a for a in window.screen.areas if a.as_pointer() not in before), None)
+    if new is None:
+        return
+    # (the areas get their place on the next redraw: Blender's split puts the new area on the right past the middle, else on the left)
+    left, right = (area, new) if factor > 0.5 else (new, area)
+    view, image = (left, right) if ws.get("m3d_3d_left", True) else (right, left)
+    kept = image.type == 'IMAGE_EDITOR'   # (2D Only: its 2D view is the one to keep)
+    view.ui_type = 'VIEW_3D'
+    if not kept:   # (setting the type of a 2D view again would put it back in Blender's previous mode)
+        image.ui_type = 'IMAGE_EDITOR'
+        setup_2d(context, image)
+
+
 class M3D_OT_tex_layout(Operator):
-    """View layout: the 3D view and the 2D view side by side, or one of them on the whole window (the other panels are hidden
-    while it is maximized)"""
+    """View layout: the 3D view and the 2D view side by side, or one of them in the space of both (the panels stay)"""
     bl_idname = "m3d.tex_layout"
     bl_label = "View Layout"
     bl_options = {'INTERNAL'}
 
     mode: EnumProperty(items=(('BOTH', "3D | 2D", "The 3D view and the 2D view side by side"),
-                              ('3D', "3D Only", "Maximize the 3D view"), ('2D', "2D Only", "Maximize the 2D view")))
+                              ('3D', "3D Only", "Only the 3D view, in the space of both"),
+                              ('2D', "2D Only", "Only the 2D view, in the space of both"),
+                              ('TOGGLE', "Toggle", "The view under the pointer alone, or both views again (Ctrl+Space)")))
 
     @classmethod
     def description(cls, _context, props):
-        return {'BOTH': "3D and 2D views side by side", '3D': "3D view only (maximized)", '2D': "2D view only (maximized)"}[props.mode]
+        return {'BOTH': "3D and 2D views side by side", '3D': "3D view only (the panels stay)",
+                '2D': "2D view only (the panels stay)",
+                'TOGGLE': "The view under the pointer alone, or both views again"}[props.mode]
 
     @classmethod
     def poll(cls, context):
         return context.window is not None and context.screen is not None
 
+    def invoke(self, context, _event):
+        if self.mode == 'TOGGLE' and not W.texture_clean(context):
+            return {'PASS_THROUGH'}   # (Ctrl+Space elsewhere: Blender's maximize)
+        return self.execute(context)
+
     def execute(self, context):
-        window = context.window
-        view, image = view_areas(context.screen)
-        if (view is None) != (image is None):   # one view is maximized: back to the layout first
-            with context.temp_override(window=window, screen=context.screen, area=view or image):
+        window, screen = context.window, context.screen
+        view, image = view_areas(screen)
+        if screen.show_fullscreen:   # maximized (a file saved while the layout still maximized a view): back first
+            with context.temp_override(window=window, screen=screen, area=view or image):
                 bpy.ops.screen.back_to_previous()
             view, image = view_areas(window.screen)
-        if self.mode != 'BOTH':
-            area = view if self.mode == '3D' else image
-            if area is not None:
+        now = 'BOTH' if view is not None and image is not None else '3D' if view is not None else '2D' if image is not None else None
+        mode = self.mode
+        if mode == 'TOGGLE':
+            area = context.area
+            mode = 'BOTH' if now != 'BOTH' else '2D' if area is not None and area.type == 'IMAGE_EDITOR' else '3D'
+        if now is None or mode == now:
+            return {'FINISHED'}
+        if now == 'BOTH':
+            if not join_views(context, view, image, mode):   # (a layout of your own: maximize, as Blender does)
+                area = view if mode == '3D' else image
                 region = next(r for r in area.regions if r.type == 'WINDOW')
                 with context.temp_override(window=window, screen=window.screen, area=area, region=region):
                     bpy.ops.screen.screen_full_area(use_hide_panels=False)
+        elif mode == 'BOTH':
+            split_views(context, view or image)
+        else:   # 3D Only <-> 2D Only: the area shows the other view
+            area = view or image
+            if mode == '2D':
+                area.ui_type = 'IMAGE_EDITOR'
+                setup_2d(context, area)
+            else:
+                remember_2d(context.workspace, area.spaces.active)
+                area.ui_type = 'VIEW_3D'
         _fit["seen"].clear()   # (the 2D view has another size now: it frames its image again)
         return {'FINISHED'}
 
@@ -3228,8 +3333,20 @@ class PROPERTIES_PT_m3d_tx_tuning(_Page, Panel):
 
 
 MATERIAL_BUTTONS = (   # (channel, button text, short text): the channels of the brush material, in the order of the buttons
-    ('BASE_COLOR', "color", "C"), ('HEIGHT', "height", "H"), ('ROUGHNESS', "rough", "R"), ('METALLIC', "metal", "M"),
-    ('EMISSION', "emit", "E"))
+    ('BASE_COLOR', "Base Color", "Color"), ('HEIGHT', "Height", "Height"), ('ROUGHNESS', "Roughness", "Rough"),
+    ('METALLIC', "Metallic", "Metal"), ('EMISSION', "Emission", "Emit"))
+
+
+def button_texts(context, buttons):
+    """The texts of a row of channel buttons ((channel, text, short text)): the whole names when they fit in the editor, else
+    the short ones."""
+    region = getattr(context, "region", None)
+    if region is None or not getattr(region, "width", 0):
+        return [text for _cid, text, _short in buttons]
+    scale = context.preferences.system.ui_scale or 1.0
+    room = region.width - 40 * scale   # (the margins of a panel)
+    full = sum(W.text_width(text, scale) for _cid, text, _short in buttons) <= room
+    return [text if full else short for _cid, text, short in buttons]
 
 
 def paint_layer_active(context):
@@ -3241,16 +3358,20 @@ def paint_layer_active(context):
     return layer if layer is not None and layer.kind == 'PAINT' and not layer.paint_mask and not L.in_frozen(layer) else None
 
 
-def draw_material_toggles(layout, context, short=False):
+def material_buttons(context):
+    """The buttons of the brush material for the channels the texture set has (a channel it has not cannot be painted)."""
+    ob = mesh_of(context)
+    off = ob.active_material.m3d_off.split("|") if ob is not None and ob.active_material is not None else ()
+    return [b for b in MATERIAL_BUTTONS if b[0] not in off]
+
+
+def draw_material_toggles(layout, context):
     """One button per channel of the brush material: the channels one stroke paints."""
     brush = context.scene.m3d_tex.brush
-    ob = mesh_of(context)
-    off = ob.active_material.m3d_off if ob is not None and ob.active_material is not None else ""
+    buttons = material_buttons(context)
     row = layout.row(align=True)
-    for cid, text, initial in MATERIAL_BUTTONS:
-        sub = row.row(align=True)
-        sub.enabled = cid not in off.split("|")   # (a channel that is not in the texture set cannot be painted)
-        sub.prop(brush, "use_" + cid.lower(), text=initial if short else text, toggle=True)
+    for (cid, _text, _short), text in zip(buttons, button_texts(context, buttons)):
+        row.prop(brush, "use_" + cid.lower(), text=text, toggle=True)
     return row
 
 
@@ -3266,7 +3387,7 @@ def draw_material(layout, context, values=True):
         col = layout.column(align=True)
         split_props(col)
         ibrush = image_brush(context)
-        for cid, _text, _initial in MATERIAL_BUTTONS:
+        for cid, _text, _short in material_buttons(context):
             if not getattr(brush, "use_" + cid.lower()):
                 continue
             label = CHANNEL_BY_ID[cid].label
@@ -3378,17 +3499,19 @@ class _PaintStock(_BrushPage):
 
 
 def draw_swatches(layout, context):
-    """One swatch for each channel of the brush material: the brush color, the value of each scalar channel as a grey, the
-    emission color; the channels that are off are dimmed."""
+    """What a stroke paints: a named swatch for each channel of the brush material that is on (the brush color, the value of a
+    scalar channel as a grey, the emission color). The Material section turns them on and off."""
     brush, ibrush = context.scene.m3d_tex.brush, image_brush(context)
-    row = layout.row(align=True)
-    for cid, _text, _initial in MATERIAL_BUTTONS:
-        sub = row.row(align=True)
-        sub.active = getattr(brush, "use_" + cid.lower())
+    col = layout.column(align=True)
+    for cid, _text, _short in material_buttons(context):
+        if not getattr(brush, "use_" + cid.lower()):
+            continue
+        split = col.split(factor=0.5, align=True)
+        split.label(text=CHANNEL_BY_ID[cid].label)
         if cid == 'BASE_COLOR':
-            sub.prop(unified(context, ibrush, "use_unified_color"), "color", text="")
+            split.prop(unified(context, ibrush, "use_unified_color"), "color", text="")
         else:
-            sub.prop(brush, "swatch_" + cid.lower() if cid in L.SCALARS else cid.lower(), text="")
+            split.prop(brush, "swatch_" + cid.lower() if cid in L.SCALARS else cid.lower(), text="")
 
 
 def draw_previews(layout, context):
@@ -3535,23 +3658,6 @@ def draw_advanced(layout, context):
         col.prop(brush, "weight", text="Mask Value", slider=True)
 
 
-class PROPERTIES_PT_m3d_tx_pp_canvas(_Page, Panel):
-    page = PAINT_PAGE
-    bl_label = "Canvas"
-    bl_order = 19
-
-    @classmethod
-    def page_poll(cls, context):
-        mat = mesh_of(context).active_material if ready(context, 'PAINT') else None
-        return mat is not None and not paint_slots(mat) and not len(mat.m3d_layers)
-
-    def draw(self, context):
-        layout = self.layout
-        layout.label(text="No paint slots yet")
-        layout.prop(context.scene.m3d_tex, "resolution")
-        layout.operator("m3d.tex_channel", text="Add Base Color", icon='ADD').channel = 'BASE_COLOR'
-
-
 class PROPERTIES_PT_m3d_tx_pp_preview(_PaintPage, Panel):
     bl_label = "Preview"
     bl_options = {'HIDE_HEADER'}
@@ -3680,7 +3786,7 @@ class PROPERTIES_PT_m3d_tx_pp_more(_PaintPage, Panel):
 
     def draw(self, context):
         tex = context.scene.m3d_tex
-        self.layout.prop(tex, "props_more", text="Fewer Settings" if tex.props_more else "More Settings", toggle=True)
+        self.layout.prop(tex, "props_more", text="Fewer Brush Settings" if tex.props_more else "More Brush Settings", toggle=True)
 
 
 # --- Layers: the stack, the active layer, its mask; the channels
@@ -3690,12 +3796,23 @@ def has_active_layer(mat):
 
 
 def draw_layers_header(layout, mat):
-    """The channel dropdown (the channel the rows show: thumbnails, blend modes, opacities), then Add Effect, Add Mask, Add Paint
+    """Show [channel] (the channel the rows show: thumbnails, blend modes, opacities), then Add Effect, Add Mask, Add Paint
     Layer, Add Fill Layer, Add Smart Material, Add Folder, Delete and the "..." menu (Merge Down, Flatten, Group, Move In /
-    Out, Freeze)."""
-    split = layout.split(factor=0.3, align=True)
-    split.prop(mat, "m3d_row_channel", text="")
-    row = split.row(align=True)
+    Out, Freeze). Each icon's tooltip is its name, what it does and its key."""
+    context = bpy.context
+    scale = context.preferences.system.ui_scale or 1.0
+    region = getattr(context, "region", None)
+    menu = max(W.text_width(ch.label, scale) for ch in CHANNELS) + 24 * scale   # (the longest name and the arrow)
+    row = layout.row()
+    sub = row.row(align=True)
+    sub.alignment = 'LEFT'
+    if region is None or region.width >= W.text_width("Show", scale) + menu + 9 * 20 * scale + 40 * scale:
+        sub.label(text="Show")   # (on a narrow dock only the dropdown: its tooltip says Show Channel)
+    sub = sub.row(align=True)
+    sub.ui_units_x = menu / (20 * scale)
+    sub.prop(mat, "m3d_row_channel", text="")
+    row = row.row(align=True)
+    row.alignment = 'RIGHT'
     row.menu("M3D_MT_layer_effect_add", text="", icon='SHADERFX')
     row.menu("M3D_MT_layer_mask_add", text="", icon='MOD_MASK')
     row.operator("m3d.layer_add", text="", icon='IMAGE_DATA').kind = 'PAINT'
@@ -3733,8 +3850,9 @@ class PROPERTIES_PT_m3d_tx_stack(_Page, Panel):
             row.label(text="Fill layer: paint its Mask, or", icon='INFO')
             row.operator("m3d.layer_convert", text="Convert to Paint", icon='IMAGE_DATA')
         row = layout.row()
-        row.template_list("M3D_UL_layers", "", mat, "m3d_layers", mat, "m3d_layer_index", rows=6,
-                          sort_reverse=True, sort_lock=True)   # (a UI list has no drag and drop: the arrows move the layer)
+        # (a UI list has no drag and drop: the arrows move the layer; it grows with the stack, so it has no filter options or grip)
+        row.template_list("M3D_UL_layers", "", mat, "m3d_layers", mat, "m3d_layer_index", rows=6, maxrows=14,
+                          sort_reverse=True, sort_lock=True, show_handles=False)
         col = row.column(align=True)
         col.operator("m3d.layer_move", text="", icon='TRIA_UP').delta = 1
         col.operator("m3d.layer_move", text="", icon='TRIA_DOWN').delta = -1
@@ -3751,10 +3869,10 @@ class PROPERTIES_PT_m3d_tx_stack(_Page, Panel):
                                    else ": " + ", ".join(channels))
             reason(layout, "Painting " + target)
         equivalent = L.memory_equivalent(mat)
-        row = layout.row()
-        row.alert = equivalent > L.MEMORY_WARN
-        row.label(text="Layer images use %d MB" % (L.memory_bytes(mat) >> 20), icon='ERROR' if row.alert else 'INFO')
-        if row.alert:
+        if equivalent > L.MEMORY_WARN:   # (only as a warning: what a stack uses is no news while it is small)
+            row = layout.row()
+            row.alert = True
+            row.label(text="Layer images use %d MB" % (L.memory_bytes(mat) >> 20), icon='ERROR')
             reason(layout, "That is %d images of 4K: use smaller sizes or merge layers" % equivalent)
 
 
@@ -3950,7 +4068,7 @@ class PROPERTIES_PT_m3d_tx_mask(_Page, Panel):
 # --- Properties - Fill, Folder and Mask: the layer's own sections (pages tex_fill_props, tex_folder_props, tex_mask_props)
 
 FILL_PAGE, FOLDER_PAGE, MASK_PAGE = "tex_fill_props", "tex_folder_props", "tex_mask_props"
-FILL_BUTTONS = (*MATERIAL_BUTTONS, ('NORMAL', "nrm", "N"))   # the channels a fill layer can have: the brush material's, and Normal
+FILL_BUTTONS = (*MATERIAL_BUTTONS, ('NORMAL', "Normal", "Normal"))   # the channels a fill layer can have: the brush material's, and Normal
 EFFECT_TYPES = {'PAINT': "Paint", 'FILL': "Fill", 'EDGES': "Generator", 'CAVITY': "Generator", 'TOPDOWN': "Generator",
                 'THICKNESS': "Generator", 'NOISE': "Generator", 'COLORID': "Generator", 'LEVELS': "Levels", 'BLUR': "Filter",
                 'INVERT': "Filter", 'SHARPEN': "Filter"}
@@ -3980,9 +4098,9 @@ def draw_fill_material(layout, layer):
     that replaces it."""
     row = layout.row(align=True)
     row.scale_y = 1.2
-    for cid, text, _initial in FILL_BUTTONS:
+    for (cid, _text, _short), text in zip(FILL_BUTTONS, button_texts(bpy.context, FILL_BUTTONS)):
         row.prop(entry_of(layer, cid), "use", text=text, toggle=True)
-    for cid, _text, _initial in FILL_BUTTONS:
+    for cid, _text, _short in FILL_BUTTONS:
         e = entry_of(layer, cid)
         if not e.use:
             continue
@@ -4726,6 +4844,52 @@ def draw_sets_menu(self, context):
     o.object, o.material = owner.name, mat.name
 
 
+def no_project(context):
+    """No texture project yet: no texture set has layers or images to paint (paint slots: a material of its own, whose images
+    become the Base layer on the first layer operation, is painted as it is). The Texture Sets editor then shows the start card,
+    the dock and Properties show nothing and Assets is greyed (the new layout)."""
+    return not any(len(mat.m3d_layers) or mat.texture_paint_images for mat, _owner in texture_sets(context))
+
+
+START_STEPS = ("1 New Texture Project", "2 Bake Mesh Maps", "3 Paint")
+
+
+def start_message(context):
+    """The first line of the start card: what the selection is missing."""
+    ob = mesh_of(context)
+    if ob is None:
+        return "Select a mesh to paint, or add one"
+    if not any(slot.material for slot in ob.material_slots):
+        return "%s has no material: the project adds one" % ob.name
+    return "%s has no texture project yet" % ob.name
+
+
+def draw_start(layout, context):
+    """The start card (Texture Sets, while there is no project): what is missing, the three steps (on one line when it fits),
+    then New Texture Project (Add Cube without a mesh)."""
+    col = layout.column()
+    note = m3d_pair.big_note(context)
+    if note:
+        m3d_pair.draw_note(col, note)
+    reason(col, start_message(context))
+    line = "  →  ".join(START_STEPS)
+    scale = context.preferences.system.ui_scale or 1.0
+    region = getattr(context, "region", None)
+    steps = col.column(align=True)
+    if region is None or W.text_width(line, scale) <= region.width - 30 * scale:
+        steps.label(text=line)
+    else:
+        for step in START_STEPS:
+            steps.label(text=step)
+    ob = mesh_of(context)
+    row = col.row(align=True)
+    row.scale_y = 1.3
+    if ob is None:
+        _button(row, context, "Add Cube", "m3d.add_primitive", 'MESH_CUBE', {"kind": 'CUBE'})
+        return
+    row.operator("m3d.tex_project", icon='FILE_NEW')
+
+
 class PROPERTIES_PT_m3d_tx_sets(_PagePanel, Panel):
     page = "tex_sets"
     bl_label = "Texture Sets"
@@ -4734,17 +4898,19 @@ class PROPERTIES_PT_m3d_tx_sets(_PagePanel, Panel):
     def draw(self, context):
         layout = self.layout
         sets = texture_sets(context)
-        if not sets:
-            reason(layout, "Select a mesh with a material")
-            if mesh_of(context) is not None:
-                layout.operator("m3d.tex_project", icon='FILE_NEW')
+        baking = context.workspace is not None and context.workspace.m3d_page_right == "tex_bake"
+        if not sets or (no_project(context) and not baking):   # (Bake Mesh Maps needs the list: its Bake checkboxes)
+            draw_start(layout, context)
             return
         tex = context.scene.m3d_tex
         if not Q.running() and [(row.name, row.mesh) for row in tex.sets] != [(mat.name, owner.name) for mat, owner in sets]:
             request_sets_sync(context.scene)   # (drawing may not write: the rows are made a moment later)
-        layout.template_list("M3D_UL_tex_sets", "", tex, "sets", tex, "set_index", rows=3, sort_lock=True)
-        if not any(mat.m3d_layers for mat, _owner in sets):
-            layout.operator("m3d.tex_project", icon='FILE_NEW')
+        region = getattr(context, "region", None)
+        scale = context.preferences.system.ui_scale or 1.0
+        fit = max(int(region.height / (20 * scale)) - 1, 1) if region is not None and getattr(region, "height", 0) else 3
+        # (as tall as the sets, up to what the editor holds; no filter options or grip: nothing to filter or resize)
+        layout.template_list("M3D_UL_tex_sets", "", tex, "sets", tex, "set_index", rows=min(len(sets), fit), maxrows=fit,
+                             sort_lock=True, show_handles=False)
 
 
 # The buttons of the dock strip: (popover panel, icon), or (operator, icon) for Export Textures (Ctrl+Shift+E), which is a dialog.
@@ -4869,7 +5035,12 @@ def props_pages(context):
     return {'FILL': {FILL_PAGE}, 'FOLDER': {FOLDER_PAGE, MASK_PAGE}}.get(kind, {"tex_layer"})
 
 
+START_EMPTY = {"tex_layers", "tex_settings", "tex_props"}   # the pages that show nothing while the start card is up
+
+
 def pages_new(context, active):
+    if active in START_EMPTY and no_project(context):
+        return set()   # (the start card in Texture Sets says what to do)
     need = PAGE_NEEDS.get(active)
     if need and not ready(context, need):
         return {active}
@@ -4885,6 +5056,8 @@ def pages_old(context, active):
 
 def draw_header_sets(layout, context):
     layout.label(text="Texture Sets")
+    if no_project(context) and context.workspace.m3d_page_right != "tex_bake":
+        return   # (the start card: nothing to isolate)
     layout.separator_spacer()
     layout.operator("m3d.tex_isolate", text="", icon='ZOOM_SELECTED', depress=context.scene.get("m3d_isolated") is not None)
 
@@ -4894,6 +5067,9 @@ def draw_header_assets(layout, _context):
 
 
 def draw_header_props(layout, context):
+    if no_project(context):
+        layout.label(text="Properties")
+        return
     ready_ = ready(context, 'PAINT')
     layout.label(text="Properties - " + PROPS_TITLES[props_context(context) if ready_ else 'PAINT'])
     layout.separator_spacer()
@@ -4942,7 +5118,8 @@ def header_tier(context):
 
 
 def draw_brush_controls(layout, context, brush, tier):
-    """Size (with its pressure toggle), Flow (the brush strength, with pressure), Spacing and Lazy Mouse with its distance."""
+    """Size (with its pressure toggle), Flow (the brush strength, with pressure), Spacing and Lazy Mouse with its distance (while
+    it is on)."""
     ups = context.tool_settings.image_paint.unified_paint_settings   # (the toolbar has no brush tool: pass it in)
     row = layout.row(align=True)
     for units, prop, unified, pressure, text in ((8.5, "size", "use_unified_size", "use_pressure_size", "Size"),
@@ -4959,10 +5136,10 @@ def draw_brush_controls(layout, context, brush, tier):
         sub.prop(brush, "spacing", text="Spacing", slider=True)
     row = layout.row(align=True)
     row.prop(brush, "use_smooth_stroke", text="Lazy Mouse" if tier == 2 else "", icon='MOD_SMOOTH', toggle=True)
-    sub = row.row(align=True)
-    sub.active = brush.use_smooth_stroke
-    sub.ui_units_x = 5
-    sub.prop(brush, "smooth_stroke_radius", text="Distance" if tier == 2 else "", slider=True)
+    if brush.use_smooth_stroke:   # (the distance only while it is on)
+        sub = row.row(align=True)
+        sub.ui_units_x = 7 if tier == 2 else 4
+        sub.prop(brush, "smooth_stroke_radius", text="Distance" if tier == 2 else "", slider=True)
 
 
 def draw_stencil_controls(layout, brush, tier):
@@ -4997,7 +5174,8 @@ def fill_selected(context):
 def draw_status_line(layout, context):
     """Texture context toolbar: file buttons, modes, the controls of the active tool (Size, Flow, Spacing, Lazy Mouse; the Fill
     mode for Polygon Fill, the stencil for Projection; the UV transform when a fill layer is selected), Symmetry; on the right the
-    viewport type, view layout, perspective / orthographic, Bake Mesh Maps, Export Textures, the workspace picker."""
+    view layout, perspective / orthographic, Bake Mesh Maps, Export Textures, the workspace picker. (The viewport type is in the 3D
+    view's header, the channels a stroke paints in Properties.)"""
     from m3d_ui import _call, draw_file_buttons, draw_workspace_picker
     if Q.running():   # (what is baking, Cancel and the view: the guard lets a click on this line through, so it draws nothing that edits)
         layout.label(text=Q.text(), icon='RENDER_STILL', translate=False)
@@ -5030,8 +5208,6 @@ def draw_status_line(layout, context):
             draw_brush_controls(layout, context, brush, tier)
         if tool == 'PROJECTION':
             draw_stencil_controls(layout, brush, tier)
-        if tool in {'PAINT', 'ERASER', 'PROJECTION', 'POLYFILL'} and paint_layer_active(context) is not None:
-            draw_material_toggles(layout, context, short=tier < 2)   # (Smudge and Clone work on one channel)
     if ob is not None:
         row = layout.row(align=True)
         row.label(text="Symmetry" if tier == 2 else "", icon='MOD_MIRROR')
@@ -5039,7 +5215,6 @@ def draw_status_line(layout, context):
             row.prop(ob.data, "use_mirror_" + axis, text=axis.upper(), toggle=True)
 
     def right(layout):
-        draw_view_type(layout, context, compact=tier == 0)
         draw_layout_buttons(layout, context)
         space = viewport(context)
         persp = space is None or space.region_3d is None or space.region_3d.is_perspective
@@ -5132,7 +5307,6 @@ classes = (
     PROPERTIES_PT_m3d_tx_projection,
     PROPERTIES_PT_m3d_tx_more,
     PROPERTIES_PT_m3d_tx_advanced,
-    PROPERTIES_PT_m3d_tx_pp_canvas,
     PROPERTIES_PT_m3d_tx_pp_preview,
     PROPERTIES_PT_m3d_tx_pp_projection,
     PROPERTIES_PT_m3d_tx_pp_polyfill,

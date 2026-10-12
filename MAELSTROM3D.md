@@ -247,14 +247,18 @@ Retopology builds the low poly from a high poly you already have, either by draw
 
 F4 opens the Texture workspace and enters Texture Paint Mode on the active mesh. It is laid out like a dedicated painting
 tool, with the tools on the left, the assets next to them, the 3D view and the 2D paint view side by side, and the texture
-sets, layers and properties on the right. Names are Blender's own. A mesh needs UVs and a material before it can be
-painted: the panels say what is missing and have a button to fix it (Auto Unwrap, Add Material, Texture Paint Mode). The
+sets, layers and properties on the right. Names are Blender's own. Until there is a texture project the Texture Set List shows
+a **start card**: what the selection is missing (a mesh, a material, a project), the three steps **1 New Texture Project ->
+2 Bake Mesh Maps -> 3 Paint** and the **New Texture Project** button (**Add Cube** without a mesh); the dock and Properties
+are empty meanwhile and Assets is greyed (Bake Mesh Maps works without a project: the list comes back for its Bake checkboxes). (A material with images of its own is painted as it is: its images become the Base
+layer on the first layer operation.) A mesh needs UVs and a material before it can be painted: the panels say what is missing and have a
+button to fix it (Auto Unwrap, Add Material, Texture Paint Mode). The
 workspace shows only what texturing needs: the menu bar of the Texturing set has no Create, Select or Modify, and the two
 view headers are short (see Headers below); everything else of Blender is in the other workspaces and in the More menu of the 3D view.
 
 ```
  menu bar        File Edit Paint Layers Bake Export Display Windows Help
- toolbar         tool controls (Size, Flow, Spacing, Lazy Mouse, Symmetry)   |  viewport type, view layout, Bake Mesh Maps, Export Textures
+ toolbar         tool controls (Size, Flow, Spacing, Lazy Mouse, Symmetry)   |  view layout, Bake Mesh Maps, Export Textures
  +---+----------+-----------------------+----------------------+------------------+---+
  | T | ASSETS   | 3D VIEW  [Material v] | 2D VIEW  [Material v]| TEXTURE SETS     | D |
  | O | icons    |                       |                      +------------------+ O |
@@ -269,12 +273,12 @@ view headers are short (see Headers below); everything else of Blender is in the
 |---|---|
 | Tool strip (far left) | One icon button for each tool: **Paint** (1), **Eraser** (2), **Projection** (3), **Polygon Fill** (4), **Smudge** (5), **Clone** (6) and the **Picker** (P). The tooltip names the tool and its key; the active tool is highlighted. Blender's own tool column is hidden in both views, so this is the only one |
 | Assets | A full height column: a row of category icons (see Assets below), a search field and a grid of tiles |
-| 3D view and 2D view | The 3D view (Material Preview, lit by a studio environment that shows blurred behind the model) and the 2D paint view (the Image Editor in Paint mode). Their headers hold only what texturing needs (see Headers below): a short **View** menu and, at the top right, the **display mode** dropdown: Material, each channel on its own, the baked mesh maps, the mask of the active layer. The 3D header also has the **viewport type**, the view layout, Display Settings and More |
-| Texture Set List (right, top) | One row for each material of the active mesh, then the materials with layers of the other meshes (a texture set is a material and its layers). A row has an **eye** that shows or hides the set, its **name** (a double-click renames it), the mesh it is on when that is not the active one, and the size of its images; a click on a row makes it the active material (the Layers follow). In Bake Mesh Maps each row also has a **Bake** checkbox. The right-click menu of a row has **Rename**, **Show / Hide** and **Isolate**; the button in the header isolates the active set (Alt+Q). While no material has layers the list has a **New Texture Project...** button |
-| Layers \| Texture Set Settings (right, middle) | Two tabs. **Layers** is the layer stack (see Layers below). **Texture Set Settings** has **General** (name, **Size**, **Normal Map Format**), **Channels** (a row for each channel of the set with its format and an x, **Add Channel**, Save All Images), **Mesh Maps** (a slot for each baked map, and a big **Bake Mesh Maps** button) and All Paint Slots (behind **More Settings**; see Texture set settings below). **Bake Mesh Maps** replaces the tabs by the Bake page (see Bake below); **Back to Painting**, or a finished bake, brings the Layers back, and a new project always ends on the Layers |
-| Properties (right, bottom) | Titled by what is selected: **Properties - Paint** (previews, then the sections of the tool: Brush, Alpha, Stencil, Material ...), **Properties - Fill** (the fill's UV transform and its Material), **Properties - Mask** (the effects of the layer's mask and the selected effect; the Paint sections follow while the mask is painted) and **Properties - Folder** (the folder and its mask). The buttons **Auto \| Layer \| Mask** in its header pick the layer's own settings or its mask when the title is not the one you want. The settings that are rarely needed (Advanced, Cursor) are behind **More Settings** at the bottom. See Properties below |
+| 3D view and 2D view | The 3D view (Material Preview, lit by a studio environment that shows blurred behind the model; no floor grid or axis lines, **Grid** in its More menu brings the grid back) and the 2D paint view (the Image Editor in Paint mode). Their headers hold only what texturing needs (see Headers below): a short **View** menu and, at the top right, the **display mode** dropdown: Material, each channel on its own, the baked mesh maps, the mask of the active layer. The 3D header also has the **viewport type**, the view layout, Display Settings and More |
+| Texture Set List (right, top) | One row for each material of the active mesh, then the materials with layers of the other meshes (a texture set is a material and its layers). A row has an **eye** that shows or hides the set, its **name** (a double-click renames it), the mesh it is on when that is not the active one, and the size of its images; a click on a row makes it the active material (the Layers follow). In Bake Mesh Maps each row also has a **Bake** checkbox. The right-click menu of a row has **Rename**, **Show / Hide** and **Isolate**; the button in the header isolates the active set (Alt+Q). The list is as tall as its rows. While no material has layers it is the start card (see above) |
+| Layers \| Texture Set Settings (right, middle) | Two tabs. **Layers** is the layer stack (see Layers below). **Texture Set Settings** has **General** (name, **Size**, **Normal Map Format**), **Channels** (a row for each channel of the set with its format and an x, **Add Channel**), **Mesh Maps** (a slot for each baked map, and a big **Bake Mesh Maps** button) and All Paint Slots (behind **More Brush Settings**; see Texture set settings below). **Bake Mesh Maps** replaces the tabs by the Bake page (see Bake below); **Back to Painting**, or a finished bake, brings the Layers back, and a new project always ends on the Layers |
+| Properties (right, bottom) | Titled by what is selected: **Properties - Paint** (previews, then the sections of the tool: Brush, Alpha, Stencil, Material ...), **Properties - Fill** (the fill's UV transform and its Material), **Properties - Mask** (the effects of the layer's mask and the selected effect; the Paint sections follow while the mask is painted) and **Properties - Folder** (the folder and its mask). The buttons **Auto \| Layer \| Mask** in its header pick the layer's own settings or its mask when the title is not the one you want. The settings that are rarely needed (Advanced, Cursor) are behind **More Brush Settings** at the bottom. See Properties below |
 | Dock strip (far right) | Icons that open a popover: **Display Settings** (the viewport type, AO in viewport, the environment: a thumbnail for each studio HDRI, rotation, exposure, background and blur, Channel View, UV checker), **Shader Settings** (the Principled shader of the active material and its displacement), **History** (the undo steps, a click goes back to that step), **Export Textures** (opens the Export Textures dialog; Ctrl+Shift+E), and **Log** (the Info window with the reports) |
-| Toolbar (top bar) | Left: the controls of the active tool, **Size** and **Flow** (the brush strength) with their pen pressure buttons, **Spacing**, **Lazy Mouse** with its distance, the channel buttons of the brush material (**color height rough metal emit**, shorter on a narrower window; for the tools that paint them), **Symmetry** X Y Z. Polygon Fill shows its fill mode instead of the brush controls; Projection adds the stencil's opacity, **Reset** and **Fit**; when a fill layer is selected the toolbar shows its UV transform (**Tiling**, **Rotation**, **Offset**, **Reset**) instead of the brush. Right: the **viewport type**, the view layout (3D \| 2D, 3D only, 2D only: the last two maximize one view), perspective / orthographic, **Bake Mesh Maps**, **Export Textures**, the workspace picker. There are no shelf rows in this workspace (Show Shelf in Workspace Settings brings them back) |
+| Toolbar (top bar) | Left: the controls of the active tool, **Size** and **Flow** (the brush strength) with their pen pressure buttons, **Spacing**, **Lazy Mouse** (its distance shows while it is on), **Symmetry** X Y Z (the channels a stroke paints are in Properties > Material). Polygon Fill shows its fill mode instead of the brush controls; Projection adds the stencil's opacity, **Reset** and **Fit**; when a fill layer is selected the toolbar shows its UV transform (**Tiling**, **Rotation**, **Offset**, **Reset**) instead of the brush. Right: the view layout (3D \| 2D, 3D only, 2D only: one view takes the space of both while the panels stay; 3D \| 2D puts the edge back where it was, also after saving; Ctrl+Space over a view does the same), perspective / orthographic, **Bake Mesh Maps**, **Export Textures**, the workspace picker. There are no shelf rows in this workspace (Show Shelf in Workspace Settings brings them back) |
 | Status bar (bottom) | The keys of the active tool, read from the keymap (so they follow your own keys): LMB with the tool's name (Paint, Eraser, Projection...), Ctrl+RMB Size / Hardness, Ctrl+LMB Flow / Angle, Shift+RMB Turn Environment, P Picker, X Swap Colors, 1-6 Tools. While a tool or gesture runs, the bar shows that tool's keys instead |
 
 **Tools.** Blender has one brush tool for texture painting, and the brush decides what a stroke does, so each tool of the strip picks a brush and a few settings in one click:
@@ -305,8 +309,8 @@ brush or of the layer. For a Paint Layer (or without a layer) it is **Properties
 | Smudge | Previews, Brush, Advanced, Cursor |
 | Clone | Previews, Brush, **Clone** (the source to paint from), Advanced, Cursor |
 
-The **previews** are the brush's picture and name, and a swatch for each channel of the brush material (the color, the grey
-of Height, Roughness and Metallic, the Emission color; a channel that is off is dimmed). **Brush** starts closed, because the
+The **previews** are the brush's picture and name, and a named swatch for each channel of the brush material that is on (the
+color, the grey of Height, Roughness and Metallic, the Emission color). **Brush** starts closed, because the
 toolbar has what you use all the time: Size (with the Unified Settings button and pen pressure), Hardness, Flow (the brush
 strength, with pen pressure), **Accumulate**, Spacing, **Size Space** (View or Scene units), then, when the brush has an alpha,
 **Angle** and **Follow Path** (the alpha turns with the stroke), **Position Jitter** and **Angle Jitter**, and the projection
@@ -323,13 +327,13 @@ Shift+RMB scales it and Ctrl+RMB turns it. A stencil is one picture on the scree
 of channel buttons and the value of each channel that is on (see Painting several channels at once). **Advanced** (closed) has the
 stroke method, the stabilizer, the falloff, input samples, seam bleed, dither and the cavity mask, and what the Blur and Mask
 brushes have of their own. **Cursor** (closed) is Blender's brush cursor display. Both are hidden until you press **More
-Settings** at the bottom of Properties - Paint (**Fewer Settings** hides them again); the same button shows All Paint Slots in
+Brush Settings** at the bottom of Properties - Paint (**Fewer Brush Settings** hides them again); the same button shows All Paint Slots in
 Texture Set Settings. While a mask is painted (**Properties - Mask**) the
 Material is replaced by the two **Grayscale** colors: white shows the layer, black hides it, X swaps them.
 
 For a Fill Layer it is **Properties - Fill**. **Fill** has the UV transform of the layer's textures, **Tiling**, **Rotation**
 and **Offset**, with **Reset** (tiling and rotation turn around the middle of the UV map); the projection is the UV map. **Material**
-is a row of buttons for the channels the fill has (**color height rough metal emit nrm**), and below it, for each one that is on, its
+is a row of buttons for the channels the fill has (**Base Color**, **Height**, **Roughness**, **Metallic**, **Emission**, **Normal**; **Color**, **Rough**... when the editor is narrow), and below it, for each one that is on, its
 value and a texture slot: an image picked there (Open loads a file) replaces the value, follows the UV map through the layer's UV
 transform and does not use the image's alpha. A file picked for a channel takes that channel's color space (sRGB for Base Color and
 Emission, Non-Color for the rest); a Normal channel with a texture is a normal map. For a **Folder** it is **Properties - Folder**:
@@ -363,6 +367,7 @@ your zoom after the first time.
 | Ctrl+Shift+B | Bake Mesh Maps |
 | Ctrl+Shift+E | Export Textures |
 | F | Frame the model (3D view) or the image (2D view) |
+| Ctrl+Space | The view under the pointer alone (3D only or 2D only, the panels stay); again: both views |
 
 Keys pressed over the 3D view or the 2D view act on that view. F1 to F7 still switch workspaces, Space is the hotbox and
 Alt+mouse navigates. Where one of these keys is also used in the 3D view (4 5 6 show wireframe, solid, textured; X C B hold
@@ -394,7 +399,7 @@ transform, and every texture set follows), **Solid** (the fast Workbench view wi
 **Wireframe** (Material with the wireframe overlay). The type is read back from the view, so the dropdown always says what it
 is, and picking one takes the view back from a channel, a map or a mask. A new 3D view in the Texture workspace starts as a studio:
 Material Preview with Blender's **studio** HDRI (soft boxes, neutral grey: it is the one that shows the colors the least tinted),
-shown blurred behind the model (background 1.0, blur 0.5, strength 1.0); this is set once, the first time a Texture workspace
+shown blurred behind the model (background 1.0, blur 0.5, strength 1.0), without the floor grid and the axis lines; this is set once, the first time a Texture workspace
 opens, and after that the view is yours. **Display Settings** (dock strip, or the globe in the 3D header) has a thumbnail for each
 studio HDRI (a click lights the Material view with it), **Rotation** (Shift+RMB drag in the view turns it too), **Exposure**,
 **Background** and **Blur**, **Studio Defaults** to go back, and **AO in Viewport**.
@@ -429,12 +434,13 @@ The old Channel View (in Display Settings) shows the picked channel flat in the 
 
 **Painting several channels at once.** A stroke on a Paint Layer paints every channel that is on in the **Material**
 section of Properties - Paint, with its own value, in one go: the same pixels, the same opacity, falloff, symmetry and seam
-bleed, and **one undo step** takes the whole stroke back in all of them. The section is a row of buttons, **color height
-rough metal emit**, and below it a value for each one that is on: **Base Color** is the brush color (the picker and the X
+bleed, and **one undo step** takes the whole stroke back in all of them. The section is a row of buttons, **Base Color
+Height Roughness Metallic Emission** (Color, Rough, Metal, Emit when the editor is narrow; a channel the texture set does not have
+has no button), and below it a value for each one that is on: **Base Color** is the brush color (the picker and the X
 swap are the same), **Height** and **Roughness** and **Metallic** are sliders from 0 to 1 (Height 0.5 is flat, more is
-higher), **Emission** is a color. Base Color is on at first, so a new project paints as before; turn on **rough**, say, and
-the next stroke paints a Roughness value next to the color. The same buttons are in the toolbar when the Paint, Eraser,
-Projection or Polygon Fill tool is active. The channel that is turned on is added to the layer if it is missing: its image
+higher), **Emission** is a color. Base Color is on at first, so a new project paints as before; turn on **Roughness**, say, and
+the next stroke paints a Roughness value next to the color. The previews at the top of Properties - Paint show a named swatch
+for each channel that is on. The channel that is turned on is added to the layer if it is missing: its image
 is made at the size of the layer's other images (a stroke paints only images of one size, and says so for one that is
 not). Normal is painted alone: pick it with **Paint Normal**, and with every button off the channel shown with C is the one
 painted. What each tool does with them:
@@ -454,7 +460,7 @@ UDIM paints its own image only).
 
 **Texture set settings.** **General** has the **Name** of the set (its material), its **Size** and the **Normal Map Format**. The size is one square size for the whole set: picking another
 scales every image of it (the layers' images, the masks' paint images, the images of frozen folders), and a layer, mask or folder made later starts at that size. It is square only, because masks,
-Merge Down, Flatten and Export work on square images. The normal map format (**OpenGL** or **DirectX**) is a setting of the project: the Normal bake writes its green channel up or down by it, and the export
+Merge Down, Flatten and Export work on square images. The normal map format (**OpenGL (Unity, Blender)** or **DirectX (Unreal)**) is a setting of the project: the Normal bake writes its green channel up or down by it, and the export
 templates that follow the project (Document Channels) flip the Normal channel for DirectX; the painted Normal channel itself is always kept the way Blender reads it (OpenGL).
 **Channels** lists the channels of the set, each with its format and an x. The x removes a channel: its layers keep their images, but nothing is built, painted, shown or exported for it until **Add Channel**
 brings it back as it was (painting a removed channel from the Layers menu or the shelf adds it back too); the last channel cannot be removed. A channel that is not a color (Roughness, Metallic, Normal, Height)
@@ -463,8 +469,8 @@ float image keeps linear light, which the layer math of the colors does not read
 joins them once baked): a thumbnail, the name of the image (`<set>_<map>`), a folder button that takes an image file for the slot, and an x that clears it. A map from a file is used like a baked one (the display modes, the
 mask effects); the next bake into the slot replaces it. Not done: non-square sizes, other ways to combine the normals (the layers' normal always goes on top of the baked one as a whiteout combine), channels beyond the six.
 
-**New Texture Project.** **File > New Texture Project...** (in the Texturing menu set), the button in the Texture Set List and the Layers tab (while no material has layers) and the one next to Add Material (for a
-mesh without a material) open a dialog for the selected meshes: the **Document Resolution** (1024 by default), the **Normal Map Format**, the **Channels** (Base Color, Roughness, Metallic, Normal and Height; the same with
+**New Texture Project.** **File > New Texture Project...** (in the Texturing menu set) and the button of the start card in the Texture Set List (while no material has layers; it also says
+when the mesh has no material: the project makes one) open a dialog for the selected meshes: the **Document Resolution** (1024 by default), the **Normal Map Format**, the **Channels** (Base Color, Roughness, Metallic, Normal and Height; the same with
 Emission; or the minimal Base Color, Roughness and Metallic), **Auto Unwrap Missing UVs** and **Bake Mesh Maps Next** (off at first). OK gives every material of the meshes a Base layer, which is its texture set, with an image of
 that size for each channel of the template (a channel that is not in the template is removed from the set, and can be added later), makes a material for a mesh that has none, unwraps a mesh without UVs and keeps the resolution
 and the format as the project's. The first set is the one painted and the dock shows the **Layers** (with Bake Mesh Maps Next the Bake page opens instead, to pick the high poly and bake; the Layers come back when the bake is done). A material that has layers already is left alone.
@@ -611,15 +617,16 @@ combines a layer into the one below with its blend mode, opacity and mask baked 
 upper one uses Normal; the merged layer keeps the lower layer's blend mode in each channel); **Flatten** replaces the stack by one
 layer holding what it looks like.
 Export, glTF included, uses the flattened visible stack of each channel (the Normal on top of the baked normal map) and does not change the layers. The Layers dock warns
-when the layer images add up to more than twelve 4K images of memory.
+(Layer images use N MB, in red) when the layer images add up to more than twelve 4K images of memory; below that it says nothing.
 
-**The Layers panel.** The header has, from the left, the **channel dropdown** and these icon buttons: **Add Effect** (a menu:
+**The Layers panel.** The header has, from the left, **Show** [channel] (the channel the rows show) and these icon buttons (the
+tooltip of each says what it is and its key): **Add Effect** (a menu:
 Add Fill, Add Paint, Add Generator and Add Filter (menus of the generators and the filters), Add Levels, Add Color Selection (a
 Color ID effect): they are the effects of the selected layer's mask, see Masks), **Add Mask** (a
 menu: White Mask, Black Mask and Image Mask, which reads an image file, then the same Add items as Add Effect),
 **Add Paint Layer**, **Add Fill Layer**, **Add Smart Material** (a grid of the smart materials of the Library: a click adds one as a
 folder), **Add Folder** and **Delete**. The **...** menu has Merge Down, Flatten, Group, Move In and Move Out, Freeze (Unfreeze),
-Merge Folder, Convert to Paint Layer and Cut, Copy and Paste. The list shows the top layer first. A row is one line: the eye, the folder
+Merge Folder, Convert to Paint Layer and Cut, Copy and Paste. The list shows the top layer first and grows with the stack (it has no filter options or resize grip). A row is one line: the eye, the folder
 triangle (folders), the **content thumbnail**, the **mask thumbnail** when the layer has a mask, the name (a double-click renames
 it), and at the right the blend mode (a short name: Norm, Pthr, Repl, Mult, Add ...) over the opacity. The columns have the
 same width in every row, so the names line up. The thumbnail is a small picture of the layer's image,
@@ -778,7 +785,7 @@ above and cached in `datafiles/m3d_library/thumbs`. Yours are `thumb.png` in the
 Previews** (Mine, Your Items) makes them all again.
 
 Painted images never get lost: before a file is saved, images with changes are written to their files, or packed into
-the .blend when they have none. Save All Images does the same on demand. Large images use a lot of memory: new slots
+the .blend when they have none. **File > Save All Images** (Texturing menu set) does the same on demand. Large images use a lot of memory: new slots
 default to 2048 px.
 
 ## Rigging (F5)

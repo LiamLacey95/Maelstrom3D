@@ -851,7 +851,8 @@ void rna_template_list(Layout *layout,
                        const int layout_type,
                        const int /*columns*/,
                        const bool sort_reverse,
-                       const bool sort_lock)
+                       const bool sort_lock,
+                       const bool show_handles)
 {
   ui::TemplateListFlags flags = ui::TEMPLATE_LIST_FLAG_NONE;
   if (sort_reverse) {
@@ -859,6 +860,10 @@ void rna_template_list(Layout *layout,
   }
   if (sort_lock) {
     flags |= ui::TEMPLATE_LIST_SORT_LOCK;
+  }
+  if (!show_handles) {
+    /* No filter options toggle either (see template_uilist_layout_draw). */
+    flags |= ui::TEMPLATE_LIST_NO_GRIP;
   }
 
   ui::template_uilist(layout,
@@ -2366,6 +2371,11 @@ void RNA_api_ui_layout(StructRNA *srna)
                               600);
   RNA_def_boolean(func, "sort_reverse", false, "", "Display items in reverse order by default");
   RNA_def_boolean(func, "sort_lock", false, "", "Lock display order to default value");
+  RNA_def_boolean(func,
+                  "show_handles",
+                  true,
+                  "",
+                  "Show the row under the list: the filter options toggle and the resize grip");
 
   func = RNA_def_function(srna, "template_running_jobs", "template_running_jobs");
   RNA_def_function_flag(func, FUNC_USE_CONTEXT);

@@ -1702,8 +1702,25 @@ def tex_gated(page):
     return len(names) == 1 and names[0].endswith("_gate")
 
 
-for page in ("layers", "settings", "props", "bake"):
-    check(tex_gated("tex_" + page), "tex_%s without a mesh shows its message only: %s" % (page, tex_shown("tex_" + page)))
+for page in ("layers", "settings", "props"):
+    check(tex_shown("tex_" + page) == [], "tex_%s shows nothing without a project (the start card says what to do): %s" % (page, tex_shown("tex_" + page)))
+check(tex_gated("tex_bake"), "tex_bake without a mesh shows its message only: %s" % tex_shown("tex_bake"))
+
+
+def start_card():
+    """The texts and operators of the Texture Set List while there is no project (the start card), [] when it shows the list."""
+    log = draw_stub(T.PROPERTIES_PT_m3d_tx_sets, TCtx('SETS'))
+    check_calls("start card", log)
+    if any(r._kind == "template_list" for r in log):
+        return []
+    return [r._kw.get("text", "") for r in log if r._kind == "label"] + [r._args[0] for r in log if r._kind == "operator"]
+
+
+card_ = start_card()
+check("Select a mesh to paint, or add one" in card_ and "m3d.tex_project" not in card_ and T.START_STEPS[0] in " ".join(card_),
+      "no mesh: the start card asks for a mesh, shows the three steps and Add Cube: %s" % card_)
+log = draw_stub(m3d_library.PROPERTIES_PT_m3d_lib_browse, TCtx('ASSETS'))
+check([r._kw.get("text") for r in log if r._kind == "label"][:1] == ["Make a texture project first"], "...Assets is greyed with its reason")
 check(not any(n.endswith("_gate") for n in tex_shown("tex_assets") + tex_shown("tex_tools") + tex_shown("tex_dockbar")),
       "Assets, the tool strip and the dock strip need no mesh")
 check(tex_shown("tex_sets") == ["PROPERTIES_PT_m3d_tx_sets"], "the Texture Set List shows without a mesh (it says what to do)")
@@ -1711,7 +1728,10 @@ check(T.missing(bpy.context) == ['MESH'], "missing without a mesh")
 bpy.ops.m3d.add_primitive(kind='CUBE')
 cube = bpy.context.active_object
 check(T.missing(bpy.context) == ['MATERIAL', 'MODE'], "a new cube has UVs, but no material, and is in Object Mode: %s" % T.missing(bpy.context))
-check(tex_gated("tex_layers") and not tex_gated("tex_bake") and tex_gated("tex_props"), "gates in Object Mode")
+check(tex_shown("tex_layers") == tex_shown("tex_props") == [] and not tex_gated("tex_bake"), "no project in Object Mode: the start card, the Bake page")
+card_ = start_card()
+check(any(t == "%s has no material: the project adds one" % cube.name for t in card_) and "m3d.tex_project" in card_,
+      "a mesh without a material: the card says so and has New Texture Project: %s" % card_)
 cube.data.uv_layers.remove(cube.data.uv_layers[0])
 check(T.missing(bpy.context) == ['UV', 'MATERIAL', 'MODE'] and tex_gated("tex_bake"),
       "missing UVs gate the Bake page: %s" % T.missing(bpy.context))
@@ -1719,15 +1739,18 @@ check(bpy.ops.m3d.tex_unwrap() == {'FINISHED'} and len(cube.data.uv_layers) == 1
       "Auto Unwrap fix adds UVs and keeps the mode")
 bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
 check(T.missing(bpy.context) == ['MATERIAL'] and bpy.context.mode == 'PAINT_TEXTURE', "only the material is missing: %s" % T.missing(bpy.context))
-check(tex_gated("tex_layers") and tex_gated("tex_props") and tex_gated("tex_settings"), "no material gates the paint pages")
+check(tex_shown("tex_layers") == tex_shown("tex_props") == tex_shown("tex_settings") == [], "no material: the paint pages wait for the project")
 check(not bpy.ops.m3d.tex_channel.poll(), "no channel without a material")
 check(bpy.ops.m3d.tex_unwrap() == {'FINISHED'} and cube.mode == 'TEXTURE_PAINT', "Auto Unwrap from Texture Paint Mode keeps it")
 check(bpy.ops.m3d.tex_add_material() == {'FINISHED'} and cube.active_material is not None and T.missing(bpy.context) == [],
       "Add Material fix")
-for page in sorted(tex_pages):
-    names = tex_shown(page)
-    check(names and not any(n.endswith("_gate") for n in names), "%s panels in Texture Paint Mode: %s" % (page, names))
-check([n for n in tex_shown("tex_props") if n.endswith("_canvas")], "Properties offers Add Base Color without paint slots")
+card_ = start_card()
+check(any(t == "%s has no texture project yet" % cube.name for t in card_) and "m3d.tex_project" in card_,
+      "a mesh with a material but no project: the card says so: %s" % card_)
+check(tex_shown("tex_props") == [], "...and Properties shows nothing")
+tex_ws.m3d_page_right = "tex_bake"
+check(start_card() == [], "...Bake Mesh Maps (no project needed) shows the list: its Bake checkboxes")
+tex_ws.m3d_page_right = "tex_layers"
 
 # Channels: every channel adds its slot with the right color space; a second click only selects it.
 T_scene = bpy.context.scene
@@ -1746,6 +1769,10 @@ for ch in T.CHANNELS:
         check(all(abs(a - b) < 1e-3 for a, b in zip(img.generated_color, ch.color)),
               "%s starts as %s (%s)" % (ch.id, ch.color, tuple(img.generated_color)))
 check(len(mat.texture_paint_slots) == 6, "six paint slots: %d" % len(mat.texture_paint_slots))
+check(start_card() == [], "a material with images of its own is painted as it is: no start card, its set is listed")
+for page in sorted(tex_pages):
+    names = tex_shown(page)
+    check(names and not any(n.endswith("_gate") for n in names), "%s panels in Texture Paint Mode: %s" % (page, names))
 check(mat.node_tree.nodes["Principled BSDF"].inputs["Emission Strength"].default_value == 1.0, "emission lights the shader")
 bpy.ops.m3d.tex_channel(channel='ROUGHNESS')
 check(len(mat.texture_paint_slots) == 6 and T.active_channel(mat) == 'ROUGHNESS', "clicking an existing channel only selects it")
@@ -1828,7 +1855,9 @@ T.draw_status_line(Rec(log), wide_)
 check_calls("Texture context toolbar", log)
 props_drawn = {r._args[1] for r in log if r._kind == "prop"}
 check({"use_mirror_x", "use_mirror_y", "use_mirror_z", "size", "strength", "use_pressure_size", "use_pressure_strength", "spacing",
-       "use_smooth_stroke", "smooth_stroke_radius"} <= props_drawn, "Texture context toolbar controls: %s" % sorted(props_drawn))
+       "use_smooth_stroke"} <= props_drawn, "Texture context toolbar controls: %s" % sorted(props_drawn))
+check(not [r for r in log if r._kind == "menu" and r._args and r._args[0] == "M3D_MT_tex_view_type"],
+      "the toolbar has no viewport type (the 3D view's header has it)")
 ops_drawn = [r._args[0] for r in log if r._kind == "operator"]
 check(not any(r._args[0] == "m3d.tex_channel" for r in log if r._kind == "operator" and r._args), "the channel buttons are not in the toolbar any more")
 check(ops_drawn.count("m3d.tex_layout") == 3 and "m3d.tex_bake_mode" in ops_drawn and "m3d.tex_export_dialog" in ops_drawn,
@@ -3147,8 +3176,8 @@ mem_mat.m3d_layers.clear()
 LY.rebuild_all(mem_mat)
 check(not [n for n in mem_mat.node_tree.nodes if LY.TAG in n.keys()], "deleting every layer removes the chains")
 check(mem_mat.node_tree.nodes.get("%s.scratch" % LY.TAG) is None, "...and the scratch node (its image goes when no material uses it)")
-check(not tex_gated("tex_layers") and "PROPERTIES_PT_m3d_tx_stack" in tex_shown("tex_layers")
-      and "PROPERTIES_PT_m3d_tx_layer" not in tex_shown("tex_props"), "no layers: the stack panel offers the add buttons only")
+check(T.no_project(TCtx('RIGHT')) and tex_shown("tex_layers") == [] and tex_shown("tex_props") == [],
+      "no layers left: the start card again (the dock and Properties show nothing)")
 
 # ----------------------------------------------------------------------------------------------------
 # Phase 7a: mask stacks on layers (data, node chains, numpy == nodes, baked maps, Blur caches, Show Mask, migration,
@@ -9743,7 +9772,7 @@ mc_reset()
 o, m = fresh_cube("MultiUI", '64')
 bpy.context.scene.m3d_tex.props_mode = 'AUTO'
 mc_ctx = TCtx('PROPS')
-check("PROPERTIES_PT_m3d_tx_pp_material" in tex_shown("tex_props"), "Properties - Paint has a Material section (no layer: it says what to do)")
+check("PROPERTIES_PT_m3d_tx_pp_material" not in tex_shown("tex_props") and T.no_project(mc_ctx), "no project: Properties waits for it (the start card)")
 log = draw_stub(T.PROPERTIES_PT_m3d_tx_pp_material, mc_ctx)
 check_calls("Material section, no layer", log)
 check(not [r for r in log if r._kind == "prop"] and any(r._kind == "label" for r in log), "...with no layer: a message, no buttons")
@@ -9755,8 +9784,17 @@ drawn_ = [r._args[1] for r in log if r._kind == "prop"]
 check(drawn_[:5] == ["use_base_color", "use_height", "use_roughness", "use_metallic", "use_emission"]
       and "roughness" in drawn_ and "emission" in drawn_ and "metallic" not in drawn_ and "height" not in drawn_,
       "the Material section: a toggle for each channel, then a value for each that is on: %s" % drawn_)
-check([r._kw.get("text") for r in log if r._kind == "prop"][:5] == ["color", "height", "rough", "metal", "emit"],
-      "...with the labels of the buttons")
+check([r._kw.get("text") for r in log if r._kind == "prop"][:5] == T.button_texts(mc_ctx, T.MATERIAL_BUTTONS)
+      and set(T.button_texts(mc_ctx, T.MATERIAL_BUTTONS)) in ({"Base Color", "Height", "Roughness", "Metallic", "Emission"}, {"Color", "Height", "Rough", "Metal", "Emit"}),
+      "...with the labels of the buttons, title case (%s)" % T.button_texts(mc_ctx, T.MATERIAL_BUTTONS))
+check(T.button_texts(NS(region=NS(width=2000), preferences=bpy.context.preferences), T.MATERIAL_BUTTONS) == ["Base Color", "Height", "Roughness", "Metallic", "Emission"]
+      and T.button_texts(NS(region=NS(width=200), preferences=bpy.context.preferences), T.MATERIAL_BUTTONS) == ["Color", "Height", "Rough", "Metal", "Emit"],
+      "...the whole names when they fit, the short ones in a narrow editor")
+m.m3d_off = "EMISSION"
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_pp_material, mc_ctx)
+check("use_emission" not in [r._args[1] for r in log if r._kind == "prop"] and "emission" not in [r._args[1] for r in log if r._kind == "prop"],
+      "...a channel the texture set does not have has no button (hidden, not greyed)")
+m.m3d_off = ""
 bpy.ops.m3d.layer_mask_add(fill='WHITE')
 m.m3d_layers[0].paint_mask = True
 check("PROPERTIES_PT_m3d_tx_pp_material" not in tex_shown("tex_props") and "PROPERTIES_PT_m3d_tx_pp_gray" in tex_shown("tex_props"),
@@ -9768,24 +9806,7 @@ T.draw_status_line(Rec(log), wide_)
 check_calls("Texture context toolbar with a paint layer", log)
 drawn_ = [r._args[1] for r in log if r._kind == "prop"]
 MC_TOGGLES = ["use_base_color", "use_height", "use_roughness", "use_metallic", "use_emission"]
-check([d for d in drawn_ if d in MC_TOGGLES] == MC_TOGGLES
-      and [r._kw.get("text") for r in log if r._kind == "prop" and r._args[1] == "use_roughness"] == ["rough"],
-      "the context toolbar has the channel toggles: %s" % [d for d in drawn_ if d in MC_TOGGLES])
-narrow_ = TCtx('RIGHT')
-narrow_.region = NS(type='HEADER', width=1800)
-log = []
-T.draw_status_line(Rec(log), narrow_)
-check([r._kw.get("text") for r in log if r._kind == "prop" and r._args[1] in MC_TOGGLES] == ["C", "H", "R", "M", "E"],
-      "...short on a narrower window")
-bpy.ops.m3d.tex_tool(tool='SMUDGE')
-log = []
-T.draw_status_line(Rec(log), wide_)
-check("use_roughness" not in [r._args[1] for r in log if r._kind == "prop"], "Smudge works on one channel: no toggles")
-bpy.ops.m3d.tex_tool(tool='PAINT')
-bpy.ops.m3d.layer_add(kind='FILL')
-log = []
-T.draw_status_line(Rec(log), wide_)
-check("use_roughness" not in [r._args[1] for r in log if r._kind == "prop"], "a fill layer: no toggles")
+check(not [d for d in drawn_ if d in MC_TOGGLES], "the context toolbar has no channel toggles: they are in Properties > Material (%s)" % [d for d in drawn_ if d in MC_TOGGLES])
 mc_reset()
 bpy.ops.object.mode_set(mode='OBJECT')
 clean_scene()
@@ -9867,10 +9888,10 @@ check(pp_orders["pp_projection"] < pp_orders["pp_brush"] and pp_orders["pp_polyf
 mc_brush.use_roughness = mc_brush.use_emission = True
 mc_brush.roughness, mc_brush.height = 0.25, 0.75
 log = pp_draw("pp_preview")
-check([n for n, _o in pp_props(log)] == ["color", "swatch_height", "swatch_roughness", "swatch_metallic", "emission"],
-      "the swatches: color, the grey of Height, Roughness and Metallic, emission: %s" % [n for n, _o in pp_props(log)])
-check([r.values().get("active") for r in log if r._kind == "row" and "active" in r.values()] == [True, False, True, False, True],
-      "...the channels that are off are dimmed")
+check([n for n, _o in pp_props(log)] == ["color", "swatch_roughness", "emission"],
+      "the swatches of the channels that are on: color, the grey of Roughness, emission: %s" % [n for n, _o in pp_props(log)])
+check([t for t in (r._kw.get("text") for r in log if r._kind == "label") if t in {c.label for c in T.CHANNELS}] == ["Base Color", "Roughness", "Emission"],
+      "...each with the channel's name")
 check(all(abs(a - 0.25) < 1e-6 for a in mc_brush.swatch_roughness) and all(abs(a - 0.75) < 1e-6 for a in mc_brush.swatch_height)
       and all(mc_brush.bl_rna.properties["swatch_" + c].is_readonly for c in ("height", "roughness", "metallic")), "a swatch is the value as a grey, read only")
 check((any(r._kind == "template_icon" and r._kw.get("icon_value") for r in log) or any(r._kind == "label" and r._kw.get("icon") == 'BRUSH_DATA' for r in log))
@@ -9979,9 +10000,9 @@ check([(n, o == fill) for n, o in pp_props(log)] == [("uv_tiling", True), ("uv_r
       and [r._args[0] for r in log if r._kind == "operator"] == ["m3d.layer_fill_reset"], "Fill: the UV transform of the layer (Tiling, Rotation, Offset) and Reset")
 log = pp_draw("fl_material")
 uses = [(r._args[1], r._kw.get("text")) for r in log if r._kind == "prop" and r._args[1] == "use"]
-check(uses == [("use", t) for t in ("color", "height", "rough", "metal", "emit", "nrm")]
+check(uses == [("use", t) for t in T.button_texts(bpy.context, T.FILL_BUTTONS)] and T.FILL_BUTTONS[-1][1] == "Normal"
       and [r._args[0] for r in log if r._kind == "prop" and r._args[1] == "use"] == [LY.entry_of(fill, c) for c in ("BASE_COLOR", "HEIGHT", "ROUGHNESS", "METALLIC", "EMISSION", "NORMAL")],
-      "Material: a button for each channel of a fill layer (color height rough metal emit nrm)")
+      "Material: a button for each channel of a fill layer (Base Color Height Roughness Metallic Emission Normal)")
 check([(r._args[1], r._args[0] == LY.entry_of(fill, 'BASE_COLOR')) for r in log if r._kind == "prop" and r._args[1] != "use"] == [("color", True)]
       and [(r._args[1], r._args[0] == LY.entry_of(fill, 'BASE_COLOR')) for r in log if r._kind == "template_ID"] == [("texture", True)],
       "...a color and a texture slot for each channel that is on")
@@ -10275,20 +10296,26 @@ def toolbar():
     return log, {n for n, _o in pp_props(log)}, [r._args[0] for r in log if r._kind == "operator"]
 
 
-COMMON = {"size", "strength", "use_pressure_size", "use_pressure_strength", "spacing", "use_smooth_stroke", "smooth_stroke_radius"}
+COMMON = {"size", "strength", "use_pressure_size", "use_pressure_strength", "spacing", "use_smooth_stroke"}
 for tool in ('PAINT', 'ERASER', 'SMUDGE', 'CLONE'):
     bpy.ops.m3d.tex_tool(tool=tool)
+    lazy_ = T.image_brush(bpy.context)
+    lazy_.use_smooth_stroke = False
     _log, names, _ops = toolbar()
-    check(COMMON <= names and {"use_mirror_x", "use_mirror_y", "use_mirror_z"} <= names and "texture_overlay_alpha" not in names and "fill_mode" not in names,
-          "%s: Size, Flow (+ pressure), Spacing, Lazy Mouse and its distance, Symmetry and its axes" % tool)
-    check(("use_roughness" in names) == (tool in {'PAINT', 'ERASER'}), "...and the channel toggles only for Paint and the Eraser")
+    check(COMMON <= names and {"use_mirror_x", "use_mirror_y", "use_mirror_z"} <= names and "texture_overlay_alpha" not in names and "fill_mode" not in names
+          and "smooth_stroke_radius" not in names, "%s: Size, Flow (+ pressure), Spacing, Lazy Mouse (no distance while it is off), Symmetry and its axes" % tool)
+    check("use_roughness" not in names, "...and no channel toggles (they are in Properties > Material)")
+    lazy_.use_smooth_stroke = True
+    _log, names, _ops = toolbar()
+    check("smooth_stroke_radius" in names, "...Lazy Mouse on: its distance")
+    lazy_.use_smooth_stroke = False
 bpy.ops.m3d.tex_tool(tool='POLYFILL')
 _log, names, _ops = toolbar()
-check({"fill_mode", "use_roughness"} <= names and "size" not in names and "strength" not in names, "Polygon Fill: its mode and the channels")
+check("fill_mode" in names and "use_roughness" not in names and "size" not in names and "strength" not in names, "Polygon Fill: its mode")
 bpy.ops.m3d.tex_tool(tool='PROJECTION')
 _log, names, ops = toolbar()
-check({"texture_overlay_alpha", "strength", "size"} <= names and "brush.stencil_reset_transform" in ops and "brush.stencil_fit_image_aspect" in ops and "use_roughness" in names,
-      "Projection: the stencil controls with the brush's, and the channels")
+check({"texture_overlay_alpha", "strength", "size"} <= names and "brush.stencil_reset_transform" in ops and "brush.stencil_fit_image_aspect" in ops,
+      "Projection: the stencil controls with the brush's")
 bpy.ops.m3d.tex_tool(tool='PAINT')
 bpy.ops.m3d.layer_add(kind='FILL')
 pp_fill3 = LY.active_layer(m)
@@ -10348,7 +10375,7 @@ fit_c = bpy.data.images.new("fitC", 128, 64)
 fit_space = NS(image=None, as_pointer=lambda: 4242)
 fit_region = NS(type='WINDOW', width=800, height=600)
 fit_area = NS(type='IMAGE_EDITOR', regions=[fit_region], spaces=NS(active=fit_space))
-fit_win = NS(workspace=tex_ws, screen=NS(areas=[NS(type='VIEW_3D', spaces=NS(active=NS(shading=NS()))), fit_area]))   # (the 3D view gets the studio defaults, once)
+fit_win = NS(workspace=tex_ws, screen=NS(areas=[NS(type='VIEW_3D', spaces=NS(active=NS(shading=NS(), overlay=NS()))), fit_area]))   # (the 3D view gets the studio defaults, once)
 fit_wm = NS(windows=[fit_win])
 T._fit.update(workspace=None, seen={})
 T.follow(fit_wm)
@@ -12261,7 +12288,17 @@ fb_v3d.shading.studiolight_background_blur, fb_v3d.shading.type = 0.1, 'SOLID'
 tex_ws.m3d_layout = 0
 check(T.view_defaults_once(NS(workspace=tex_ws, screen=tex_screen)) is False and fb_v3d.shading.type == 'SOLID', "the old layout's view is left alone")
 tex_ws.m3d_layout = 1
-check(T.view_defaults_once(NS(workspace=tex_ws, screen=tex_screen)) is True and tex_ws.get("m3d_env") == 1, "a Texture view of the new layout starts as a studio, once")
+fb_v3d.overlay.show_floor = fb_v3d.overlay.show_axis_x = fb_v3d.overlay.show_axis_y = True
+check(T.view_defaults_once(NS(workspace=tex_ws, screen=tex_screen)) is True and tex_ws.get("m3d_env") == 2, "a Texture view of the new layout starts as a studio, once")
+check(not fb_v3d.overlay.show_floor and not fb_v3d.overlay.show_axis_x and not fb_v3d.overlay.show_axis_y and not fb_v3d.overlay.show_axis_z,
+      "...without the floor grid and the axis lines")
+fb_v3d.overlay.show_floor = True
+check(T.view_defaults_once(NS(workspace=tex_ws, screen=tex_screen)) is False and fb_v3d.overlay.show_floor, "...once: a grid turned on again stays")
+tex_ws["m3d_env"] = 1   # (a view set up before the grid went: it loses the grid, once, and keeps the rest)
+fb_v3d.shading.studiolight_background_blur = 0.3
+check(T.view_defaults_once(NS(workspace=tex_ws, screen=tex_screen)) is True and not fb_v3d.overlay.show_floor
+      and abs(fb_v3d.shading.studiolight_background_blur - 0.3) < 1e-6 and tex_ws.get("m3d_env") == 2, "an older Texture view loses the floor grid once, the rest stays")
+fb_v3d.shading.studiolight_background_blur = 0.5
 sh_ = fb_v3d.shading
 check(sh_.type == 'MATERIAL' and sh_.studio_light == "studio.exr" and not sh_.use_scene_world and not sh_.use_scene_lights and abs(sh_.studiolight_background_alpha - 1.0) < 1e-6
       and abs(sh_.studiolight_background_blur - 0.5) < 1e-6 and abs(sh_.studiolight_intensity - 1.0) < 1e-6 and sh_.studiolight_rotate_z == 0.0,
@@ -12377,7 +12414,7 @@ check(not T.PROPERTIES_PT_m3d_tx_pp_advanced.poll(fb_props) and not T.PROPERTIES
 fb_tx.props_more = True
 check(T.PROPERTIES_PT_m3d_tx_pp_advanced.poll(fb_props) and T.PROPERTIES_PT_m3d_tx_pp_cursor.poll(fb_props) and T.PROPERTIES_PT_m3d_tx_slots.poll(fb_dock), "...More Settings shows them")
 log = bg_draw(T.PROPERTIES_PT_m3d_tx_pp_more, fb_props)
-check(any(r._kind == "prop" and r._args[1] == "props_more" and r._kw["text"] == "Fewer Settings" for r in log), "...and the button says Fewer Settings then")
+check(any(r._kind == "prop" and r._args[1] == "props_more" and r._kw["text"] == "Fewer Brush Settings" for r in log), "...and the button says Fewer Brush Settings then")
 fb_tx.props_more = False
 tex_ws.m3d_layout = 0
 check(T.PROPERTIES_PT_m3d_tx_slots.poll(fb_dock), "(the old layout still has All Paint Slots in its tab)")
@@ -13160,6 +13197,66 @@ check({"M3D_OT_bake_guard", "M3D_OT_bake_cancel", "M3D_OT_bake_report", "M3D_OT_
 check(bpy.ops.m3d.bake_report('EXEC_DEFAULT', level='INFO', text="x") == {'FINISHED'}, "the report operator says a news of a queue that is over")
 QQ.report_later = bq_report_real
 bq_clean()
+
+# --- Texture UX pass (layout and clean-up): the Layers header, the memory warning, the lists without handles, Save All Images in
+# File, the normal map format names, the start card, the 3D view without the floor grid, Ctrl+Space for the view layout.
+tex_ws = W.find_workspace('TEXTURE')   # (the one of the file the tests above left open)
+tex_ws.m3d_layout, tex_ws.m3d_page_right = 1, "tex_layers"
+ux_o, ux_m = fresh_cube("UxTex", '64')
+check(T.no_project(TCtx('SETS')), "a cube with a plain material: no project yet")
+bpy.ops.m3d.tex_project('EXEC_DEFAULT', resolution='64', template='DEFAULT', unwrap=True, bake_after=False)
+check(not T.no_project(TCtx('SETS')) and len(ux_m.m3d_layers) == 1, "New Texture Project: the project is there")
+log = []
+T.draw_layers_header(Rec(log), ux_m)
+check_calls("Layers header", log)
+check([r._kw.get("text") for r in log if r._kind == "label"] == ["Show"] and any(r._kind == "prop" and r._args[1] == "m3d_row_channel" for r in log)
+      and ux_m.bl_rna.properties["m3d_row_channel"].name == "Show Channel", "the Layers header: Show [channel] (its tooltip: Show Channel)")
+icons_ = [r for r in log if r._kind in {"operator", "menu", "popover"}]
+check(len(icons_) == 8 and all(r._kw.get("text") == "" for r in icons_), "...then eight icon buttons: %s" % [r._args[0] if r._args else r._kw for r in icons_])
+check(all(getattr(bpy.types, n).__doc__ for n in ("M3D_MT_layer_effect_add", "M3D_MT_layer_mask_add", "M3D_MT_layer_more", "M3D_PT_lib_smart")),
+      "...each menu and popover has a tooltip of its own")
+check("Ctrl+D" in LY.M3D_OT_layer_duplicate.__doc__ and "Delete" in LY.M3D_OT_layer_remove.__doc__.split(".")[-1]
+      and "Ctrl+G" in LY.M3D_OT_layer_folder_add.description(None, NS(group=False)) and "Ctrl+X" in LY.M3D_MT_layer_more.__doc__,
+      "...and the tooltips name the keys over the layer list")
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_stack, TCtx('RIGHT'))
+check(not [r for r in log if r._kind == "label" and "Layer images use" in r._kw.get("text", "")], "a small stack: no word about memory")
+check([r._kw.get("show_handles") for r in log if r._kind == "template_list"] == [False], "the layer list has no filter options or grip")
+ux_warn = LY.MEMORY_WARN
+LY.MEMORY_WARN = -1
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_stack, TCtx('RIGHT'))
+check([r._kw.get("icon") for r in log if r._kind == "label" and "Layer images use" in r._kw.get("text", "")] == ['ERROR'],
+      "...past the limit the memory warning shows (as a warning)")
+LY.MEMORY_WARN = ux_warn
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_sets, TCtx('SETS'))
+lists_ = [r for r in log if r._kind == "template_list"]
+check(len(lists_) == 1 and lists_[0]._kw.get("show_handles") is False and lists_[0]._kw.get("rows") == len(T.texture_sets(bpy.context)) == 1,
+      "the Texture Set List is as tall as its rows, without filter options or grip: %s" % (lists_ and lists_[0]._kw))
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_sets, TCtx('SETS'))
+file_ = {e.get("idname"): e for e in m3d_ui.MENUS["M3D_MT_file"][1] if e.get("idname")}
+check("m3d.tex_save_all" in file_ and file_["m3d.tex_save_all"].get("sets") == {'TEXTURING'}
+      and "m3d.tex_save_all" not in {e.get("idname") for e in m3d_ui.MENUS["M3D_MT_export"][1]}, "Save All Images is in the File menu (Texturing)")
+log = draw_stub(TS.PROPERTIES_PT_m3d_tx_set_channels, TCtx('RIGHT'))
+check(not [r for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_save_all"], "...not in Texture Set Settings > Channels")
+nf_ = bpy.context.scene.m3d_tex.bl_rna.properties["normal_format"].enum_items
+check([i.name for i in nf_] == ["OpenGL (Unity, Blender)", "DirectX (Unreal)"]
+      and [i.name for i in bpy.ops.m3d.tex_project.get_rna_type().properties["normal_format"].enum_items] == ["OpenGL (Unity, Blender)", "DirectX (Unreal)"],
+      "Normal Map Format: OpenGL (Unity, Blender) / DirectX (Unreal)")
+log = []
+T.draw_header_sets(Rec(log), TCtx('SETS'))
+check(any(r._kind == "operator" and r._args[0] == "m3d.tex_isolate" for r in log), "with a project the Texture Sets header has Isolate")
+check(T.START_EMPTY == {"tex_layers", "tex_settings", "tex_props"} and T.pages_new(TCtx('RIGHT'), "tex_layers") == {"tex_layers"},
+      "...and the dock shows its page again")
+ux_sp = NS(overlay=NS(show_floor=True, show_axis_x=True, show_axis_y=True, show_axis_z=False))
+T.hide_floor(ux_sp)
+check(not (ux_sp.overlay.show_floor or ux_sp.overlay.show_axis_x or ux_sp.overlay.show_axis_y or ux_sp.overlay.show_axis_z), "F4's 3D view: no floor grid, no axis lines")
+ux_key = find("Image Paint", "m3d.tex_layout", 'SPACE', ctrl=True, shift=False, alt=False)
+ux_key2 = find("Image", "m3d.tex_layout", 'SPACE', ctrl=True, shift=False, alt=False)
+check(ux_key and ux_key[0].properties.mode == 'TOGGLE' and ux_key2 and ux_key2[0].properties.mode == 'TOGGLE',
+      "Ctrl+Space in Texture Paint Mode and in the 2D view: the view under the pointer alone, or both views")
+check(T.M3D_OT_tex_layout.invoke(NS(mode='TOGGLE', execute=lambda c: {'FINISHED'}), fb_ctx('VIEW_3D', fb_v3d, bpy.data.workspaces["Modeling"]), None) == {'PASS_THROUGH'},
+      "...outside the Texture workspace it is Blender's maximize (the key passes through)")
+bpy.ops.object.mode_set(mode='OBJECT')
+clean_scene()
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

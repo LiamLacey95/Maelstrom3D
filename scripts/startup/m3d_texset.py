@@ -127,7 +127,7 @@ class PROPERTIES_PT_m3d_tx_set_general(_Settings, Panel):
         row.prop(tex, "set_size", text="Size")
         row.label(text="", icon='LOCKED')
         layout.prop(tex, "normal_format")
-        reason(layout, "Square sizes only: masks, merging and export work on square images")
+        reason(layout, "Square sizes: masks and export need them")
 
 
 class PROPERTIES_PT_m3d_tx_set_channels(_Settings, Panel):
@@ -152,8 +152,9 @@ class PROPERTIES_PT_m3d_tx_set_channels(_Settings, Panel):
             row.operator("m3d.tex_channel_remove", text="", icon='X').channel = ch.id
         if any(L.channel_off(mat, ch.id) for ch in L.CHANNELS):
             layout.menu("M3D_MT_tex_channel_add", text="Add Channel", icon='ADD')
-        layout.operator("m3d.tex_save_all", icon='FILE_TICK')
-        reason(layout, "A removed channel keeps its images; C / Shift+C show the next / previous channel")
+        col = layout.column(align=True)   # (Save All Images is in the File menu)
+        reason(col, "A removed channel keeps its images")
+        reason(col, "C / Shift+C: next / previous channel")
 
 
 class M3D_OT_tex_map_load(Operator):
@@ -259,7 +260,7 @@ class PROPERTIES_PT_m3d_tx_set_maps(_Settings, Panel):
         row = layout.row()
         row.scale_y = 1.6
         row.operator("m3d.tex_bake_mode", text="Bake Mesh Maps", icon='RENDER_STILL').on = True
-        reason(layout, "Ctrl+Shift+B: set the maps up and bake them; a slot takes an image file too")
+        reason(layout, "A folder icon loads a file into a slot")
 
 
 # -----------------------------------------------------------------------------
@@ -432,7 +433,7 @@ class M3D_OT_tex_project(Operator):
     resolution: EnumProperty(name="Document Resolution", default='1024', items=T.SIZES,
                              description="Size of the images of every texture set (square)")
     normal_format: EnumProperty(name="Normal Map Format", default='OPENGL', items=(
-        ('OPENGL', "OpenGL", "Green up: Blender, Unity"), ('DIRECTX', "DirectX", "Green down: Unreal")),
+        ('OPENGL', "OpenGL (Unity, Blender)", "Green up"), ('DIRECTX', "DirectX (Unreal)", "Green down")),
         description="How the green channel of the normal map points: used by the Normal bake and by the export templates that "
                     "follow the project")
     unwrap: BoolProperty(name="Auto Unwrap Missing UVs", default=True,

@@ -5981,17 +5981,38 @@ def tex3_export_key():
     event('ESC', 'RELEASE')
 
 
+TEX3 = {}
+
+
+def tex3_views():
+    """(x, width) of the 3D view and of the 2D view."""
+    view, image = m3d_texture.view_areas(window().screen)
+    return [(a.x, a.width) if a is not None else None for a in (view, image)]
+
+
 @step
 def tex3_layout_buttons():
     check(m3d_texture.layout_mode(bpy.context) == 'BOTH', "both views are shown")
+    TEX3["views"], TEX3["props"] = tex3_views(), sorted((a.x, a.y, a.width, a.height) for a in props_areas())
+    TEX3["v3d"] = m3d_texture.view_areas(window().screen)[0].spaces.active.region_3d.view_matrix.copy()
+    space = m3d_texture.view_areas(window().screen)[1].spaces.active
+    TEX3["2d"] = (space.ui_mode, space.image)
     with bpy.context.temp_override(window=window(), screen=window().screen):
         check(bpy.ops.m3d.tex_layout('INVOKE_DEFAULT', mode='3D') == {'FINISHED'}, "3D Only")
+
+
+def tex3_panels_kept(what):
+    check(sorted((a.x, a.y, a.width, a.height) for a in props_areas()) == TEX3["props"] and not window().screen.show_fullscreen,
+          "%s: the panels stay where they were (tool strip, Assets, Texture Sets, Layers, Properties, dock strip)" % what)
 
 
 @step
 def tex3_layout_3d():
     kinds = {a.type for a in window().screen.areas}
     check('VIEW_3D' in kinds and 'IMAGE_EDITOR' not in kinds and m3d_texture.layout_mode(bpy.context) == '3D', "3D Only: the 2D view is gone (%s)" % sorted(kinds))
+    tex3_panels_kept("3D Only")
+    view = m3d_texture.view_areas(window().screen)[0]
+    check(view.x == min(x for x, _w in TEX3["views"]) and view.width >= sum(w for _x, w in TEX3["views"]), "...and the 3D view has the space of both")
     with bpy.context.temp_override(window=window(), screen=window().screen):
         check(bpy.ops.m3d.tex_layout('INVOKE_DEFAULT', mode='2D') == {'FINISHED'}, "2D Only")
 
@@ -6000,6 +6021,13 @@ def tex3_layout_3d():
 def tex3_layout_2d():
     kinds = {a.type for a in window().screen.areas}
     check('IMAGE_EDITOR' in kinds and 'VIEW_3D' not in kinds and m3d_texture.layout_mode(bpy.context) == '2D', "2D Only: the 3D view is gone (%s)" % sorted(kinds))
+    tex3_panels_kept("2D Only")
+    image = m3d_texture.view_areas(window().screen)[1]
+    space = image.spaces.active
+    check(any(sp.type == 'VIEW_3D' for sp in image.spaces) and window().workspace.get("m3d_split") is not None,
+          "...the 3D view waits in the area (and the workspace keeps where the edge was): both are saved with the file")
+    got = (space.show_region_toolbar, space.show_region_ui, space.show_region_tool_header, space.show_region_asset_shelf)
+    check(not any(got) and (space.ui_mode, space.image) == TEX3["2d"], "...the 2D view is set up as in the startup layout and shows what it showed: %s %s" % (got, (space.ui_mode, space.image)))
     with bpy.context.temp_override(window=window(), screen=window().screen):
         check(bpy.ops.m3d.tex_layout('INVOKE_DEFAULT', mode='BOTH') == {'FINISHED'}, "3D | 2D")
 
@@ -6007,7 +6035,38 @@ def tex3_layout_2d():
 @step
 def tex3_layout_both():
     check(m3d_texture.layout_mode(bpy.context) == 'BOTH' and len(props_areas()) == 6, "3D | 2D: both views and the six editors are back")
+    got = tex3_views()
+    check(all(abs(a - b) <= 2 for (x0, w0), (x1, w1) in zip(TEX3["views"], got) for a, b in ((x0, x1), (w0, w1))),
+          "...the 3D view on the left and the 2D view on the right, the edge where it was: %s, before %s" % (got, TEX3["views"]))
+    tex3_panels_kept("3D | 2D")
+    view = m3d_texture.view_areas(window().screen)[0]
+    check(all(abs(a - b) < 1e-4 for ra, rb in zip(view.spaces.active.region_3d.view_matrix, TEX3["v3d"]) for a, b in zip(ra, rb)),
+          "...the 3D view looks at the model as before")
     check(not tracebacks(), "Python error switching the view layout")
+    tex3_ctrl_space(m3d_texture.view_areas(window().screen)[1])
+
+
+def tex3_ctrl_space(area):
+    """Ctrl+Space over the middle of `area` (event() needs a 3D view: 2D Only has none)."""
+    x, y = area.x + area.width // 2, area.y + area.height // 2
+    window().event_simulate(type='MOUSEMOVE', value='NOTHING', x=x, y=y)
+    window().event_simulate(type='SPACE', value='PRESS', x=x, y=y, ctrl=True)
+    window().event_simulate(type='SPACE', value='RELEASE', x=x, y=y, ctrl=True)
+
+
+@step
+def tex3_layout_key():
+    check(m3d_texture.layout_mode(bpy.context) == '2D', "Ctrl+Space over the 2D view: the 2D view alone (%s)" % m3d_texture.layout_mode(bpy.context))
+    tex3_panels_kept("Ctrl+Space")
+    tex3_ctrl_space(m3d_texture.view_areas(window().screen)[1])
+
+
+@step
+def tex3_layout_key_back():
+    check(m3d_texture.layout_mode(bpy.context) == 'BOTH' and tex3_views()[0][0] < tex3_views()[1][0], "Ctrl+Space again: both views, 3D on the left")
+    space = m3d_texture.view_areas(window().screen)[1].spaces.active
+    check((space.ui_mode, space.image) == TEX3["2d"], "...the 2D view shows what it showed, in the same mode: %s" % ((space.ui_mode, space.image),))
+    check(not tracebacks(), "Python error with Ctrl+Space")
 
 
 @step
@@ -6619,7 +6678,7 @@ def s3e_rows_check():
     check(LY.mask_thumb(mat, s3e_layer("Fill B"))[0] is None, "a generator mask has no thumbnail")
     # find the header dropdown: scan the top of the dock under its tabs
     area, region = s3e_region()
-    s3e_scan([(region.x + 40, y) for y in range(region.y + region.height - 20, region.y + region.height - 160, -4)])
+    s3e_scan([(region.x + dx, y) for dx in (40, 110) for y in range(region.y + region.height - 20, region.y + region.height - 160, -4)])   # (Show, then the dropdown)
 
 
 step(wait_until(s3e_scanned, "the probes of the dock header", tries=40))
@@ -10607,6 +10666,7 @@ def t4_no_project():
     check(window().workspace.m3d_layout == 1 and ob.name == "Crate4" and not ob.material_slots, "(a cube without a material in the Texture workspace)")
     check(not m3d_texture.texture_sets(bpy.context), "there is no texture set yet")
     window().workspace.m3d_page_right = "tex_layers"
+    check(m3d_texture.no_project(bpy.context), "no project: the start card")
     t4_redraw()
 
 
@@ -11065,7 +11125,9 @@ def fb_defaults_check():
     sh = fb_area('VIEW_3D').spaces.active.shading
     check(sh.type == 'MATERIAL' and sh.studio_light == "studio.exr" and abs(sh.studiolight_background_blur - 0.5) < 1e-6 and sh.studiolight_background_alpha == 1.0,
           "the 3D view starts with the studio environment: %s, blur %.2f, background %.2f" % (sh.studio_light, sh.studiolight_background_blur, sh.studiolight_background_alpha))
-    check(window().workspace.get("m3d_env") == 1, "(the workspace remembers that it did)")
+    check(window().workspace.get("m3d_env") == 2, "(the workspace remembers that it did)")
+    ov = fb_area('VIEW_3D').spaces.active.overlay
+    check(not ov.show_floor and not ov.show_axis_x and not ov.show_axis_y, "...without the floor grid and the axis lines")
     xy = tex_roles()["dockbar"]
     event('MOUSEMOVE', xy=(xy.x + xy.width // 2, xy.y + xy.height - 30))
     with bpy.context.temp_override(window=window(), screen=window().screen, area=xy, region=next(r for r in xy.regions if r.type == 'WINDOW')):

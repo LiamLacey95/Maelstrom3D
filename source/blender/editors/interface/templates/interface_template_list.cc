@@ -866,7 +866,9 @@ static void template_uilist_layout_draw(const bContext *C,
       break;
   }
 
-  if (glob) {
+  /* Maelstrom3D: #TEMPLATE_LIST_NO_GRIP leaves out the whole row under the list (the filter options
+   * toggle with the grip), for lists that are sized to their items (`show_handles` in Python). */
+  if (glob && !(flags & TEMPLATE_LIST_NO_GRIP)) {
     const bool add_grip_but = (flags & TEMPLATE_LIST_NO_GRIP) == 0;
 
     /* About #ButtonType::Grip drag-resize:

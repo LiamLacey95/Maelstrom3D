@@ -58,6 +58,7 @@ import m3d_library_data as DATA
 import m3d_masks as MK
 import m3d_sculpt as S
 import m3d_texture as T
+import m3d_workspace as W
 from m3d_sculpt import mesh_of, reason
 from m3d_workspace import _PagePanel
 
@@ -1261,6 +1262,10 @@ class PROPERTIES_PT_m3d_lib_browse(_Lib, Panel):
         layout = self.layout
         s = context.scene.m3d_library
         start_thumbnails()
+        if W.tabs_kind(context) == 'TEXTURE' and T.no_project(context):   # (greyed: there is nothing to put them on yet)
+            reason(layout, "Make a texture project first")
+            layout = layout.column()
+            layout.enabled = False
         layout.row(align=True).prop(s, "category", expand=True, icon_only=True)
         layout.label(text=next(name for ident, name, *_rest in CATEGORIES if ident == s.category))
         layout.prop(s, "search", icon='VIEWZOOM', text="")

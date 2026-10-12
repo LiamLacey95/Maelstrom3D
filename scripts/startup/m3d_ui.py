@@ -181,6 +181,7 @@ MENUS = {
         op("Save Scene", "wm.save_mainfile", 'FILE_TICK'),
         op("Save Scene As...", "wm.save_as_mainfile"),
         op("Increment and Save", "wm.save_mainfile", incremental=True),
+        {**op("Save All Images", "m3d.tex_save_all", 'FILE_TICK'), "sets": {'TEXTURING'}},   # (the painted images, on their own)
         SEP,
         op("Import...", "wm.append", 'IMPORT'),
         op("Create Reference...", "wm.link", 'LINK_BLEND'),
@@ -513,7 +514,6 @@ MENUS = {
     "M3D_MT_export": ("Export", [
         op("Export Textures... (Ctrl+Shift+E)", "m3d.tex_export_dialog", 'EXPORT'),
         op("Export Active Set", "m3d.tex_export", 'EXPORT'),
-        op("Save All Images", "m3d.tex_save_all", 'FILE_TICK'),
         sub("Export Scene", "TOPBAR_MT_file_export", 'EXPORT'),
     ]),
 
