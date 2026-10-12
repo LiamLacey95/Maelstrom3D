@@ -102,6 +102,11 @@ LEGACY_BLENDS = ('MIX', 'MULTIPLY', 'ADD', 'OVERLAY', 'SCREEN', 'SOFT_LIGHT', 'S
                  'LIGHTEN')   # the modes of the one blend a layer had before every channel had its own, in their saved order
 TWO_STEP = {'BURN', 'DODGE'}   # modes whose node formula is not linear in the factor: a Mix node at full strength, then a plain Mix
 TAG = "m3d_layer"   # Custom property (value: channel id) and name prefix of every node the stack creates.
+# The baked mesh maps the shader of a texture set uses, in the viewport only (Export, Merge Down and Flatten read the layers' pixels):
+# the Normal map is the base of the Normal channel (the layers' normal goes on top of it as detail), the AO map darkens the Base
+# Color. Material.<property> holds each map; link_maps sets them.
+BAKED_PROPS = {"Normal": "m3d_baked_normal", "AO": "m3d_baked_ao"}
+AO_MUL, AO_TEX = "%s.view.ao" % TAG, "%s.view.aotex" % TAG   # the nodes of the AO multiply (tagged "VIEW")
 FILL_TEXTURE = "m3d_fill_texture"   # Custom property of an image file picked as a fill's texture (value: the channel it was first picked for).
 MEMORY_WARN = 12    # Warn from this many 4K images (8 bit RGBA) on.
 
@@ -598,6 +603,185 @@ def release(images):
 
 
 # -----------------------------------------------------------------------------
+# Baked mesh maps in the shader: the Normal map under the Normal channel, the AO map over the Base Color
+
+def view_ao_on():
+    """Scene.m3d_tex.view_ao: does the AO map darken the Base Color in the viewport (Display Settings > AO in viewport)?"""
+    scene = getattr(bpy.context, "scene", None)
+    tex = getattr(scene, "m3d_tex", None)
+    return tex is None or tex.view_ao
+
+
+_rendering = [False]   # a render is being made: the viewport's AO multiply is out of the shader meanwhile (render_pre, render_end)
+
+
+def baked_image(mat, label):
+    """The baked map `label` ("Normal", "AO") the material's shader uses, or None. Only a texture set (a material with layers) uses
+    them; the Normal map needs the Normal channel to be in the set, the AO map the "AO in viewport" option (and not a render)."""
+    if not len(mat.m3d_layers):
+        return None
+    image = getattr(mat, BAKED_PROPS[label])
+    if image is None or (label == "Normal" and channel_off(mat, 'NORMAL')) or (label == "AO" and (_rendering[0] or not view_ao_on())):
+        return None
+    return image
+
+
+def normal_flip(image):
+    """Was the baked normal map made with its green channel down (DirectX)? The bake says so on the image: the project's setting
+    may have been changed since."""
+    return image.get("m3d_nfmt") == 'DIRECTX'
+
+
+def baked_signature(image):
+    """What decides the nodes of a baked normal map (a map made again is another image, even with the same name)."""
+    return repr(("baked", image.name, image.session_uid, normal_flip(image)))
+
+
+def baked_normal_pixels(image, size):
+    """The baked normal map as (size, size, 4) pixels, the green channel as OpenGL (what the Normal Map node reads)."""
+    px = pixels_of(image, size).copy()
+    if normal_flip(image):
+        px[..., 1] = 1.0 - px[..., 1]
+    return px
+
+
+def combine_normals(base, detail):
+    """Tangent space normals as pixels (0-1, OpenGL): `detail` on top of `base`, as the whiteout combine does: the slopes add up (x and
+    y), the z's multiply, and the result is made one long. A flat detail (0.5, 0.5, 1) leaves the base as it is, a flat base leaves
+    the detail. The nodes of the Normal channel compute the same (baked_normal_nodes)."""
+    b, d = base[..., :3] * 2.0 - 1.0, detail[..., :3] * 2.0 - 1.0
+    n = np.stack((b[..., 0] + d[..., 0], b[..., 1] + d[..., 1], b[..., 2] * d[..., 2]), axis=-1)
+    n /= np.maximum(np.linalg.norm(n, axis=-1, keepdims=True), 1e-20)
+    out = np.ones(base.shape[:2] + (4,), np.float32)
+    out[..., :3] = n * 0.5 + 0.5
+    return out
+
+
+def flatten_normal(mat, size):
+    """The Normal as the shader shows it and Export writes it, (size, size, 4): the layers' normal, on top of the baked normal map when
+    the set has one (the layers alone otherwise). Merge Down and Flatten use flatten_channel: the baked map is not a layer."""
+    layers = flatten_channel(mat, 'NORMAL', size)
+    base = baked_image(mat, "Normal")
+    return combine_normals(baked_normal_pixels(base, size), layers) if base is not None else layers
+
+
+def node_factory(nodes, frame, tag):
+    """new(idname, name, x, y): makes a node of the chain `tag` in `frame`, with the settings of the node it replaces."""
+    def new(idname, name, x, y):
+        node = nodes.new(idname)
+        node.name = name
+        node[TAG] = tag
+        node.parent = frame
+        node.location = (x, y)
+        restore_settings(node)
+        return node
+    return new
+
+
+def baked_normal_nodes(new, links, image, detail, x, y):
+    """The nodes of the baked normal map: its Image Texture (a MULTIPLY_ADD turns the green channel over first when the bake made it
+    DirectX), and with `detail` (a color socket: the layers' normal) the whiteout combine on top of it, in tangent space: decode both
+    to -1..1, add the slopes, multiply the z's, normalize, encode. Returns the color socket for the Normal Map node."""
+    def vector(key, operation, at, *inputs):
+        node = new("ShaderNodeVectorMath", "%s.NORMAL.%s" % (TAG, key), x + at[0], y + at[1])
+        node.operation = operation
+        for i, value in enumerate(inputs):
+            if isinstance(value, tuple):
+                node.inputs[i].default_value = value
+            else:
+                links.new(value, node.inputs[i])
+        return node.outputs[0]
+
+    tex = new("ShaderNodeTexImage", "%s.NORMAL.base" % TAG, x, y)
+    tex.image = image
+    color = tex.outputs["Color"]
+    if normal_flip(image):
+        color = vector("flip", 'MULTIPLY_ADD', (300, 0), color, (1.0, -1.0, 1.0), (0.0, 1.0, 0.0))
+    if detail is None:
+        return color
+    base_n = vector("base", 'MULTIPLY_ADD', (600, 0), color, (2.0, 2.0, 2.0), (-1.0, -1.0, -1.0))
+    detail_n = vector("detail", 'MULTIPLY_ADD', (600, -200), detail, (2.0, 2.0, 2.0), (-1.0, -1.0, -1.0))
+    total, product = vector("sum", 'ADD', (900, 0), base_n, detail_n), vector("prod", 'MULTIPLY', (900, -200), base_n, detail_n)
+    sep_total, sep_product = (new("ShaderNodeSeparateXYZ", "%s.NORMAL.%s" % (TAG, key), x + 1200, y + dy)
+                              for key, dy in (("sep_sum", 0), ("sep_prod", -200)))
+    links.new(total, sep_total.inputs[0])
+    links.new(product, sep_product.inputs[0])
+    both = new("ShaderNodeCombineXYZ", "%s.NORMAL.comb" % TAG, x + 1500, y)
+    links.new(sep_total.outputs["X"], both.inputs["X"])
+    links.new(sep_total.outputs["Y"], both.inputs["Y"])
+    links.new(sep_product.outputs["Z"], both.inputs["Z"])
+    unit = vector("unit", 'NORMALIZE', (1800, 0), both.outputs[0])
+    return vector("encode", 'MULTIPLY_ADD', (2100, 0), unit, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+
+
+def build_baked_normal(mat, image, sig):
+    """The Normal chain of a texture set whose layers have no normal: the baked normal map into a Normal Map node."""
+    nt, bsdf = mat.node_tree, principled_of(mat)
+    frame = nt.nodes.new("NodeFrame")
+    frame.name, frame.label = "%s.NORMAL" % TAG, "Normal (baked map)"
+    frame[TAG], frame["m3d_sig"] = 'NORMAL', sig
+    new = node_factory(nt.nodes, frame, 'NORMAL')
+    y = bsdf.location.y - 700 - CHANNEL_INDEX['NORMAL'] * 900
+    node = new("ShaderNodeNormalMap", "%s.NORMAL.map" % TAG, bsdf.location.x - 300, y)
+    node.space = 'TANGENT'
+    nt.links.new(baked_normal_nodes(new, nt.links, image, None, bsdf.location.x - 1000, y), node.inputs["Color"])
+
+
+def base_source(mat):
+    """The socket that feeds the Principled BSDF's Base Color before the viewport's AO multiply (None: nothing does)."""
+    socket = principled_of(mat).inputs["Base Color"]
+    link = socket.links[0] if socket.links else None
+    if link is not None and link.from_node.name == AO_MUL:
+        links = link.from_node.inputs[6].links
+        return links[0].from_socket if links else None
+    return link.from_socket if link is not None else None
+
+
+def sync_ao(mat):
+    """The viewport's AO multiply: Base Color x the baked AO map (Image Texture -> Mix, Multiply) between the Base Color chain and the
+    Principled BSDF, while the material has a baked AO map, a Base Color chain and "AO in viewport" is on; none otherwise. It is only
+    in the nodes: Export reads the layers. True when nodes changed."""
+    nt, bsdf = mat.node_tree, principled_of(mat)
+    if nt is None or bsdf is None:
+        return False
+    image, mul, tex = baked_image(mat, "AO"), nt.nodes.get(AO_MUL), nt.nodes.get(AO_TEX)
+    socket = bsdf.inputs["Base Color"]
+    on = bool(socket.links) and socket.links[0].from_node == mul
+    source = base_source(mat)
+    if image is None or source is None:
+        if mul is None and tex is None:
+            return False
+        if on and source is not None:
+            nt.links.new(source, socket)   # (the chain feeds the shader again)
+        for node in (mul, tex):
+            if node is not None:
+                nt.nodes.remove(node)
+        return True
+    changed = mul is None
+    if mul is None:
+        mul = nt.nodes.new("ShaderNodeMix")
+        mul.name, mul.label, mul[TAG] = AO_MUL, "AO (viewport)", "VIEW"
+        mul.data_type, mul.blend_type, mul.location = 'RGBA', 'MULTIPLY', (bsdf.location.x - 220, bsdf.location.y + 330)
+        mul.inputs[0].default_value = 1.0
+    if tex is None:
+        tex = nt.nodes.new("ShaderNodeTexImage")
+        tex.name, tex.label, tex[TAG] = AO_TEX, "Baked AO", "VIEW"
+        tex.location = (bsdf.location.x - 520, bsdf.location.y + 380)
+    if tex.image != image:
+        tex.image = image
+        changed = True
+    if not any(link.from_socket == source for link in mul.inputs[6].links):
+        nt.links.new(source, mul.inputs[6])
+        changed = True
+    if not any(link.from_node == tex for link in mul.inputs[7].links):
+        nt.links.new(tex.outputs["Color"], mul.inputs[7])
+    if not on:
+        nt.links.new(mul.outputs[2], socket)
+        changed = True
+    return changed
+
+
+# -----------------------------------------------------------------------------
 # Node chains
 
 # Settings of the nodes the chains make that the user may have set (or that came from the node a layer replaced): they
@@ -846,11 +1030,12 @@ def link_masks(mat):
                 _set(mul.inputs[1], 1.0)
 
 
-def build_channel(mat, ch, tree, sig):
+def build_channel(mat, ch, tree, sig, base=None):
     """The frame with one chain for `ch`: Image Texture (or fill) -> Mix per layer, bottom to top, into the shader. The
     layers of a folder are chained the same way first, but over nothing instead of the channel's value: that chain
     carries the color and the coverage (how much of the pixel the layers cover), and the folder is one more layer of
-    the chain below it, its image being that color and its alpha that coverage."""
+    the chain below it, its image being that color and its alpha that coverage. `base`: the baked normal map the
+    Normal chain goes on top of (see baked_normal_nodes)."""
     nt, bsdf = mat.node_tree, principled_of(mat)
     nodes, links = nt.nodes, nt.links
     y = bsdf.location.y - 700 - CHANNEL_INDEX[ch.id] * 900
@@ -859,15 +1044,7 @@ def build_channel(mat, ch, tree, sig):
     frame.name, frame.label = "%s.%s" % (TAG, ch.id), ch.label + " Layers"
     frame[TAG], frame["m3d_sig"] = ch.id, sig
     columns, placed = len(list(walk(tree))), [0]
-
-    def new(idname, name, x, y_):
-        node = nodes.new(idname)
-        node.name = name
-        node[TAG] = ch.id
-        node.parent = frame
-        node.location = (x, y_)
-        restore_settings(node)
-        return node
+    new = node_factory(nodes, frame, ch.id)
 
     def mix_node(layer, key, x, y_, data_type='RGBA', clamp=False):
         node = new("ShaderNodeMix", part(ch.id, layer.uid, key), x, y_)
@@ -986,7 +1163,7 @@ def build_channel(mat, ch, tree, sig):
     elif ch.id == 'NORMAL':
         node = new("ShaderNodeNormalMap", "%s.NORMAL.map" % TAG, bsdf.location.x - 300, y)
         node.space = 'TANGENT'
-        links.new(top, node.inputs["Color"])
+        links.new(top if base is None else baked_normal_nodes(new, links, base, top, x_top - 300, y - 450), node.inputs["Color"])
     else:
         node = new("ShaderNodeBump", "%s.HEIGHT.bump" % TAG, bsdf.location.x - 300, y)
         links.new(top, node.inputs["Height"])
@@ -1052,9 +1229,10 @@ def rebuild(mat, ch_id):
     if nt is None or bsdf is None:
         return False
     tree = chain_tree(kids_of(mat), ch_id)
-    sig = signature(tree, ch_id)
+    base = baked_image(mat, "Normal") if ch_id == 'NORMAL' else None   # (the baked normal map is the base of the Normal channel)
+    sig = signature(tree, ch_id) + (baked_signature(base) if base is not None else "")
     frame = nt.nodes.get("%s.%s" % (TAG, ch_id))
-    if frame is not None and tree and frame.get("m3d_sig") == sig:
+    if frame is not None and (tree or base is not None) and frame.get("m3d_sig") == sig:
         for layer in walk(tree):
             set_values(nt, layer, ch_id)
         return False
@@ -1064,10 +1242,12 @@ def rebuild(mat, ch_id):
             _carry[node.name] = settings_of(node)
         nt.nodes.remove(node)
     if tree:
-        build_channel(mat, CHANNEL_BY_ID[ch_id], tree, sig)
+        build_channel(mat, CHANNEL_BY_ID[ch_id], tree, sig, base)
+    elif base is not None:
+        build_baked_normal(mat, base, sig)
     if ch_id in {'NORMAL', 'HEIGHT'}:
         link_normal(mat)
-    return bool(ours or tree)
+    return bool(ours or tree or base is not None)
 
 
 def rebuild_all(mat):
@@ -1076,6 +1256,7 @@ def rebuild_all(mat):
     for layer in live:
         MK.ensure_caches(layer)
     changed = [rebuild_masks(mat)] + [rebuild(mat, ch.id) for ch in CHANNELS]
+    changed.append(sync_ao(mat))
     _carry.clear()
     if not mat.m3d_layers:
         remove_scratch(mat)
@@ -1120,11 +1301,12 @@ def maskview_off(mat):
 def sync_maskview(mat):
     """Make the material match Material.m3d_show_mask: on, the Material Output shows an Emission node fed by the
     active layer's mask (white when it has none); the link it replaces is kept in the material's m3d_maskview. Material.m3d_show_map
-    (the name of a baked map's image) does the same with that image instead of the mask."""
+    (the name of a baked map's image) does the same with that image instead of the mask, and Material.m3d_unlit with the Base Color
+    (flat, before the viewport's AO multiply)."""
     nt = mat.node_tree
     out = output_node(nt) if nt is not None else None
     image = bpy.data.images.get(mat.m3d_show_map) if mat.m3d_show_map else None
-    if nt is None or out is None or not (mat.m3d_show_mask or image is not None):
+    if nt is None or out is None or not (mat.m3d_show_mask or image is not None or mat.m3d_unlit):
         if nt is not None and (nt.nodes.get(MASKVIEW) is not None or "m3d_maskview" in mat.keys()):
             maskview_off(mat)
         return
@@ -1138,7 +1320,8 @@ def sync_maskview(mat):
         emit.name, emit.label, emit[TAG] = MASKVIEW, "Show Mask", "MASKVIEW"
         emit.location = (out.location.x - 250, out.location.y - 200)
     layer = active_layer(mat)
-    top = mask_top(nt, layer) if layer is not None and image is None else None
+    unlit = mat.m3d_unlit and not mat.m3d_show_mask and image is None   # (Unlit: the Base Color flat)
+    top = mask_top(nt, layer) if layer is not None and image is None and not unlit else None
     color = emit.inputs["Color"]
     tex = nt.nodes.get(MAPVIEW)
     if image is None and tex is not None:
@@ -1152,6 +1335,15 @@ def sync_maskview(mat):
             tex.image = image
         if not any(l.from_node == tex for l in color.links):
             nt.links.new(tex.outputs["Color"], color)
+    elif unlit:
+        source = base_source(mat)
+        if source is not None:
+            if not any(l.from_socket == source for l in color.links):
+                nt.links.new(source, color)
+        else:
+            for link in list(color.links):
+                nt.links.remove(link)
+            color.default_value = principled_of(mat).inputs["Base Color"].default_value
     elif top is not None:
         if not any(l.from_socket == top for l in color.links):
             nt.links.new(top, color)
@@ -1242,7 +1434,8 @@ def map_keys(mat):
 
 def link_maps(mat, ob, replace=False):
     """Effects that read a baked map the mesh has since (a bake in the Bake tab, an effect made before the bake) pick
-    it up; `replace`: every effect reads this mesh's maps (the texture set's, see m3d_texture.texture_set)."""
+    it up; `replace`: every effect reads this mesh's maps (the texture set's, see m3d_texture.texture_set). A texture set also
+    takes the mesh's baked Normal and AO maps for its shader (BAKED_PROPS); the nodes follow at the next rebuild."""
     import m3d_texture
     with muted():
         for layer in mat.m3d_layers:
@@ -1252,6 +1445,28 @@ def link_maps(mat, ob, replace=False):
                     image = m3d_texture.map_image(ob, MK.MAP_LABELS[key])
                     if image is not None and (replace or have[key] is None):
                         assign_map(e, key, image)
+        if len(mat.m3d_layers):
+            maps = dict(m3d_texture.mesh_maps(ob))
+            for label, prop in BAKED_PROPS.items():
+                if getattr(mat, prop) != maps.get(label):
+                    setattr(mat, prop, maps.get(label))
+
+
+def use_baked_maps(context, obs):
+    """The texture sets of the meshes `obs` use their baked maps (after a bake, a map picked from a file or cleared): the Normal map as
+    the base normal and the AO map over the Base Color in the shader, the effects that read a map pick it up. The paint target is
+    aimed again (new nodes change the list of paint slots)."""
+    done = set()
+    for ob in obs:
+        for slot in ob.material_slots:
+            mat = slot.material
+            if mat is not None and mat not in done and len(mat.m3d_layers) and mat.node_tree is not None:
+                done.add(mat)
+                link_maps(mat, ob)
+                rebuild_all(mat)
+    active = getattr(context, "object", None) if context is not None else None
+    if active is not None and active.type == 'MESH' and active.active_material in done:
+        sync_target(context, active.active_material, True)
 
 
 def prepare(context, mat):
@@ -1532,6 +1747,8 @@ def refresh(context, mat):
     rebuild_all(mat)
     if ob is not None and ob.type == 'MESH' and ob.active_material == mat:
         sync_target(context, mat, True)
+    import m3d_texture
+    m3d_texture.preview_dirty(mat.name)   # (the 2D view's Material View is made again on a timer)
 
 
 def paint_channel(context, ob, ch):
@@ -1686,12 +1903,15 @@ def flattened_material(ob, mat, size):
         for node in [n for n in nt.nodes if TAG in n.keys()]:
             nt.nodes.remove(node)
         bsdf = principled_of(temp)
-        for ch_id in content_channels(mat):
+        channels = content_channels(mat)
+        if 'NORMAL' not in channels and baked_image(mat, "Normal") is not None:
+            channels.append('NORMAL')   # (the baked normal map is the Normal of a set whose layers have none)
+        for ch_id in channels:
             if ch_id == 'HEIGHT':
                 continue   # glTF has no height map.
             ch = CHANNEL_BY_ID[ch_id]
             image = bpy.data.images.new("m3dFlat" + ch_id, size, size, alpha=False, is_data=not ch.srgb)
-            write_pixels(image, flatten_channel(mat, ch_id, size))
+            write_pixels(image, flatten_normal(mat, size) if ch_id == 'NORMAL' else flatten_channel(mat, ch_id, size))
             set_channel_space(image, ch)
             images.append(image)
             tex = nt.nodes.new("ShaderNodeTexImage")
@@ -3483,8 +3703,28 @@ def load_post(*_args):
     for mat in bpy.data.materials:
         if mat.node_tree is not None and any(l.mask is not None or not l.per_channel for l in mat.m3d_layers):
             rebuild_all(mat)
+    import m3d_texture
+    use_baked_maps(None, [ob for ob in bpy.data.objects if ob.type == 'MESH' and ob.material_slots and m3d_texture.mesh_maps(ob)])
     thumbs_clear()
     sync_list(bpy.context)
+
+
+def _render_ao(rendering):
+    """The AO multiply is for the viewport: a render (F12, an animation) is made without it, and has it again when it is done."""
+    _rendering[0] = rendering
+    for mat in bpy.data.materials:
+        if mat.node_tree is not None and len(mat.m3d_layers) and mat.m3d_baked_ao is not None:
+            sync_ao(mat)
+
+
+@bpy.app.handlers.persistent
+def render_pre(*_args):
+    _render_ao(True)
+
+
+@bpy.app.handlers.persistent
+def render_end(*_args):
+    _render_ao(False)
 
 
 @bpy.app.handlers.persistent
@@ -3505,6 +3745,10 @@ def _follow_strokes():
     _changed_images.clear()
     if names:
         refresh_thumbs(names)
+        import m3d_texture
+        for mat in bpy.data.materials:   # (a stroke changed an image of a texture set: its Material View is out of date)
+            if len(mat.m3d_layers) and any(image.name in names for image in stack_images(mat)):
+                m3d_texture.preview_dirty(mat.name)
     for mat in bpy.data.materials:
         if mat.node_tree is not None and any(e.kind == 'BLUR' for l in mat.m3d_layers for e in l.mask_stack):
             for layer in live_layers(mat):
@@ -3544,19 +3788,32 @@ def register():
     mat.m3d_depth = StringProperty(description="Channels whose images are 16 bit float, separated by | (the others are 8 bit)")
     mat.m3d_size = IntProperty(name="Size", default=0, min=0, description="Side of the texture set's images (0: not chosen: new images "
                                "take the size of the Texture settings)")
+    mat.m3d_baked_normal = PointerProperty(type=bpy.types.Image, name="Baked Normal", description="The baked normal map the shader of the "
+                                           "texture set uses as its base normal (the mesh's Normal mesh map)")
+    mat.m3d_baked_ao = PointerProperty(type=bpy.types.Image, name="Baked AO", description="The baked AO map that darkens the Base Color "
+                                       "in the viewport (the mesh's AO mesh map)")
+    mat.m3d_unlit = BoolProperty(name="Unlit", default=False, update=_show_mask_changed,
+                                 description="Show the Base Color flat, without lighting (the viewport type Unlit)")
     bpy.types.UI_MT_list_item_context_menu.append(draw_list_menu)
     bpy.app.handlers.load_post.append(load_post)
     bpy.app.handlers.undo_post.append(undo_post)
     bpy.app.handlers.redo_post.append(undo_post)
     bpy.app.handlers.depsgraph_update_post.append(depsgraph_post)
+    bpy.app.handlers.render_pre.append(render_pre)
+    for handlers in (bpy.app.handlers.render_post, bpy.app.handlers.render_cancel):
+        handlers.append(render_end)
 
 
 def unregister():
+    for handlers in (bpy.app.handlers.render_cancel, bpy.app.handlers.render_post):
+        handlers.remove(render_end)
+    bpy.app.handlers.render_pre.remove(render_pre)
     bpy.app.handlers.depsgraph_update_post.remove(depsgraph_post)
     bpy.app.handlers.redo_post.remove(undo_post)
     bpy.app.handlers.undo_post.remove(undo_post)
     bpy.app.handlers.load_post.remove(load_post)
     bpy.types.UI_MT_list_item_context_menu.remove(draw_list_menu)
+    del bpy.types.Material.m3d_unlit, bpy.types.Material.m3d_baked_ao, bpy.types.Material.m3d_baked_normal
     del bpy.types.Material.m3d_size, bpy.types.Material.m3d_depth, bpy.types.Material.m3d_off
     thumbs_clear()
     if _thumbs["coll"] is not None:

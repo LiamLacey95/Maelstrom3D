@@ -298,6 +298,8 @@ BAKE_MAPS = (   # (id, label, flag in M3D_BakeSettings; the label names the imag
     ('POSITION', "Position", "use_position"), ('THICKNESS', "Thickness", "use_thickness"), ('ID', "ID", "use_id"),
     ('WORLDNORMAL', "WorldNormal", "use_worldnormal"),
 )
+BAKE_TEXT = {"Normal": "Normal", "AO": "Ambient Occlusion", "Curvature": "Curvature", "Position": "Position",
+             "Thickness": "Thickness", "ID": "ID", "WorldNormal": "World Normal"}   # what the Bake page calls the maps
 
 
 # -----------------------------------------------------------------------------
@@ -366,6 +368,13 @@ def export_skipped(tex):
 def _export_template_changed(self, _context):
     """The output maps of the chosen template are listed (Export Textures) with the ones that were skipped kept skipped."""
     sync_export_maps(self)
+
+
+def _view_ao_changed(self, _context):
+    """AO in Viewport was switched: every texture set that has a baked AO map takes it up or leaves it."""
+    for mat in bpy.data.materials:
+        if mat.node_tree is not None and len(mat.m3d_layers) and mat.m3d_baked_ao is not None:
+            L.rebuild_all(mat)
 
 
 def set_index_get(self):
@@ -451,7 +460,12 @@ class M3D_TexSettings(PropertyGroup):
         description="Also write the low polys and the high polys of the groups of this texture set as two FBX files "
                     "(<name>_low.fbx, <name>_high.fbx) with the meshes named Part_low and Part_high, for tools that match by name")
     export_files: StringProperty(description="Files of the last export, separated by |")
-    bake_map: EnumProperty(name="Map", default='NORMAL', items=[(key, label, "") for key, label, _flag in BAKE_MAPS],
+    view_ao: BoolProperty(name="AO in Viewport", default=True, update=_view_ao_changed,
+                          description="Darken the Base Color with the baked AO map in the 3D view (it is only for what you see: the "
+                                      "exported Base Color never has the AO in it)")
+    props_more: BoolProperty(name="More", default=False,
+                             description="Also show the advanced brush settings and the cursor settings in Properties - Paint")
+    bake_map: EnumProperty(name="Map", default='NORMAL', items=[(key, BAKE_TEXT[label], "") for key, label, _flag in BAKE_MAPS],
                            description="The mesh map whose settings are shown")
     sets: CollectionProperty(type=M3D_SetRow)
     set_index: IntProperty(name="Texture Set", get=set_index_get, set=set_index_set, description="The texture set that is painted")
@@ -470,24 +484,34 @@ class M3D_TexSettings(PropertyGroup):
 class M3D_BakeSettings(PropertyGroup):
     """Bake options of an object (Object.m3d_bake): the low-poly mesh the maps are baked onto."""
     high: PointerProperty(
-        name="High Poly", type=bpy.types.Object, description="Mesh the detail is baked from (empty: bake the mesh itself)",
+        name="High Poly", type=bpy.types.Object,
+        description="The detailed mesh to bake from: its small details are baked onto this mesh as maps (empty: this mesh bakes "
+                    "its own detail)",
         poll=lambda self, ob: ob.type == 'MESH' and ob != self.id_data)
-    use_normal: BoolProperty(name="Normal", default=True, description="Tangent space normal map")
-    use_ao: BoolProperty(name="AO", default=True, description="Ambient occlusion")
+    use_normal: BoolProperty(name="Normal", default=True,
+                             description="Normal map: the small bumps of the high poly as a map the shader reads. The 3D view shows it "
+                                         "as soon as it is baked")
+    use_ao: BoolProperty(name="Ambient Occlusion", default=True,
+                         description="Ambient occlusion: how hidden each point is from the light, dark in crevices. It darkens the colors "
+                                     "in the 3D view (AO in Viewport); the exported Base Color stays clean")
     use_curvature: BoolProperty(name="Curvature", default=False,
-                                description="Convex edges light, concave ones dark (needs enough polygons)")
-    use_position: BoolProperty(name="Position", default=False, description="Position within the mesh's bounds")
+                                description="Curvature: convex edges light, concave ones dark. For edge wear and dirt masks (needs "
+                                            "enough polygons)")
+    use_position: BoolProperty(name="Position", default=False,
+                               description="Position: where each point is inside the bounds of the mesh. For masks that follow the "
+                                           "height or the sides of the model")
     use_thickness: BoolProperty(name="Thickness", default=False,
-                                description="How thick the mesh is (closed meshes only)")
+                                description="Thickness: how thick the mesh is (closed meshes only). For masks of thin parts")
     use_id: BoolProperty(name="ID", default=False,
-                         description="One flat colour for each material of the high poly (for each mesh when they have one material): "
-                                     "pick a part of the model by its colour in a mask")
+                         description="ID: one flat colour for each material of the high poly (for each mesh when they have one "
+                                     "material): pick a part of the model by its colour in a mask")
     use_worldnormal: BoolProperty(name="World Normal", default=False,
-                                  description="World space normal map: the direction of the surface in the scene (n * 0.5 + 0.5)")
+                                  description="World Normal: the direction the surface faces in the scene (n * 0.5 + 0.5). For masks "
+                                              "of surfaces that face up, like dust and snow")
     resolution: EnumProperty(name="Size", default='1024', items=SIZES,
-                             description="Side of the baked maps (they are square)")
+                             description="Size of the baked maps in pixels (they are square): bigger is sharper and slower")
     margin: IntProperty(name="Dilation", default=16, min=0, max=64, subtype='PIXEL',
-                        description="Pixels the baked detail is extended past the UV shells")
+                        description="Pixels the baked detail is spread past the edges of the UV islands, so that seams do not show")
     cage: PointerProperty(
         name="Cage", type=bpy.types.Object, poll=lambda self, ob: ob.type == 'MESH' and ob != self.id_data,
         description="Mesh the rays start from instead of the extruded surface (it needs the faces of this mesh; a mesh of a bake "
@@ -496,11 +520,13 @@ class M3D_BakeSettings(PropertyGroup):
                                       description="How far the pointiness of the mesh is from flat where the Curvature map is black "
                                       "and white: smaller shows smaller edges (0.05 is the default)")
     extrusion: FloatProperty(name="Extrusion", default=0.02, min=0.0, soft_max=1.0, unit='LENGTH',
-                             description="Distance the rays start from the low-poly surface")
+                             description="How far in front of the low-poly surface the rays start: raise it when the high poly sticks "
+                                         "out of the low poly")
     ray_distance: FloatProperty(name="Max Ray Distance", default=0.0, min=0.0, soft_max=1.0, unit='LENGTH',
                                 description="Longest distance a ray travels to the high-poly mesh (0: no limit)")
     samples: IntProperty(name="Antialiasing", default=32, min=1, soft_max=512,
-                         description="Samples of each pixel of the baked maps: more are smoother and take longer (Position and ID use one)")
+                         description="Samples for each pixel of the baked maps: more is smoother and takes longer (Position and ID "
+                                     "use one)")
     thickness_distance: FloatProperty(name="Thickness Distance", default=0.25, min=0.001, soft_max=10.0, unit='LENGTH',
                                       description="Where the mesh is thicker than this the map is white, where it is thinner "
                                       "it gets darker")
@@ -517,8 +543,8 @@ class M3D_BakeSettings(PropertyGroup):
 # Safety: painted images are saved or packed with the file
 
 def modified_images():
-    skip = {m3d_uv.CHECKER, L.SCRATCH}
-    return [i for i in bpy.data.images if i.is_dirty and i.source in {'GENERATED', 'FILE'} and i.name not in skip]
+    skip = {m3d_uv.CHECKER, L.SCRATCH}   # (and the Material View pictures: they are made again from the layers)
+    return [i for i in bpy.data.images if i.is_dirty and i.source in {'GENERATED', 'FILE'} and i.name not in skip and not i.get("m3d_preview")]
 
 
 def save_images():
@@ -1441,6 +1467,8 @@ def bake_maps(context, ob, high, s, maps, name=None, extrusion=None, ray_distanc
             prefix = ob.m3d_pair.group + ": " if m3d_pair.grouped(ob) else ""
             image["m3d_ids"] = {**(image["m3d_ids"].to_dict() if held and "m3d_ids" in image else {}),
                                 **{prefix + n: list(c) for n, c in ids[0].items()}}
+        if key == 'NORMAL':
+            image["m3d_nfmt"] = context.scene.m3d_tex.normal_format   # (the shader reads the green channel as the bake made it)
         if key == 'POSITION' and normalise:
             normalise_position(image, highs or ob, ob)
         image["m3d_map"] = size   # Baked at this size: mask effects reuse it until the resolution changes.
@@ -1529,6 +1557,8 @@ def bake_multires(context, ob, s, kinds, name, others=()):
                 image["m3d_parts"] = "|".join(sorted({*held, ob.name}))
                 image["m3d_map"] = size
                 image["m3d_stamp"] = MK.new_uid()
+                if key == 'NORMAL':
+                    image["m3d_nfmt"] = 'OPENGL'   # (the Multires baker always makes the green channel up)
                 images.append(image)
     finally:
         mod.levels = level
@@ -1569,12 +1599,14 @@ class M3D_OT_tex_bake_multires(Operator):
         if m3d_pair.grouped(ob):
             import m3d_bakegroups
             m3d_bakegroups.bake_groups_done(context, m3d_pair.all_groups(context), [ob.m3d_pair.group])
+        L.use_baked_maps(context, every)
+        after_bake(context)
         self.report({'INFO'}, "Baked %s from Multires at %s px" % (", ".join(m[1] for m in kinds), owner.resolution))
         return {'FINISHED'}
 
 
 class M3D_OT_tex_bake_pick(Operator):
-    """Use the other selected mesh as the high-poly mesh of the active one"""
+    """Use the other selected mesh as the high poly of the active one (select the high poly as well, with the low poly active)"""
     bl_idname = "m3d.tex_bake_pick"
     bl_label = "Use Selected as High Poly"
     bl_options = {'REGISTER', 'UNDO'}
@@ -1591,6 +1623,22 @@ class M3D_OT_tex_bake_pick(Operator):
             return {'CANCELLED'}
         ob.m3d_bake.high = other
         return {'FINISHED'}
+
+
+def after_bake(context):
+    """A bake is done: the 3D view shows the material (the baked normal and AO are in its shader), the dock goes back from the Bake page
+    to the Layers, the 2D Material view is made again and everything redraws."""
+    space = viewport(context)
+    if space is not None and mesh_of(context) is not None:
+        show_in_3d(context, space, 'MATERIAL')
+        if space.shading.type == 'WIREFRAME':
+            space.shading.type = 'MATERIAL'
+    ws = context.workspace
+    if ws is not None and ws.m3d_page_right == "tex_bake":
+        ws.m3d_page_right = "tex_layers"
+    preview_dirty()
+    for area in context.screen.areas if context.screen is not None else ():
+        area.tag_redraw()
 
 
 def ticked_maps(s):
@@ -1613,6 +1661,7 @@ def bake_mesh(context, ob):
     finally:
         wm.progress_end()
     s.baked = "|".join(img.name for img in images)
+    L.use_baked_maps(context, [ob])   # (the texture sets of the mesh show the Normal and AO maps)
     return maps, s.resolution
 
 
@@ -1640,6 +1689,7 @@ class M3D_OT_tex_bake(Operator):
         except RuntimeError as err:
             self.report({'WARNING' if "Tick" in str(err) else 'ERROR'}, str(err).strip())
             return {'CANCELLED'}
+        after_bake(context)
         self.report({'INFO'}, "Baked %s at %s px" % (", ".join(m[1] for m in maps), size))
         return {'FINISHED'}
 
@@ -1690,19 +1740,20 @@ class M3D_OT_tex_bake_sets(Operator):
             self.report({'WARNING'}, "%s: %s" % (name, err))
         if not baked:
             return {'CANCELLED'}
+        after_bake(context)
         self.report({'INFO'}, "Baked %s in %.1f s" % ("; ".join(baked), time.perf_counter() - t0))
         return {'FINISHED'}
 
 
 class M3D_OT_tex_bake_maps(Operator):
-    """Tick the mesh map bakers: all, none, or the others; or copy the ticked maps, size, dilation and antialiasing of the active
-    mesh to the meshes of the other ticked texture sets"""
+    """Tick all the maps to bake, none, or the others; or give the other ticked texture sets the ticked maps, size, dilation and
+    antialiasing of the active mesh"""
     bl_idname = "m3d.tex_bake_maps"
-    bl_label = "Mesh Map Bakers"
+    bl_label = "Choose Maps"
     bl_options = {'REGISTER', 'UNDO'}
 
-    action: EnumProperty(items=(('ALL', "Check All", "Tick every map"), ('NONE', "Uncheck All", "Untick every map"),
-                                ('INVERT', "Invert Checked", "Tick the maps that are not ticked and the other way round"),
+    action: EnumProperty(items=(('ALL', "All Maps", "Tick every map: they are all baked"), ('NONE', "No Maps", "Untick every map"),
+                                ('INVERT', "Invert", "Tick the maps that are not ticked and untick the ones that are"),
                                 ('SYNC', "Apply to Checked Texture Sets", "Give the meshes of the other ticked texture sets the maps, "
                                  "size, dilation and antialiasing of this one")))
 
@@ -1872,8 +1923,11 @@ def export_set(context, ob, mat, folder):
     stacked = bool(mat.m3d_layers)
     if stacked:
         L.prepare(context, mat)
+        L.link_maps(mat, ob)   # (the baked maps the texture set has now: the Normal map is under the Normal channel)
     found = {ch: img for ch, (_i, img) in channel_slots(mat).items()}
     present = {c for c in (L.content_channels(mat) if stacked else found) if not L.channel_off(mat, c)}
+    if stacked and L.baked_image(mat, "Normal") is not None:
+        present.add('NORMAL')   # (a set whose layers have no normal still has the baked one)
     native = L.stack_size(mat) if stacked else max((max(img.size) for img in found.values()), default=0)
     size = int(s.export_size) if s.export_size != 'SAME' else native or 1024
     ao_image = map_image(ob, "AO")
@@ -1882,7 +1936,10 @@ def export_set(context, ob, mat, folder):
 
     def pixels(channel):
         if channel not in cache:
-            cache[channel] = L.flatten_channel(mat, channel, size) if stacked else pixels_of(found[channel], size)
+            if stacked:   # (the Normal is the layers' normal on top of the baked normal map: what the 3D view shows)
+                cache[channel] = L.flatten_normal(mat, size) if channel == 'NORMAL' else L.flatten_channel(mat, channel, size)
+            else:
+                cache[channel] = pixels_of(found[channel], size)
         return cache[channel]
 
     def map_of(channel, socket, default):
@@ -2072,7 +2129,9 @@ class M3D_OT_tex_export(Operator):
 # -----------------------------------------------------------------------------
 # Display modes of the 3D and 2D views: the material, one channel on its own, a baked mesh map, the mask of the active layer.
 # A mode is a string: "MATERIAL", "CHANNEL:<channel id>", "MAP:<image label>", "MASK". In the 3D view the material's own
-# nodes show them (m3d_layers: channel view, Show Mask, Show Map); in the 2D view the image shown is the one.
+# nodes show them (m3d_layers: channel view, Show Mask, Show Map); in the 2D view the image shown is the one. Material in the
+# 2D view is a picture of the material in UV space (the Material View image, see material_pixels), made again on a timer
+# after strokes and changes.
 
 MESH_MAPS = (("Normal", "Normal"), ("AO", "Ambient Occlusion"), ("Curvature", "Curvature"), ("Position", "Position"),
              ("Thickness", "Thickness"), ("ID", "ID"), ("WorldNormal", "World Normal"), ("Displacement", "Displacement"))
@@ -2097,7 +2156,22 @@ def mode_label(mode):
 
 
 def mode_icon(mode):
-    return {'MATERIAL': 'SHADING_TEXTURE', 'CHANNEL': 'IMAGE_RGB', 'MAP': 'MESH_DATA', 'MASK': 'MOD_MASK'}[mode.partition(":")[0]]
+    return {'MATERIAL': 'MATERIAL', 'CHANNEL': 'IMAGE_RGB', 'MAP': 'MESH_DATA', 'MASK': 'MOD_MASK'}[mode.partition(":")[0]]
+
+
+def mode_text(context, mode):
+    """The whole text of the display dropdown: a channel names the layer that is painted ("Base Color (Rust)"), the mask its layer,
+    a map or the material just itself."""
+    kind = mode.partition(":")[0]
+    ob = mesh_of(context)
+    mat = ob.active_material if ob is not None else None
+    layer = active_layer(mat) if mat is not None and kind in {'CHANNEL', 'MASK'} else None
+    return "%s (%s)" % (mode_label(mode), layer.name) if layer is not None else mode_label(mode)
+
+
+def dropdown_units(text, icon=True):
+    """ui_units_x for a dropdown that shows `text` whole (a unit is a button's height; a character is a bit under half of that)."""
+    return max(7.0, 2.4 + 0.46 * len(text) + (0.0 if icon else -1.0))
 
 
 def layer_image(mat, layer, channel):
@@ -2113,10 +2187,76 @@ def channel_image(mat, channel):
     return found[channel][1] if channel in found else None
 
 
-def material_image(context, mat):
-    """The image the brush paints on now (the 2D view's Material mode)."""
-    if mat.m3d_layers:
-        return L.target_image(context, mat, False)
+PREVIEW_SIZE = 512   # side of the Material View image (the 2D view's Material): a preview, not the set's own size
+PREVIEW_LIGHT = np.array((0.35, 0.45, 0.82), np.float32) / np.linalg.norm((0.35, 0.45, 0.82))   # the light of the preview: top left, in front
+_preview = {"dirty": set(), "made": set(), "next": 0.0}   # names of the materials whose Material View is out of date; names of the images made; when the timer may make one again
+
+
+def preview_name(mat):
+    return ("%s (Material View)" % mat.name)[:63]
+
+
+def preview_dirty(name=None):
+    """The Material View of a material (of every texture set without a name) is out of date: a timer makes it again when a 2D view shows it."""
+    _preview["dirty"].update([name] if name else (m.name for m in bpy.data.materials if len(m.m3d_layers)))
+
+
+def material_pixels(mat, size):
+    """(size, size, 4) display pixels of the material in UV space: its Base Color (the layers' result, with the baked AO map when the
+    AO shows in the 3D view), lit by one light from the top left over the combined normal (a flat surface is as bright as the color),
+    and the Emission added. A picture for the 2D view: the timer makes it, drawing never does."""
+    rgb = L.composite(mat, 'BASE_COLOR', size)
+    ao = L.baked_image(mat, "AO")
+    if ao is not None:
+        rgb = rgb * MK.pixels_of(ao, size)[..., :1]
+    normal = L.flatten_normal(mat, size)[..., :3] * 2.0 - 1.0
+    rgb = rgb * np.clip(normal @ PREVIEW_LIGHT / PREVIEW_LIGHT[2], 0.0, 1.4)[..., None]
+    if 'EMISSION' in L.content_channels(mat):
+        rgb = rgb + L.composite(mat, 'EMISSION', size)
+    return L.encode(CHANNEL_BY_ID['BASE_COLOR'], np.clip(rgb, 0.0, 1.0))
+
+
+def preview_image(mat):
+    """The Material View image of the material, None when it is not made (yet)."""
+    image = bpy.data.images.get(preview_name(mat))
+    return image if image is not None and image.get("m3d_preview") == mat.name else None
+
+
+def make_preview(mat):
+    """Make (or make again) the Material View image of a texture set. Returns it."""
+    size = max(64, min(L.stack_size(mat) or PREVIEW_SIZE, PREVIEW_SIZE))
+    pixels = material_pixels(mat, size)
+    image = preview_image(mat)
+    if image is None:
+        image = bpy.data.images.new(preview_name(mat), size, size, alpha=False)
+        image["m3d_preview"] = mat.name
+    elif tuple(image.size) != (size, size):
+        image.scale(size, size)
+    L.write_pixels(image, pixels)
+    _preview["dirty"].discard(mat.name)
+    _preview["made"].add(image.name)
+    return image
+
+
+def refresh_previews(win):
+    """Timer (follow): a 2D view that shows a Material View image gets it made again when what it is of has changed since. Not more
+    often than five times the time one takes (a long stroke keeps changing the layers: painting must not wait for the picture)."""
+    now = time.perf_counter()
+    if now < _preview["next"]:
+        return
+    for area in win.screen.areas:
+        image = area.spaces.active.image if area.type == 'IMAGE_EDITOR' else None
+        mat = bpy.data.materials.get(image.get("m3d_preview", "")) if image is not None else None
+        if mat is not None and len(mat.m3d_layers) and (mat.name in _preview["dirty"] or image.name not in _preview["made"]):
+            make_preview(mat)
+            _preview["next"] = now + 5.0 * (time.perf_counter() - now) + 0.3
+            break   # (one at a time: the next tick does the rest)
+
+
+def material_image(mat):
+    """The image the 2D view shows for Material: the picture of the texture set; the image being painted for a material without layers."""
+    if len(mat.m3d_layers):
+        return preview_image(mat)
     slots = list(mat.texture_paint_images)
     return slots[mat.paint_active_slot] if 0 <= mat.paint_active_slot < len(slots) else None
 
@@ -2151,7 +2291,7 @@ def image_of_mode(context, mode):
         layer = active_layer(mat)
         effect = L.paint_effect(layer) if layer is not None else None
         return effect.image if effect is not None else None
-    return channel_image(mat, key) if kind == 'CHANNEL' else material_image(context, mat)
+    return channel_image(mat, key) if kind == 'CHANNEL' else material_image(mat)
 
 
 def space_key(space):
@@ -2203,12 +2343,19 @@ def show_in_2d(context, space, mode):
         return "Select a mesh with a material"
     if kind == 'CHANNEL' and key in channel_slots(ob.active_material):
         select_channel(ob.active_material, key)   # (the channel is the one painted, like in the 3D view)
+    if kind == 'MATERIAL' and len(ob.active_material.m3d_layers) and principled_of(ob.active_material) is not None:
+        make_preview(ob.active_material)   # (now: the view should not wait for the timer)
     image = image_of_mode(context, mode)
     if image is None:
         return "Nothing to show here: %s" % ("the %s map is not baked" % MAP_TEXT.get(key, key) if kind == 'MAP'
                                             else "the layer has no image for it")
     space.image = image
-    space.ui_mode = 'PAINT'   # (the painting keys only work in Paint mode: a map shown here is painted like any image: Undo)
+    # (the painting keys only work in Paint mode: a map shown here is painted like any image: Undo. The Material View is a picture
+    # of the whole set: strokes on it would be lost, so it is shown in View mode; the channels are for painting)
+    space.ui_mode = 'VIEW' if image.get("m3d_preview") else 'PAINT'
+    # (Blender puts the image of the active paint slot into every unpinned Image Editor when the paint target changes, a layer was
+    # added or picked: the picture of the whole material stays where it is: pinned)
+    space.use_image_pin = bool(image.get("m3d_preview"))
     _shown_2d[space_key(space)] = mode
     return ""
 
@@ -2345,16 +2492,211 @@ class M3D_MT_tex_view_mode(Menu):
 
 
 def draw_view_mode(layout, context):
-    """The display mode dropdown at the top right of the 3D view and the 2D view of the Texture workspace."""
+    """The display mode dropdown at the top right of the 3D view and the 2D view of the Texture workspace: it shows the whole name of
+    what the view shows (the dropdown is as wide as the text), and always offers Material."""
     area = context.area
     ob = mesh_of(context)
     if area is None or ob is None or area.type not in {'VIEW_3D', 'IMAGE_EDITOR'}:
         return
     space = area.spaces.active
     mode = view_mode_3d(context, space) if area.type == 'VIEW_3D' else view_mode_2d(context, space)
+    text = mode_text(context, mode)
     row = layout.row()
-    row.ui_units_x = 7   # (room for the longest names: Ambient Occlusion, Displacement)
-    row.menu("M3D_MT_tex_view_mode", text=mode_label(mode), icon=mode_icon(mode))
+    row.ui_units_x = dropdown_units(text)
+    row.menu("M3D_MT_tex_view_mode", text=text, icon=mode_icon(mode), translate=False)
+
+
+# -----------------------------------------------------------------------------
+# Viewport types of the 3D view and its environment: Material (lit by a studio HDRI, EEVEE Material Preview), Rendered (EEVEE),
+# Unlit (the Base Color flat: the material shows an Emission of it, see m3d_layers.sync_maskview), Solid, and the wireframe over the
+# material. The type is read back from the view's shading, the material and the Wireframe overlay.
+
+VIEW_TYPES = (   # (id, label, icon, what it shows)
+    ('MATERIAL', "Lit", 'SHADING_TEXTURE', "Lit by the environment (Material Preview): the material as it will look"),
+    ('RENDERED', "Rendered", 'SHADING_RENDERED', "EEVEE with the lights and the world of the scene"),
+    ('UNLIT', "Unlit", 'COLOR', "The Base Color alone, flat, without any light: for judging a color"),
+    ('SOLID', "Solid", 'SHADING_SOLID', "The fast view: the painted channel lit by simple studio lights"),
+    ('WIRE', "Wireframe", 'SHADING_WIRE', "The material with the wireframe of the mesh on top"),
+)
+VIEW_TYPE_BY_ID = {v[0]: v for v in VIEW_TYPES}
+ENV_DEFAULT = "studio.exr"   # the environment of a new Texture view: Blender's studio HDRI (soft boxes, neutral grey), shown blurred behind the model
+
+
+def view_type_of(space, mat):
+    """The viewport type a 3D view is in (a channel shown alone is a display mode: the type is the one it was left for)."""
+    kind = space.shading.type
+    if channel_view_on(space.shading) and _view_memory.get("shading"):
+        kind = _view_memory["shading"][0]
+    if kind == 'RENDERED':
+        return 'RENDERED'
+    if kind == 'SOLID':
+        return 'SOLID'
+    if kind == 'WIREFRAME':
+        return 'WIRE'
+    if mat is not None and mat.m3d_unlit:
+        return 'UNLIT'
+    return 'WIRE' if space.overlay.show_wireframes else 'MATERIAL'
+
+
+def set_unlit(context, on):
+    """Every texture set (and any material that was Unlit) shows its Base Color flat, or its shader again."""
+    for mat in {*(m for m, _ob in texture_sets(context)), *(m for m in bpy.data.materials if m.m3d_unlit)}:
+        if mat.m3d_unlit != on and mat.node_tree is not None:
+            mat.m3d_unlit = on
+
+
+def set_view_type(context, space, kind):
+    """Put the 3D view `space` in a viewport type. It also takes the view back from a channel on its own, a map and a mask: the type is
+    a lit view of the whole material (Solid shows the painted channel lit)."""
+    shading, overlay = space.shading, space.overlay
+    channel_view_set(shading, False)
+    ob = mesh_of(context)
+    if ob is not None and ob.active_material is not None:
+        L.show_view(ob.active_material, False, "")
+    set_unlit(context, kind == 'UNLIT')
+    overlay.show_wireframes = kind == 'WIRE'
+    if kind == 'RENDERED':
+        if context.scene.render.engine != 'BLENDER_EEVEE':
+            context.scene.render.engine = 'BLENDER_EEVEE'   # (Cycles in the viewport is slow; the bake switches engines by itself)
+        shading.type = 'RENDERED'
+    elif kind == 'SOLID':
+        shading.type, shading.light, shading.color_type = 'SOLID', 'STUDIO', 'TEXTURE'
+    else:
+        shading.type = 'MATERIAL'
+
+
+def apply_view_defaults(space):
+    """The 3D view starts as a studio: Material Preview lit by Blender's studio HDRI (ENV_DEFAULT), blurred behind the model as the
+    background (how a dedicated painting tool shows its default environment), full strength, not turned."""
+    shading = space.shading
+    shading.type = 'MATERIAL'
+    shading.use_scene_lights = shading.use_scene_world = False
+    if any(sl.name == ENV_DEFAULT for sl in bpy.context.preferences.studio_lights):
+        shading.studio_light = ENV_DEFAULT
+    shading.studiolight_rotate_z = 0.0
+    shading.studiolight_intensity = 1.0
+    shading.studiolight_background_alpha = 1.0
+    shading.studiolight_background_blur = 0.5
+
+
+def view_defaults_once(win):
+    """The 3D view of a Texture workspace of the new layout starts as a studio, once (the workspace remembers it in its custom property
+    m3d_env): after that the view is the user's. True when it set the view."""
+    ws = win.workspace
+    if ws.m3d_layout < 1 or ws.get("m3d_env") is not None:
+        return False
+    ws["m3d_env"] = 1
+    for area in win.screen.areas:
+        if area.type == 'VIEW_3D':
+            apply_view_defaults(area.spaces.active)
+    return True
+
+
+class M3D_OT_tex_view_type(Operator):
+    """Viewport type of the 3D view: Material (lit), Rendered (EEVEE), Unlit (the Base Color flat), Solid, or the wireframe over the
+    material"""
+    bl_idname = "m3d.tex_view_type"
+    bl_label = "Viewport Type"
+    bl_options = {'INTERNAL'}
+
+    kind: EnumProperty(items=[(k, label, what) for k, label, _icon, what in VIEW_TYPES])
+
+    @classmethod
+    def description(cls, _context, props):
+        return "%s: %s" % (VIEW_TYPE_BY_ID[props.kind][1], VIEW_TYPE_BY_ID[props.kind][3])
+
+    @classmethod
+    def poll(cls, context):
+        return view3d_space(context) is not None
+
+    def execute(self, context):
+        set_view_type(context, view3d_space(context), self.kind)
+        return {'FINISHED'}
+
+
+class M3D_OT_tex_view_defaults(Operator):
+    """Put the 3D view back as a studio: Material Preview with the studio environment shown blurred behind the model"""
+    bl_idname = "m3d.tex_view_defaults"
+    bl_label = "Studio Defaults"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return view3d_space(context) is not None
+
+    def execute(self, context):
+        space = view3d_space(context)
+        set_view_type(context, space, 'MATERIAL')
+        apply_view_defaults(space)
+        return {'FINISHED'}
+
+
+class M3D_MT_tex_view_type(Menu):
+    """Viewport type of the 3D view"""
+    bl_label = "Viewport Type"
+
+    def draw(self, context):
+        for kind, label, icon, _what in VIEW_TYPES:
+            self.layout.operator("m3d.tex_view_type", text=label, icon=icon).kind = kind
+
+
+def draw_view_type(layout, context, compact=False):
+    """The viewport type dropdown (in the 3D view's header, and in the toolbar: it acts on the main 3D view)."""
+    space = view3d_space(context)
+    if space is None:
+        return
+    ob = mesh_of(context)
+    kind = view_type_of(space, ob.active_material if ob is not None else None)
+    _id, label, icon, _what = VIEW_TYPE_BY_ID[kind]
+    row = layout.row()
+    row.ui_units_x = 2.2 if compact else dropdown_units(label)
+    row.menu("M3D_MT_tex_view_type", text="" if compact else label, icon=icon)
+
+
+def draw_layout_buttons(layout, context):
+    """The view layout: 3D and 2D side by side, 3D only, 2D only."""
+    row = layout.row(align=True)
+    now = layout_mode(context)
+    for mode, icon in (('BOTH', 'SPLIT_VERTICAL'), ('3D', 'VIEW3D'), ('2D', 'IMAGE_DATA')):
+        row.operator("m3d.tex_layout", text="", icon=icon, depress=now == mode).mode = mode
+
+
+class M3D_MT_tex_more(Menu):
+    """More of the 3D view: what the Texture workspace leaves out of its header"""
+    bl_label = "More"
+
+    def draw(self, context):
+        layout = self.layout
+        space = view3d_space(context)
+        if space is None:
+            return
+        layout.prop(space.overlay, "show_overlays", text="Overlays")
+        layout.prop(space.overlay, "show_floor", text="Grid")
+        layout.prop(space, "show_gizmo", text="Gizmos")
+        layout.prop(space.shading, "show_xray", text="X-Ray")
+        layout.separator()
+        layout.menu("M3D_MT_blender_menus", text="Blender Menus")
+
+
+def draw_view_header(layout, context):
+    """The 3D view's header in the Texture workspace (after the editor type): the compact View menu, then at the right the display mode
+    dropdown, the viewport type, the view layout, Display Settings and More. The rest of Blender's header (the other menus, the
+    selection modes, the gizmo and overlay buttons, the shading popover, the texture slots) is left out."""
+    layout.menu("M3D_MT_tex_view")
+    layout.separator_spacer()
+    draw_view_mode(layout, context)
+    draw_view_type(layout, context)
+    draw_layout_buttons(layout, context)
+    layout.popover("M3D_PT_tex_display", text="", icon='WORLD')
+    layout.menu("M3D_MT_tex_more", text="", icon='DOWNARROW_HLT')
+
+
+def draw_image_header(layout, context):
+    """The 2D view's header in the Texture workspace (after the editor type): the compact View menu and the display mode dropdown. The
+    image selector, the pin, the Image and UV menus and the overlay buttons are left out: the dropdown picks what is shown."""
+    layout.menu("M3D_MT_tex_image_view")
+    layout.separator_spacer()
+    draw_view_mode(layout, context)
 
 
 # -----------------------------------------------------------------------------
@@ -2554,6 +2896,8 @@ def follow(wm):
         return
     if _fit["workspace"] != ws.name:
         _fit["workspace"], _fit["seen"] = ws.name, {}
+    view_defaults_once(win)
+    refresh_previews(win)
     for area in win.screen.areas:
         region = next((r for r in area.regions if r.type == 'WINDOW'), None) if area.type == 'IMAGE_EDITOR' else None
         if region is None or region.width < 100 or region.height < 100:   # (no 2D view, or not drawn yet)
@@ -2603,7 +2947,8 @@ class M3D_OT_tex_layout(Operator):
 
 
 class M3D_OT_tex_bake_mode(Operator):
-    """Bake Mesh Maps (Ctrl+Shift+B): the Layers dock shows the Bake page; Back to Painting returns to the Layers"""
+    """Bake Mesh Maps (Ctrl+Shift+B): the dock shows the Bake page, where you pick the high poly and the maps and bake; Back to
+    Painting (or a finished bake) returns to the Layers"""
     bl_idname = "m3d.tex_bake_mode"
     bl_label = "Bake Mesh Maps"
 
@@ -3139,6 +3484,10 @@ class PROPERTIES_PT_m3d_tx_pp_advanced(_PaintPage, Panel):
     bl_order = 27
     tools = BRUSH_TOOLS_SET
 
+    @classmethod
+    def page_poll(cls, context):
+        return super().page_poll(context) and context.scene.m3d_tex.props_more   # (behind More)
+
     def draw(self, context):
         draw_advanced(self.layout, context)
 
@@ -3146,6 +3495,22 @@ class PROPERTIES_PT_m3d_tx_pp_advanced(_PaintPage, Panel):
 class PROPERTIES_PT_m3d_tx_pp_cursor(_PaintStock, DisplayPanel, Panel):
     bl_label = "Cursor"
     bl_order = 28
+
+    @classmethod
+    def page_poll(cls, context):
+        return super().page_poll(context) and context.scene.m3d_tex.props_more   # (behind More)
+
+
+class PROPERTIES_PT_m3d_tx_pp_more(_PaintPage, Panel):
+    """The button that shows the settings that are rarely needed (Advanced, Cursor, and All Paint Slots in Texture Set Settings)."""
+    bl_label = "More"
+    bl_options = {'HIDE_HEADER'}
+    bl_order = 29
+    tools = BRUSH_TOOLS_SET
+
+    def draw(self, context):
+        tex = context.scene.m3d_tex
+        self.layout.prop(tex, "props_more", text="Fewer Settings" if tex.props_more else "More Settings", toggle=True)
 
 
 # --- Layers: the stack, the active layer, its mask; the channels
@@ -3558,6 +3923,10 @@ class PROPERTIES_PT_m3d_tx_slots(_Page, Panel):
     bl_options = {'DEFAULT_CLOSED'}
     bl_order = 40
 
+    @classmethod
+    def page_poll(cls, context):   # (the layers hold the images: the slot list is behind More in the new layout)
+        return ready(context, cls.need) and (W.tabs_kind(context) != 'TEXTURE' or context.scene.m3d_tex.props_more)
+
     def draw(self, context):
         layout = self.layout
         ob = mesh_of(context)
@@ -3657,7 +4026,9 @@ class PROPERTIES_PT_m3d_tx_palette(_Brush, ColorPalettePanel, Panel):
     pass
 
 
-# --- Bake (Bake Mesh Maps: the dock shows this page instead of the tabs)
+# --- Bake (Bake Mesh Maps: the dock shows this page instead of the tabs). Top to bottom: Back to Painting, High Poly, Maps, Size and
+# Bake; everything else is under Advanced (collapsed): dilation, antialiasing, the rays and the cage, the settings of each map, the bake
+# groups, Multires and the list of the baked maps.
 
 class _Bake(_Page):
     page = "tex_bake"
@@ -3674,6 +4045,11 @@ def bake_count(context):
     return len(ticked_maps(bake_owner(ob).m3d_bake)) if ob is not None else 0, len(bake_checked(context))
 
 
+def bake_text(maps, sets):
+    """The text of the Bake button: what it bakes."""
+    return "Bake %s" % plural(maps, "map") + (" for %s" % plural(sets, "texture set") if sets > 1 else "")
+
+
 class PROPERTIES_PT_m3d_tx_bake_back(_PagePanel, Panel):
     page = "tex_bake"
     bl_label = "Bake Mesh Maps"
@@ -3681,59 +4057,141 @@ class PROPERTIES_PT_m3d_tx_bake_back(_PagePanel, Panel):
     bl_order = -10
 
     def draw(self, context):
-        layout = self.layout
-        if ready(context, 'BAKE'):
-            maps, sets = bake_count(context)
-            row = layout.row()
-            row.scale_y = 1.6
-            row.operator("m3d.tex_bake_sets", text="Bake: %s x %s" % (plural(maps, "map"), plural(sets, "set")), icon='RENDER_STILL')
-            reason(layout, "Uses Cycles; the window waits until it is done")
-        row = layout.row()
+        row = self.layout.row()
         row.scale_y = 1.2
         row.operator("m3d.tex_bake_mode", text="Back to Painting", icon='LOOP_BACK').on = False
 
 
-class PROPERTIES_PT_m3d_tx_bake_maps(_Bake, Panel):
-    bl_label = "Mesh Map Bakers"
+class PROPERTIES_PT_m3d_tx_bake_high(_Bake, Panel):
+    bl_label = "High Poly"
     bl_order = 0
 
     def draw(self, context):
         layout = self.layout
         ob = mesh_of(context)
-        owner = bake_owner(ob)
-        s, tex = owner.m3d_bake, context.scene.m3d_tex
         row = layout.row(align=True)
-        row.operator("m3d.tex_bake_maps", text="Check All", icon='CHECKBOX_HLT').action = 'ALL'
-        row.operator("m3d.tex_bake_maps", text="Uncheck All", icon='CHECKBOX_DEHLT').action = 'NONE'
-        row.operator("m3d.tex_bake_maps", text="", icon='ARROW_LEFTRIGHT').action = 'INVERT'
-        col = layout.column(align=True)
-        have = dict(mesh_maps(owner))
-        for key, label, flag in BAKE_MAPS:
-            row = col.row(align=True)
-            row.prop(s, flag, text="")
-            row.prop_enum(tex, "bake_map", key, text=MAP_TEXT[label])
-            sub = row.row(align=True)
-            sub.enabled = label in have
-            sub.operator("m3d.tex_view_mode", text="", icon='HIDE_OFF').mode = "MAP:" + label
+        grouped = m3d_pair.grouped(ob)
+        if grouped:   # (the group has its own high polys: the status of the group in one line)
+            lows, highs = m3d_pair.group_of(context, ob.m3d_pair.group)
+            row.label(text="%s: %s, %s" % (ob.m3d_pair.group, plural(len(lows), "low poly"), plural(len(highs), "high poly")),
+                      icon='OUTLINER_COLLECTION', translate=False)
+        else:
+            row.prop(ob.m3d_bake, "high", text="")
+            row.operator("m3d.tex_bake_pick", text="", icon='RESTRICT_SELECT_OFF')
+        row.operator("m3d.hp_auto_pair", text="Auto-Pair", icon='LINKED')
+        if (highs if grouped else ob.m3d_bake.high) in (None, []):
+            reason(layout, "No high poly: the mesh bakes its own detail")
+        elif grouped:
+            reason(layout, "The detail of the high polys is baked onto the low polys")
+        else:
+            reason(layout, "The detail of the high poly is baked onto this mesh")
+        if not grouped:
+            reason(layout, "Name meshes Sword_low and Sword_high, then Auto-Pair")
+
+
+class PROPERTIES_PT_m3d_tx_bake_maps(_Bake, Panel):
+    bl_label = "Maps"
+    bl_order = 10
+
+    def draw(self, context):
+        layout = self.layout
+        ob = mesh_of(context)
+        owner = bake_owner(ob)
+        s = owner.m3d_bake
+        flow = layout.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
+        for _key, label, flag in BAKE_MAPS:
+            flow.prop(s, flag, text=BAKE_TEXT[label])
         name, lows = texture_set(owner)
         if len(lows) > 1:
             reason(layout, "Texture set %s: %s" % (name, ", ".join(o.name for o in lows)))
         elif owner != ob:
             reason(layout, "Set on %s" % owner.name)
-        if len(bake_checked(context)) > 1:
-            layout.operator("m3d.tex_bake_maps", text="Apply to Checked Texture Sets", icon='DUPLICATE').action = 'SYNC'
 
 
 class PROPERTIES_PT_m3d_tx_bake_settings(_Bake, Panel):
-    bl_label = "Common Settings"
-    bl_order = 10
+    bl_label = "Size and Bake"
+    bl_order = 20
 
     def draw(self, context):
         layout = self.layout
         split_props(layout)
+        layout.prop(bake_owner(mesh_of(context)).m3d_bake, "resolution", text="Size")
+        row = layout.row()
+        row.scale_y = 1.6
+        row.operator("m3d.tex_bake_sets", text=bake_text(*bake_count(context)), icon='RENDER_STILL')
+        reason(layout, "Uses Cycles; the window waits until it is done")
+
+
+def draw_map_settings(layout, context):
+    """Advanced > Map Settings: the settings of the map the dropdown picks."""
+    owner = bake_owner(mesh_of(context))
+    s, tex = owner.m3d_bake, context.scene.m3d_tex
+    split_props(layout)
+    layout.prop(tex, "bake_map", text="Map")
+    key = tex.bake_map
+    layout.label(text="%s > %s" % (texture_set(owner)[0], MAP_TEXT[next(label for k, label, _f in BAKE_MAPS if k == key)]), translate=False)
+    if key == 'NORMAL':
+        layout.prop(tex, "normal_format", text="Format")
+        reason(layout, "Tangent space; DirectX flips the green channel")
+    elif key == 'AO':
+        world = context.scene.world
+        if world is not None:
+            layout.prop(world.light_settings, "distance", text="Distance")
+        reason(layout, "How far an occluder can be: the AO distance of the world")
+    elif key == 'CURVATURE':
+        layout.prop(s, "curvature_contrast")
+        reason(layout, "Convex edges light, concave ones dark; needs enough polygons")
+    elif key == 'THICKNESS':
+        layout.prop(s, "thickness_distance", text="Distance")
+        reason(layout, "For closed meshes: white where the mesh is thicker than this")
+    elif key == 'POSITION':
+        reason(layout, "Scaled to 0-1 within the bounds of the baked meshes; one sample")
+    elif key == 'WORLDNORMAL':
+        reason(layout, "The surface direction in the scene, n * 0.5 + 0.5")
+    else:
+        reason(layout, "One flat colour for each material of the high poly (each mesh when they have one material)")
+
+
+def draw_multires_settings(layout, context):
+    """Advanced > Multires: bake the detail of the Multires levels (no high poly needed)."""
+    ob = mesh_of(context)
+    s = ob.m3d_bake
+    flow = layout.grid_flow(row_major=True, columns=2, even_columns=True, align=True)
+    for _key, _label, _type, flag in MULTIRES_MAPS:
+        flow.prop(s, flag, toggle=True)
+    split_props(layout)
+    layout.prop(s, "multires_level")
+    layout.operator("m3d.tex_bake_multires", icon='MOD_MULTIRES')
+    total = multires_of(ob).total_levels
+    low = min(s.multires_level, total - 1)
+    reason(layout, "The detail of levels %d to %d is baked onto level %d" % (low + 1, total, low))
+    reason(layout, "No high poly needed; the maps are named like the others")
+
+
+def draw_baked_maps(layout, context):
+    """Advanced > Baked Maps: the images of the last bake, each with a button that shows it in the 3D view and one for the 2D view."""
+    owner = bake_owner(mesh_of(context))
+    s, have = owner.m3d_bake, {image.name: label for label, image in mesh_maps(owner)}
+    for name in filter(None, s.baked.split("|")):
+        row = layout.row(align=True)
+        row.label(text=name, icon='IMAGE_DATA', translate=False)
+        if name in have:
+            row.operator("m3d.tex_view_mode", text="", icon='MESH_DATA').mode = "MAP:" + have[name]
+        row.operator("m3d.tex_show_image", text="", icon='HIDE_OFF').name = name
+
+
+class PROPERTIES_PT_m3d_tx_bake_advanced(_Bake, Panel):
+    bl_label = "Advanced"
+    bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 30
+
+    def draw(self, context):
+        layout = self.layout
         ob = mesh_of(context)
-        s = bake_owner(ob).m3d_bake
-        layout.prop(s, "resolution")
+        owner = bake_owner(ob)
+        s = owner.m3d_bake
+        import m3d_bakegroups
+        split_props(layout)
         layout.prop(s, "margin")
         layout.prop(s, "samples")
         if not m3d_pair.grouped(ob):   # (a group has its own extrusion, ray distance and cage: Group Settings)
@@ -3741,103 +4199,25 @@ class PROPERTIES_PT_m3d_tx_bake_settings(_Bake, Panel):
             layout.prop(s, "ray_distance")
             layout.prop(s, "cage")
         else:
-            reason(layout, "Cage: Group Settings")
-        layout.operator("m3d.hp_auto_pair", text="Match by Name", icon='LINKED')
-        reason(layout, "Name meshes Sword_low and Sword_high: they are paired into a bake group")
-
-
-class PROPERTIES_PT_m3d_tx_bake_high(_Bake, Panel):
-    bl_label = "High Poly Meshes"
-    bl_order = 20
-
-    @classmethod
-    def page_poll(cls, context):
-        return ready(context, cls.need) and not m3d_pair.grouped(mesh_of(context))   # (a group has its own high polys)
-
-    def draw(self, context):
-        layout = self.layout
-        split_props(layout)
-        s = mesh_of(context).m3d_bake
-        layout.prop(s, "high", text="Mesh")
-        layout.operator("m3d.tex_bake_pick", icon='EYEDROPPER')
-        if s.high is None:
-            reason(layout, "No high poly: the mesh bakes itself")
-        else:
-            layout.operator("m3d.hp_make_pair", icon='LINKED')
-            reason(layout, "Make Pair: bake groups can have several high polys")
-
-
-class PROPERTIES_PT_m3d_tx_bake_map(_Bake, Panel):
-    bl_label = "Map Settings"
-    bl_order = 30
-
-    def draw(self, context):
-        layout = self.layout
-        owner = bake_owner(mesh_of(context))
-        s, tex = owner.m3d_bake, context.scene.m3d_tex
-        key = tex.bake_map
-        layout.label(text="%s > %s" % (texture_set(owner)[0], MAP_TEXT[next(label for k, label, _f in BAKE_MAPS if k == key)]))
-        split_props(layout)
-        if key == 'NORMAL':
-            layout.prop(tex, "normal_format", text="Format")
-            reason(layout, "Tangent space; DirectX flips the green channel")
-        elif key == 'AO':
-            world = context.scene.world
-            if world is not None:
-                layout.prop(world.light_settings, "distance", text="Distance")
-            reason(layout, "How far an occluder can be: the AO distance of the world")
-        elif key == 'CURVATURE':
-            layout.prop(s, "curvature_contrast")
-            reason(layout, "Convex edges light, concave ones dark; needs enough polygons")
-        elif key == 'THICKNESS':
-            layout.prop(s, "thickness_distance", text="Distance")
-            reason(layout, "For closed meshes: white where the mesh is thicker than this")
-        elif key == 'POSITION':
-            reason(layout, "Scaled to 0-1 within the bounds of the baked meshes; one sample")
-        elif key == 'WORLDNORMAL':
-            reason(layout, "The surface direction in the scene, n * 0.5 + 0.5")
-        else:
-            reason(layout, "One flat colour for each material of the high poly (each mesh when they have one material)")
-
-
-class PROPERTIES_PT_m3d_tx_bake_multires(_Bake, Panel):
-    bl_label = "Multires"
-    bl_order = 40
-
-    @classmethod
-    def page_poll(cls, context):
-        return ready(context, cls.need) and multires_ready(mesh_of(context))
-
-    def draw(self, context):
-        layout = self.layout
-        ob = mesh_of(context)
-        s = ob.m3d_bake
-        flow = layout.grid_flow(row_major=True, columns=2, even_columns=True, align=True)
-        for _key, _label, _type, flag in MULTIRES_MAPS:
-            flow.prop(s, flag, toggle=True)
-        split_props(layout)
-        layout.prop(s, "multires_level")
-        layout.operator("m3d.tex_bake_multires", icon='MOD_MULTIRES')
-        total = multires_of(ob).total_levels
-        low = min(s.multires_level, total - 1)
-        reason(layout, "The detail of levels %d to %d is baked onto level %d" % (low + 1, total, low))
-        reason(layout, "No high poly needed; the maps are named like the others")
-
-
-class PROPERTIES_PT_m3d_tx_bake_run(_Bake, Panel):
-    bl_label = "Baked Maps"
-    bl_order = 50
-
-    @classmethod
-    def page_poll(cls, context):
-        return ready(context, cls.need) and bool(bake_owner(mesh_of(context)).m3d_bake.baked)
-
-    def draw(self, context):
-        s = bake_owner(mesh_of(context)).m3d_bake
-        for name in filter(None, s.baked.split("|")):
-            row = self.layout.row(align=True)
-            row.label(text=name, icon='IMAGE_DATA')
-            row.operator("m3d.tex_show_image", text="", icon='HIDE_OFF').name = name
+            reason(layout, "Cage, extrusion and ray distance: Group Settings")
+        row = layout.row(align=True)
+        row.use_property_split = False
+        row.operator("m3d.tex_bake_maps", text="All Maps", icon='CHECKBOX_HLT').action = 'ALL'
+        row.operator("m3d.tex_bake_maps", text="No Maps", icon='CHECKBOX_DEHLT').action = 'NONE'
+        row.operator("m3d.tex_bake_maps", text="", icon='ARROW_LEFTRIGHT').action = 'INVERT'
+        if len(bake_checked(context)) > 1:
+            layout.operator("m3d.tex_bake_maps", text="Apply to Checked Texture Sets", icon='DUPLICATE').action = 'SYNC'
+        sections = (("map", "Map Settings", draw_map_settings, True),
+                    ("groups", "Bake Groups", m3d_bakegroups.draw_groups, True),
+                    ("group", "Group Settings", m3d_bakegroups.draw_group_settings, m3d_pair.grouped(ob)),
+                    ("multires", "Multires", draw_multires_settings, multires_ready(ob)),
+                    ("baked", "Baked Maps", draw_baked_maps, bool(s.baked)))
+        for key, label, draw, shown in sections:
+            if shown:
+                header, body = layout.panel("m3d_bake_" + key, default_closed=True)
+                header.label(text=label)
+                if body:
+                    draw(body, context)
 
 
 # --- Export
@@ -3916,6 +4296,54 @@ def draw_environment(layout, context):
         layout.prop(shading, "studiolight_intensity", text="Intensity")
         layout.prop(shading, "studiolight_background_alpha", text="Background")
         reason(layout, "Pick the environment in Assets > Environments; Shift+RMB drag turns it")
+
+
+def draw_viewport_settings(layout, context):
+    """The viewport types (one button each) and AO in Viewport."""
+    space = viewport(context)
+    if space is None:
+        reason(layout, "No 3D Viewport in this workspace")
+        return
+    ob = mesh_of(context)
+    now = view_type_of(space, ob.active_material if ob is not None else None)
+    flow = layout.grid_flow(row_major=True, columns=3, even_columns=True, align=True)
+    for kind, label, icon, _what in VIEW_TYPES:
+        flow.operator("m3d.tex_view_type", text=label, icon=icon, depress=kind == now).kind = kind
+    layout.prop(context.scene.m3d_tex, "view_ao")
+    reason(layout, "Only for what you see, never the export")
+
+
+def draw_environment_settings(layout, context):
+    """The environment that lights the Material view: a row of the studio HDRIs (a click picks one), how it is turned, how strong it
+    is, how blurred it shows behind the model, and the way back to the studio defaults."""
+    space = viewport(context)
+    if space is None:
+        reason(layout, "No 3D Viewport in this workspace")
+        return
+    shading = space.shading
+    if shading.type == 'RENDERED':
+        reason(layout, "Rendered uses the world and the lights of the scene")
+        return
+    if shading.type != 'MATERIAL':
+        reason(layout, "The environment lights the Material and Wireframe views")
+        return
+    flow = S.tile_grid(layout, context, units_x=16, columns=8)
+    for sl in S.studio_lights(context, 'WORLD'):
+        icon = layout.enum_item_icon(shading, "studio_light", sl.name)
+        o = flow.operator("m3d.env_pick", text="" if icon else sl.name, icon_value=icon,
+                          depress=not shading.use_scene_world and shading.studio_light == sl.name)
+        o.name = sl.name
+    name = shading.studio_light.rpartition(".")[0] or shading.studio_light
+    layout.label(text=name.replace("_", " ").title(), translate=False)
+    split_props(layout)
+    layout.prop(shading, "studiolight_rotate_z", text="Rotation")
+    layout.prop(shading, "studiolight_intensity", text="Exposure")
+    layout.prop(shading, "studiolight_background_alpha", text="Background")
+    sub = layout.column()
+    sub.active = shading.studiolight_background_alpha > 0.0
+    sub.prop(shading, "studiolight_background_blur", text="Blur")
+    layout.operator("m3d.tex_view_defaults", icon='LOOP_BACK')
+    reason(layout, "Shift+RMB drag turns the environment")
 
 
 def draw_channel_view(layout, context):
@@ -4157,7 +4585,7 @@ class PROPERTIES_PT_m3d_tx_dockbar(_PagePanel, Panel):
 
 
 class M3D_PT_tex_display(Panel):
-    """Display Settings: the viewport's shading, environment, channel view and UV checker"""
+    """Display Settings: the viewport type, the environment, channel view and UV checker"""
     bl_space_type = 'TOPBAR'
     bl_region_type = 'HEADER'
     bl_label = "Display Settings"
@@ -4165,8 +4593,8 @@ class M3D_PT_tex_display(Panel):
 
     def draw(self, context):
         layout = self.layout
-        for label, draw, closed in (("Environment", draw_environment, False), ("Channel View", draw_channel_view, True),
-                                    ("UV Checker", draw_checker, True)):
+        for label, draw, closed in (("Viewport", draw_viewport_settings, False), ("Environment", draw_environment_settings, False),
+                                    ("Channel View", draw_channel_view, True), ("UV Checker", draw_checker, True)):
             header, body = layout.panel("m3d_tex_display_" + label.split()[0].lower(), default_closed=closed)
             header.label(text=label)
             if body:
@@ -4383,7 +4811,7 @@ def fill_selected(context):
 def draw_status_line(layout, context):
     """Texture context toolbar: file buttons, modes, the controls of the active tool (Size, Flow, Spacing, Lazy Mouse; the Fill
     mode for Polygon Fill, the stencil for Projection; the UV transform when a fill layer is selected), Symmetry; on the right the
-    view layout, perspective / orthographic, Bake Mesh Maps, Export Textures, the workspace picker."""
+    viewport type, view layout, perspective / orthographic, Bake Mesh Maps, Export Textures, the workspace picker."""
     from m3d_ui import _call, draw_file_buttons, draw_workspace_picker
     draw_file_buttons(layout)
     row = layout.row(align=True)
@@ -4417,10 +4845,8 @@ def draw_status_line(layout, context):
             row.prop(ob.data, "use_mirror_" + axis, text=axis.upper(), toggle=True)
 
     def right(layout):
-        row = layout.row(align=True)
-        now = layout_mode(context)
-        for mode, icon in (('BOTH', 'SPLIT_VERTICAL'), ('3D', 'VIEW3D'), ('2D', 'IMAGE_DATA')):
-            row.operator("m3d.tex_layout", text="", icon=icon, depress=now == mode).mode = mode
+        draw_view_type(layout, context, compact=tier == 0)
+        draw_layout_buttons(layout, context)
         space = viewport(context)
         persp = space is None or space.region_3d is None or space.region_3d.is_perspective
         _call(layout, "view3d.view_persportho", 'VIEW_PERSPECTIVE' if persp else 'VIEW_ORTHO', "Perspective / Orthographic")
@@ -4476,6 +4902,10 @@ classes = (
     M3D_OT_tex_view_mode,
     M3D_OT_tex_view_cycle,
     M3D_MT_tex_view_mode,
+    M3D_OT_tex_view_type,
+    M3D_OT_tex_view_defaults,
+    M3D_MT_tex_view_type,
+    M3D_MT_tex_more,
     M3D_OT_tex_lazy,
     M3D_OT_tex_symmetry,
     M3D_OT_tex_stencil,
@@ -4518,6 +4948,7 @@ classes = (
     PROPERTIES_PT_m3d_tx_pp_gray,
     PROPERTIES_PT_m3d_tx_pp_advanced,
     PROPERTIES_PT_m3d_tx_pp_cursor,
+    PROPERTIES_PT_m3d_tx_pp_more,
     PROPERTIES_PT_m3d_tx_stack,
     PROPERTIES_PT_m3d_tx_layer,
     M3D_MT_mask_add,
@@ -4539,12 +4970,10 @@ classes = (
     PROPERTIES_PT_m3d_tx_cursor,
     PROPERTIES_PT_m3d_tx_palette,
     PROPERTIES_PT_m3d_tx_bake_back,
+    PROPERTIES_PT_m3d_tx_bake_high,
     PROPERTIES_PT_m3d_tx_bake_maps,
     PROPERTIES_PT_m3d_tx_bake_settings,
-    PROPERTIES_PT_m3d_tx_bake_high,
-    PROPERTIES_PT_m3d_tx_bake_map,
-    PROPERTIES_PT_m3d_tx_bake_multires,
-    PROPERTIES_PT_m3d_tx_bake_run,
+    PROPERTIES_PT_m3d_tx_bake_advanced,
     PROPERTIES_PT_m3d_tx_export_preset,
     PROPERTIES_PT_m3d_tx_export_run,
     PROPERTIES_PT_m3d_tx_environment,

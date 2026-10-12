@@ -261,6 +261,8 @@ def phase3_texture():
         area.spaces.active.show_region_toolbar = False
         area.spaces.active.show_region_tool_header = False
     view.spaces.active.shading.type = 'MATERIAL'
+    import m3d_texture
+    m3d_texture.apply_view_defaults(view.spaces.active)   # (the studio environment: the running program sets it once too, see view_defaults_once)
     image.spaces.active.ui_mode = 'PAINT'
     image.spaces.active.show_region_ui = False
     yield 0.3

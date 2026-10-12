@@ -704,6 +704,29 @@ MENUS = {
         op("Plug-in Manager", "screen.userpref_show", section='ADDONS'),
     ]),
 
+    # The compact View menus of the Texture workspace's 3D view and 2D view headers (frame, camera, zoom).
+    "M3D_MT_tex_view": ("View", [
+        op("Frame All", "view3d.view_all", 'VIEWZOOM', center=False),
+        op("Frame Selected", "view3d.view_selected"),
+        SEP,
+        op("Orthographic / Perspective", "view3d.view_persportho", 'VIEW_PERSPECTIVE'),
+        op("Top", "view3d.view_axis", type='TOP'),
+        op("Front", "view3d.view_axis", type='FRONT'),
+        op("Side", "view3d.view_axis", type='RIGHT'),
+        op("Camera", "view3d.view_camera", 'CAMERA_DATA'),
+        SEP,
+        sub("More", "VIEW3D_MT_view"),
+    ]),
+    "M3D_MT_tex_image_view": ("View", [
+        op("Fit to Window", "image.view_all", 'VIEWZOOM', fit_view=True),
+        SEP,
+        op("Zoom In", "image.view_zoom_in", 'ZOOM_IN'),
+        op("Zoom Out", "image.view_zoom_out", 'ZOOM_OUT'),
+        op("Zoom 1:1", "image.view_zoom_ratio", ratio=1.0),
+        op("Zoom 2:1", "image.view_zoom_ratio", ratio=2.0),
+        op("Zoom 1:2", "image.view_zoom_ratio", ratio=0.5),
+    ]),
+
     # Viewport panel menus.
     "M3D_MT_panel_view": ("View", [
         op("Frame All", "view3d.view_all", center=False),
@@ -789,6 +812,9 @@ _MENU_SET_NUMBERS = {'MODELING': 0, 'RIGGING': 1, 'ANIMATION': 2, 'FX': 3, 'REND
 
 COMMON_MENUS = ["M3D_MT_file", "M3D_MT_edit", "M3D_MT_create", "M3D_MT_select", "M3D_MT_modify",
                 "M3D_MT_display", "M3D_MT_windows"]
+# A menu set that lists its menus in full, in this order (Texturing has no Create, Select and Modify: they are for modeling).
+MENU_ORDER = {'TEXTURING': ["M3D_MT_file", "M3D_MT_edit", "M3D_MT_paint", "M3D_MT_layers", "M3D_MT_bake", "M3D_MT_export",
+                            "M3D_MT_display", "M3D_MT_windows"]}
 
 PANEL_MENUS = ["M3D_MT_panel_view", "M3D_MT_panel_shading", "M3D_MT_panel_lighting", "M3D_MT_panel_show",
                "M3D_MT_panel_renderer", "M3D_MT_panel_panels"]
@@ -828,7 +854,7 @@ def draw_menu_bar(layout, context):
     """Main menu bar: menu set selector, common menus, menu set menus, Help."""
     wm = context.window_manager
     layout.prop(wm, "m3d_menu_set", text="")
-    for idname in COMMON_MENUS + MENU_SETS[wm.m3d_menu_set][1] + ["M3D_MT_help"]:
+    for idname in [*MENU_ORDER.get(wm.m3d_menu_set, COMMON_MENUS + MENU_SETS[wm.m3d_menu_set][1]), "M3D_MT_help"]:
         layout.menu(idname)
 
 

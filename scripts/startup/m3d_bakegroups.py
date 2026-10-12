@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 """
-Bake groups for Maelstrom3D: the Bake Groups panel of the Bake tab (Texture workspace, F4) and the bakes behind it.
+Bake groups for Maelstrom3D: the Bake Groups section of the Bake page (Texture workspace, F4, under Advanced) and the bakes behind it.
 
 A bake group is the meshes that share a group key (Object.m3d_pair, see m3d_pair.py): one or more low polys, which get the
 maps, and one or more high polys, which the detail is baked from (several high polys are the floaters of the group). Each
@@ -25,13 +25,13 @@ import time
 
 import bpy
 from bpy.props import CollectionProperty, EnumProperty, FloatProperty, PointerProperty, StringProperty
-from bpy.types import Operator, Panel, PropertyGroup
+from bpy.types import Operator, PropertyGroup
 from mathutils import Vector
 
+import m3d_layers as L
 import m3d_pair
 import m3d_texture as T
 from m3d_sculpt import mesh_of, reason, split_props
-from m3d_workspace import _PagePanel
 
 # -----------------------------------------------------------------------------
 # Settings and state
@@ -523,6 +523,7 @@ def bake_group(context, group):
     finally:
         wm.progress_end()
     bake_groups_done(context, groups, [group])
+    L.use_baked_maps(context, lows)   # (their texture sets show the Normal and AO maps)
     return shown, T.bake_owner(lows[0]).m3d_bake.resolution
 
 
@@ -552,6 +553,7 @@ class M3D_OT_bg_bake(Operator):
         except RuntimeError as err:
             self.report({'ERROR'}, str(err).strip())
             return {'CANCELLED'}
+        T.after_bake(context)   # (the 3D view shows the material, the dock is back on the Layers)
         self.report({'INFO'}, "Baked %s: %s at %s px in %.1f s" % (group, ", ".join(m[1] for m in maps), size, time.perf_counter() - t0))
         return {'FINISHED'}
 
@@ -591,62 +593,54 @@ class M3D_OT_bg_bake_all(Operator):
             wm.progress_end()
         baked = [g for g in times if g not in errors]
         bake_groups_done(context, groups, baked)
+        L.use_baked_maps(context, [low for g in baked for low in groups[g][0]])
         for group in baked:
             self.report({'INFO'}, "%s: %.1f s" % (group, times[group]))
         if errors:
             self.report({'WARNING'}, "Not baked: " + "; ".join("%s (%s)" % item for item in errors.items()))
         if not baked:
             return {'CANCELLED'}
+        T.after_bake(context)
         self.report({'INFO'}, "Baked %s in %.1f s" % (m3d_pair.plural(len(baked), "group"), time.perf_counter() - t0))
         return {'FINISHED'}
 
 
 # -----------------------------------------------------------------------------
-# Panels of the Bake tab (the High Poly, Maps, Settings and Bake panels are in m3d_texture.py)
+# Sections of the Bake page (drawn by Advanced in m3d_texture.py; the High Poly, Maps, Size and Bake panels are there too)
 
-class PROPERTIES_PT_m3d_tx_bake_groups(_PagePanel, Panel):
-    bl_label = "Bake Groups"
-    page = "tex_bake"
-    bl_order = 21   # (after the High Poly Meshes of the Bake page)
-
-    def draw(self, context):
-        layout = self.layout
-        groups = m3d_pair.all_groups(context)
-        ob = context.active_object
-        active = ob.m3d_pair.group if m3d_pair.grouped(ob) else ""
-        if groups:
-            col = layout.column(align=True)
-            for group, (lows, highs) in groups.items():
-                state = state_of(context.scene.m3d_bake_groups.get(group), group, lows, highs)
-                split = col.split(factor=0.5, align=True)
-                split.operator("m3d.bg_select", text=group, icon=STATE_ICONS[state], depress=group == active).group = group
-                info = split.row(align=True)
-                info.alert = state == 'STALE'
-                info.label(text="%d low  %d high" % (len(lows), len(highs)))
-                info.label(text=STATE_TEXT[state])
-        else:
-            reason(layout, "Name meshes Sword_low and Sword_high, then Auto-Pair")
-        pair = layout.grid_flow(row_major=True, columns=2, even_columns=True, align=True)
-        pair.operator("m3d.hp_auto_pair", icon='LINKED')
-        pair.operator("m3d.hp_pair", icon='LINKED')
-        layout.operator_menu_enum("m3d.hp_rename", "style", text="Rename to Suffixes", icon='SORTALPHA')
-        row = layout.row(align=True)
-        row.scale_y = 1.6
-        row.operator("m3d.bg_bake", icon='RENDER_STILL')
-        row.operator("m3d.bg_bake_all", icon='RENDER_ANIMATION')
-        reason(layout, "Uses Cycles; the window waits until it is done")
-        apart = bool(moved(context))
-        row = layout.row(align=True)
-        row.operator("m3d.bg_explode", text="Collapse" if apart else "Explode", icon='FULLSCREEN_EXIT' if apart else 'FULLSCREEN_ENTER',
-                     depress=apart).mode = 'TOGGLE'
-        if apart:
-            row.operator("m3d.bg_explode", text="", icon='FILE_REFRESH').mode = 'EXPLODE'
-        row = layout.row(align=True)
-        row.prop(context.scene, "m3d_explode_axis", expand=True)
-        split_props(layout)
-        layout.prop(context.scene, "m3d_explode_gap", slider=True)
-        if apart and any(entry.ao_scope == 'MODEL' for entry in context.scene.m3d_bake_groups):
-            reason(layout, "AO Shadows: Whole Model sees the groups as placed now")
+def draw_groups(layout, context):
+    """Advanced > Bake Groups: the groups with their state, a click selects a group; Pair Selected, Rename to Suffixes and Explode."""
+    groups = m3d_pair.all_groups(context)
+    ob = context.active_object
+    active = ob.m3d_pair.group if m3d_pair.grouped(ob) else ""
+    if groups:
+        col = layout.column(align=True)
+        for group, (lows, highs) in groups.items():
+            state = state_of(context.scene.m3d_bake_groups.get(group), group, lows, highs)
+            split = col.split(factor=0.5, align=True)
+            split.operator("m3d.bg_select", text=group, icon=STATE_ICONS[state], depress=group == active).group = group
+            info = split.row(align=True)
+            info.alert = state == 'STALE'
+            info.label(text="%d low  %d high" % (len(lows), len(highs)))
+            info.label(text=STATE_TEXT[state])
+    else:
+        reason(layout, "Name meshes Sword_low and Sword_high, then Auto-Pair")
+    layout.operator("m3d.hp_pair", icon='LINKED')
+    if m3d_pair.is_mesh(ob) and not m3d_pair.grouped(ob) and ob.m3d_bake.high is not None:
+        layout.operator("m3d.hp_make_pair", icon='LINKED')   # (the picked High Poly becomes the high poly of a new group)
+    layout.operator_menu_enum("m3d.hp_rename", "style", text="Rename to Suffixes", icon='SORTALPHA')
+    apart = bool(moved(context))
+    row = layout.row(align=True)
+    row.operator("m3d.bg_explode", text="Collapse" if apart else "Explode", icon='FULLSCREEN_EXIT' if apart else 'FULLSCREEN_ENTER',
+                 depress=apart).mode = 'TOGGLE'
+    if apart:
+        row.operator("m3d.bg_explode", text="", icon='FILE_REFRESH').mode = 'EXPLODE'
+    row = layout.row(align=True)
+    row.prop(context.scene, "m3d_explode_axis", expand=True)
+    split_props(layout)
+    layout.prop(context.scene, "m3d_explode_gap", slider=True)
+    if apart and any(entry.ao_scope == 'MODEL' for entry in context.scene.m3d_bake_groups):
+        reason(layout, "AO Shadows: Whole Model sees the groups as placed now")
 
 
 def names_line(label, obs, limit=3):
@@ -654,45 +648,36 @@ def names_line(label, obs, limit=3):
     return "%s: %s%s" % (label, ", ".join(names[:limit]), " +%d" % (len(names) - limit) if len(names) > limit else "")
 
 
-class PROPERTIES_PT_m3d_tx_bake_group(_PagePanel, Panel):
-    bl_label = "Group Settings"
-    page = "tex_bake"
-    bl_order = 22
-
-    @classmethod
-    def page_poll(cls, context):
-        return m3d_pair.grouped(context.active_object)
-
-    def draw(self, context):
-        layout = self.layout
-        group = context.active_object.m3d_pair.group
-        lows, highs = m3d_pair.group_of(context, group)
-        entry = context.scene.m3d_bake_groups.get(group)
-        layout.label(text=group, icon='OUTLINER_COLLECTION')
-        col = layout.column(align=True)
-        col.label(text=names_line("Low", lows) if lows else "No low poly: nothing to bake onto")
-        col.label(text=names_line("High", highs) if highs else "No high poly: the low poly bakes itself")
-        if entry is None:
-            request_settings(context, group)
-            return
-        split_props(layout)
-        layout.prop(entry, "extrusion")
-        layout.prop(entry, "ray_distance")
-        sub = layout.column()
-        sub.active = len(lows) == 1
-        sub.prop(entry, "cage")
-        shown = bool(cage_objects())
-        layout.operator("m3d.bg_cage_preview", icon='MOD_DISPLACE', depress=shown)
-        if shown:
-            reason(layout, "A wire in the 3D view: not saved, not baked")
-        layout.prop(entry, "ao_scope", expand=True)
-        for low in lows:
-            if not low.data.uv_layers:
-                reason(layout, "%s has no UVs" % low.name)
-        if len(lows) > 1 and entry.cage is not None:
-            reason(layout, "A custom cage needs one low poly")
-        if entry.ao_scope == 'MODEL':
-            reason(layout, "Other groups' high polys shadow this group")
+def draw_group_settings(layout, context):
+    """Advanced > Group Settings: the extrusion, ray distance and cage of the group of the active mesh, the cage preview, the AO scope."""
+    group = context.active_object.m3d_pair.group
+    lows, highs = m3d_pair.group_of(context, group)
+    entry = context.scene.m3d_bake_groups.get(group)
+    layout.label(text=group, icon='OUTLINER_COLLECTION', translate=False)
+    col = layout.column(align=True)
+    col.label(text=names_line("Low", lows) if lows else "No low poly: nothing to bake onto", translate=False)
+    col.label(text=names_line("High", highs) if highs else "No high poly: the low poly bakes itself", translate=False)
+    if entry is None:
+        request_settings(context, group)
+        return
+    split_props(layout)
+    layout.prop(entry, "extrusion")
+    layout.prop(entry, "ray_distance")
+    sub = layout.column()
+    sub.active = len(lows) == 1
+    sub.prop(entry, "cage")
+    shown = bool(cage_objects())
+    layout.operator("m3d.bg_cage_preview", icon='MOD_DISPLACE', depress=shown)
+    if shown:
+        reason(layout, "A wire in the 3D view: not saved, not baked")
+    layout.prop(entry, "ao_scope", expand=True)
+    for low in lows:
+        if not low.data.uv_layers:
+            reason(layout, "%s has no UVs" % low.name)
+    if len(lows) > 1 and entry.cage is not None:
+        reason(layout, "A custom cage needs one low poly")
+    if entry.ao_scope == 'MODEL':
+        reason(layout, "Other groups' high polys shadow this group")
 
 
 classes = (
@@ -702,8 +687,6 @@ classes = (
     M3D_OT_bg_select,
     M3D_OT_bg_bake,
     M3D_OT_bg_bake_all,
-    PROPERTIES_PT_m3d_tx_bake_groups,
-    PROPERTIES_PT_m3d_tx_bake_group,
 )
 
 

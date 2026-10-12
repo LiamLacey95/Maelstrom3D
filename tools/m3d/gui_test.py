@@ -9176,9 +9176,9 @@ def bgg_tab_check():
     dock, region = bgg_dock_context()
     with bpy.context.temp_override(window=window(), screen=window().screen, area=dock, region=region):
         check(m3d_workspace.active_page(bpy.context) == "tex_bake", "the dock shows the Bake page")
-        check(BGR.PROPERTIES_PT_m3d_tx_bake_groups.poll(bpy.context), "the Bake Groups panel is shown")
-        check(BGR.PROPERTIES_PT_m3d_tx_bake_group.poll(bpy.context), "...and the settings of the group of the active mesh")
-        check(not m3d_texture.PROPERTIES_PT_m3d_tx_bake_high.poll(bpy.context), "...and not the High Poly picker")
+        check(m3d_texture.PROPERTIES_PT_m3d_tx_bake_advanced.poll(bpy.context) and HPR.grouped(bpy.context.active_object),
+              "the Bake page has Advanced, which holds the Bake Groups and the settings of the group of the active mesh")
+        check(m3d_texture.PROPERTIES_PT_m3d_tx_bake_high.poll(bpy.context), "...and High Poly, which shows the status of the group instead of the picker")
     groups = HPR.all_groups(bpy.context)
     check(list(groups) == ["Rock", "Shield", "Sword"] and [len(x) for x in groups["Sword"]] == [1, 2], "three groups, the sword with a floater: %s" % {g: [len(x) for x in v] for g, v in groups.items()})
     check(bgg_group_state("Sword") == 'NONE', "nothing is baked yet")
@@ -9884,7 +9884,7 @@ def bx_tab_check():
     check(not tracebacks(), "Python error drawing the Bake tab (bake extras)")
     dock, region = bgg_dock_context()
     with bpy.context.temp_override(window=window(), screen=window().screen, area=dock, region=region):
-        check(BGR.PROPERTIES_PT_m3d_tx_bake_groups.poll(bpy.context) and BGR.PROPERTIES_PT_m3d_tx_bake_group.poll(bpy.context), "the Bake tab shows the groups and the settings of the active one")
+        check(m3d_texture.PROPERTIES_PT_m3d_tx_bake_advanced.poll(bpy.context) and HPR.grouped(bpy.context.active_object), "the Bake page shows Advanced, with the groups and the settings of the active one")
     check(not BGR.cage_objects() and not BGR.moved(bpy.context), "(nothing is apart, no cage preview)")
 
 
@@ -10223,7 +10223,13 @@ def t4_project_check():
     check(mat is not None and len(mat.m3d_layers) == 1 and mat.m3d_layers[0].name == "Base" and mat.m3d_size == 1024 and LY.stack_size(mat) == 1024
           and [c.id for c in LY.set_channels(mat)] == ['BASE_COLOR', 'ROUGHNESS', 'METALLIC', 'NORMAL', 'HEIGHT'],
           "OK in the New Texture Project dialog made a texture set with a Base layer of 1024 px and the default channels")
-    check(window().workspace.m3d_page_right == "tex_bake" and window().workspace.name == "Texture", "...and opened Bake Mesh Maps")
+    check(window().workspace.m3d_page_right == "tex_layers" and window().workspace.name == "Texture", "...and the dock shows the Layers (Bake Mesh Maps opens from its button)")
+    roles = tex_roles()
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=roles["dock"], region=next(r for r in roles["dock"].regions if r.type == 'WINDOW'),
+                                   space_data=roles["dock"].spaces.active):
+        shown = [c.__name__ for c in (*m3d_texture.classes, *m3d_texset.classes) if hasattr(c, "poll") and getattr(c, "page", "") in {"tex_layers", "tex_settings", "tex_bake"} and c.poll(bpy.context)]
+    check("PROPERTIES_PT_m3d_tx_stack" in shown and not {"PROPERTIES_PT_m3d_tx_set_general", "PROPERTIES_PT_m3d_tx_bake_high"} & set(shown),
+          "...the dock draws the Layers, not Texture Set Settings or the Bake page: %s" % shown)
     check(not tracebacks(), "Python error making the project")
     # small images keep the rest of the tests quick
     bpy.context.scene.m3d_tex.set_size = '128'
@@ -10236,14 +10242,20 @@ def t4_project_check():
 
 # --- Bake Mesh Maps: the page, the Bake button, Back to Painting
 @step
+def t4_bake_open():
+    t4_key('B', ctrl=True, shift=True)
+
+
+@step
 def t4_bake_page():
     roles = tex_roles()
-    check(window().workspace.m3d_page_right == "tex_bake", "the dock shows the Bake page")
+    check(window().workspace.m3d_page_right == "tex_bake", "Ctrl+Shift+B shows the Bake page in the dock")
     with bpy.context.temp_override(window=window(), screen=window().screen, area=roles["dock"], region=next(r for r in roles["dock"].regions if r.type == 'WINDOW'),
                                    space_data=roles["dock"].spaces.active):
         shown = [c.__name__ for c in (*m3d_texture.classes, *LIB.classes) if hasattr(c, "poll") and getattr(c, "page", "") == "tex_bake" and c.poll(bpy.context)]
-    check({"PROPERTIES_PT_m3d_tx_bake_back", "PROPERTIES_PT_m3d_tx_bake_maps", "PROPERTIES_PT_m3d_tx_bake_settings", "PROPERTIES_PT_m3d_tx_bake_map"} <= set(shown),
-          "Bake Mesh Maps shows the Bake button, the bakers, the common settings and the map settings: %s" % shown)
+    check(set(shown) == {"PROPERTIES_PT_m3d_tx_bake_back", "PROPERTIES_PT_m3d_tx_bake_high", "PROPERTIES_PT_m3d_tx_bake_maps", "PROPERTIES_PT_m3d_tx_bake_settings",
+                         "PROPERTIES_PT_m3d_tx_bake_advanced"},
+          "Bake Mesh Maps shows Back to Painting, High Poly, Maps, Size and Bake, and Advanced: %s" % shown)
     bpy.context.scene.m3d_tex.bake_map = 'AO'
     t4_redraw()
 
@@ -10252,6 +10264,7 @@ def t4_bake_page():
 def t4_bake_shot():
     check(not tracebacks(), "Python error drawing Bake Mesh Maps")
     e_screenshot("F:/AI/m3d_bake_mode.png")
+    e_screenshot("F:/AI/m3d_fb_bake_page.png")
 
 
 @step
@@ -10265,12 +10278,22 @@ def t4_bake_check():
     ob = bpy.context.active_object
     check({"Crate4_Normal", "Crate4_AO"} <= set(bpy.data.images.keys()) and ob.m3d_bake.baked == "Crate4_Normal|Crate4_AO", "Bake in the window baked the ticked maps: %s" % ob.m3d_bake.baked)
     check(tuple(bpy.data.images["Crate4_AO"].size) == (64, 64), "...at the size of the settings")
-    check(window().workspace.m3d_page_right == "tex_bake" and not tracebacks(), "...and the page stays; no Python error")
+    check(window().workspace.m3d_page_right == "tex_layers" and not tracebacks(), "...and the dock is back on the Layers when it is done; no Python error")
+    mat = ob.active_material
+    check(mat.m3d_baked_normal == bpy.data.images["Crate4_Normal"] and mat.m3d_baked_ao == bpy.data.images["Crate4_AO"] and "m3d_layer.NORMAL.encode" in mat.node_tree.nodes
+          and LY.principled_of(mat).inputs["Base Color"].links[0].from_node.name == LY.AO_MUL, "...the baked normal and AO are in the shader of the set")
+    check(m3d_texture.view_mode_3d(bpy.context, tex_view()[0].spaces.active) == 'MATERIAL' and tex_view()[0].spaces.active.shading.type == 'MATERIAL', "...and the 3D view shows the material")
     t4_redraw()
 
 
 @step
+def t4_back_open():
+    press_ok("m3d.tex_bake_mode", _area=tex_roles()["dock"], on=True)
+
+
+@step
 def t4_back():
+    check(window().workspace.m3d_page_right == "tex_bake", "(Bake Mesh Maps is open again)")
     press_ok("m3d.tex_bake_mode", _area=tex_roles()["dock"], on=False)
 
 
@@ -10399,6 +10422,242 @@ def t4_export_buttons():
         check(bpy.ops.m3d.tex_export_dialog.poll(), "the dock strip button and the toolbar button open the dialog (it has a poll)")
     shutil.rmtree(os.path.join(GIZMO["t4_dir"], "out"), ignore_errors=True)
     s.export_preset = 'UNITY'
+
+
+# --- Feedback on the redesigned workspace: a bake shows in the viewport (the normal detail on a low poly, in Material view), the clean
+# headers with the whole name in the dropdown, the 2D view showing Material, the viewport types, the Display Settings. Pictures:
+# F:/AI/m3d_fb_baked.png, m3d_fb_headers.png, m3d_fb_2d_material.png, m3d_fb_display.png (m3d_fb_bake_page.png is above).
+def fb_view_text(area):
+    """The text the display dropdown of a view of the Texture screen shows."""
+    region = next(r for r in area.regions if r.type == 'WINDOW')
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=area, region=region, space_data=area.spaces.active):
+        space = area.spaces.active
+        mode = m3d_texture.view_mode_3d(bpy.context, space) if area.type == 'VIEW_3D' else m3d_texture.view_mode_2d(bpy.context, space)
+        return m3d_texture.mode_text(bpy.context, mode), mode
+
+
+def fb_area(kind):
+    return next(a for a in window().screen.areas if a.type == kind)
+
+
+@step
+def fb_setup():
+    """A low poly sphere and a high poly with dimples: the bake has detail to show. Nothing else is shown (Crate4 is hidden)."""
+    import numpy as np
+    for ob in bpy.data.objects:
+        ob.hide_set(True)
+    area, region = tex_view()
+    with bpy.context.temp_override(window=window(), area=area, region=region):
+        bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=5, radius=1.0)
+        high = bpy.context.active_object
+        high.name = "FbHigh"
+        co = np.empty(len(high.data.vertices) * 3, np.float32)
+        high.data.vertices.foreach_get("co", co)
+        co = co.reshape(-1, 3)
+        bump = 1.0 + 0.07 * np.sin(9 * co[:, 0]) * np.sin(9 * co[:, 1]) * np.sin(9 * co[:, 2]) + 0.03 * np.sin(23 * co[:, 0] + 1) * np.sin(19 * co[:, 2])
+        high.data.vertices.foreach_set("co", (co * bump[:, None]).ravel())
+        high.data.polygons.foreach_set("use_smooth", [True] * len(high.data.polygons))
+        high.data.update()
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=16, ring_count=8, radius=1.0)
+        low = bpy.context.active_object
+        low.name = "FbLow"
+        bpy.ops.object.shade_smooth()
+        for o in bpy.data.objects:
+            o.select_set(o == low)
+        bpy.context.view_layer.objects.active = low
+        bpy.ops.m3d.tex_project('EXEC_DEFAULT', resolution='512', template='DEFAULT', unwrap=False, bake_after=False)
+        bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+        high.hide_set(True)
+        for m in bpy.data.materials:
+            if m != low.active_material:
+                m.m3d_set_bake = False
+        s = low.m3d_bake
+        s.high, s.resolution, s.samples, s.margin, s.extrusion = high, '512', 8, 8, 0.2
+        s.use_normal = s.use_ao = True
+        s.use_curvature = s.use_position = s.use_thickness = s.use_id = s.use_worldnormal = False
+        for o in bpy.data.objects:
+            o.select_set(o == low)
+        bpy.ops.view3d.view_selected()
+    window().workspace.m3d_page_right = "tex_layers"
+    check(window().workspace.m3d_page_right == "tex_layers" and low.active_material.m3d_baked_normal is None, "(a low poly and its high poly, nothing baked yet)")
+    t4_redraw()
+
+
+@step
+def fb_bake():
+    press_ok("m3d.tex_bake_sets", _area=tex_roles()["dock"])
+
+
+@step
+def fb_baked_check():
+    low = bpy.data.objects["FbLow"]
+    mat = low.active_material
+    check(not tracebacks(), "Python error baking a low poly and a high poly")
+    normal = bpy.data.images.get("FbLow_Normal")
+    check(normal is not None and normal.get("m3d_bake") == "Normal" and mat.m3d_baked_normal == normal and bpy.data.images.get("FbLow_AO") == mat.m3d_baked_ao,
+          "the bake made the Normal and AO maps and the set uses them: %s" % mat.m3d_baked_normal)
+    import numpy as np
+    px = np.empty(len(normal.pixels), np.float32)
+    normal.pixels.foreach_get(px)
+    check(float(np.ptp(px.reshape(-1, 4)[:, 0])) > 0.2, "the baked normal has detail (red spans %.2f)" % np.ptp(px.reshape(-1, 4)[:, 0]))
+    check("m3d_layer.NORMAL.encode" in mat.node_tree.nodes and mat.node_tree.nodes["m3d_layer.NORMAL.map"].inputs["Color"].links[0].from_node.name == "m3d_layer.NORMAL.encode"
+          and LY.principled_of(mat).inputs["Normal"].links[0].from_node.name in {"m3d_layer.NORMAL.map", "m3d_layer.HEIGHT.bump"}
+          and LY.principled_of(mat).inputs["Base Color"].links[0].from_node.name == LY.AO_MUL, "...the shader combines the baked normal with the layers' normal and multiplies the Base Color by the AO")
+    area = fb_area('VIEW_3D')
+    check(area.spaces.active.shading.type == 'MATERIAL' and window().workspace.m3d_page_right == "tex_layers", "...the 3D view is in Material and the dock on the Layers")
+    t4_redraw()
+
+
+@step
+def fb_baked_wait():
+    t4_redraw()
+
+
+@step
+def fb_baked_shot():
+    check(not tracebacks(), "Python error drawing the baked material")
+    e_screenshot("F:/AI/m3d_fb_baked.png")
+
+
+@step
+def fb_headers_setup():
+    mat = bpy.data.objects["FbLow"].active_material
+    LY.active_layer(mat).name = "Rust"
+    press_ok("m3d.tex_view_mode", _area=fb_area('VIEW_3D'), mode="CHANNEL:BASE_COLOR")
+    press_ok("m3d.tex_view_mode", _area=fb_area('IMAGE_EDITOR'), mode="CHANNEL:BASE_COLOR")
+    t4_redraw()
+
+
+@step
+def fb_headers_check():
+    check(not tracebacks(), "Python error drawing the clean headers")
+    for kind in ('VIEW_3D', 'IMAGE_EDITOR'):
+        text, mode = fb_view_text(fb_area(kind))
+        check(text == "Base Color (Rust)" and mode == "CHANNEL:BASE_COLOR", "the %s dropdown shows the whole name: %r" % (kind, text))
+    try:
+        import blf
+        scale = bpy.context.preferences.system.ui_scale
+        blf.size(0, 11 * scale)
+        width = blf.dimensions(0, "Base Color (Rust)")[0]
+        check(m3d_texture.dropdown_units("Base Color (Rust)") * 20 * scale >= width + 60 * scale, "...the dropdown is wide enough for it (%.0f px of text in %.0f)" % (width, m3d_texture.dropdown_units("Base Color (Rust)") * 20 * scale))
+    except Exception as err:
+        print("blf:", err)
+    t4_redraw()
+
+
+@step
+def fb_headers_shot():
+    e_screenshot("F:/AI/m3d_fb_headers.png")
+
+
+@step
+def fb_2d_material():
+    press_ok("m3d.tex_view_mode", _area=fb_area('IMAGE_EDITOR'), mode='MATERIAL')
+    press_ok("m3d.tex_view_mode", _area=fb_area('VIEW_3D'), mode='MATERIAL')
+    t4_redraw()
+
+
+@step
+def fb_2d_material_check():
+    space = fb_area('IMAGE_EDITOR').spaces.active
+    mat = bpy.data.objects["FbLow"].active_material
+    check(space.image is not None and space.image.get("m3d_preview") == mat.name and space.ui_mode == 'VIEW' and space.use_image_pin,
+          "the 2D view shows Material: a picture of the material, pinned so that a new paint target does not replace it (%s)" % (space.image and space.image.name))
+    check(fb_view_text(fb_area('IMAGE_EDITOR'))[0] == "Material" and fb_view_text(fb_area('VIEW_3D'))[0] == "Material", "...both dropdowns say Material")
+    import numpy as np
+    px = np.empty(len(space.image.pixels), np.float32)
+    space.image.pixels.foreach_get(px)
+    px = px.reshape(-1, 4)
+    check(float(px[:, :3].std()) > 0.01, "...with the lit detail of the baked normal in it (std %.3f)" % px[:, :3].std())
+    check(not tracebacks(), "Python error drawing the 2D view's Material")
+    t4_redraw()
+
+
+@step
+def fb_2d_material_wait():
+    t4_redraw()
+
+
+@step
+def fb_2d_material_shot():
+    e_screenshot("F:/AI/m3d_fb_2d_material.png")
+
+
+@step
+def fb_2d_refresh():
+    """A change of the layers makes the picture again (the timer): a fill layer of a strong color changes it."""
+    mat = bpy.data.objects["FbLow"].active_material
+    area = fb_area('IMAGE_EDITOR')
+    press_ok("m3d.layer_add", _area=tex_roles()["dock"], kind='FILL')
+    layer = LY.active_layer(mat)
+    layer.channels[0].color = (0.9, 0.1, 0.1, 1.0)
+    check(mat.name in m3d_texture._preview["dirty"], "a change of the layers makes the Material View out of date")
+
+
+step(wait_until(lambda: not (bpy.data.objects["FbLow"].active_material.name in m3d_texture._preview["dirty"]), "the timer to make the Material View again", tries=30))
+
+
+@step
+def fb_2d_refresh_check():
+    import numpy as np
+    image = fb_area('IMAGE_EDITOR').spaces.active.image
+    px = np.empty(len(image.pixels), np.float32)
+    image.pixels.foreach_get(px)
+    px = px.reshape(-1, 4)
+    check(px[:, 0].mean() > 1.5 * px[:, 1].mean(), "...and it shows the red fill now (red %.2f, green %.2f on average)" % (px[:, 0].mean(), px[:, 1].mean()))
+    press_ok("m3d.layer_remove", _area=tex_roles()["dock"])
+    check(not tracebacks(), "Python error refreshing the Material View")
+
+
+@step
+def fb_types():
+    """The viewport type of the 3D view: every type through the operator the dropdown calls, read back from the view."""
+    area = fb_area('VIEW_3D')
+    shading, mat = area.spaces.active.shading, bpy.data.objects["FbLow"].active_material
+    scene = bpy.context.scene
+    GIZMO["fb_engine"] = scene.render.engine
+    for kind, want in (('UNLIT', 'MATERIAL'), ('SOLID', 'SOLID'), ('WIRE', 'MATERIAL'), ('RENDERED', 'RENDERED'), ('MATERIAL', 'MATERIAL')):
+        press_ok("m3d.tex_view_type", _area=tex_roles()["dockbar"], kind=kind)
+        check(shading.type == want and m3d_texture.view_type_of(area.spaces.active, mat) == kind and mat.m3d_unlit == (kind == 'UNLIT')
+              and area.spaces.active.overlay.show_wireframes == (kind == 'WIRE'), "viewport type %s: shading %s, read back %s" % (kind, shading.type, m3d_texture.view_type_of(area.spaces.active, mat)))
+        if kind == 'UNLIT':
+            check(LY.output_node(mat.node_tree).inputs["Surface"].links[0].from_node.name == LY.MASKVIEW, "...Unlit shows an Emission of the Base Color")
+        if kind == 'RENDERED':
+            check(scene.render.engine == 'BLENDER_EEVEE', "...Rendered is EEVEE")
+    scene.render.engine = GIZMO["fb_engine"]
+    check(not tracebacks(), "Python error switching the viewport type")
+    t4_redraw()
+
+
+@step
+def fb_defaults_check():
+    """The 3D view of the Texture workspace starts as a studio: the studio HDRI, blurred behind the model."""
+    sh = fb_area('VIEW_3D').spaces.active.shading
+    check(sh.type == 'MATERIAL' and sh.studio_light == "studio.exr" and abs(sh.studiolight_background_blur - 0.5) < 1e-6 and sh.studiolight_background_alpha == 1.0,
+          "the 3D view starts with the studio environment: %s, blur %.2f, background %.2f" % (sh.studio_light, sh.studiolight_background_blur, sh.studiolight_background_alpha))
+    check(window().workspace.get("m3d_env") == 1, "(the workspace remembers that it did)")
+    xy = tex_roles()["dockbar"]
+    event('MOUSEMOVE', xy=(xy.x + xy.width // 2, xy.y + xy.height - 30))
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=xy, region=next(r for r in xy.regions if r.type == 'WINDOW')):
+        bpy.ops.wm.call_panel('INVOKE_DEFAULT', name="M3D_PT_tex_display", keep_open=True)
+
+
+@step
+def fb_display_shot():
+    check(not tracebacks(), "Python error drawing Display Settings")
+    e_screenshot("F:/AI/m3d_fb_display.png")
+    event('ESC', 'PRESS')
+    event('ESC', 'RELEASE')
+
+
+@step
+def fb_cleanup():
+    for ob in list(bpy.data.objects):
+        if ob.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.data.objects.remove(ob)
+    check(not tracebacks(), "Python error in the feedback tests")
 
 
 @step

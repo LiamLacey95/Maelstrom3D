@@ -869,6 +869,14 @@ class IMAGE_HT_header(Header):
 
         layout.template_header()
 
+        # Maelstrom3D: the Texture workspace's 2D view keeps a compact View menu and the display mode dropdown only
+        # (m3d_texture.draw_image_header): no image selector, pin, Image or UV menus, overlays.
+        from m3d_workspace import texture_clean
+        if sima.mode in {'PAINT', 'VIEW'} and texture_clean(context):
+            from m3d_texture import draw_image_header
+            draw_image_header(layout, context)
+            return
+
         if sima.mode != 'UV':
             layout.prop(sima, "ui_mode", text="")
 

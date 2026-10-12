@@ -238,11 +238,13 @@ Retopology builds the low poly from a high poly you already have, either by draw
 F4 opens the Texture workspace and enters Texture Paint Mode on the active mesh. It is laid out like a dedicated painting
 tool, with the tools on the left, the assets next to them, the 3D view and the 2D paint view side by side, and the texture
 sets, layers and properties on the right. Names are Blender's own. A mesh needs UVs and a material before it can be
-painted: the panels say what is missing and have a button to fix it (Auto Unwrap, Add Material, Texture Paint Mode).
+painted: the panels say what is missing and have a button to fix it (Auto Unwrap, Add Material, Texture Paint Mode). The
+workspace shows only what texturing needs: the menu bar of the Texturing set has no Create, Select or Modify, and the two
+view headers are short (see Headers below); everything else of Blender is in the other workspaces and in the More menu of the 3D view.
 
 ```
- menu bar        File Edit ... Paint Layers Bake Export
- toolbar         tool controls (Size, Flow, Spacing, Lazy Mouse, Symmetry)   |  view layout, Bake Mesh Maps, Export Textures
+ menu bar        File Edit Paint Layers Bake Export Display Windows Help
+ toolbar         tool controls (Size, Flow, Spacing, Lazy Mouse, Symmetry)   |  viewport type, view layout, Bake Mesh Maps, Export Textures
  +---+----------+-----------------------+----------------------+------------------+---+
  | T | ASSETS   | 3D VIEW  [Material v] | 2D VIEW  [Material v]| TEXTURE SETS     | D |
  | O | icons    |                       |                      +------------------+ O |
@@ -257,12 +259,12 @@ painted: the panels say what is missing and have a button to fix it (Auto Unwrap
 |---|---|
 | Tool strip (far left) | One icon button for each tool: **Paint** (1), **Eraser** (2), **Projection** (3), **Polygon Fill** (4), **Smudge** (5), **Clone** (6) and the **Picker** (P). The tooltip names the tool and its key; the active tool is highlighted. Blender's own tool column is hidden in both views, so this is the only one |
 | Assets | A full height column: a row of category icons (see Assets below), a search field and a grid of tiles |
-| 3D view and 2D view | The 3D view in Material Preview and the 2D paint view (the Image Editor in Paint mode). Each has a **display mode** dropdown at the top right: Material, each channel on its own, the baked mesh maps, the mask of the active layer |
+| 3D view and 2D view | The 3D view (Material Preview, lit by a studio environment that shows blurred behind the model) and the 2D paint view (the Image Editor in Paint mode). Their headers hold only what texturing needs (see Headers below): a short **View** menu and, at the top right, the **display mode** dropdown: Material, each channel on its own, the baked mesh maps, the mask of the active layer. The 3D header also has the **viewport type**, the view layout, Display Settings and More |
 | Texture Set List (right, top) | One row for each material of the active mesh, then the materials with layers of the other meshes (a texture set is a material and its layers). A row has an **eye** that shows or hides the set, its **name** (a double-click renames it), the mesh it is on when that is not the active one, and the size of its images; a click on a row makes it the active material (the Layers follow). In Bake Mesh Maps each row also has a **Bake** checkbox. The right-click menu of a row has **Rename**, **Show / Hide** and **Isolate**; the button in the header isolates the active set (Alt+Q). While no material has layers the list has a **New Texture Project...** button |
-| Layers \| Texture Set Settings (right, middle) | Two tabs. **Layers** is the layer stack (see Layers below). **Texture Set Settings** has **General** (name, **Size**, **Normal Map Format**), **Channels** (a row for each channel of the set with its format and an x, **Add Channel**, Save All Images), **Mesh Maps** (a slot for each baked map, and a big **Bake Mesh Maps** button) and All Paint Slots (see Texture set settings below). **Bake Mesh Maps** replaces the tabs by the Bake page, with the **Bake** button and **Back to Painting** on top |
-| Properties (right, bottom) | Titled by what is selected: **Properties - Paint** (previews, then the sections of the tool: Brush, Alpha, Stencil, Material ...), **Properties - Fill** (the fill's UV transform and its Material), **Properties - Mask** (the effects of the layer's mask and the selected effect; the Paint sections follow while the mask is painted) and **Properties - Folder** (the folder and its mask). The buttons **Auto \| Layer \| Mask** in its header pick the layer's own settings or its mask when the title is not the one you want. See Properties below |
-| Dock strip (far right) | Icons that open a popover: **Display Settings** (shading, environment rotation and intensity, Channel View, UV checker), **Shader Settings** (the Principled shader of the active material and its displacement), **History** (the undo steps, a click goes back to that step), **Export Textures** (opens the Export Textures dialog; Ctrl+Shift+E), and **Log** (the Info window with the reports) |
-| Toolbar (top bar) | Left: the controls of the active tool, **Size** and **Flow** (the brush strength) with their pen pressure buttons, **Spacing**, **Lazy Mouse** with its distance, the channel buttons of the brush material (**color height rough metal emit**, shorter on a narrower window; for the tools that paint them), **Symmetry** X Y Z. Polygon Fill shows its fill mode instead of the brush controls; Projection adds the stencil's opacity, **Reset** and **Fit**; when a fill layer is selected the toolbar shows its UV transform (**Tiling**, **Rotation**, **Offset**, **Reset**) instead of the brush. Right: the view layout (3D \| 2D, 3D only, 2D only: the last two maximize one view), perspective / orthographic, **Bake Mesh Maps**, **Export Textures**, the workspace picker. There are no shelf rows in this workspace (Show Shelf in Workspace Settings brings them back) |
+| Layers \| Texture Set Settings (right, middle) | Two tabs. **Layers** is the layer stack (see Layers below). **Texture Set Settings** has **General** (name, **Size**, **Normal Map Format**), **Channels** (a row for each channel of the set with its format and an x, **Add Channel**, Save All Images), **Mesh Maps** (a slot for each baked map, and a big **Bake Mesh Maps** button) and All Paint Slots (behind **More Settings**; see Texture set settings below). **Bake Mesh Maps** replaces the tabs by the Bake page (see Bake below); **Back to Painting**, or a finished bake, brings the Layers back, and a new project always ends on the Layers |
+| Properties (right, bottom) | Titled by what is selected: **Properties - Paint** (previews, then the sections of the tool: Brush, Alpha, Stencil, Material ...), **Properties - Fill** (the fill's UV transform and its Material), **Properties - Mask** (the effects of the layer's mask and the selected effect; the Paint sections follow while the mask is painted) and **Properties - Folder** (the folder and its mask). The buttons **Auto \| Layer \| Mask** in its header pick the layer's own settings or its mask when the title is not the one you want. The settings that are rarely needed (Advanced, Cursor) are behind **More Settings** at the bottom. See Properties below |
+| Dock strip (far right) | Icons that open a popover: **Display Settings** (the viewport type, AO in viewport, the environment: a thumbnail for each studio HDRI, rotation, exposure, background and blur, Channel View, UV checker), **Shader Settings** (the Principled shader of the active material and its displacement), **History** (the undo steps, a click goes back to that step), **Export Textures** (opens the Export Textures dialog; Ctrl+Shift+E), and **Log** (the Info window with the reports) |
+| Toolbar (top bar) | Left: the controls of the active tool, **Size** and **Flow** (the brush strength) with their pen pressure buttons, **Spacing**, **Lazy Mouse** with its distance, the channel buttons of the brush material (**color height rough metal emit**, shorter on a narrower window; for the tools that paint them), **Symmetry** X Y Z. Polygon Fill shows its fill mode instead of the brush controls; Projection adds the stencil's opacity, **Reset** and **Fit**; when a fill layer is selected the toolbar shows its UV transform (**Tiling**, **Rotation**, **Offset**, **Reset**) instead of the brush. Right: the **viewport type**, the view layout (3D \| 2D, 3D only, 2D only: the last two maximize one view), perspective / orthographic, **Bake Mesh Maps**, **Export Textures**, the workspace picker. There are no shelf rows in this workspace (Show Shelf in Workspace Settings brings them back) |
 
 **Tools.** Blender has one brush tool for texture painting, and the brush decides what a stroke does, so each tool of the strip picks a brush and a few settings in one click:
 
@@ -309,7 +311,9 @@ drawn with, the same library grid (a click makes that alpha the stencil) and **L
 Shift+RMB scales it and Ctrl+RMB turns it. A stencil is one picture on the screen, so it has no tiling. **Material** is the row
 of channel buttons and the value of each channel that is on (see Painting several channels at once). **Advanced** (closed) has the
 stroke method, the stabilizer, the falloff, input samples, seam bleed, dither and the cavity mask, and what the Blur and Mask
-brushes have of their own. **Cursor** (closed) is Blender's brush cursor display. While a mask is painted (**Properties - Mask**) the
+brushes have of their own. **Cursor** (closed) is Blender's brush cursor display. Both are hidden until you press **More
+Settings** at the bottom of Properties - Paint (**Fewer Settings** hides them again); the same button shows All Paint Slots in
+Texture Set Settings. While a mask is painted (**Properties - Mask**) the
 Material is replaced by the two **Grayscale** colors: white shows the layer, black hides it, X swaps them.
 
 For a Fill Layer it is **Properties - Fill**. **Fill** has the UV transform of the layer's textures, **Tiling**, **Rotation**
@@ -359,9 +363,39 @@ as Blender does.
 Color, Roughness, Metallic, Normal, Height, Emission: the ones the material has), the **Mesh maps** (Normal, Ambient
 Occlusion, Curvature, Position, Thickness, ID, World Normal, Displacement: the ones that are baked) and **Mask**. In the 3D
 view a channel is shown flat without lighting, and the maps and the mask are shown by the material instead of its shader (the
-shader comes back with Material). In the 2D view the image of the channel, the map or the mask is shown. Material in the
-2D view is the image that is being painted. The 2D view paints the image it shows (it stays in Paint mode, so the painting
+shader comes back with Material). In the 2D view the image of the channel, the map or the mask is shown. The dropdown is as
+wide as what it shows and says it whole: a channel names the layer that is painted (**Base Color (Rust)**), the mask names its
+layer, a map shows its name; Material is always in the list. Blender's image selector is not in the headers: the dropdown picks what
+is shown, and the code picks the image that is painted.
+
+**Material in the 2D view** is a picture of the whole material in UV space (the Material View): the layers' Base Color, with the
+baked AO when AO in Viewport is on, lit by one light from the top left over the combined normal (a flat surface is as bright as
+its color) and with the Emission added. It is made from the layers by a timer a moment after a stroke or any change (never while
+the view draws) at 512 px at most, it is shown in View mode (strokes on it would be lost: show a channel to paint in the 2D view),
+and it is never saved with the file. The 2D view paints the image it shows (it stays in Paint mode for the channels, so the painting
 keys work there), so a baked map shown in it changes if you paint on it: Undo takes it back.
+
+**Viewport types and environment.** The **viewport type** dropdown (in the 3D header and at the right of the toolbar; the five
+buttons are also in Display Settings) has: **Material** (the default: Material Preview, lit by the environment), **Rendered**
+(EEVEE with the lights and the world of the scene: it switches the scene to EEVEE, since Cycles in the viewport is slow), **Unlit**
+(the Base Color alone, flat, without light: the material shows an Emission of the layers' Base Color, through the scene's view
+transform, and every texture set follows), **Solid** (the fast Workbench view with the painted channel, lit by studio lights) and
+**Wireframe** (Material with the wireframe overlay). The type is read back from the view, so the dropdown always says what it
+is, and picking one takes the view back from a channel, a map or a mask. A new 3D view in the Texture workspace starts as a studio:
+Material Preview with Blender's **studio** HDRI (soft boxes, neutral grey: it is the one that shows the colors the least tinted),
+shown blurred behind the model (background 1.0, blur 0.5, strength 1.0); this is set once, the first time a Texture workspace
+opens, and after that the view is yours. **Display Settings** (dock strip, or the globe in the 3D header) has a thumbnail for each
+studio HDRI (a click lights the Material view with it), **Rotation** (Shift+RMB drag in the view turns it too), **Exposure**,
+**Background** and **Blur**, **Studio Defaults** to go back, and **AO in Viewport**.
+
+**Headers.** The 3D view's header in the Texture workspace has the editor type, a compact **View** menu (frame, perspective,
+the three axis views, the camera, and More for Blender's whole View menu), then at the right the display mode dropdown, the viewport
+type, the view layout, Display Settings and a **More** menu (overlays, grid, gizmos, X-Ray, Blender's own menus). Left out of it,
+and reachable in the other workspaces: the Shading, Lighting, Show, Renderer and Panels menus and their toolbar, the selection
+modes, the overlay, gizmo and shading buttons, the texture slot and mask popovers. The 2D view's header has the editor type, a
+compact View menu (fit, zoom) and the display mode dropdown: no image selector, pin, New / Open, Image or UV menus, overlays or
+paint mode switch. Only the Texture workspace of the new layout is changed: files saved with the old layout, and the other
+workspaces, keep Blender's headers.
 
 **Assets.** The category icons are, left to right: **Materials**, **Smart Materials**, **Smart Masks**, **Brushes**,
 **Alphas**, **Environments** and **Mine**.
@@ -416,50 +450,57 @@ brings it back as it was (painting a removed channel from the Layers menu or the
 can be stored as **8 bit** or **16 bit float**: its images are copied into the other kind with the same pixels and names, and the layers made later follow. Base Color and Emission stay 8 bit sRGB, because a
 float image keeps linear light, which the layer math of the colors does not read. **Mesh Maps** has a slot for Normal, World Normal, ID, Ambient Occlusion, Curvature, Position and Thickness (Displacement
 joins them once baked): a thumbnail, the name of the image (`<set>_<map>`), a folder button that takes an image file for the slot, and an x that clears it. A map from a file is used like a baked one (the display modes, the
-mask effects); the next bake into the slot replaces it. Not done: non-square sizes, a Normal mixing setting (the layers of the Normal channel blend with their own blend modes), channels beyond the six.
+mask effects); the next bake into the slot replaces it. Not done: non-square sizes, other ways to combine the normals (the layers' normal always goes on top of the baked one as a whiteout combine), channels beyond the six.
 
 **New Texture Project.** **File > New Texture Project...** (in the Texturing menu set), the button in the Texture Set List and the Layers tab (while no material has layers) and the one next to Add Material (for a
 mesh without a material) open a dialog for the selected meshes: the **Document Resolution** (1024 by default), the **Normal Map Format**, the **Channels** (Base Color, Roughness, Metallic, Normal and Height; the same with
-Emission; or the minimal Base Color, Roughness and Metallic), **Auto Unwrap Missing UVs** and **Bake Mesh Maps After**. OK gives every material of the meshes a Base layer, which is its texture set, with an image of
+Emission; or the minimal Base Color, Roughness and Metallic), **Auto Unwrap Missing UVs** and **Bake Mesh Maps Next** (off at first). OK gives every material of the meshes a Base layer, which is its texture set, with an image of
 that size for each channel of the template (a channel that is not in the template is removed from the set, and can be added later), makes a material for a mesh that has none, unwraps a mesh without UVs and keeps the resolution
-and the format as the project's. The first set is the one painted, and Bake Mesh Maps opens (when asked for) to pick the high poly and bake. A material that has layers already is left alone.
+and the format as the project's. The first set is the one painted and the dock shows the **Layers** (with Bake Mesh Maps Next the Bake page opens instead, to pick the high poly and bake; the Layers come back when the bake is done). A material that has layers already is left alone.
 
-**Bake.** **Bake Mesh Maps** (in Texture Set Settings, in the toolbar, the Bake menu or Ctrl+Shift+B) replaces the tabs of the dock by the Bake page, and **Back to Painting** returns. The page has, from the top, the big **Bake**
-button with what it bakes (**Bake: 2 maps x 3 sets**: the ticked maps of the active set, and the texture sets that have their Bake checkbox ticked in the Texture Set List; a mesh with several sets is baked once, a bake group
-as a group), **Back to Painting**, the **Mesh Map Bakers** (a checkbox for each map: Normal, AO, Curvature, Position, Thickness, ID and World Normal; the name of a map shows its **Map Settings**, the eye shows a baked map;
-**Check All**, **Uncheck All**, Invert, and **Apply to Checked Texture Sets**, which gives the other ticked sets the maps, size, dilation and antialiasing of this one), the **Common Settings** (**Size**, **Dilation**, **Antialiasing**:
-the samples of each pixel, **Extrusion** and **Max Ray Distance** of the cage, a custom **Cage** mesh, and **Match by Name**, which pairs meshes called Sword_low and Sword_high into a bake group), the **High Poly Meshes** (the picker
-for a mesh without a group; a mesh of a group has the Bake Groups and Group Settings panels instead), the **Map Settings** of the map that is selected (Normal: the format; AO: the distance of the world's ambient occlusion;
-Curvature: the contrast; Thickness: the distance; Position, World Normal and ID: what they are), Multires and the list of the baked maps. A set that cannot be baked (a mesh without UVs) is reported and skipped.
+**Bake.** **Bake Mesh Maps** (in Texture Set Settings, in the toolbar, the Bake menu or Ctrl+Shift+B) replaces the tabs of the dock by the Bake page. It is made for a first bake, top to bottom:
+
+| Part | What it is |
+|---|---|
+| Back to Painting | Back to the Layers |
+| High Poly | One line: the picker of the high poly (for a mesh without a group; the eyedropper takes the other selected mesh) or, for a mesh of a bake group, the group with its number of low and high polys. **Auto-Pair** is on the same line: it pairs meshes called Sword_low and Sword_high into bake groups |
+| Maps | A checkbox for each map, in two columns: Normal, Ambient Occlusion, Curvature, Position, Thickness, ID and World Normal |
+| Size and Bake | The **Size** of the maps and one big **Bake** button that says what it bakes: **Bake 2 maps**, or **Bake 2 maps for 3 texture sets** (the ticked maps of the active set, for every texture set that has its Bake checkbox ticked in the Texture Set List; a mesh with several sets is baked once, a bake group as a group) |
+| Advanced (closed) | **Dilation**, **Antialiasing** (the samples of each pixel), **Extrusion**, **Max Ray Distance** and a custom **Cage** mesh (a group has these in its Group Settings), **All Maps**, **No Maps**, Invert and **Apply to Checked Texture Sets** (it gives the other ticked sets the maps, size, dilation and antialiasing of this one). Under them, closed at first: **Map Settings** (the settings of the map the dropdown picks: Normal: the format; AO: the distance of the world's ambient occlusion; Curvature: the contrast; Thickness: the distance; Position, World Normal and ID: what they are), **Bake Groups**, **Group Settings** (for a mesh of a group), **Multires** (a mesh with levels and no high poly) and **Baked Maps** (the images of the last bake: one button shows an image in the 3D view, one in the 2D view) |
+
+The tooltip of every control says what it does. When the bake is done the dock goes back to the Layers, the 3D view shows the material and every texture set that was baked uses its maps (next paragraph). A set that cannot be baked (a mesh without UVs) is reported and skipped.
 The bake needs Cycles: it switches to it, bakes every ticked map into an image (kept with the file) and switches back; the mesh's materials
 are not changed (a temporary material takes the bake and is removed). Curvature uses the shader's Pointiness (needs enough polygons), Thickness uses
 ambient occlusion from inside the mesh (closed meshes only; white where the mesh is thicker than the Thickness Distance), Position is scaled to 0-1
 within the bounds of the baked meshes (and is always baked with one sample: Cycles adds a position pass up over its samples). The window waits while
 it bakes. Mask effects use these maps too (see Masks).
 
+**Baked maps in the viewport.** A bake changes what you see: the texture sets of the baked meshes use the **Normal** and **AO** maps in their shader (Texture Set Settings > Mesh Maps and a map picked from a file do the same, and so does a file that has baked maps when it is opened). The baked **Normal** is the base normal of the material: an Image Texture (Non-Color) into a Normal Map node, under the layers. When the layers paint a Normal channel, the layers' normal goes on top of the baked one as detail, a whiteout combine in tangent space made of Vector Math nodes in front of the Normal Map node (decode both to -1..1, add the slopes x and y, multiply the z's, make the vector one long, encode): a flat layer normal leaves the baked normal as it is and a flat baked normal leaves the painted one. A normal bake made as DirectX is read with its green channel turned over first (the bake remembers its format, so changing the project's format later does not change a map that is made). A set without the Normal channel uses no baked normal. The **AO** map darkens the Base Color in the viewport only: a Multiply node between the Base Color layers and the Principled shader (Display Settings > **AO in Viewport**, on by default), and the Unlit viewport type, the exported Base Color and a render (F12, an animation: the multiply is taken out of the shader when a render starts and put back when it ends) never have it. Export writes the same combined normal the nodes show (in OpenGL, or DirectX when the template follows a DirectX project), computed in numpy and compared with a Cycles bake of the nodes; Merge Down and Flatten work on the layers alone, since the baked map is not a layer. Height from a Multires displacement is not combined: the Normal bake already holds that detail, so it would count twice.
+
 A mesh without a role bakes as before: the images are named `<mesh>_<Map>`, with the **High Poly** mesh when one is picked (selected to active), else
 from the mesh itself. **Make Pair** (below the picker) turns the picked mesh into the high poly of a new group and the mesh into its low poly.
 
 **Bake groups.** A group (see High poly and low poly) is one or more low polys, which get the maps, and one or more high polys, which the detail is
-baked from; several high polys in one group (a panel and its bolts) are baked together. The **Bake Groups** panel at the top of the Bake page lists the
+baked from; several high polys in one group (a panel and its bolts) are baked together. The **Bake Groups** section of Advanced on the Bake page lists the
 groups of the scene with their number of low and high polys and their state: **Baked**, **Stale** (a mesh of the group was moved or edited, joined or left
 the group, or a setting of the group changed, after the bake; the file keeps this) or **Not baked**. Clicking a row selects the group's low poly. Below the
-list: **Auto-Pair by Name**, **Pair Selected**, the **Rename to Suffixes** menu, **Bake Group** (the group of the active mesh) and **Bake All**. Bake All
+list: **Pair Selected**, **Make Pair** (once a High Poly is picked), the **Rename to Suffixes** menu and **Explode**. **Auto-Pair by Name** is next to the High Poly picker, and
+the one **Bake** button bakes the groups of the ticked texture sets; the Bake menu has **Bake Maps** (the group of the active mesh) and **Bake All Groups**. Bake All Groups
 shows its progress, writes the time of each group to the Info log, skips a group that fails (a missing UV map, a cage that does not fit) and says which,
-and is one step of Undo. The Bake button of the shelf and the menu bakes the group of the active mesh. Going into a mode, painting a texture, adding or applying a material, the UV checker map, the export and a rename do not make a group stale. Leaving Sculpt Mode or Edit Mode does (Blender only tells then that a mesh may have changed, not whether it did), and so does any other change of a mesh's material slots, which Blender reports like an edit.
+and is one step of Undo. The Bake button of the shelf bakes the group of the active mesh. Going into a mode, painting a texture, adding or applying a material, the UV checker map, the export and a rename do not make a group stale. Leaving Sculpt Mode or Edit Mode does (Blender only tells then that a mesh may have changed, not whether it did), and so does any other change of a mesh's material slots, which Blender reports like an edit.
 
 Every group is baked on its own, whatever else is in the scene: only its high polys are the source, and all the other meshes (the other groups, the low
 polys, loose meshes) are not rendered meanwhile, so a neighbour that touches the group, or sits in the same place, cannot shadow its ambient occlusion or reach its normal
 map. The low poly that is being baked never shadows its high poly. High polys that are hidden (Maelstrom3D hides them outside Sculpt) are shown for the bake
 only, and hidden again; selection, the active mesh, the mode, the render engine and every visibility and render flag are put back, also when the bake fails.
 
-The **Group Settings** panel (below the list, for the group of the active mesh) has the group's own values, made from the low poly's own Bake page values:
+The **Group Settings** section (below the list, for the group of the active mesh) has the group's own values, made from the low poly's own Bake page values:
 **Extrusion** and **Max Ray Distance**, a **Cage** (a mesh with the same faces as the low poly, for a group with one low poly; the rays start from it instead of
 from the extruded low poly), and **AO Shadows**: **This Group** (the default) or **Whole Model**, which lets the high polys of every group shadow this group's ambient
-occlusion, for contact shadows between the groups. The Maps panel (maps, size, margin) and the Settings panel (samples, Thickness Distance, AO Distance) are shared by the
+occlusion, for contact shadows between the groups. The maps, the size, the dilation, the antialiasing, the Thickness Distance and the AO Distance are shared by the
 group's texture set.
 
-**Explode.** The **Explode** button of the Bake Groups panel moves the groups apart along one axis (**Axis**: X, Y or Z), so that you can look at them one by one or export them to
+**Explode.** The **Explode** button of the Bake Groups section moves the groups apart along one axis (**Axis**: X, Y or Z), so that you can look at them one by one or export them to
 another baker. The low polys, high polys and custom cage of a group move together, so a bake while they are apart gives the same maps as before; Whole Model ambient occlusion is the one
 exception, since it sees the groups where they are. The groups are taken in the order they have along the axis, and a group is moved past the one before it only when their bounds overlap or are closer than
 the **Gap** (a share of the average size of a group): a group that has room stays where it is. The button says **Collapse** while they are apart and puts every mesh back exactly where it was; the
@@ -467,7 +508,7 @@ small refresh button beside it lines the groups up again, for a group that was a
 was added to it, so this survives saving and opening the file, and Undo works. A mesh that you moved yourself in the meantime goes back by what was added. Exploding or collapsing does not make a baked group stale.
 A copy of a moved mesh (Create High Poly, Auto Low Poly, New Low Poly) goes back with the mesh it was made from; a mesh that you add to an exploded group by hand is left where it is: use the refresh button.
 
-**Cage preview.** **Show Cage** in the Group Settings panel draws the low poly of the active group pushed out along its normals by the group's Extrusion (or the custom Cage, as it is) as an orange wire in the 3D view, so you can check that it
+**Cage preview.** **Show Cage** in the Group Settings section draws the low poly of the active group pushed out along its normals by the group's Extrusion (or the custom Cage, as it is) as an orange wire in the 3D view, so you can check that it
 covers the high poly (show the high poly with Edit High Poly). It follows the Extrusion and the low poly while you work. It is only drawn: the wire is made of temporary objects that share the low poly's mesh, are never rendered or selected, and
 are taken away when you press the button again, pick a mesh of another group, start a bake, and when a file is saved or opened, so they are never in a saved file or in a bake. The distance is the Extrusion in the world, also when the low poly is
 scaled (a scale you change afterwards is not followed: press the button twice).
@@ -478,13 +519,13 @@ others (Position is scaled to the bounds of the whole set, so it is baked again 
 samples of the set. A low poly whose material nobody else shares, and every mesh without a role, keeps maps named after the mesh (`Cube_Normal`); maps named after a mesh in
 files from earlier versions are still found and used until the set is baked.
 
-**Multires.** A mesh with a Multires modifier that has levels, and no high poly (a low poly of a group without high polys, or a mesh without a role and without a picked High Poly), gets a **Multires** panel in the
-Bake page: **Normal** and **Displacement** buttons, **Low Level** (the Multires level the detail is baked onto: 0 is the base mesh) and **Bake Multires**. It uses Blender's own Multires baker: what the levels above the Low Level
-add to it becomes a tangent space normal map and / or a displacement map (a float map; grey is no distance), without any high poly, in the size and margin of the Maps panel. The images are named like the other maps (`<mesh>_Normal`,
+**Multires.** A mesh with a Multires modifier that has levels, and no high poly (a low poly of a group without high polys, or a mesh without a role and without a picked High Poly), gets a **Multires** section under
+Advanced on the Bake page: **Normal** and **Displacement** buttons, **Low Level** (the Multires level the detail is baked onto: 0 is the base mesh) and **Bake Multires**. It uses Blender's own Multires baker: what the levels above the Low Level
+add to it becomes a tangent space normal map and / or a displacement map (a float map; grey is no distance), without any high poly, in the size and dilation of the Bake page. The images are named like the other maps (`<mesh>_Normal`,
 `<mesh>_Displacement`; after the material for a low poly of a texture set), so everything that reads a baked map finds them. The Multires modifier has to be the last modifier, and the mesh needs UVs. The render settings of the scene,
 the level of the modifier, the selection and the mode are put back, also when the bake fails. A Low Level of 3 on a modifier with 3 levels has nothing above it, so it bakes the last level only.
 
-**ID map.** The **ID** map of the Maps panel gives each material of the group's high polys a flat colour, or each high poly mesh when they have only one material (or none) between them, baked onto the low poly: one sample, so the edges
+**ID map.** The **ID** map of the Maps list gives each material of the group's high polys a flat colour, or each high poly mesh when they have only one material (or none) between them, baked onto the low poly: one sample, so the edges
 between the colours are hard, and the margin only extends them. The colours follow the names of the materials (or the meshes) in order, so a new bake gives the same ones; a slot without a material is black, like the background. The map is
 named like the others (`<mesh>_ID`) and keeps which colour is which (shown in the Color ID mask effect, see Masks).
 
@@ -497,7 +538,8 @@ again before anything is drawn. A mesh without a bake group is refused; a group 
 checkbox that skips it and the file name it will have. On the right: the **Template** (the engine the files are for), the **Output Directory** (it may start with `//`, next to the saved file), the **File Type** (PNG, TGA, TIFF
 or EXR) with its **Bit Depth** (PNG and TIFF 8 or 16 bit, EXR 16 or 32 bit float, TGA 8 bit), the **Size** (the size of each set, or 64 to 8192 px: the layers are resampled) and the **Padding**, and the Bake meshes option. **Export**
 writes the files, and a summary lists them. A file is named after the mesh (and after the material too when the mesh has more than one material: `T_Hero_Body_BC.png`); a channel without a paint image uses the shader's value, and
-the colors are written in linear light in EXR files.
+the colors are written in linear light in EXR files. The Normal is the combined one (the layers' normal on top of the baked normal map, as the 3D view shows it); the baked AO is
+never in the exported Base Color.
 
 | Template | Files |
 |---|---|
@@ -529,7 +571,7 @@ channel has a frame with one Image Texture and Mix node per layer; only nodes ma
 combines a layer into the one below with its blend mode, opacity and mask baked in (exact when the lower layer is opaque or the
 upper one uses Normal; the merged layer keeps the lower layer's blend mode in each channel); **Flatten** replaces the stack by one
 layer holding what it looks like.
-Export, glTF included, uses the flattened visible stack of each channel and does not change the layers. The Layers dock warns
+Export, glTF included, uses the flattened visible stack of each channel (the Normal on top of the baked normal map) and does not change the layers. The Layers dock warns
 when the layer images add up to more than twelve 4K images of memory.
 
 **The Layers panel.** The header has, from the left, the **channel dropdown** and these icon buttons: **Add Effect** (a menu:
@@ -556,7 +598,7 @@ mask still fade it), Multiply, Divide, Darken, Lighten, Add (Linear Dodge), Subt
 Color Dodge, Soft Light, Linear Light, Hue, Saturation, Color and Value. New layers mix every channel except Height, which
 is **Linear Light**: Height is stored with 0.5 as flat, and Linear Light leaves 0.5 alone, raises what is above it and digs
 what is below (what Add does to a signed height in other painting tools), so painted or filled bumps add up. The Base layer
-made from existing paint slots, or by Flatten, mixes Height, so the look does not change. The Normal channel mixes (Blender has no normal map combine here). Every mode is exact in the numbers Merge Down,
+made from existing paint slots, or by Flatten, mixes Height, so the look does not change. The Normal channel mixes its layers; the baked normal map is not a layer: the layers' normal goes on top of it as detail (see Baked maps in the viewport). Every mode is exact in the numbers Merge Down,
 Flatten, Freeze and Export use, and was compared with a Cycles bake of the shader nodes. Color Burn and Color Dodge need one more
 Mix node in the channel (their node formulas are not linear in the strength). **Properties - Layer** (and Folder) has the
 blend mode and opacity of every channel. Layers from older files open with their one blend mode and opacity in every channel

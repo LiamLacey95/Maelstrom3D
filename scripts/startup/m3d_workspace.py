@@ -257,6 +257,12 @@ def tabs_kind(context):
     return kind
 
 
+def texture_clean(context):
+    """Is this the Texture workspace of the new layout (Workspace.m3d_layout 1)? Its 3D view and 2D view headers show only what texturing
+    needs; the old layout and every other workspace keep Blender's headers."""
+    return current_kind(context) == 'TEXTURE' and tabs_kind(context) == 'TEXTURE'
+
+
 def texture_role(context):
     """Which Properties editor of the Texture layout the area is. Where it sits decides: the narrow ones at the window's edges
     are the tool strip (left) and the dock strip (right), the wide one on the left is Assets, and the wide ones on the right,

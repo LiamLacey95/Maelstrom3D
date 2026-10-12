@@ -191,12 +191,14 @@ class M3D_OT_tex_map_load(Operator):
         image.colorspace_settings.name = 'Non-Color'
         image.use_fake_user = True
         image["m3d_bake"], image["m3d_map"], image["m3d_stamp"] = self.label, int(s.resolution), MK.new_uid()
+        if self.label == "Normal":   # (a file is taken to follow the project's normal map format: the shader reads the green channel so)
+            image["m3d_nfmt"] = context.scene.m3d_tex.normal_format
         if self.label == "Position":   # (a file of positions is taken to be scaled to the bounds of the mesh, as the bake does)
             lo, hi = T.world_bounds(ob)
             image["m3d_bounds"] = [float(x) for x in (*lo, *hi)]
             image["m3d_inv"] = [float(x) for row in owner.matrix_world.inverted() for x in row]
         s.baked = "|".join(dict.fromkeys([*filter(None, s.baked.split("|")), name]))
-        L.link_maps(ob.active_material, ob)
+        L.use_baked_maps(context, [ob])   # (a Normal or AO map is in the shader of the texture sets at once)
         return {'FINISHED'}
 
 
@@ -220,6 +222,7 @@ class M3D_OT_tex_map_clear(Operator):
         s = T.bake_owner(ob).m3d_bake
         s.baked = "|".join(n for n in s.baked.split("|") if n and n != image.name)
         L.remove_image(image)
+        L.use_baked_maps(context, [ob])   # (the shader goes back to what the layers say)
         return {'FINISHED'}
 
 
@@ -436,8 +439,9 @@ class M3D_OT_tex_project(Operator):
                          description="Unwrap the meshes that have no UV map (cut at sharp edges, unfold, lay out)")
     template: EnumProperty(name="Channels", default='DEFAULT', items=[(k, name, "") for k, (name, _ch) in PROJECT_CHANNELS.items()],
                            description="The channels of each texture set")
-    bake_after: BoolProperty(name="Bake Mesh Maps After", default=True,
-                             description="Open Bake Mesh Maps when the project is made, to pick the high poly and bake")
+    bake_after: BoolProperty(name="Bake Mesh Maps Next", default=False,
+                             description="Open Bake Mesh Maps when the project is made, to pick the high poly and bake (the Layers "
+                                         "come back when the bake is done). Off: the Layers show")
 
     @classmethod
     def poll(cls, context):
@@ -511,13 +515,13 @@ class M3D_OT_tex_project(Operator):
         return {'FINISHED'}
 
     def open_texture(self, context):
-        """The Texture workspace (when this is another one) shows the new sets; Bake Mesh Maps opens when asked for."""
+        """The Texture workspace (when this is another one) shows the new sets, with the Layers in its dock; Bake Mesh Maps opens when
+        asked for."""
         import m3d_workspace as W
         ws = next((w for w in bpy.data.workspaces if W.workspace_kind(w) == 'TEXTURE'), None)
         if ws is None:
             return
-        if self.bake_after:
-            ws.m3d_page_right = "tex_bake"
+        ws.m3d_page_right = "tex_bake" if self.bake_after else "tex_layers"
         if context.workspace != ws and context.window is not None:
             try:
                 bpy.ops.m3d.workspace(kind='TEXTURE')

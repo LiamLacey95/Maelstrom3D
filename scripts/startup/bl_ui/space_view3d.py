@@ -846,6 +846,13 @@ class VIEW3D_HT_header(Header):
         from m3d_workspace import menu_bar_has_mode
         classic_header = (object_mode in {'OBJECT', 'EDIT'} and (obj is None or obj.type == 'MESH')
                           or menu_bar_has_mode(context))
+        # Maelstrom3D: the Texture workspace keeps only what texturing needs in this header (the View menu, the display mode,
+        # the viewport type and the layout; m3d_texture.draw_view_header). Blender's own header is in the other workspaces.
+        from m3d_workspace import texture_clean
+        if classic_header and texture_clean(context):
+            from m3d_texture import draw_view_header
+            draw_view_header(layout, context)
+            return
 
         act_mode_item = bpy.types.Object.bl_rna.properties["mode"].enum_items[object_mode]
         act_mode_i18n_context = bpy.types.Object.bl_rna.properties["mode"].translation_context
