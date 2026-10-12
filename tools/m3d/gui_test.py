@@ -2466,64 +2466,52 @@ def sg_invert_check():
     press_ok("paint.mask_flood_fill", mode='VALUE', value=0.0)
 
 
-# --- Ctrl+drag on empty space masks a rectangle; a tiny one clears the mask
+# --- Ctrl+drag on empty space clears the mask (a click there inverts it)
 
-@step
-def sg_box_drag():
+def sg_box_mask():
+    """Mask the right half of the sphere with the box gesture (a mask to clear, or to smooth)."""
     c, r = SG["c"], SG["r"]
-    SG["box"] = ((c[0] + 1.35 * r, c[1] + 1.35 * r), (c[0], c[1] - 1.35 * r))   # the right half of the sphere
-    sg_press(SG["box"][0], ctrl=True)
-    sg_move(*SG["box"], ctrl=True)
+    SG["box"] = ((c[0] + 1.35 * r, c[1] + 1.35 * r), (c[0], c[1] - 1.35 * r))
+    win, area, region = view3d()
+    (x0, y0), (x1, y1) = SG["box"]
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.paint.mask_box_gesture(xmin=int(min(x0, x1) - region.x), xmax=int(max(x0, x1) - region.x),
+                                       ymin=int(min(y0, y1) - region.y), ymax=int(max(y0, y1) - region.y),
+                                       mode='VALUE', value=1.0, use_front_faces_only=True)
 
 
 @step
-def sg_box_release():
-    sg_release(SG["box"][1], ctrl=True)
-
-
-step(wait_until(lambda: sg_verts()["mask"].max() > 0, "Ctrl+drag on empty space to mask a rectangle"))
-
-
-@step
-def sg_box_check():
-    v = sg_verts()
-    cx = SG["c"][0]
-    inside = (v["px"][:, 0] > cx + 12) & (v["facing"] > 0.3)
-    outside = v["px"][:, 0] < cx - 12
-    back = (v["px"][:, 0] > cx + 12) & (v["facing"] < -0.3)
-    check(inside.any() and v["mask"][inside].min() > 0.99, "box mask covers the visible verts inside (min %.2f)" % v["mask"][inside].min())
-    check(v["mask"][outside].max() == 0, "box mask leaves the outside alone")
-    check(v["mask"][back].max() == 0, "box mask is for what you see (the back is not masked)")
-    check(not tracebacks(), "Python error in the box mask gesture")
+def sg_clear_setup():
+    sg_box_mask()
+    check(sg_verts()["mask"].max() > 0, "(a box mask to clear)")
 
 
 @step
-def sg_tiny_drag():
+def sg_clear_drag():
     a = SG["empty"]
-    SG["tiny"] = (a, (a[0] + 7, a[1] + 5))
+    SG["clear"] = (a, (a[0] + 60, a[1] - 40))
     sg_press(a, ctrl=True)
-    sg_move(*SG["tiny"], steps=4, ctrl=True)
+    sg_move(*SG["clear"], ctrl=True)
 
 
 @step
-def sg_tiny_release():
-    sg_release(SG["tiny"][1], ctrl=True)
+def sg_clear_release():
+    sg_release(SG["clear"][1], ctrl=True)
 
 
-step(wait_until(lambda: sg_verts()["mask"].max() == 0, "a tiny Ctrl+drag on empty space to clear the mask"))
+step(wait_until(lambda: sg_verts()["mask"].max() == 0, "Ctrl+drag on empty space to clear the mask"))
+
+
+@step
+def sg_clear_check():
+    check(not tracebacks(), "Python error in the clear mask gesture")
 
 
 # --- Ctrl+click on the mesh smooths the mask, Ctrl+Alt+click sharpens it
 
 @step
 def sg_smooth_setup():
-    sg_press(SG["box"][0], ctrl=True)
-    sg_move(*SG["box"], ctrl=True)
-
-
-@step
-def sg_smooth_setup2():
-    sg_release(SG["box"][1], ctrl=True)
+    sg_box_mask()
 
 
 step(wait_until(lambda: sg_verts()["mask"].max() > 0, "the box mask for the smooth test"))
@@ -2621,13 +2609,7 @@ step(wait_until(lambda: not sg_verts()["hidden"].any(), "show all after the insi
 @step
 def sg_faceset_setup():
     # Two face sets: the right half (masked by a box) and the rest.
-    sg_press(SG["box"][0], ctrl=True)
-    sg_move(*SG["box"], ctrl=True)
-
-
-@step
-def sg_faceset_setup2():
-    sg_release(SG["box"][1], ctrl=True)
+    sg_box_mask()
 
 
 step(wait_until(lambda: sg_verts()["mask"].max() > 0, "the mask for the face sets"))

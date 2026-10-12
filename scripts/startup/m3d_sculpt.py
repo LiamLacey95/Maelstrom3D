@@ -725,16 +725,15 @@ class M3D_OT_sculpt_add_mesh(Operator):
 
 CTRL_MODES = (
     ('MASK', "Mask", "Ctrl: drag on the mesh paints mask, click on it smooths the mask, click off the mesh inverts "
-     "it, drag off the mesh masks a rectangle (a tiny one clears the mask)"),
+     "it, drag off the mesh clears it"),
     ('UNMASK', "Unmask", "Ctrl+Alt: drag on the mesh erases mask, click on it sharpens the mask, drag off the mesh "
      "unmasks a rectangle"),
     ('HIDE_OUTSIDE', "Hide Outside", "Ctrl+Shift: drag hides everything outside a rectangle, click off the mesh "
      "shows everything, click on the mesh shows only that face set"),
     ('HIDE_INSIDE', "Hide Inside", "Ctrl+Shift+Alt: drag hides everything inside a rectangle"),
 )
-TINY_BOX = 16   # px: a Ctrl+drag off the mesh smaller than this (both sides) clears the mask instead of masking
-BOX_OPS = {   # mode -> the rectangle operator and its options
-    'MASK': ("paint.mask_box_gesture", {"mode": 'VALUE', "value": 1.0, "use_front_faces_only": True}),
+TINY_BOX = 16   # px: a Ctrl+Alt / Ctrl+Shift drag off the mesh smaller than this (both sides) does nothing
+BOX_OPS = {   # mode -> the rectangle operator and its options (a Ctrl drag off the mesh clears the mask instead)
     'UNMASK': ("paint.mask_box_gesture", {"mode": 'VALUE', "value": 0.0, "use_front_faces_only": True}),
     'HIDE_OUTSIDE': ("paint.hide_show", {"action": 'HIDE', "area": 'OUTSIDE'}),
     'HIDE_INSIDE': ("paint.hide_show", {"action": 'HIDE', "area": 'Inside'}),   # (sic: Blender's identifier)
@@ -834,6 +833,9 @@ class M3D_OT_sculpt_ctrl(Operator):
             self.run("sculpt.brush_stroke", 'INVOKE_DEFAULT', mode='INVERT' if self.mode == 'UNMASK' else 'NORMAL',
                      brush_toggle='MASK')
             return self.finish(context, {'FINISHED'})
+        if self.mode == 'MASK':   # Off the mesh: Ctrl+drag clears the mask (a click there inverts it)
+            self.run("paint.mask_flood_fill", mode='VALUE', value=0.0)
+            return self.finish(context, {'FINISHED'})
         self.box = True
         self.handle = bpy.types.SpaceView3D.draw_handler_add(self.draw_box, (), 'WINDOW', 'POST_PIXEL')
         context.window.cursor_modal_set('CROSSHAIR')
@@ -847,8 +849,6 @@ class M3D_OT_sculpt_ctrl(Operator):
                 op, options = BOX_OPS[self.mode]
                 self.run(op, 'EXEC_DEFAULT', xmin=int(min(x0, x1)), xmax=int(max(x0, x1)),
                          ymin=int(min(y0, y1)), ymax=int(max(y0, y1)), **options)
-            elif self.mode == 'MASK':
-                self.run("paint.mask_flood_fill", mode='VALUE', value=0.0)
         elif self.mode == 'MASK':
             if self.on_mesh:
                 self.run("sculpt.mask_filter", filter_type='SMOOTH')

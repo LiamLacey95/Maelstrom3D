@@ -858,7 +858,8 @@ def phase1b():
                        ('HIDE_OUTSIDE', dict(shift=True, alt=False)), ('HIDE_INSIDE', dict(shift=True, alt=True))):
         item = find("Sculpt", "m3d.sculpt_ctrl", "LEFTMOUSE", ctrl=True, **mods)
         check(len(item) == 1 and item[0].value == 'PRESS' and item[0].properties.mode == mode, "Ctrl gesture %s: %s" % (mode, item))
-        check(mode in S.BOX_OPS and mode in {m for m, _l, _d in S.CTRL_MODES}, "Ctrl gesture %s has its rectangle operator" % mode)
+        check((mode in S.BOX_OPS) == (mode != 'MASK') and mode in {m for m, _l, _d in S.CTRL_MODES},
+              "Ctrl gesture %s has its rectangle operator (Ctrl alone clears the mask off the mesh)" % mode)
     ctrl_lmb = [k for k in sculpt_km.keymap_items if k.type == 'LEFTMOUSE' and k.ctrl]
     check(len(ctrl_lmb) == 4 and all(k.idname == "m3d.sculpt_ctrl" for k in ctrl_lmb),
           "Ctrl+LMB in Sculpt is only the gesture operator: %s" % [(k.idname, k.shift, k.alt) for k in ctrl_lmb])
@@ -889,7 +890,8 @@ def phase1b():
         check(all(k in rna.properties for k in (*options, "xmin", "xmax", "ymin", "ymax")), "rectangle operator %s for %s" % (op, mode))
         if "area" in options:
             check(options["area"] in rna.properties["area"].enum_items.keys(), "hide area %s exists" % options["area"])
-    check(op_ok("paint.mask_flood_fill", {"mode": 'INVERT'}) and op_ok("sculpt.mask_filter", {"filter_type": 'SMOOTH'})
+    check(op_ok("paint.mask_flood_fill", {"mode": 'INVERT'}) and op_ok("paint.mask_flood_fill", {"mode": 'VALUE', "value": 0.0})
+          and op_ok("sculpt.mask_filter", {"filter_type": 'SMOOTH'})
           and op_ok("sculpt.face_set_change_visibility", {"mode": 'TOGGLE'}) and op_ok("paint.hide_show_all", {"action": 'SHOW'}),
           "gesture click operators")
     check(S.ui_scale_factor(bpy.context) > 0, "UI scale factor without a window")

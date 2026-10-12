@@ -160,7 +160,7 @@ by what is under the cursor when you press and by whether you click or drag (mor
 
 | Input | On the mesh | Off the mesh (empty space) |
 |---|---|---|
-| Ctrl+drag | Paint mask (the Mask brush for this stroke, at the brush's size; your active brush stays) | Mask a rectangle (what you see; a tiny rectangle clears the mask) |
+| Ctrl+drag | Paint mask (the Mask brush for this stroke, at the brush's size; your active brush stays) | Clear the mask |
 | Ctrl+Alt+drag | Erase mask | Unmask a rectangle |
 | Ctrl+click | Smooth (blur) the mask once | **Invert the mask** |
 | Ctrl+Alt+click | Sharpen the mask | Nothing |
