@@ -186,7 +186,7 @@ def _check_gpu():
 
 Job = namedtuple("Job", "title steps total finish")   # finish(context, report, result, error) -> True when something was baked
 CANCELLED = RuntimeError("Cancelled")   # `error` of a finish function when the queue was cancelled
-_note = {"label": "", "where": ""}   # what is being baked: the map and the group, for the panels
+_note = {"label": "", "where": "", "done": []}   # what is being baked: the map and the group, for the panels; the maps the queue finished
 
 
 def note(label=None, where=None):
@@ -195,6 +195,15 @@ def note(label=None, where=None):
         _note["label"] = label
     if where is not None:
         _note["where"] = where
+
+
+def baked(name):
+    """A map of the queue is done (its image `name`): Baked Maps may show it (the others are still being written)."""
+    _note["done"].append(name)
+
+
+def baked_names():
+    return set(_note["done"])
 
 
 def drive(steps):
@@ -249,6 +258,7 @@ class Run:
         self.launched = 0.0
         self.blocked = 0.0       # when the guard last stopped a click or a key
         self.restore = []        # (space, shading type) of the 3D views that were in Rendered
+        self.page = None         # the page the dock was on when the queue opened the Bake page (it goes back there after)
 
 
 _run = None
@@ -306,7 +316,7 @@ def start(context, job, window):
     """Start the queue for a job in `window` (None: no window, the tests drive the timer by hand)."""
     global _run
     _run = Run(job, window)
-    _note.update(label="", where="")
+    _note.update(label="", where="", done=[])
     if window is not None:
         prepare(context)
     bpy.app.timers.register(_tick, first_interval=0.0)
@@ -315,7 +325,7 @@ def start(context, job, window):
 def prepare(context):
     """What the queue needs before it starts: the visualization of the Bake page is put away (it changes meshes and
     materials), a 3D view in Rendered goes to Material (Cycles is the engine meanwhile; a Cycles viewport would race the job), the
-    Bake page is shown, the banner is drawn in the 3D views."""
+    Bake page is shown (a queue that opens it goes back after), the banner is drawn in the 3D views."""
     import m3d_bakeview
     import m3d_workspace as W
     m3d_bakeview.leave(context)
@@ -327,7 +337,7 @@ def prepare(context):
                 shading.type = 'MATERIAL'
     ws = _run.window.workspace
     if ws is not None and W.workspace_kind(ws) == 'TEXTURE' and ws.m3d_page_right != "tex_bake":
-        ws.m3d_page_right = "tex_bake"
+        _run.page, ws.m3d_page_right = ws.m3d_page_right, "tex_bake"
     _banner["handle"] = bpy.types.SpaceView3D.draw_handler_add(_draw_banner, (), 'WINDOW', 'POST_PIXEL')
 
 
@@ -440,6 +450,8 @@ def _finish(run, result, error):
     try:
         with window_override(run.window):
             done = run.job.finish(context, report_later, result, error)
+            if run.page and ws is not None and ws.m3d_page_right == "tex_bake":
+                ws.m3d_page_right = run.page   # (a bake started from the Layers: back there, the 2D view too, see m3d_texture.follow)
             if done and run.window is not None:
                 bpy.ops.ed.undo_push(message=run.job.title)
     except BaseException:

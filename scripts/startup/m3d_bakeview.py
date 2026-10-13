@@ -11,11 +11,12 @@ see-through blue mesh: each gets a temporary material in its object slots (`slot
 touched), and goes back when the dock leaves the Bake page, when the file is saved, undone or loaded. What an object had before is
 kept in a custom property of the object itself, so that an undo can never leave the blue behind.
 
-The cage is the low poly pushed out by the group's Extrusion, drawn as an orange wire. Where a bake would go wrong it is red:
-from every point of the low poly a ray goes along the normal as the bake sends it (from the extruded surface, inwards, as far as
-the Max Ray Distance) and a point is a problem when the ray finds no high poly (a miss), or when the point is inside a high poly (the
-high poly sticks out past the cage, so the ray starts inside it and the bake takes the inner wall). The check is done by a timer in
-small slices, a moment after the last change, never while drawing; the draw handler only draws batches that the check made.
+The cage is the low poly pushed out by the group's Cage Distance (the bake's extrusion), drawn as an orange wire. Where a bake would go
+wrong it is red: from every point of the low poly a ray goes along the normal as the bake sends it (from the extruded surface, inwards,
+as far as the Max Ray Distance) and a point is a problem when the ray finds no high poly (a miss), or when the point is inside a high
+poly (the high poly sticks out past the cage, so the ray starts inside it and the bake takes the inner wall). The check is done by a
+timer in small slices, a moment after the last change, never while drawing; the draw handler only draws batches that the check made.
+The Bake page says what it found next to the Cage Distance, with Auto-fit Cage, which measures how far the high poly sticks out.
 """
 
 import time
@@ -39,7 +40,7 @@ KEY = "m3d_view"          # custom property of an object the view changed: what 
 CAGE_COLOR = (1.0, 0.5, 0.1, 1.0)
 SLICE = 0.02              # seconds of the check that one timer call may take
 CHUNK = 300               # rays between two looks at the clock
-BIG_FACE = 3.0            # a face this many times bigger than the average one also sends a ray from its middle
+MIDDLES = 20000           # faces that also send a ray from their middle, at most (the biggest: the middle of a face lies below its corners)
 MAX_FACES = 8_000_000     # high polys with more faces than this (all together) are not checked: a BVH of them takes too long
 
 _view = {
@@ -55,6 +56,7 @@ _view = {
     "job": None,          # the check that is running (a generator, see check_steps)
     "result": {},         # low poly name -> Cage: what the draw handler draws
     "areas": None,        # problem areas found (None: not checked yet)
+    "kinds": {},          # of them: "tight" (the high poly sticks out of the cage), "miss" (no high poly), "limited" (a Max Ray Distance is set)
     "note": "",           # why there is no check
     "handles": [],        # draw handlers
 }
@@ -202,7 +204,7 @@ def leave(context):
     stop_check()
     for handle in _view["handles"]:
         bpy.types.SpaceView3D.draw_handler_remove(handle, 'WINDOW')
-    _view.update(on=False, sig=None, handles=[], result={}, areas=None, note="", dirty=0.0, bvh={}, geo=set(), touched=set())
+    _view.update(on=False, sig=None, handles=[], result={}, areas=None, kinds={}, note="", dirty=0.0, bvh={}, geo=set(), touched=set())
     redraw(context)
 
 
@@ -305,8 +307,8 @@ def hp_bvh(context, ob):
 def low_samples(context, low, extrusion):
     """The points a bake of `low` sends rays from, as numpy arrays: world positions of the extruded surface, the world directions of the
     rays (inwards), and for the face colors the loop and face of each, plus the cage's wire and triangles in object space. The extrusion is
-    in object space (the bake does so), a point is sent from the corner normal of each loop, and from the middle of the faces that
-    are big."""
+    in object space (the bake does so), a point is sent from the corner normal of each loop, and from the middle of each face along
+    the mean of its corner normals (a bake's rays start all over the face)."""
     ev = low.evaluated_get(context.evaluated_depsgraph_get())
     me = ev.to_mesh()
     try:
@@ -337,12 +339,12 @@ def low_samples(context, low, extrusion):
         ev.to_mesh_clear()
     face_of = np.repeat(np.arange(npoly, dtype=np.int32), total)
     corner = co[vert] + normals * extrusion   # the cage, one point for each corner
-    # one sample for each corner (the ones that are the same are one), and one for the middle of each big face
+    # one sample for each corner (the ones that are the same are one), and one for the middle of each face
     keys = np.round(np.concatenate([co[vert], normals], axis=1), 5)
     _unique, first, inverse = np.unique(keys, axis=0, return_index=True, return_inverse=True)
     inverse = inverse.reshape(-1)
-    big = np.flatnonzero(area > BIG_FACE * max(float(area.mean()), 1e-12)) if npoly else np.empty(0, np.int64)
-    big = big[:20000]
+    # ponytail: the middle is the deepest point of a face on a curved low poly; past MIDDLES faces only the biggest send one
+    big = np.arange(npoly) if npoly <= MIDDLES else np.sort(np.argsort(-area)[:MIDDLES])
     face_normal = np.zeros((npoly, 3), np.float32)
     np.add.at(face_normal, face_of, normals)
     face_normal /= np.maximum(np.linalg.norm(face_normal, axis=1, keepdims=True), 1e-12)
@@ -359,9 +361,11 @@ def low_samples(context, low, extrusion):
 
 
 def cast(origin, direction, highs, limit):
-    """0 for a point that is fine, 1 for a miss, 2 for a point inside a high poly, for the rays `origin` / `direction` (world space).
+    """0 for a point that is fine, 1 for a miss, 2 for a point inside a high poly, 3 for a high poly past the Max Ray Distance, for the
+    rays `origin` / `direction` (world space).
     Done like the bake does: the nearest hit of the ray along the direction counts when it is closer than `limit` (0: no limit).
-    `highs`: [(bvh, matrix, inverse)]. A hit on a back face means the ray started inside."""
+    `highs`: [(bvh, matrix, inverse)]. A point is inside when the ray outwards meets a back face first (the cage is too tight there);
+    a ray that meets a back face first going in passed through a hole and finds the far wall from inside, which is a miss too."""
     status = np.zeros(len(origin), np.uint8)
     for i in range(len(origin)):
         o, d = Vector(origin[i]), Vector(direction[i])
@@ -377,17 +381,20 @@ def cast(origin, direction, highs, limit):
             out = bvh.ray_cast(lo, -ld)   # (outwards: a back face first means the start is inside)
             if out[2] is not None and out[1].dot(-ld) > 0.0:
                 inside = True
-        if inside or best_back:
+        if inside:
             status[i] = 2
-        elif best is None or (limit > 0.0 and best >= limit):
+        elif best is None or best_back:
             status[i] = 1
+        elif limit > 0.0 and best >= limit:
+            status[i] = 3
     return status
 
 
 def check_steps(context, entries):
     """The check as a generator that yields now and then, so that a timer can run it in slices. `entries`: [(low, highs, extrusion,
-    ray distance)]. Returns {low name: Cage}, the number of problem areas."""
-    result, areas = {}, 0
+    ray distance)]. Returns {low name: Cage}, the number of problem areas, and {"tight": areas where the cage is too tight, "miss":
+    areas where the rays find no high poly, "limited": whether a high poly lies past the Max Ray Distance somewhere}."""
+    result, areas, kinds = {}, 0, {"tight": 0, "miss": 0, "limited": False}
     for low, highs, extrusion, limit in entries:
         yield
         bvhs = []
@@ -401,14 +408,19 @@ def check_steps(context, entries):
         for a in range(0, n, CHUNK):
             status[a:a + CHUNK] = cast(s["origin"][a:a + CHUNK], s["direction"][a:a + CHUNK], bvhs, limit)
             yield
-        flagged_corner = status[:s["count_corners"]][s["corner_sample"]] > 0   # for each loop
-        face_bad = np.zeros(s["npoly"], bool)
-        np.logical_or.at(face_bad, s["face_of"], flagged_corner)
-        face_bad[s["big"]] |= status[s["count_corners"]:] > 0
-        areas += count_areas(face_bad, s)
-        result[low.name] = make_cage(face_bad, s)
+        bad = {}
+        for kind, flag in (("any", status > 0), ("tight", status == 2), ("miss", (status == 1) | (status == 3))):
+            face = np.zeros(s["npoly"], bool)
+            np.logical_or.at(face, s["face_of"], flag[:s["count_corners"]][s["corner_sample"]])   # (each loop has the flag of its sample)
+            face[s["big"]] |= flag[s["count_corners"]:]
+            bad[kind] = face
+        areas += count_areas(bad["any"], s)
+        kinds["tight"] += count_areas(bad["tight"], s)
+        kinds["miss"] += count_areas(bad["miss"], s)
+        kinds["limited"] |= bool((status == 3).any())
+        result[low.name] = make_cage(bad["any"], s)
         yield
-    return result, areas
+    return result, areas, kinds
 
 
 def count_areas(face_bad, s):
@@ -487,7 +499,7 @@ def _check_tick():
             next(job)
     except StopIteration as done:
         _view["job"] = None
-        _view["result"], _view["areas"] = done.value
+        _view["result"], _view["areas"], _view["kinds"] = done.value
         redraw(bpy.context)
         return None
     except Exception:   # (a timer that raises is gone; the view goes on without a check)
@@ -498,18 +510,35 @@ def _check_tick():
     return 0.0
 
 
-def status_text():
-    """(text, problems) of the cage check for the Bake page."""
+def places(count):
+    return "here" if count == 1 else "in %d places" % count
+
+
+def status_lines():
+    """[(text, problem)] of the cage check, for the Bake page and the 3D view: what it found and what fixes it. A problem of each
+    kind has a line of its own: the cage too tight (the high poly sticks out of it), or rays that find no high poly."""
     if not _view["on"]:
-        return "", False
+        return []
     if _view["note"]:
-        return "Cage: " + _view["note"], False
-    areas = _view["areas"]
+        return [("Cage: " + _view["note"], False)]
+    areas, kinds = _view["areas"], _view["kinds"]
     if areas is None:
-        return "Cage: checking...", False
+        return [("Cage: checking...", False)]
     if areas == 0:
-        return "Cage: no problems found", False
-    return "Cage: %d problem area%s" % (areas, "" if areas == 1 else "s"), True
+        return [("Cage: no problems found", False)]
+    lines = []
+    if kinds.get("tight"):
+        lines.append(("Cage too tight %s: raise Cage Distance" % places(kinds["tight"]), True))
+    if kinds.get("miss"):
+        lines.append(("Rays find no high poly %s: %s" % (places(kinds["miss"]), "raise Max Ray Distance" if kinds.get("limited")
+                                                         else "the high poly does not cover it"), True))
+    return lines or [("Cage: %d problem area%s" % (areas, "" if areas == 1 else "s"), True)]
+
+
+def status_text():
+    """(text, problems) of the cage check in one line (the first of `status_lines`)."""
+    lines = status_lines()
+    return lines[0] if lines else ("", False)
 
 
 # -----------------------------------------------------------------------------
@@ -551,23 +580,54 @@ def _draw_cage():
 def _draw_note():
     """POST_PIXEL: the result of the check in the corner of the 3D view."""
     import blf
-    text, bad = status_text()
     region = bpy.context.region
-    if not text or region is None:
+    if region is None:
         return
     blf.size(0, 15)
-    if bad:
-        blf.color(0, 1.0, 0.35, 0.3, 1.0)
-    else:
-        blf.color(0, 0.85, 0.85, 0.85, 1.0)
-    blf.position(0, 16, region.height - 52, 0)
-    blf.draw(0, text)
+    for i, (text, bad) in enumerate(status_lines()):
+        if bad:
+            blf.color(0, 1.0, 0.35, 0.3, 1.0)
+        else:
+            blf.color(0, 0.85, 0.85, 0.85, 1.0)
+        blf.position(0, 16, region.height - 52 - 22 * i, 0)
+        blf.draw(0, text)
 
 
 # -----------------------------------------------------------------------------
 # The Bake page
 
-class PROPERTIES_PT_m3d_tx_bake_view(T._Bake, Panel):
+def bake_settings_of(context, ob):
+    """What holds the Cage Distance a bake of `ob` uses: its group's settings (None until a timer made them), else its own."""
+    if m3d_pair.grouped(ob):
+        entry = context.scene.m3d_bake_groups.get(ob.m3d_pair.group)
+        if entry is None:
+            import m3d_bakegroups
+            m3d_bakegroups.request_settings(context, ob.m3d_pair.group)
+        return entry
+    return ob.m3d_bake
+
+
+def draw_cage(layout, context):
+    """High Poly on the Bake page: what the cage check found, each kind of problem with what fixes it, then the Cage Distance (of the
+    group of the active mesh, or of the mesh) and Auto-fit Cage."""
+    for i, (text, bad) in enumerate(status_lines()):
+        row = layout.row()
+        col = row.column()
+        col.alert = bad
+        T.draw_lines(col, context, text, icon='ERROR' if bad else 'CHECKMARK' if text.endswith("found") else 'TIME')   # (whole: the fix is at its end)
+        if i == 0:
+            row.operator("m3d.bake_view_check", text="", icon='FILE_REFRESH')
+    owner = bake_settings_of(context, mesh_of(context))
+    if owner is None:
+        return
+    row = layout.row(align=True)
+    row.prop(owner, "extrusion")
+    row.operator("m3d.bake_cage_fit", icon='MOD_SHRINKWRAP')
+    if owner.cage is not None:
+        reason(layout, "The rays start from the cage mesh %s" % owner.cage.name)
+
+
+class PROPERTIES_PT_m3d_tx_bake_view(T._BakeMore, Panel):
     bl_label = "Visualization"
     bl_order = 15
 
@@ -576,20 +636,98 @@ class PROPERTIES_PT_m3d_tx_bake_view(T._Bake, Panel):
         tex = context.scene.m3d_tex
         split_props(layout)
         layout.prop(tex, "view_hp")
-        sub = layout.column()
-        sub.active = tex.view_hp
-        sub.prop(tex, "view_opacity", slider=True)
+        if tex.view_hp:
+            layout.prop(tex, "view_opacity", slider=True)
         layout.prop(tex, "view_cage")
-        sub = layout.column()
-        sub.active = tex.view_cage
-        sub.prop(tex, "view_problem")
-        text, bad = status_text()
-        if text:
-            row = layout.row()
-            row.alert = bad
-            row.label(text=text, icon='ERROR' if bad else 'CHECKMARK', translate=False)
-            row.operator("m3d.bake_view_check", text="", icon='FILE_REFRESH')
-        reason(layout, "Red: the rays find no high poly there, or start inside it")
+        if tex.view_cage:
+            layout.prop(tex, "view_problem")
+            reason(layout, "Red: the rays find no high poly there, or start inside it")
+
+
+FIT_SAMPLES = 50_000   # points of a low poly Auto-fit Cage sends rays from, at most
+FIT_MARGIN = 1.1       # the fitted Cage Distance (and Max Ray Distance) is this much past what was measured
+
+
+def reach(origin, direction, highs, cap):
+    """(farthest a point inside a high poly is from its surface along the normal, outwards; farthest a point outside it is, inwards), in
+    world units, for the rays `origin` / `direction` (world space, inwards) and `highs` [(bvh, matrix, inverse)]. Outwards a back face
+    first means the point is inside. Distances past `cap` are left out: a ray through a hole of an open high poly finds its far side."""
+    out_max = in_max = 0.0
+    for i in range(len(origin)):
+        o, d = Vector(origin[i]), Vector(direction[i])
+        for bvh, mat, inv in highs:
+            lo, ld = inv @ o, inv.to_3x3() @ d
+            ld.normalize()
+            loc, nrm, idx, _dist = bvh.ray_cast(lo, -ld)
+            if idx is not None and nrm.dot(-ld) > 0.0:
+                dist = (mat @ loc - o).length
+                if dist < cap:
+                    out_max = max(out_max, dist)
+            loc, nrm, idx, _dist = bvh.ray_cast(lo, ld)
+            if idx is not None and nrm.dot(ld) < 0.0:
+                dist = (mat @ loc - o).length
+                if dist < cap:
+                    in_max = max(in_max, dist)
+    return out_max, in_max
+
+
+def fit(context, lows, highs):
+    """(Cage Distance, the Max Ray Distance it needs) that fit the low polys `lows` around the high polys `highs`: the farthest the high
+    polys stick out along the normals x FIT_MARGIN (in object units, as the bake extrudes; at least a sliver of the size), and how far
+    a ray from that cage goes in to reach them x FIT_MARGIN (world units)."""
+    bvhs = [(hp_bvh(context, h), h.matrix_world.copy(), h.matrix_world.inverted()) for h in highs]
+    extrusion, need = 0.0, 0.0
+    reaches = []
+    for low in lows:
+        s = low_samples(context, low, 0.0)
+        origin, direction = s["origin"], s["direction"]
+        if len(origin) > FIT_SAMPLES:   # ponytail: a fixed random share of the points of a big low poly; the margin covers the rest
+            pick = np.random.default_rng(0).choice(len(origin), FIT_SAMPLES, replace=False)
+            origin, direction = origin[pick], direction[pick]
+        scale = max(low.matrix_world.median_scale, 1e-9)   # (world -> object units)
+        size = max(low.dimensions)
+        out_max, in_max = reach(origin, direction, bvhs, 0.25 * size)
+        extrusion = max(extrusion, out_max / scale * FIT_MARGIN, 0.002 * size / scale)
+        reaches.append((scale, in_max))
+    for scale, in_max in reaches:
+        need = max(need, (extrusion * scale + in_max) * FIT_MARGIN)
+    return extrusion, need
+
+
+class M3D_OT_bake_cage_fit(Operator):
+    """Measure how far the high poly sticks out of the low poly along its normals and set the Cage Distance just past it; a Max Ray
+    Distance that is set is raised when the rays would not reach the high poly. For each group and mesh the Bake button bakes"""
+    bl_idname = "m3d.bake_cage_fit"
+    bl_label = "Auto-fit Cage"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, _context):
+        return _view["on"] and not Q.running()
+
+    def execute(self, context):
+        import m3d_bakegroups as BG
+        units, done, skipped = context.scene.unit_settings, [], []
+        for group, lows, highs in targets(context):
+            highs = [h for h in highs if h.type == 'MESH']
+            if not lows or not highs:
+                continue
+            owner = BG.settings_of(context, group) if group else lows[0].m3d_bake
+            if owner.cage is not None and (not group or owner.cage not in lows):
+                skipped.append(group or lows[0].name)   # (the rays start from the cage mesh: no distance to fit)
+                continue
+            extrusion, need = fit(context, lows, highs)
+            owner.extrusion = extrusion
+            if 0.0 < owner.ray_distance < need:
+                owner.ray_distance = need
+            done.append("%s %s" % (group or lows[0].name, bpy.utils.units.to_string(units.system, 'LENGTH', extrusion * units.scale_length, precision=3)))
+        if skipped:
+            self.report({'WARNING'}, "%s use a cage mesh: no Cage Distance to fit" % ", ".join(skipped))
+        if not done:
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Cage Distance: " + ", ".join(done))
+        touch()
+        return {'FINISHED'}
 
 
 class M3D_OT_bake_view_check(Operator):
@@ -637,7 +775,7 @@ def _load_post(*_args):
     stop_check()
     for handle in _view["handles"]:
         bpy.types.SpaceView3D.draw_handler_remove(handle, 'WINDOW')
-    _view.update(on=False, sig=None, handles=[], result={}, areas=None, note="", dirty=0.0, bvh={}, geo=set(), touched=set(), job=None)
+    _view.update(on=False, sig=None, handles=[], result={}, areas=None, kinds={}, note="", dirty=0.0, bvh={}, geo=set(), touched=set(), job=None)
     repair(bpy.context)   # (an autosave or a crash file may hold the blue)
 
 
@@ -652,6 +790,7 @@ def _undo_post(*_args):
 classes = (
     PROPERTIES_PT_m3d_tx_bake_view,
     M3D_OT_bake_view_check,
+    M3D_OT_bake_cage_fit,
 )
 
 

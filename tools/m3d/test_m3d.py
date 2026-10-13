@@ -1704,7 +1704,7 @@ def tex_shown(page):
 
 
 def tex_gated(page):
-    names = [n for n in tex_shown(page) if not n.endswith("_bake_back")]   # (Back to Painting stays on the Bake page)
+    names = tex_shown(page)
     return len(names) == 1 and names[0].endswith("_gate")
 
 
@@ -1844,7 +1844,7 @@ for mode in ('OBJECT', 'TEXTURE_PAINT'):
     ctx = TCtx('RIGHT')
     for cls in (*T.PAGE_GATES, m3d_library.PROPERTIES_PT_m3d_lib_browse, m3d_library.PROPERTIES_PT_m3d_lib_assets,
                 T.PROPERTIES_PT_m3d_tx_channel_view, T.PROPERTIES_PT_m3d_tx_checker, T.PROPERTIES_PT_m3d_tx_tools,
-                T.PROPERTIES_PT_m3d_tx_sets, T.PROPERTIES_PT_m3d_tx_dockbar, TS.PROPERTIES_PT_m3d_tx_set_maps, T.PROPERTIES_PT_m3d_tx_bake_back):
+                T.PROPERTIES_PT_m3d_tx_sets, T.PROPERTIES_PT_m3d_tx_dockbar, TS.PROPERTIES_PT_m3d_tx_set_maps, T.PROPERTIES_PT_m3d_tx_baked):
         try:
             check_calls(cls.__name__ + " " + mode, draw_stub(cls, TCtx('ASSETS' if cls.__name__.endswith("browse") else 'TOOLS')))
         except Exception as err:
@@ -2161,7 +2161,10 @@ check(flow_owner_.strength == 1.0, "...a brush without an alpha has no angle to 
 size_owner_.size, flow_owner_.strength = 50, 1.0
 with bpy.context.temp_override(workspace=tex_ws):
     check(bpy.ops.m3d.tex_bake_mode(on=True) == {'FINISHED'} and tex_ws.m3d_page_right == "tex_bake", "Bake Mesh Maps shows the Bake page in the dock")
-    check("PROPERTIES_PT_m3d_tx_bake_back" in tex_shown("tex_bake"), "...with Back to Painting on it")
+    log = []
+    T.draw_header_dock(Rec(log), TCtx('RIGHT'))
+    check([r._kw.get("text") for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_bake_mode"] == ["Back to Painting"]
+          and "Bake Mesh Maps" in [r._kw.get("text") for r in log if r._kind == "label"], "...its header says so, with Back to Painting")
     check(bpy.ops.m3d.tex_bake_mode(on=False) == {'FINISHED'} and tex_ws.m3d_page_right == "tex_layers", "Back to Painting shows the Layers")
 check(all(hasattr(bpy.ops.m3d, n) for n in ("tex_frame", "tex_layout", "tex_env_rotate", "tex_brush_drag")), "the other painting key operators exist")
 # the layer decides what Properties shows
@@ -8181,7 +8184,6 @@ BG_GROUPS = NS(__name__="draw_groups", draw=lambda self, ctx: BG.draw_groups(sel
 BG_GROUP = NS(__name__="draw_group_settings", draw=lambda self, ctx: BG.draw_group_settings(self.layout, ctx))
 T_MAP = NS(__name__="draw_map_settings", draw=lambda self, ctx: T.draw_map_settings(self.layout, ctx))
 T_MULTIRES = NS(__name__="draw_multires_settings", draw=lambda self, ctx: T.draw_multires_settings(self.layout, ctx))
-T_BAKED = NS(__name__="draw_baked_maps", draw=lambda self, ctx: T.draw_baked_maps(self.layout, ctx))
 
 
 bpy.context.view_layer.objects.active = ts_blade
@@ -8201,13 +8203,13 @@ check("Stale" in bg_text(bg_draw(BG_GROUPS)), "a stale group says so")
 check(PR.grouped(bpy.context.active_object) and "Group Settings" in bg_text(bg_draw(T.PROPERTIES_PT_m3d_tx_bake_advanced)), "Group Settings: under Advanced for a mesh of a group")
 log = bg_draw(BG_GROUP)
 props = [r._args[1] for r in log if r._kind == "prop"]
-check(props == ["extrusion", "ray_distance", "cage", "ao_scope"] and "Low: Blade_low" in bg_text(log) and "High: Blade_high" in bg_text(log),
-      "...extrusion, ray distance, cage, AO shadows, the meshes of the group: %s %s" % (props, bg_text(log)))
+check(props == ["ray_distance", "cage", "ao_scope"] and "Low: Blade_low" in bg_text(log) and "High: Blade_high" in bg_text(log),
+      "...ray distance, cage, AO shadows (the Cage Distance is in High Poly), the meshes of the group: %s %s" % (props, bg_text(log)))
 log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_maps)
 check("Texture set SwordMat: Blade_low, Guard_low" in bg_text(log), "Maps: names the texture set: %s" % bg_text(log))
-log = bg_draw(T_BAKED)
+log = bg_draw(T.PROPERTIES_PT_m3d_tx_baked)
 check(not [r for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_bake"] and any(r._kind == "operator" and r._args[0] == "m3d.tex_show_image" for r in log),
-      "Bake: the Bake button bakes the group, the images are listed under Advanced > Baked Maps")
+      "Bake: the Bake button bakes the group, the images are in Baked Maps (the Assets column)")
 log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_advanced)
 props = [r._args[1] for r in log if r._kind == "prop"]
 check(props[:2] == ["margin", "samples"] and not {"extrusion", "ray_distance", "cage"} & set(props[:4]), "Advanced: extrusion and ray distance are the group's, not here: %s" % props)
@@ -8223,7 +8225,7 @@ check("high" in [r._args[1] for r in log if r._kind == "prop"] and "Group Settin
 bg_plain.m3d_bake.high = ts_blade_h
 log = bg_draw(BG_GROUPS)
 check(any(r._kind == "operator" and r._args[0] == "m3d.hp_make_pair" for r in log), "...and Make Pair (under Bake Groups) once a High Poly is picked")
-check(any(r._kind == "operator" and r._args[0] == "m3d.tex_bake_sets" for r in bg_draw(T.PROPERTIES_PT_m3d_tx_bake_settings)), "...and the Bake button (under Size)")
+check(any(r._kind == "operator" and r._args[0] == "m3d.tex_bake_sets" for r in bg_draw(T.PROPERTIES_PT_m3d_tx_bake_settings)), "...and the Bake button (next to the Size)")
 bg_plain.m3d_bake.high = None
 bpy.context.view_layer.objects.active = ts_blade
 bpy.data.objects.remove(bg_plain)
@@ -11504,21 +11506,38 @@ for label_ in ("Curvature", "Position"):
 p4_a.m3d_bake.use_curvature = False
 p4_a.m3d_bake.use_ao = True
 
-# --- Bake Mesh Maps: Back to Painting, High Poly, Maps, Size and Bake, and Advanced (collapsed) with the rest; a set of each mesh
+# --- Bake Mesh Maps: the dock has Size and Bake (on top), High Poly, Maps; Properties the rest (Visualization, Advanced); a set of each mesh
 tex_ws.m3d_page_right = "tex_bake"
 names_ = tex_shown("tex_bake")
-BAKE_PANELS = (T.PROPERTIES_PT_m3d_tx_bake_back, T.PROPERTIES_PT_m3d_tx_bake_high, T.PROPERTIES_PT_m3d_tx_bake_maps, T.PROPERTIES_PT_m3d_tx_bake_settings,
-               T.PROPERTIES_PT_m3d_tx_bake_advanced)
-check(set(names_) == {c.__name__ for c in BAKE_PANELS}, "the Bake page: Back to Painting, High Poly, Maps, Size and Bake, Advanced: %s" % names_)
-check([c.bl_order for c in BAKE_PANELS] == [-10, 0, 10, 20, 30] and [c.bl_label for c in BAKE_PANELS[1:]] == ["High Poly", "Maps", "Size and Bake", "Advanced"]
-      and 'DEFAULT_CLOSED' in T.PROPERTIES_PT_m3d_tx_bake_advanced.bl_options and not any('DEFAULT_CLOSED' in getattr(c, "bl_options", set()) for c in BAKE_PANELS[1:4]),
-      "...in that order, Advanced closed at first")
+BAKE_PANELS = (T.PROPERTIES_PT_m3d_tx_bake_settings, T.PROPERTIES_PT_m3d_tx_bake_high, T.PROPERTIES_PT_m3d_tx_bake_maps)
+check(set(names_) == {c.__name__ for c in BAKE_PANELS}, "the Bake page: Size and Bake, High Poly, Maps: %s" % names_)
+check([c.bl_order for c in BAKE_PANELS] == [-10, 0, 10] and [c.bl_label for c in BAKE_PANELS[1:]] == ["High Poly", "Maps"]
+      and 'HIDE_HEADER' in T.PROPERTIES_PT_m3d_tx_bake_settings.bl_options and not any('DEFAULT_CLOSED' in getattr(c, "bl_options", set()) for c in BAKE_PANELS),
+      "...in that order, the Bake button on top without a header")
+check(T.pages_new(TCtx('PROPS'), "tex_props") == {"tex_bake_more"} and T.pages_new(TCtx('ASSETS'), "tex_assets") == {"tex_baked"},
+      "in Bake Mesh Maps Properties shows the other bake settings and Assets the baked maps")
+import m3d_bakeview as VV
+ux4_props = {c.__name__ for c in (*T.classes, *VV.classes) if getattr(c, "page", "") == "tex_bake_more" and c.poll(TCtx('PROPS'))}
+check(ux4_props == {"PROPERTIES_PT_m3d_tx_bake_view", "PROPERTIES_PT_m3d_tx_bake_advanced"}, "...Visualization and Advanced: %s" % ux4_props)
+ux4_assets = [c.__name__ for c in (*T.classes, *m3d_library.classes) if hasattr(c, "page") and hasattr(c, "poll") and c.poll(TCtx('ASSETS'))]
+check(ux4_assets == ["PROPERTIES_PT_m3d_tx_baked"], "...and Assets nothing of the library: %s" % ux4_assets)
+log = []
+T.draw_header_props(Rec(log), TCtx('PROPS'))
+T.draw_header_assets(Rec(log), TCtx('ASSETS'))
+check(bg_text(log) == ["Bake Settings", "Baked Maps"], "their headers say so: %s" % bg_text(log))
+check(T.pages_old(TCtx(), "tex_bake") == {"tex_bake", "tex_bake_more", "tex_baked"}, "the old layout's Bake tab has all three")
 for cls_ in BAKE_PANELS:
     bg_draw(cls_, TCtx())
 log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_maps, TCtx())
 check([r._args[1] for r in log if r._kind == "prop"] == ["use_normal", "use_ao", "use_curvature", "use_position", "use_thickness", "use_id", "use_worldnormal"]
-      and [r._kw["text"] for r in log if r._kind == "prop"] == [T.BAKE_TEXT[l_] for _k, l_, _f in T.BAKE_MAPS]
-      and [r._kw["columns"] for r in log if r._kind == "grid_flow"] == [2], "Maps: a checkbox for each map, in two columns, with plain names")
+      and [r._kw["text"] for r in log if r._kind == "prop"] == [T.BAKE_TEXT[l_] for _k, l_, _f in T.BAKE_MAPS], "Maps: a checkbox for each map, with plain names")
+check(all(T.BAKE_HINTS[k_] in bg_text(log) for k_, _l, _f in T.BAKE_MAPS), "...each with what it is for beside it")
+check(all(T.M3D_BakeSettings.bl_rna.properties[f_].description for _k, _l, f_ in T.BAKE_MAPS), "...and a tooltip")
+ux4_lib = T.library_maps()
+ux4_used = set().union(*(m3d_library.maps_of(e_.item) for e_ in m3d_library.entries()))
+check(ux4_lib and set(ux4_lib) == ux4_used and ux4_lib == [k_ for k_, _l, _f in T.BAKE_MAPS if k_ in ux4_used],
+      "the maps the smart materials and masks of the library read, in the order of the list: %s" % ux4_lib)
+check(any(t_.startswith("Smart materials and masks use AO") for t_ in bg_text(log)), "...and the hint names them: %s" % bg_text(log))
 log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_advanced, TCtx())
 check([r.values().get("action") for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_bake_maps"] == ['ALL', 'NONE', 'INVERT', 'SYNC'],
       "Advanced: All Maps, No Maps, Invert and (with several sets ticked) Apply to Checked Texture Sets")
@@ -11534,23 +11553,24 @@ check(bpy.ops.m3d.tex_bake_maps(action='SYNC') == {'FINISHED'} and p4_b.m3d_bake
 check(T.bake_count(bpy.context) == (2, 3), "the Bake button counts 2 maps for 3 texture sets: %s" % (T.bake_count(bpy.context),))
 check(T.bake_text(2, 3) == "Bake 2 maps for 3 texture sets" and T.bake_text(1, 1) == "Bake 1 map" and T.bake_text(7, 1) == "Bake 7 maps", "the Bake button says it in plain words")
 log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_settings, TCtx())
-bake_buttons_ = [i_ for i_, r in enumerate(log) if r._kind == "operator" and r._args[0] == "m3d.tex_bake_sets"]
-check(len(bake_buttons_) == 1 and log[bake_buttons_[0]]._kw["text"] == "Bake 2 maps for 3 texture sets" and log[bake_buttons_[0] - 1]._kind == "row"
-      and log[bake_buttons_[0] - 1].values().get("scale_y") == 1.6 and "resolution" in [r._args[1] for r in log if r._kind == "prop"],
-      "Size and Bake: the Size and one big Bake button with what it bakes")
-log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_back, TCtx())
-check([r._kw["text"] for r in log if r._kind == "operator"] == ["Back to Painting"], "Back to Painting is on its own at the top")
+bake_buttons_ = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_bake_sets"]
+check(len(bake_buttons_) == 1 and bake_buttons_[0]._kw["text"] == "Bake 2 maps for 3 texture sets" and log[0]._kind == "row" and log[0].values().get("scale_y") == 1.6
+      and "resolution" in [r._args[1] for r in log if r._kind == "prop"], "Size and Bake: the Size and one big Bake button with what it bakes, on one line")
+ux4_tip = T.M3D_OT_tex_bake_sets.description(bpy.context, None)
+check("GPU" in ux4_tip or "CPU" in ux4_tip, "...its tooltip says the device: %s" % ux4_tip)
 check(T.bake_units(T.bake_checked(bpy.context)) == [('MESH', p4_a), ('MESH', p4_b)], "a mesh is baked once, however many of its sets are ticked")
 log = []
 T.PROPERTIES_PT_m3d_tx_bake_advanced.draw(type("Inst", (), {"layout": RecP(log)})(), TCtx())
 check_calls("Advanced", log)
 advanced_props_ = [r._args[1] for r in log if r._kind == "prop"]
-check({"margin", "samples", "extrusion", "ray_distance", "cage"} <= set(advanced_props_) and advanced_props_.index("margin") < advanced_props_.index("samples") < advanced_props_.index("extrusion"),
-      "Advanced: dilation, antialiasing, extrusion, max ray distance and the cage: %s" % advanced_props_)
+check({"margin", "samples", "ray_distance", "cage"} <= set(advanced_props_) and "extrusion" not in advanced_props_
+      and advanced_props_.index("margin") < advanced_props_.index("samples") < advanced_props_.index("ray_distance"),
+      "Advanced: dilation, antialiasing, max ray distance and the cage mesh (the Cage Distance is in High Poly): %s" % advanced_props_)
 sections_ = [(r.idname, r.closed) for r in log if r._kind == "panel_call"]
 check(sections_ == [("m3d_bake_map", True), ("m3d_bake_groups", True)] and "Map Settings" in bg_text(log) and "Bake Groups" in bg_text(log),
-      "...and under it, closed at first, Map Settings and Bake Groups (Multires, Group Settings and Baked Maps when they apply): %s" % sections_)
-all_ops_ = [r._args[0] for cls_ in BAKE_PANELS for r in bg_draw(cls_, TCtx()) if r._kind == "operator"]
+      "...and under it, closed at first, Map Settings and Bake Groups (Multires and Group Settings when they apply): %s" % sections_)
+check('DEFAULT_CLOSED' not in getattr(T.PROPERTIES_PT_m3d_tx_bake_advanced, "bl_options", set()), "(Advanced is open: it has Properties to itself)")
+all_ops_ = [r._args[0] for cls_ in (*BAKE_PANELS, T.PROPERTIES_PT_m3d_tx_bake_advanced) for r in bg_draw(cls_, TCtx()) if r._kind == "operator"]
 check(all_ops_.count("m3d.hp_auto_pair") == 1 and all_ops_.count("m3d.tex_bake_sets") == 1 and all_ops_.count("m3d.tex_bake_pick") == 1
       and not {"m3d.bg_bake", "m3d.bg_bake_all", "m3d.tex_bake"} & set(all_ops_), "no control is on the page twice: one Bake, one Auto-Pair, one High Poly picker: %s" % sorted(set(all_ops_)))
 for key_, label_, _flag in T.BAKE_MAPS:
@@ -12158,9 +12178,10 @@ np_ctx = NS(screen=tex_screen, workspace=tex_ws, active_object=np_b, object=np_b
 np_v3d.shading.type = 'SOLID'
 T.show_in_3d(np_ctx, np_v3d, "CHANNEL:ROUGHNESS")
 check(T.channel_view_on(np_v3d.shading), "(the 3D view shows a channel alone)")
+tex_ws.m3d_page_right = "tex_bake"
 with bpy.context.temp_override(workspace=tex_ws):
     check(bpy.ops.m3d.tex_bake_sets() == {'FINISHED'}, "Bake")
-check(tex_ws.m3d_page_right == "tex_layers", "...when the bake is done the dock is back on the Layers")
+check(tex_ws.m3d_page_right == "tex_bake", "...when the bake is done the dock stays on the Bake page (the maps are in Baked Maps)")
 check(np_mat.m3d_baked_normal == bpy.data.images["NPB_Normal"] and np_mat.m3d_baked_ao == bpy.data.images["NPB_AO"] and bpy.data.images["NPB_Normal"].get("m3d_nfmt") == 'OPENGL'
       and "m3d_layer.NORMAL.encode" in np_mat.node_tree.nodes and np_mat.node_tree.nodes[LY.AO_TEX].image == bpy.data.images["NPB_AO"]
       and LY.principled_of(np_mat).inputs["Base Color"].links[0].from_node.name == LY.AO_MUL,
@@ -12192,13 +12213,18 @@ p4_select(bg_low)
 bpy.ops.m3d.tex_project('EXEC_DEFAULT', resolution='64', template='DEFAULT', unwrap=False)
 bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
 log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_high, TCtx())
-check("high" not in [r._args[1] for r in log if r._kind == "prop"] and "Brick: 1 low poly, 1 high poly" in bg_text(log) and [r._args[0] for r in log if r._kind == "operator"] == ["m3d.hp_auto_pair"],
+check("high" not in [r._args[1] for r in log if r._kind == "prop"] and "Brick: 1 low poly, 1 high poly" in bg_text(log)
+      and [r._args[0] for r in log if r._kind == "operator"][0] == "m3d.hp_auto_pair",
       "High Poly of a mesh in a bake group: the status of the group in one line, with Auto-Pair: %s" % bg_text(log))
+BG.settings_of(bpy.context, "Brick")
+log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_high, TCtx())
+check([r._args[1] for r in log if r._kind == "prop"] == ["extrusion"] and log[[r._kind for r in log].index("prop")]._args[0] == bpy.context.scene.m3d_bake_groups["Brick"]
+      and "m3d.bake_cage_fit" in [r._args[0] for r in log if r._kind == "operator"], "...then the Cage Distance of the group, with Auto-fit Cage")
 log = []
 T.PROPERTIES_PT_m3d_tx_bake_advanced.draw(type("Inst", (), {"layout": RecP(log)})(), TCtx())
 check_calls("Advanced (group)", log)
 check([r.idname for r in log if r._kind == "panel_call"] == ["m3d_bake_map", "m3d_bake_groups", "m3d_bake_group"] and all(r.closed for r in log if r._kind == "panel_call")
-      and not {"extrusion", "ray_distance", "cage"} & {r._args[1] for r in log if r._kind == "prop"} and "Group Settings" in bg_text(log),
+      and not any(r._kind == "prop" and (r._args[1] == "extrusion" or r._args[0] == bg_low.m3d_bake and r._args[1] in {"ray_distance", "cage"}) for r in log) and "Group Settings" in bg_text(log),
       "Advanced of a group: Map Settings, Bake Groups and Group Settings, all closed; the rays are the group's")
 bpy.ops.object.mode_set(mode='OBJECT')
 bpy.data.objects.remove(bg_low)
@@ -13054,7 +13080,14 @@ check(any("Baking AO (Qa): 2 of 4" in r._kw.get("text", "") for r in log if r._k
 check(any(r._kind == "operator" and r._args[0] == "m3d.bake_cancel" for r in log) and any(r._kind == "progress" for r in log) and any(r._kind == "template_running_jobs" for r in log),
       "...with the bar, the job's own bar and Cancel")
 check(not T.PROPERTIES_PT_m3d_tx_bake_maps.page_poll(bpy.context) and T.PROPERTIES_PT_m3d_tx_bake_progress.page_poll(bpy.context)
-      and not T.PROPERTIES_PT_m3d_tx_bake_back.page_poll(bpy.context), "while a bake runs the Bake page shows its progress and nothing that edits")
+      and not T.PROPERTIES_PT_m3d_tx_bake_advanced.page_poll(bpy.context) and not VV.PROPERTIES_PT_m3d_tx_bake_view.page_poll(bpy.context)
+      and T.PROPERTIES_PT_m3d_tx_bake_wait.page_poll(bpy.context), "while a bake runs the Bake page shows its progress and nothing that edits, nor does Bake Settings")
+bq_header = []
+tex_ws = W.find_workspace('TEXTURE')   # (the tests above opened files)
+tex_ws.m3d_layout, tex_ws.m3d_page_right = 1, "tex_bake"
+T.draw_header_dock(Rec(bq_header), TCtx('RIGHT'))
+check([r._kw.get("text") for r in bq_header if r._kind == "label"] == ["Bake Mesh Maps"], "(the dock is on the Bake page)")
+check(not any(r._kind == "operator" for r in bq_header), "...and the dock's header has no Back to Painting meanwhile")
 bq_header = []
 T.draw_baking_header(Rec(bq_header), bpy.context, "M3D_MT_tex_view_baking", display=True)
 check_calls("baking header", bq_header)
@@ -13137,14 +13170,16 @@ def bq_check(entries):
 
 bq_depsgraph()
 VV._view["bvh"].clear()
-bq_result, bq_areas = bq_check([(bq_low, [bq_high], 0.05, 0.3)])
+bq_result, bq_areas, bq_kinds = bq_check([(bq_low, [bq_high], 0.05, 0.3)])
 bq_bad = bq_result["Cg_low"].bad
 bq_centers = np.array([tuple(p.center) for p in bq_low.data.polygons])
 check(bq_areas == 2, "a high poly that sticks out of the cage in one place and is missing in another gives two problem areas: %s" % bq_areas)
+check(bq_kinds == {"tight": 1, "miss": 1, "limited": False}, "...one where the cage is too tight, one where the rays find no high poly (a hole: no Max Ray Distance helps): %s" % bq_kinds)
+check(bq_check([(bq_low, [bq_high], 0.5, 0.2)])[2]["limited"], "a high poly that lies past the Max Ray Distance is noted (raising it helps)")
 check(bq_bad[bq_centers[:, 2] > 0.9].all() and bq_bad[bq_centers[:, 0] > 0.95].all(), "...the faces where the high poly is bigger than the cage (the top) and where it is missing (the side) are bad")
 check(not bq_bad[(bq_centers[:, 0] < 0.5) & (bq_centers[:, 2] < 0.5)].any(), "...and the faces that are fine are not")
 check(bq_result["Cg_low"].problems == int(bq_bad.sum()) and 0 < bq_result["Cg_low"].problems < len(bq_bad), "...with their count: %d of %d" % (bq_result["Cg_low"].problems, len(bq_bad)))
-bq_result, bq_areas = bq_check([(bq_low, [bq_high], 0.05, 0.0)])
+bq_result, bq_areas, bq_kinds = bq_check([(bq_low, [bq_high], 0.05, 0.0)])
 check(bq_areas == 2 and bq_result["Cg_low"].bad[bq_centers[:, 0] > 0.95].all(),
       "without a Max Ray Distance the missing part is still found: the ray goes through the hole and reaches the far wall from inside, which the bake would take: %s" % bq_areas)
 check(bq_check([(bq_low, [bq_high], 0.5, 0.6)])[1] == 1, "a bigger extrusion starts the rays outside the bump again: only the missing part is left")
@@ -13173,12 +13208,15 @@ while VV._view["job"] is not None and bq_ticks < 10000:
     bq_ticks += 1
 if bpy.app.timers.is_registered(VV._check_tick):
     bpy.app.timers.unregister(VV._check_tick)
-check(VV._view["areas"] is not None and VV.status_text()[1] == (VV._view["areas"] > 0) and VV.status_text()[0].startswith("Cage:"),
+check(VV._view["areas"] is not None and VV.status_text()[1] == (VV._view["areas"] > 0) and VV.status_text()[0].startswith(("Cage", "Rays")),
       "...and ends with a count: %s" % (VV.status_text(),))
-VV._view["areas"] = 1
-check(VV.status_text() == ("Cage: 1 problem area", True), "one problem area, singular")
-VV._view["areas"] = 37
-check(VV.status_text() == ("Cage: 37 problem areas", True), "...and 37 problem areas")
+VV._view.update(areas=1, kinds={"tight": 1, "miss": 0, "limited": False})
+check(VV.status_lines() == [("Cage too tight here: raise Cage Distance", True)], "one place where the cage is too tight: what fixes it")
+VV._view.update(areas=40, kinds={"tight": 37, "miss": 3, "limited": True})
+check(VV.status_lines() == [("Cage too tight in 37 places: raise Cage Distance", True), ("Rays find no high poly in 3 places: raise Max Ray Distance", True)],
+      "...in 37 places, and a line for the rays that find nothing (a Max Ray Distance is set): %s" % VV.status_lines())
+VV._view.update(areas=1, kinds={"tight": 0, "miss": 1, "limited": False})
+check(VV.status_text() == ("Rays find no high poly here: the high poly does not cover it", True), "...without a Max Ray Distance the high poly is missing there")
 VV._view["areas"] = 0
 check(VV.status_text() == ("Cage: no problems found", False), "...and none")
 bq_max = VV.MAX_FACES
@@ -13397,6 +13435,123 @@ check(bpy.ops.m3d.layer_mask_add(fill='WHITE') == {'FINISHED'} and u3_fill.paint
 check(bpy.ops.m3d.layer_pick(index=u3_i) == {'FINISHED'} and not u3_fill.paint_mask, "a click on the content thumbnail: the content again")
 bpy.ops.object.mode_set(mode='OBJECT')
 clean_scene()
+
+# --- Bake page UX: Auto-fit Cage and the two kinds of cage problem, the maps the layers read (Tick), the Layers line, Baked Maps in
+# the Assets column, the 2D view that shows a baked map and goes back when Bake Mesh Maps is left.
+bq_clean()
+tex_ws = W.find_workspace('TEXTURE')
+tex_ws.m3d_layout, tex_ws.m3d_page_right = 1, "tex_layers"
+# a high poly a little bigger than a coarse low poly: the middles of the low poly's faces lie deeper than its corners
+u4_low = bq_sphere("Fit_low", u=24, v=12)
+u4_high = bq_sphere("Fit_high", radius=1.05, u=64, v=32)
+u4_low.m3d_bake.high = u4_high
+VV._view["bvh"].clear()
+check(bq_check([(u4_low, [u4_high], 0.06, 0.0)])[2]["tight"] >= 1, "a Cage Distance just past the corners is too tight: the face middles start inside the high poly")
+u4_ext, u4_need = VV.fit(bpy.context, [u4_low], [u4_high])
+u4_sag = 1.0 - math.cos(math.pi / 12)   # (how far the middle of a face of 12 rings lies below its corners, about)
+check(0.05 * 1.1 < u4_ext < (0.05 + 1.5 * u4_sag) * 1.1, "Auto-fit measures how far the high poly sticks out, middles of the faces too, x 1.1: %.4f" % u4_ext)
+check(bq_check([(u4_low, [u4_high], u4_ext, 0.0)])[2] == {"tight": 0, "miss": 0, "limited": False}, "...and with it the cage check finds no problem")
+check(u4_need > u4_ext, "...the rays need to go at least that far to reach the high poly: %.4f" % u4_need)
+for o_ in bpy.data.objects:
+    o_.select_set(o_ == u4_low)
+bpy.context.view_layer.objects.active = u4_low
+u4_low.m3d_bake.extrusion, u4_low.m3d_bake.ray_distance = 0.01, 0.0
+VV._view["on"] = True   # (the Bake page's view is up: Auto-fit works on what it checks)
+check('UNDO' in VV.M3D_OT_bake_cage_fit.bl_options and bpy.ops.m3d.bake_cage_fit() == {'FINISHED'} and abs(u4_low.m3d_bake.extrusion - u4_ext) < 1e-6
+      and u4_low.m3d_bake.ray_distance == 0.0, "Auto-fit Cage sets the Cage Distance of the mesh (one undo step); no Max Ray Distance stays none")
+u4_low.m3d_bake.ray_distance = 0.02
+check(bpy.ops.m3d.bake_cage_fit() == {'FINISHED'} and abs(u4_low.m3d_bake.ray_distance - u4_need) < 1e-6
+      and bq_check([(u4_low, [u4_high], u4_low.m3d_bake.extrusion, u4_low.m3d_bake.ray_distance)])[2]["miss"] == 0,
+      "...a Max Ray Distance too short for that cage is raised: %.4f" % u4_low.m3d_bake.ray_distance)
+u4_low.scale = (2.0, 2.0, 2.0)
+u4_high.scale = (2.0, 2.0, 2.0)
+bpy.context.view_layer.update()
+VV._view["bvh"].clear()
+check(abs(VV.fit(bpy.context, [u4_low], [u4_high])[0] - u4_ext) < 0.1 * u4_ext, "...the Cage Distance is in the units of the mesh (the bake extrudes in object space)")
+u4_low.m3d_bake.cage = u4_high
+check(bpy.ops.m3d.bake_cage_fit() == {'CANCELLED'}, "a mesh that bakes from a cage mesh has no Cage Distance to fit")
+u4_low.m3d_bake.cage = None
+# a group: its settings get the fitted distance
+u4_gl = bq_sphere("Fg_low", u=24, v=12, role='LOW', group="Fg")
+u4_gh = bq_sphere("Fg_high", radius=1.05, u=64, v=32, role='HIGH', group="Fg")
+for o_ in bpy.data.objects:
+    o_.select_set(o_ == u4_gl)
+bpy.context.view_layer.objects.active = u4_gl
+check(bpy.ops.m3d.bake_cage_fit() == {'FINISHED'} and abs(bpy.context.scene.m3d_bake_groups["Fg"].extrusion - u4_ext) < 1e-5,
+      "...a mesh of a bake group: the group's Cage Distance")
+log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_high, TCtx())
+check([r._args[1] for r in log if r._kind == "prop"] == ["extrusion"] and "m3d.bake_cage_fit" in [r._args[0] for r in log if r._kind == "operator"],
+      "High Poly has the Cage Distance and Auto-fit Cage")
+VV._view.update(areas=2, kinds={"tight": 1, "miss": 1, "limited": False})
+log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_high, TCtx())
+check("Cage too tight here: raise Cage Distance Rays find no high poly here: the high poly does not cover it" in " ".join(bg_text(log))
+      and "m3d.bake_view_check" in [r._args[0] for r in log if r._kind == "operator"],
+      "...under what the check found, each kind of problem with what fixes it (and Check Cage): %s" % bg_text(log))
+check(T.M3D_BakeSettings.bl_rna.properties["extrusion"].name == BG.M3D_BakeGroup.bl_rna.properties["extrusion"].name == "Cage Distance", "(it is called Cage Distance everywhere)")
+VV.leave(bpy.context)
+bq_clean()
+
+# the maps the layers' masks read: a line with Tick on the Bake page when the bake leaves them out, a warning when one is missing
+u4_o, u4_m = fresh_cube("U4Tex", '64')
+bpy.ops.m3d.tex_project('EXEC_DEFAULT', resolution='64', template='DEFAULT', unwrap=True, bake_after=False)
+s_ = u4_o.m3d_bake
+s_.resolution, s_.margin, s_.samples, s_.samples_ao = '64', 2, 1, 1
+s_.use_normal, s_.use_ao, s_.use_curvature, s_.use_position, s_.use_worldnormal = True, True, False, False, False
+u4_item = next(e_ for e_ in m3d_library.entries('MATERIAL') if 'POSITION' in m3d_library.maps_of(e_.item))
+check(bpy.ops.m3d.library_apply(item=u4_item.ref) == {'FINISHED'} and bpy.data.images.get("U4Tex_Position") is not None, "(a smart material that reads Position: its maps are baked)")
+u4_lines = T.stack_maps(u4_o)
+check('POSITION' in [k_ for k_, _l, _m in u4_lines] and not any(m_ for _k, _l, m_ in u4_lines), "the Bake page knows the maps the masks read that the bake leaves out: %s" % u4_lines)
+tex_ws.m3d_page_right = "tex_bake"
+log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_maps, TCtx())
+u4_layer = dict((k_, l_) for k_, l_, _m in u4_lines)['POSITION']
+check("%s uses Position" % u4_layer.name in bg_text(log) and "POSITION" in [r.maps for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_bake_tick"],
+      "...a line for each, with Tick: %s" % bg_text(log))
+check(bpy.ops.m3d.tex_bake_tick(maps="POSITION") == {'FINISHED'} and s_.use_position and 'POSITION' not in [k_ for k_, _l, _m in T.stack_maps(u4_o)], "Tick ticks it")
+s_.use_position = False
+bpy.data.images.remove(bpy.data.images["U4Tex_Position"])
+check(dict((k_, m_) for k_, _l, m_ in T.stack_maps(u4_o))['POSITION'] is True, "a map that is gone is missing")
+log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_maps, TCtx())
+check("%s needs Position" % u4_layer.name in bg_text(log) and any(r._kind == "row" and r.values().get("alert") for r in log), "...the line is a warning")
+tex_ws.m3d_page_right = "tex_layers"
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_stack, TCtx())
+check("Masks need Position" in [r._kw.get("text") for r in log if r._kind == "label"]
+      and any(r._kind == "operator" and r._args[0] == "m3d.tex_bake_mode" and r.values().get("on") for r in log), "the Layers panel says it too, with Bake Mesh Maps")
+check(bpy.ops.m3d.mask_rebake() == {'FINISHED'} and not any(MK.missing_maps(l_) for l_ in u4_m.m3d_layers), "(Rebake Mesh Maps bakes it again)")
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_stack, TCtx())
+check(not any("Masks need" in (r._kw.get("text") or "") for r in log if r._kind == "label"), "...and the warning goes")
+
+# Baked Maps: a tile for each baked map with its name and size; while a bake runs only the ones it finished
+tex_ws.m3d_page_right = "tex_bake"
+with bpy.context.temp_override(workspace=tex_ws):
+    check(bpy.ops.m3d.tex_bake_sets() == {'FINISHED'} and tex_ws.m3d_page_right == "tex_bake", "(Normal and AO baked; the dock stays on the Bake page)")
+log = bg_draw(T.PROPERTIES_PT_m3d_tx_baked, TCtx('ASSETS'))
+u4_maps = [image.name for _l, image in T.mesh_maps(u4_o)]
+check([r.name for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_show_image"] == u4_maps and "Normal  64" in bg_text(log) and "AO  64" in bg_text(log),
+      "Baked Maps: a tile for each map (a click shows it in the 2D view), named with its size: %s" % bg_text(log))
+QQ._run = NS(cancelling=False)
+QQ._note["done"] = ["U4Tex_Normal"]
+log = bg_draw(T.PROPERTIES_PT_m3d_tx_baked, TCtx('ASSETS'))
+check([r.name for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_show_image"] == ["U4Tex_Normal"], "...while a bake runs only the maps it finished")
+QQ._run, QQ._note["done"] = None, []
+# the 2D view shows a baked map in Bake Mesh Maps, and what it showed before when the dock leaves the Bake page
+u4_screen = tex_ws.screens[0]
+u4_area = T.view_areas(u4_screen)[1]
+u4_space = u4_area.spaces.active
+u4_before = bpy.data.images.new("U4Before", 8, 8)
+u4_space.image, u4_space.use_image_pin, u4_space.ui_mode = u4_before, False, 'PAINT'
+u4_win = NS(workspace=tex_ws, screen=u4_screen)
+check(T.show_baked_map(NS(window=u4_win), bpy.data.images["U4Tex_AO"]) and u4_space.image == bpy.data.images["U4Tex_AO"] and u4_space.use_image_pin
+      and u4_space.ui_mode == 'VIEW' and tex_ws["m3d_2d_bake"]["image"] == "U4Before", "the 2D view shows a baked map, pinned; what it showed is kept on the workspace")
+check(T.show_baked_map(NS(window=u4_win), bpy.data.images["U4Tex_Normal"]) and u4_space.image == bpy.data.images["U4Tex_Normal"] and tex_ws["m3d_2d_bake"]["image"] == "U4Before",
+      "...the next map too, and the first state stays kept")
+tex_ws.m3d_page_right = "tex_layers"
+T.restore_2d(u4_win)
+check(u4_space.image == u4_before and not u4_space.use_image_pin and u4_space.ui_mode == 'PAINT' and "m3d_2d_bake" not in tex_ws,
+      "leaving Bake Mesh Maps: the 2D view shows what it showed before")
+bpy.data.images.remove(u4_before)
+clean_scene()
+for im_ in [i for i in bpy.data.images if i.name.startswith("U4Tex")]:
+    bpy.data.images.remove(im_)
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

@@ -9741,13 +9741,17 @@ def bgg_tab_check():
     dock, region = bgg_dock_context()
     with bpy.context.temp_override(window=window(), screen=window().screen, area=dock, region=region):
         check(m3d_workspace.active_page(bpy.context) == "tex_bake", "the dock shows the Bake page")
-        check(m3d_texture.PROPERTIES_PT_m3d_tx_bake_advanced.poll(bpy.context) and HPR.grouped(bpy.context.active_object),
-              "the Bake page has Advanced, which holds the Bake Groups and the settings of the group of the active mesh")
         check(m3d_texture.PROPERTIES_PT_m3d_tx_bake_high.poll(bpy.context), "...and High Poly, which shows the status of the group instead of the picker")
+    props = tex_roles()["props"]
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=props, region=next(r for r in props.regions if r.type == 'WINDOW')):
+        check(m3d_texture.PROPERTIES_PT_m3d_tx_bake_advanced.poll(bpy.context) and HPR.grouped(bpy.context.active_object),
+              "Bake Settings (Properties) has Advanced, which holds the Bake Groups and the settings of the group of the active mesh")
     groups = HPR.all_groups(bpy.context)
     check(list(groups) == ["Rock", "Shield", "Sword"] and [len(x) for x in groups["Sword"]] == [1, 2], "three groups, the sword with a floater: %s" % {g: [len(x) for x in v] for g, v in groups.items()})
     check(bgg_group_state("Sword") == 'NONE', "nothing is baked yet")
-    check(bpy.context.scene.m3d_bake_groups.get("Sword") is None, "(Advanced is closed: the Group Settings are not drawn, so nothing is made for them)")
+    entry = bpy.context.scene.m3d_bake_groups.get("Sword")
+    check(entry is None or abs(entry.extrusion - bpy.data.objects["Sword_low"].m3d_bake.extrusion) < 1e-6,
+          "(the group's settings are made when High Poly first shows its Cage Distance, from the low poly's)")
     # A panel of the dock that draws the Group Settings as Advanced does when it is open.
     GIZMO["bgg_probe"] = type("PROPERTIES_PT_m3d_gui_group_probe", (bpy.types.Panel,), {
         "bl_label": "Group Settings Probe", "bl_space_type": 'PROPERTIES', "bl_region_type": 'WINDOW', "bl_context": "modeling_toolkit",
@@ -9809,8 +9813,17 @@ def bgg_bake_group_check():
           "Texture Paint Mode, the active mesh and the selection are back (%s)" % bpy.context.mode)
     check(all(bpy.data.images.get("Shield_low_" + n) is not None for n in ("Normal", "AO")), "Shield's maps are baked")
     check(bpy.data.images.get("Sword_low_Normal") is None, "...and only Shield's")
-    check(hp_ob("Shield_high").hide_get() and hp_ob("Shield_high").m3d_pair.parked and not hp_ob("Shield_high").select_get(), "the parked high poly is hidden again")
     check(bgg_group_state("Shield") == 'BAKED' and bgg_group_state("Sword") == 'NONE', "Shield is baked, Sword is not")
+    check(window().workspace.m3d_page_right == "tex_bake", "(the dock stays on the Bake page)")
+    window().workspace.m3d_page_right = "tex_layers"
+
+
+step(wait_until(lambda: not BVW._view["on"], "the Bake mode view to go with the page", 40))
+
+
+@step
+def bgg_bake_group_parked():
+    check(hp_ob("Shield_high").hide_get() and hp_ob("Shield_high").m3d_pair.parked and not hp_ob("Shield_high").select_get(), "the parked high poly is hidden again")
     for a in window().screen.areas:
         a.tag_redraw()
 
@@ -9822,6 +9835,7 @@ def bgg_bake_all():
 
 
 step(wait_until(lambda: not QB.running(), "Bake All to finish (it is a queue of jobs: the window goes on)", 400))
+step(wait_until(lambda: not BVW._view["on"] and window().workspace.m3d_page_right == "tex_layers", "the dock back on the Layers (the queue opened the Bake page)", 40))
 
 
 @step
@@ -10484,8 +10498,9 @@ def bx_open_tab():
 def bx_tab_check():
     check(not tracebacks(), "Python error drawing the Bake tab (bake extras)")
     dock, region = bgg_dock_context()
-    with bpy.context.temp_override(window=window(), screen=window().screen, area=dock, region=region):
-        check(m3d_texture.PROPERTIES_PT_m3d_tx_bake_advanced.poll(bpy.context) and HPR.grouped(bpy.context.active_object), "the Bake page shows Advanced, with the groups and the settings of the active one")
+    props = tex_roles()["props"]
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=props, region=next(r for r in props.regions if r.type == 'WINDOW')):
+        check(m3d_texture.PROPERTIES_PT_m3d_tx_bake_advanced.poll(bpy.context) and HPR.grouped(bpy.context.active_object), "Bake Settings shows Advanced, with the groups and the settings of the active one")
     check(not BGR.cage_objects() and not BGR.moved(bpy.context), "(nothing is apart, no cage preview)")
 
 
@@ -10603,6 +10618,14 @@ step(wait_until(lambda: not QB.running(), "Bake All with the cage preview to fin
 def bx_cage_bake_check():
     check(not BGR.cage_objects() and all(bgg_group_state(g) == 'BAKED' for g in ("Axe", "Bow", "Cup")), "Bake All takes the preview away and bakes every group")
     check(not GIZMO["bx_seen"], "no parked high poly was drawn during the bakes: %s" % GIZMO["bx_seen"])
+    window().workspace.m3d_page_right = "tex_layers"   # (the dock stays on the Bake page after a bake: leave it)
+
+
+step(wait_until(lambda: not BVW._view["on"], "the Bake mode view to go with the page (bake extras)", 40))
+
+
+@step
+def bx_cage_bake_parked():
     check(all(hp_ob(n).hide_get() and hp_ob(n).m3d_pair.parked for n in ("Axe_high", "Bow_high", "Cup_high")), "...they are hidden again")
 
 
@@ -10846,6 +10869,9 @@ def t4_project_check():
 
 
 # --- Bake Mesh Maps: the page, the Bake button, Back to Painting
+T4 = {}   # what the 2D view showed before the bake
+
+
 @step
 def t4_bake_open():
     t4_key('B', ctrl=True, shift=True)
@@ -10858,9 +10884,19 @@ def t4_bake_page():
     with bpy.context.temp_override(window=window(), screen=window().screen, area=roles["dock"], region=next(r for r in roles["dock"].regions if r.type == 'WINDOW'),
                                    space_data=roles["dock"].spaces.active):
         shown = [c.__name__ for c in (*m3d_texture.classes, *LIB.classes) if hasattr(c, "poll") and getattr(c, "page", "") == "tex_bake" and c.poll(bpy.context)]
-    check(set(shown) == {"PROPERTIES_PT_m3d_tx_bake_back", "PROPERTIES_PT_m3d_tx_bake_high", "PROPERTIES_PT_m3d_tx_bake_maps", "PROPERTIES_PT_m3d_tx_bake_settings",
-                         "PROPERTIES_PT_m3d_tx_bake_advanced"},
-          "Bake Mesh Maps shows Back to Painting, High Poly, Maps, Size and Bake, and Advanced: %s" % shown)
+    check(set(shown) == {"PROPERTIES_PT_m3d_tx_bake_high", "PROPERTIES_PT_m3d_tx_bake_maps", "PROPERTIES_PT_m3d_tx_bake_settings"},
+          "Bake Mesh Maps shows Size and Bake, High Poly and Maps: %s" % shown)
+    for role, want in (("assets", {"PROPERTIES_PT_m3d_tx_baked"}), ("props", {"PROPERTIES_PT_m3d_tx_bake_view", "PROPERTIES_PT_m3d_tx_bake_advanced"})):
+        area = roles[role]
+        with bpy.context.temp_override(window=window(), screen=window().screen, area=area, region=next(r for r in area.regions if r.type == 'WINDOW'),
+                                       space_data=area.spaces.active):
+            shown = {c.__name__ for c in (*m3d_texture.classes, *LIB.classes, *BV.classes) if hasattr(c, "page") and hasattr(c, "poll") and c.poll(bpy.context)}
+        check(shown == want, "...%s shows %s instead of what painting needs: %s" % (role, sorted(want), sorted(shown)))
+    image_area = m3d_texture.view_areas(window().screen)[1]
+    with bpy.context.temp_override(window=window(), screen=window().screen, area=image_area):
+        m3d_texture.show_in_2d(bpy.context, image_area.spaces.active, 'MATERIAL')   # (the material's picture, pinned)
+    T4["2d"] = (image_area.spaces.active.image, image_area.spaces.active.use_image_pin)
+    check(T4["2d"][0] is not None and T4["2d"][1], "(the 2D view shows the material: %s)" % (T4["2d"],))
     bpy.context.scene.m3d_tex.bake_map = 'AO'
     t4_redraw()
 
@@ -10886,7 +10922,9 @@ def t4_bake_check():
     ob = bpy.context.active_object
     check({"Crate4_Normal", "Crate4_AO"} <= set(bpy.data.images.keys()) and ob.m3d_bake.baked == "Crate4_Normal|Crate4_AO", "Bake in the window baked the ticked maps: %s" % ob.m3d_bake.baked)
     check(tuple(bpy.data.images["Crate4_AO"].size) == (64, 64), "...at the size of the settings")
-    check(window().workspace.m3d_page_right == "tex_layers" and not tracebacks(), "...and the dock is back on the Layers when it is done; no Python error")
+    check(window().workspace.m3d_page_right == "tex_bake" and not tracebacks(), "...and the dock stays on the Bake page when it is done; no Python error")
+    space = m3d_texture.view_areas(window().screen)[1].spaces.active
+    check(space.image == bpy.data.images["Crate4_AO"] and space.use_image_pin and space.ui_mode == 'VIEW', "...the 2D view shows the last map it baked: %s" % space.image)
     mat = ob.active_material
     check(mat.m3d_baked_normal == bpy.data.images["Crate4_Normal"] and mat.m3d_baked_ao == bpy.data.images["Crate4_AO"] and "m3d_layer.NORMAL.encode" in mat.node_tree.nodes
           and LY.principled_of(mat).inputs["Base Color"].links[0].from_node.name == LY.AO_MUL, "...the baked normal and AO are in the shader of the set")
@@ -10909,6 +10947,13 @@ def t4_back():
 def t4_back_check():
     check(window().workspace.m3d_page_right == "tex_layers", "Back to Painting shows the Layers again")
     t4_redraw()
+
+
+@step
+def t4_back_2d():
+    space = m3d_texture.view_areas(window().screen)[1].spaces.active
+    check((space.image, space.use_image_pin) == T4["2d"] and "m3d_2d_bake" not in window().workspace,
+          "...and the 2D view shows what it showed before the bake: %s %s, before %s" % (space.image, space.use_image_pin, T4["2d"]))
 
 
 # --- The Texture Set List and Texture Set Settings
@@ -11376,7 +11421,8 @@ def bq_view_check():
     check(not high.hide_get() and [(s.link, s.material.name) for s in high.material_slots] == [('OBJECT', BV.MATERIAL)] and high.show_transparent,
           "Bake mode shows the high poly as the blue see-through material through its object slots: %s" % ([(s.link, s.material.name) for s in high.material_slots],))
     check([m.name for m in high.data.materials] == ["OrbHighMat"], "...the mesh and its material are not touched")
-    check(BV.status_text() == ("Cage: 2 problem areas", True), "...and the cage check finds the two problems (the high poly sticks out at the top and is missing at the side): %s" % (BV.status_text(),))
+    check(BV.status_lines() == [("Cage too tight here: raise Cage Distance", True), ("Rays find no high poly here: the high poly does not cover it", True)],
+          "...and the cage check finds the two problems (the high poly sticks out at the top and is missing at the side): %s" % (BV.status_lines(),))
     cage = BV._view["result"]["Orb_low"]
     check(cage.lines is not None and cage.tris is not None and cage.problems > 0, "...as batches the draw handler only draws (%d bad faces)" % cage.problems)
     check(bpy.data.materials[BV.MATERIAL].surface_render_method == 'BLENDED', "(the blue is blended)")
@@ -11398,6 +11444,27 @@ def bq_view_redraw():
 @step
 def bq_view_shot():
     e_screenshot("F:/AI/m3d_bake_viz.png")
+
+
+@step
+def bq_fit():
+    """Auto-fit Cage (next to the cage check in High Poly) fits the Cage Distance around the bump; the hole stays a problem."""
+    press_ok("m3d.bake_cage_fit", _area=bq_dock())
+
+
+step(wait_until(lambda: BV._view["areas"] is not None and BV._view["kinds"].get("tight") == 0, "the cage check after Auto-fit Cage", 100))
+
+
+@step
+def bq_fit_check():
+    entry = bpy.context.scene.m3d_bake_groups["Orb"]
+    check(0.25 < entry.extrusion < 0.5 and entry.ray_distance >= 0.3, "Auto-fit Cage set the group's Cage Distance past the bump (0.25): %.3f" % entry.extrusion)
+    check(BV.status_lines() == [("Rays find no high poly here: the high poly does not cover it", True)], "...the check runs again: only the hole is left: %s" % BV.status_lines())
+    check(not tracebacks(), "Python error in Auto-fit Cage")
+    entry.extrusion, entry.ray_distance = 0.05, 0.3
+
+
+step(wait_until(lambda: BV._view["areas"] is not None and BV._view["kinds"].get("tight") == 1, "the cage check with the old Cage Distance", 100))
 
 
 @step
@@ -11445,6 +11512,9 @@ def bq_while_baking():
     check(QB.running() and bpy.app.is_job_running('OBJECT_BAKE') and window().workspace.m3d_page_right == "tex_bake", "a bake job runs and the Bake page is shown")
     check(BQ["draws"][0] > BQ["draws0"] + 3, "the window keeps drawing during the bake (%d redraws of the 3D view)" % (BQ["draws"][0] - BQ["draws0"]))
     check(not BV._view["on"] and not any(BV.KEY in o for o in bpy.data.objects), "the view of the Bake page is put away while the queue bakes")
+    space = m3d_texture.view_areas(window().screen)[1].spaces.active
+    check(space.image is not None and space.image.name == "Orb_low_Normal" and space.use_image_pin and QB.baked_names() == {"Orb_low_Normal"},
+          "the 2D view shows the map the queue finished (the next one bakes): %s" % space.image)
     check(bpy.context.scene.render.engine == 'CYCLES' and hp_ob("Orb_high").display_type == 'BOUNDS', "(Cycles is the engine, the high poly is drawn as a box meanwhile)")
     BQ["steps"][0] += 1
     win, area, region = view3d()
@@ -11545,11 +11615,22 @@ def bq_done_check():
     check(not tracebacks(), "no Python error during the queue")
     check(all(bpy.data.images.get("Orb_low_" + n) is not None for n in ("Normal", "AO", "Curvature", "Thickness")), "the queue baked every map")
     check(bgg_group_state("Orb") == 'BAKED', "...the group is baked")
-    check(window().workspace.m3d_page_right == "tex_layers", "...and the dock is back on the Layers: results are applied as before")
+    check(window().workspace.m3d_page_right == "tex_bake", "...and the dock stays on the Bake page")
+    space = m3d_texture.view_areas(window().screen)[1].spaces.active
+    check(space.image is not None and space.image.name == "Orb_low_Thickness", "...the 2D view shows the last map: %s" % space.image)
+    check(QB.progress()[0] == 0 and QB.text() == "", "no progress is shown when it is over")
+    window().workspace.m3d_page_right = "tex_layers"
+
+
+step(wait_until(lambda: not BV._view["on"], "the Bake mode view to go with the page", 100))
+
+
+@step
+def bq_done_left():
     after = bq_flags()
     check(after[0]["Orb_high"] == BQ["before"][0]["Orb_high"] and after[1:] == BQ["before"][1:], "everything is put back as it was before Bake Mesh Maps was opened: %s vs %s" % (after[1:], BQ["before"][1:]))
-    check(not BV._view["on"] and not any(BV.KEY in o for o in bpy.data.objects) and BV.MATERIAL not in bpy.data.materials, "the Bake mode view is gone with the page")
-    check(QB.progress()[0] == 0 and QB.text() == "", "no progress is shown when it is over")
+    check(not any(BV.KEY in o for o in bpy.data.objects) and BV.MATERIAL not in bpy.data.materials, "the Bake mode view is gone with the page")
+    check("m3d_2d_bake" not in window().workspace, "(the 2D view has what it had)")
     bpy.context.scene.m3d_tex.bake_gpu = True
     win, area, region = view3d()
     event('MOUSEMOVE', xy=(region.x + 5, region.y + 5))
@@ -11695,7 +11776,7 @@ step(wait_until(lambda: not QB.running(), "the last queue to finish", 800))
 
 @step
 def bq_last_check():
-    check(bgg_group_state("Orb") == 'BAKED' and window().workspace.m3d_page_right == "tex_layers", "(the last bake is done)")
+    check(bgg_group_state("Orb") == 'BAKED' and window().workspace.m3d_page_right == "tex_bake", "(the last bake is done)")
     check(not tracebacks(), "no Python error in the bake queue tests")
 
 

@@ -301,6 +301,8 @@ BAKE_MAPS = (   # (id, label, flag in M3D_BakeSettings; the label names the imag
 )
 BAKE_TEXT = {"Normal": "Normal", "AO": "Ambient Occlusion", "Curvature": "Curvature", "Position": "Position",
              "Thickness": "Thickness", "ID": "ID", "WorldNormal": "World Normal"}   # what the Bake page calls the maps
+BAKE_HINTS = {'NORMAL': "surface bumps", 'AO': "dark in crevices", 'CURVATURE': "edges and cavities", 'POSITION': "height and sides",
+              'THICKNESS': "thin parts", 'ID': "parts by colour", 'WORLDNORMAL': "which way it faces"}   # the line beside each map's checkbox
 
 
 # -----------------------------------------------------------------------------
@@ -482,7 +484,7 @@ class M3D_TexSettings(PropertyGroup):
     view_hp: BoolProperty(name="Show High Poly", default=True, update=_view_changed,
                           description="In Bake Mesh Maps the high polys of the groups that are baked are shown as a see-through blue mesh")
     view_cage: BoolProperty(name="Show Cage", default=True, update=_view_changed,
-                            description="In Bake Mesh Maps the low polys are shown pushed out by the Extrusion (the cage the rays start "
+                            description="In Bake Mesh Maps the low polys are shown pushed out by the Cage Distance (the cage the rays start "
                                         "from), in red where the bake would go wrong")
     view_opacity: FloatProperty(name="High Poly Opacity", default=0.35, min=0.05, max=1.0, subtype='FACTOR', update=_view_changed,
                                 description="How solid the blue high poly is drawn")
@@ -537,9 +539,9 @@ class M3D_BakeSettings(PropertyGroup):
     curvature_contrast: FloatProperty(name="Contrast", default=0.05, min=0.005, max=0.5,
                                       description="How far the pointiness of the mesh is from flat where the Curvature map is black "
                                       "and white: smaller shows smaller edges (0.05 is the default)")
-    extrusion: FloatProperty(name="Extrusion", default=0.02, min=0.0, soft_max=1.0, unit='LENGTH',
-                             description="How far in front of the low-poly surface the rays start: raise it when the high poly sticks "
-                                         "out of the low poly")
+    extrusion: FloatProperty(name="Cage Distance", default=0.02, min=0.0, soft_max=1.0, unit='LENGTH',
+                             description="How far in front of the low-poly surface the rays start (the cage): raise it when the high "
+                                         "poly sticks out of the low poly (Auto-fit Cage measures it)")
     ray_distance: FloatProperty(name="Max Ray Distance", default=0.0, min=0.0, soft_max=1.0, unit='LENGTH',
                                 description="Longest distance a ray travels to the high-poly mesh (0: no limit)")
     samples: IntProperty(name="Antialiasing", default=4, min=1, soft_max=512,
@@ -1474,6 +1476,8 @@ def bake_maps_steps(context, ob, high, s, maps, name=None, extrusion=None, ray_d
     m3d_bakeq): it yields the arguments of each bake and returns the images."""
     size, images, highs = int(s.resolution), [], meshes_of(high)
     name = name or ob.name
+    if Q.running():
+        keep_2d(context)   # (before the first bake: Blender puts the image it bakes into the 2D view)
     for key, label, _flag in maps:
         context.scene.cycles.samples = map_samples(s, key)
         Q.note(label=BAKE_TEXT[label])
@@ -1511,7 +1515,11 @@ def bake_maps_steps(context, ob, high, s, maps, name=None, extrusion=None, ray_d
             normalise_position(image, highs or ob, ob)
         image["m3d_map"] = size   # Baked at this size: mask effects reuse it until the resolution changes.
         image["m3d_stamp"] = MK.new_uid()
+        L.refresh_thumbs({image.name})   # (the thumbnails of the map are made again from the new pixels)
         images.append(image)
+        if Q.running():   # (between two bakes of a queue: the job is over, the map is done)
+            Q.baked(image.name)
+            show_baked_map(context, image)
     return images
 
 
@@ -1669,16 +1677,14 @@ class M3D_OT_tex_bake_pick(Operator):
 
 
 def after_bake(context):
-    """A bake is done: the 3D view shows the material (the baked normal and AO are in its shader), the dock goes back from the Bake page
-    to the Layers, the 2D Material view is made again and everything redraws."""
+    """A bake is done: the 3D view shows the material (the baked normal and AO are in its shader), the 2D Material view is made again
+    and everything redraws. The dock stays where it is: on the Bake page the new maps are in Baked Maps (the Assets column) and the 2D
+    view shows the last one until Back to Painting (a queue that opened the Bake page itself goes back, see m3d_bakeq)."""
     space = viewport(context)
     if space is not None and mesh_of(context) is not None:
         show_in_3d(context, space, 'MATERIAL')
         if space.shading.type == 'WIREFRAME':
             space.shading.type = 'MATERIAL'
-    ws = context.workspace
-    if ws is not None and ws.m3d_page_right == "tex_bake":
-        ws.m3d_page_right = "tex_layers"
     preview_dirty()
     for area in context.screen.areas if context.screen is not None else ():
         area.tag_redraw()
@@ -1844,6 +1850,10 @@ class M3D_OT_tex_bake_sets(Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
+    def description(cls, context, _props):
+        return "%s.\n%s; Cycles bakes, the window stays usable (Esc cancels)" % (cls.__doc__.rstrip(), Q.device_note(context))
+
+    @classmethod
     def poll(cls, context):
         return bool(bake_checked(context)) and not Q.running()
 
@@ -1886,20 +1896,91 @@ class M3D_OT_tex_bake_maps(Operator):
         return {'FINISHED'}
 
 
+class M3D_OT_tex_bake_tick(Operator):
+    """Tick this map for the bake: a mask of the layers reads it (not ticked, the bake leaves it as it was, or without it)"""
+    bl_idname = "m3d.tex_bake_tick"
+    bl_label = "Tick"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    maps: StringProperty(description="Map ids (BAKE_MAPS), separated by spaces")
+
+    @classmethod
+    def poll(cls, context):
+        return mesh_of(context) is not None and not Q.running()
+
+    def execute(self, context):
+        s = bake_owner(mesh_of(context)).m3d_bake
+        for key, _label, flag in BAKE_MAPS:
+            if key in self.maps.split():
+                setattr(s, flag, True)
+        return {'FINISHED'}
+
+
+_2d_bake = "m3d_2d_bake"   # custom property of the workspace: what its 2D view showed before Bake Mesh Maps put a baked map there
+
+
+def keep_2d(context):
+    """(window, 2D view area) of the Texture workspace, after what the 2D view shows is kept on the workspace (saved with the file; once:
+    until it comes back, see restore_2d). None without a 2D view (3D Only) or outside the Texture workspace. A queue keeps it before its
+    first bake: Blender's bake puts the image it bakes into the 2D view."""
+    win = context.window or Q.window_of(context)
+    ws = win.workspace if win is not None else None
+    if ws is None or W.workspace_kind(ws) != 'TEXTURE':
+        return None
+    area = view_areas(win.screen)[1]
+    if area is None:
+        return None
+    if _2d_bake not in ws:
+        remember_2d(ws, area.spaces.active, _2d_bake)
+    return win, area
+
+
+def show_baked_map(context, image):
+    """Bake Mesh Maps: the 2D view of the Texture workspace shows a baked map (the last one a bake finished, or one picked in Baked
+    Maps), whole and pinned. What it showed before comes back when the dock leaves the Bake page (keep_2d, follow). False without a
+    2D view."""
+    found = keep_2d(context)
+    if found is None:
+        return False
+    win, area = found
+    space = area.spaces.active
+    space.image = image
+    space.ui_mode, space.use_image_pin = 'VIEW', True   # (a map is looked at here, not painted; pinned: the paint target does not take the view)
+    _shown_2d.pop(space_key(space), None)
+    region = next((r for r in area.regions if r.type == 'WINDOW'), None)
+    if region is not None and region.width > 100 and not bpy.app.background:   # (framed now: while a bake runs follow() does nothing)
+        fit_view(win, area, region, space)
+        _fit["seen"].setdefault(space.as_pointer(), set()).add((image.session_uid, L.image_size(image)))
+    area.tag_redraw()
+    return True
+
+
+def restore_2d(win):
+    """The dock left the Bake page: the 2D view shows again what it showed before a baked map was put there (follow)."""
+    ws = win.workspace
+    saved = ws[_2d_bake].to_dict()
+    del ws[_2d_bake]
+    area = view_areas(win.screen)[1]
+    if area is not None:
+        recall_2d(area.spaces.active, saved)
+
+
 class M3D_OT_tex_show_image(Operator):
-    """Show an image in the 2D view"""
+    """Show this map in the 2D view (it goes back to what it showed when you leave Bake Mesh Maps)"""
     bl_idname = "m3d.tex_show_image"
-    bl_label = "Show Image"
+    bl_label = "Show Map"
     bl_options = {'INTERNAL'}
 
     name: StringProperty()
 
+    @classmethod
+    def poll(cls, _context):
+        return not Q.running()
+
     def execute(self, context):
         image = bpy.data.images.get(self.name)
-        areas = [a for a in context.screen.areas if a.type == 'IMAGE_EDITOR']
-        if image is None or not areas:
+        if image is None or not show_baked_map(context, image):
             return {'CANCELLED'}
-        max(areas, key=lambda a: a.width * a.height).spaces.active.image = image
         return {'FINISHED'}
 
 
@@ -3059,8 +3140,8 @@ def follow(wm):
     """Timer (m3d_workspace._follow_workspace): the 2D view of the Texture workspace frames its image (image.view_all, fit) when
     the workspace opens, when a view is new, and the first time it shows an image (or one of another size, or none): Blender keeps
     the view of each image (a new one is shown 1:1, a small square in a big empty area), so an image framed once keeps the
-    view you gave it when it comes back. Also the view of Bake Mesh Maps (m3d_bakeview.py) follows the dock here. Nothing is written while a
-    bake runs (its job reads the scene from another thread)."""
+    view you gave it when it comes back. Also the view of Bake Mesh Maps (m3d_bakeview.py) follows the dock here, and the 2D view gets back
+    what it showed when the dock leaves the Bake page. Nothing is written while a bake runs (its job reads the scene from another thread)."""
     import m3d_bakeview
     m3d_bakeview.follow(wm)
     win = wm.windows[0] if wm.windows else None
@@ -3072,6 +3153,8 @@ def follow(wm):
         return
     if _fit["workspace"] != ws.name:
         _fit["workspace"], _fit["seen"] = ws.name, {}
+    if _2d_bake in ws and ws.m3d_page_right != "tex_bake":
+        restore_2d(win)   # (Bake Mesh Maps is left: the 2D view shows what it showed before the baked maps)
     view_defaults_once(win)
     refresh_previews(win)
     for area in win.screen.areas:
@@ -3087,11 +3170,20 @@ def follow(wm):
             fit_view(win, area, region, space)
 
 
-def remember_2d(ws, space):
+def remember_2d(ws, space, key="m3d_2d"):
     """What the 2D view shows (its image, pin, mode and display mode), kept on the workspace (saved with the file) for the 2D view
-    the layout makes again."""
-    ws["m3d_2d"] = {"image": space.image.name if space.image is not None else "", "pin": space.use_image_pin,
-                    "ui_mode": space.ui_mode, "mode": _shown_2d.get(space_key(space), "")}
+    the layout makes again (or, `key` m3d_2d_bake, for the end of Bake Mesh Maps)."""
+    ws[key] = {"image": space.image.name if space.image is not None else "", "pin": space.use_image_pin,
+               "ui_mode": space.ui_mode, "mode": _shown_2d.get(space_key(space), "")}
+
+
+def recall_2d(space, saved):
+    """The 2D view shows what `remember_2d` kept."""
+    space.image = bpy.data.images.get(saved.get("image", ""))
+    space.ui_mode = saved.get("ui_mode", 'PAINT')
+    space.use_image_pin = bool(saved.get("pin", False)) and space.image is not None
+    if saved.get("mode"):
+        _shown_2d[space_key(space)] = saved["mode"]
 
 
 def setup_2d(context, area):
@@ -3102,12 +3194,7 @@ def setup_2d(context, area):
     if space.show_region_asset_shelf:   # (read-only: the region is toggled)
         with context.temp_override(window=context.window, screen=context.window.screen, area=area):
             bpy.ops.screen.region_toggle(region_type='ASSET_SHELF')
-    saved = context.workspace.get("m3d_2d") or {}
-    space.image = bpy.data.images.get(saved.get("image", ""))
-    space.ui_mode = saved.get("ui_mode", 'PAINT')
-    space.use_image_pin = bool(saved.get("pin", False)) and space.image is not None
-    if saved.get("mode"):
-        _shown_2d[space_key(space)] = saved["mode"]
+    recall_2d(space, context.workspace.get("m3d_2d") or {})
 
 
 def area_center(area):
@@ -3218,8 +3305,8 @@ class M3D_OT_tex_layout(Operator):
 
 
 class M3D_OT_tex_bake_mode(Operator):
-    """Bake Mesh Maps (Ctrl+Shift+B): the dock shows the Bake page, where you pick the high poly and the maps and bake; Back to
-    Painting (or a finished bake) returns to the Layers"""
+    """Bake Mesh Maps (Ctrl+Shift+B): the dock shows the Bake page, where you pick the high poly and the maps and bake, the Assets
+    column the baked maps and Properties the other bake settings; Back to Painting returns to the Layers"""
     bl_idname = "m3d.tex_bake_mode"
     bl_label = "Bake Mesh Maps"
 
@@ -3869,6 +3956,12 @@ class PROPERTIES_PT_m3d_tx_stack(_Page, Panel):
         col.separator()
         col.operator("m3d.layer_duplicate", text="", icon='DUPLICATE')
         reason(layout, paint_status(context, mat, layer))
+        need = [key for key, _l, _f in BAKE_MAPS if key in {k for lay in mat.m3d_layers for _e, k in MK.missing_maps(lay)}]
+        if need:   # (a mask effect without its baked map: the Bake page has them ticked with one click)
+            row = layout.row(align=True)
+            row.alert = True
+            row.label(text="Masks need %s" % ", ".join(BAKE_TEXT[MK.MAP_LABELS[k]] for k in need), icon='ERROR')
+            row.operator("m3d.tex_bake_mode", text="Bake Mesh Maps", icon='RENDER_STILL').on = True
         if layer.kind == 'FILL' and not layer.mask_stack and context.mode == 'PAINT_TEXTURE':
             layout.operator("m3d.layer_convert", icon='IMAGE_DATA')   # (the other way to paint a fill)
         equivalent = L.memory_equivalent(mat)
@@ -4322,9 +4415,11 @@ class PROPERTIES_PT_m3d_tx_palette(_Brush, ColorPalettePanel, Panel):
     pass
 
 
-# --- Bake (Bake Mesh Maps: the dock shows this page instead of the tabs). Top to bottom: Back to Painting, High Poly, Maps, Size and
-# Bake; everything else is under Advanced (collapsed): dilation, antialiasing, the rays and the cage, the settings of each map, the bake
-# groups, Multires and the list of the baked maps.
+# --- Bake (Bake Mesh Maps: the dock shows this page instead of the tabs, Back to Painting in its header). Top to bottom: Size and the
+# Bake button (always in sight), High Poly (with the cage check, the Cage Distance and Auto-fit Cage), Maps. Meanwhile
+# the Assets column shows the baked maps (page tex_baked) and Properties the rest (page tex_bake_more): the visualization, dilation,
+# antialiasing, the device, the rays and the cage mesh, the settings of each map, the bake groups and Multires. The old layout has
+# all three pages in its dock.
 
 class _Bake(_Page):
     page = "tex_bake"
@@ -4333,6 +4428,10 @@ class _Bake(_Page):
     @classmethod
     def page_poll(cls, context):
         return ready(context, cls.need) and not Q.running()   # (while a bake runs the page shows its progress, see PROPERTIES_PT_m3d_tx_bake_progress)
+
+
+class _BakeMore(_Bake):
+    page = "tex_bake_more"
 
 
 def plural(count, word):
@@ -4364,27 +4463,12 @@ class PROPERTIES_PT_m3d_tx_bake_progress(_PagePanel, Panel):
         Q.draw_progress(self.layout, context)
 
 
-class PROPERTIES_PT_m3d_tx_bake_back(_PagePanel, Panel):
-    page = "tex_bake"
-    bl_label = "Bake Mesh Maps"
-    bl_options = {'HIDE_HEADER'}
-    bl_order = -10
-
-    @classmethod
-    def page_poll(cls, _context):
-        return not Q.running()
-
-    def draw(self, context):
-        row = self.layout.row()
-        row.scale_y = 1.2
-        row.operator("m3d.tex_bake_mode", text="Back to Painting", icon='LOOP_BACK').on = False
-
-
 class PROPERTIES_PT_m3d_tx_bake_high(_Bake, Panel):
     bl_label = "High Poly"
     bl_order = 0
 
     def draw(self, context):
+        import m3d_bakeview
         layout = self.layout
         ob = mesh_of(context)
         row = layout.row(align=True)
@@ -4399,12 +4483,59 @@ class PROPERTIES_PT_m3d_tx_bake_high(_Bake, Panel):
         row.operator("m3d.hp_auto_pair", text="Auto-Pair", icon='LINKED')
         if (highs if grouped else ob.m3d_bake.high) in (None, []):
             reason(layout, "No high poly: the mesh bakes its own detail")
-        elif grouped:
-            reason(layout, "The detail of the high polys is baked onto the low polys")
+            if not grouped:
+                reason(layout, "Name meshes Sword_low and Sword_high, then Auto-Pair")
+            return
+        m3d_bakeview.draw_cage(layout, context)
+
+
+def library_maps():
+    """The maps (BAKE_MAPS ids, in their order) that the smart materials and masks of the library read."""
+    import m3d_library
+    found = m3d_library.entries()
+    key = tuple(e.ref for e in found)
+    if _library_maps.get("key") != key:
+        used = set().union(*(m3d_library.maps_of(e.item) for e in found))
+        _library_maps.update(key=key, maps=[k for k, _label, _flag in BAKE_MAPS if k in used])
+    return _library_maps["maps"]
+
+
+_library_maps = {}   # library_maps, kept until the items change
+
+
+def stack_maps(owner):
+    """[(map id, layer, missing)] for each map the mask effects of the texture set of `owner` read and its bake leaves out (it is not
+    ticked): the first layer that reads it, and whether the map is missing (not baked at the bake's size)."""
+    s = owner.m3d_bake
+    found = {}
+    for ob in texture_set(owner)[1]:
+        for slot in ob.material_slots:
+            mat = slot.material
+            for layer in mat.m3d_layers if mat is not None else ():
+                for e in layer.mask_stack:
+                    for key in MK.needed_maps(e):
+                        flag = next(f for k, _l, f in BAKE_MAPS if k == key)
+                        if key not in found and not getattr(s, flag):
+                            image = map_image(owner, MK.MAP_LABELS[key])
+                            found[key] = (layer, image is None or image.get("m3d_map") != int(s.resolution))
+    return [(key, *found[key]) for key, _l, _f in BAKE_MAPS if key in found]
+
+
+def draw_lines(layout, context, text, icon='INFO'):
+    """`text` on as many lines as the width of the region needs (the first with `icon`)."""
+    scale = context.preferences.system.ui_scale or 1.0
+    region = getattr(context, "region", None)
+    room = (region.width if region is not None else 400 * scale) - 50 * scale
+    lines, line = [], ""
+    for word in text.split():
+        if line and W.text_width(line + " " + word, scale) > room:
+            lines.append(line)
+            line = word
         else:
-            reason(layout, "The detail of the high poly is baked onto this mesh")
-        if not grouped:
-            reason(layout, "Name meshes Sword_low and Sword_high, then Auto-Pair")
+            line = (line + " " + word).strip()
+    col = layout.column(align=True)
+    for i, line in enumerate([*lines, line]):
+        col.label(text=line, icon=icon if i == 0 else 'BLANK1', translate=False)
 
 
 class PROPERTIES_PT_m3d_tx_bake_maps(_Bake, Panel):
@@ -4416,9 +4547,26 @@ class PROPERTIES_PT_m3d_tx_bake_maps(_Bake, Panel):
         ob = mesh_of(context)
         owner = bake_owner(ob)
         s = owner.m3d_bake
-        flow = layout.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=False, align=False)
-        for _key, label, flag in BAKE_MAPS:
-            flow.prop(s, flag, text=BAKE_TEXT[label])
+        col = layout.column(align=True)
+        for key, label, flag in BAKE_MAPS:   # (each with what it is for; the tooltip says more)
+            split = col.split(factor=0.5, align=True)
+            split.prop(s, flag, text=BAKE_TEXT[label])
+            sub = split.row()
+            sub.active = False
+            sub.label(text=BAKE_HINTS[key])
+        used = library_maps()
+        if used:
+            draw_lines(layout, context, "Smart materials and masks use " + ", ".join(
+                BAKE_TEXT[label] if key != 'AO' else "AO" for key, label, _f in BAKE_MAPS if key in used))
+        for key, layer, missing in stack_maps(owner):
+            row = layout.row(align=True)
+            row.alert = missing
+            label = BAKE_TEXT[next(lb for k, lb, _f in BAKE_MAPS if k == key)]
+            row.label(text=("%s needs %s" if missing else "%s uses %s") % (layer.name, label), icon='ERROR' if missing else 'INFO',
+                      translate=False)   # (missing: not baked yet; else the bake would leave it as it was)
+            sub = row.row(align=True)
+            sub.ui_units_x = 3   # (the line gets the room)
+            sub.operator("m3d.tex_bake_tick", text="Tick").maps = key
         name, lows = texture_set(owner)
         if len(lows) > 1:
             reason(layout, "Texture set %s: %s" % (name, ", ".join(o.name for o in lows)))
@@ -4427,19 +4575,18 @@ class PROPERTIES_PT_m3d_tx_bake_maps(_Bake, Panel):
 
 
 class PROPERTIES_PT_m3d_tx_bake_settings(_Bake, Panel):
-    bl_label = "Size and Bake"
-    bl_order = 20
+    bl_label = "Bake"
+    bl_options = {'HIDE_HEADER'}
+    bl_order = -10   # (on top: in sight on any screen, however long the Maps get)
 
     def draw(self, context):
-        layout = self.layout
-        split_props(layout)
-        layout.prop(bake_owner(mesh_of(context)).m3d_bake, "resolution", text="Size")
-        row = layout.row()
+        row = self.layout.row(align=True)
         row.scale_y = 1.6
+        sub = row.row(align=True)
+        sub.ui_units_x = 4.5
+        sub.prop(bake_owner(mesh_of(context)).m3d_bake, "resolution", text="")
         row.operator("m3d.tex_bake_sets", text=bake_text(*bake_count(context)), icon='RENDER_STILL')
-        Q.check_gpu_soon()
-        reason(layout, Q.device_note(context))
-        reason(layout, "Uses Cycles; the window stays usable (Esc cancels)")
+        Q.check_gpu_soon()   # (its tooltip says the device; Bake Settings too)
 
 
 def draw_map_settings(layout, context):
@@ -4493,21 +4640,53 @@ def draw_multires_settings(layout, context):
     reason(layout, "No high poly needed; the maps are named like the others")
 
 
-def draw_baked_maps(layout, context):
-    """Advanced > Baked Maps: the images of the last bake, each with a button that shows it in the 3D view and one for the 2D view."""
-    owner = bake_owner(mesh_of(context))
-    s, have = owner.m3d_bake, {image.name: label for label, image in mesh_maps(owner)}
-    for name in filter(None, s.baked.split("|")):
-        row = layout.row(align=True)
-        row.label(text=name, icon='IMAGE_DATA', translate=False)
-        if name in have:
-            row.operator("m3d.tex_view_mode", text="", icon='MESH_DATA').mode = "MAP:" + have[name]
-        row.operator("m3d.tex_show_image", text="", icon='HIDE_OFF').name = name
+MAP_SHORT = {"AO": "AO", "WorldNormal": "World Normal"}   # names of the maps on the Baked Maps tiles, where the full one is long
 
 
-class PROPERTIES_PT_m3d_tx_bake_advanced(_Bake, Panel):
+class PROPERTIES_PT_m3d_tx_bake_wait(_PagePanel, Panel):
+    page = "tex_bake_more"
+    bl_label = "Bake Settings"
+    bl_options = {'HIDE_HEADER'}
+
+    @classmethod
+    def page_poll(cls, _context):
+        return Q.running()
+
+    def draw(self, _context):
+        reason(self.layout, "The settings are back when the bake is done")
+
+
+class PROPERTIES_PT_m3d_tx_baked(_PagePanel, Panel):
+    """Baked Maps (the Assets column in Bake Mesh Maps): a thumbnail of each baked map of the active texture set with its name and
+    size; a click shows it in the 2D view. While a bake runs only the maps it has finished (the others are being written)."""
+    page = "tex_baked"
+    bl_label = "Baked Maps"
+    bl_options = {'HIDE_HEADER'}
+
+    def draw(self, context):
+        import m3d_library
+        layout = self.layout
+        ob = mesh_of(context)
+        maps = mesh_maps(bake_owner(ob)) if ob is not None else []
+        if Q.running():
+            maps = [(label, image) for label, image in maps if image.name in Q.baked_names()]
+        if not maps:
+            draw_lines(layout, context, "Nothing baked yet: the maps show here as they are baked" if ob is not None else "Select a mesh")
+            return
+        area = view_areas(context.screen)[1]
+        shown = area.spaces.active.image if area is not None else None
+
+        def cell(label, image):
+            def draw(flow):
+                icon = L.thumb_icon("baked:" + image.name, ('IMAGE', image.name, False))
+                flow.operator("m3d.tex_show_image", text="", icon_value=icon, depress=image == shown).name = image.name
+            return "%s  %d" % (MAP_SHORT.get(label, MAP_TEXT[label]), image.size[0]), draw
+        m3d_library.tile_rows(layout, context, [cell(label, image) for label, image in maps], columns=2)
+        reason(layout, "A click shows the map in the 2D view")
+
+
+class PROPERTIES_PT_m3d_tx_bake_advanced(_BakeMore, Panel):
     bl_label = "Advanced"
-    bl_options = {'DEFAULT_CLOSED'}
     bl_order = 30
 
     def draw(self, context):
@@ -4522,12 +4701,12 @@ class PROPERTIES_PT_m3d_tx_bake_advanced(_Bake, Panel):
         layout.prop(context.scene.m3d_tex, "bake_gpu")
         Q.check_gpu_soon()
         reason(layout, Q.device_note(context))
-        if not m3d_pair.grouped(ob):   # (a group has its own extrusion, ray distance and cage: Group Settings)
-            layout.prop(s, "extrusion")
+        reason(layout, "Cycles bakes; the window stays usable (Esc cancels)")
+        if not m3d_pair.grouped(ob):   # (a group has its own ray distance and cage: Group Settings; the Cage Distance is in High Poly)
             layout.prop(s, "ray_distance")
             layout.prop(s, "cage")
         else:
-            reason(layout, "Cage, extrusion and ray distance: Group Settings")
+            reason(layout, "Cage mesh and ray distance: Group Settings")
         row = layout.row(align=True)
         row.use_property_split = False
         row.operator("m3d.tex_bake_maps", text="All Maps", icon='CHECKBOX_HLT').action = 'ALL'
@@ -4538,8 +4717,7 @@ class PROPERTIES_PT_m3d_tx_bake_advanced(_Bake, Panel):
         sections = (("map", "Map Settings", draw_map_settings, True),
                     ("groups", "Bake Groups", m3d_bakegroups.draw_groups, True),
                     ("group", "Group Settings", m3d_bakegroups.draw_group_settings, m3d_pair.grouped(ob)),
-                    ("multires", "Multires", draw_multires_settings, multires_ready(ob)),
-                    ("baked", "Baked Maps", draw_baked_maps, bool(s.baked)))
+                    ("multires", "Multires", draw_multires_settings, multires_ready(ob)))
         for key, label, draw, shown in sections:
             if shown:
                 header, body = layout.panel("m3d_bake_" + key, default_closed=True)
@@ -5029,7 +5207,8 @@ PAGE_NEEDS = {"tex_brushes": 'PAINT', "tex_layers": 'PAINT', "tex_brush": 'PAINT
               "tex_props": 'PAINT', "tex_bake": 'BAKE', "tex_export": 'EXPORT'}   # pages that show what is missing instead
 # The old layout's pages: the tray, and the Layers tab with the panels the new layout spreads over its editors.
 OLD_PAGES = {"tex_layers": {"tex_layers", "tex_layer", "tex_mask", "tex_settings"},
-             "tex_brushes": {"tex_brushes", "tex_brush_grid"}, "tex_library": {"tex_library", "tex_assets"}}
+             "tex_brushes": {"tex_brushes", "tex_brush_grid"}, "tex_library": {"tex_library", "tex_assets"},
+             "tex_bake": {"tex_bake", "tex_bake_more", "tex_baked"}}
 PROPS_TITLES = {'PAINT': "Paint", 'FILL': "Fill", 'MASK': "Mask", 'FOLDER': "Folder"}
 
 
@@ -5063,7 +5242,17 @@ def props_pages(context):
 START_EMPTY = {"tex_layers", "tex_settings", "tex_props"}   # the pages that show nothing while the start card is up
 
 
+BAKE_PAGES = {"tex_assets": "tex_baked", "tex_props": "tex_bake_more"}   # what Assets and Properties show in Bake Mesh Maps
+
+
+def baking_mode(context):
+    """Is the dock of this workspace on the Bake page (Bake Mesh Maps)?"""
+    return context.workspace is not None and context.workspace.m3d_page_right == "tex_bake"
+
+
 def pages_new(context, active):
+    if active in BAKE_PAGES and baking_mode(context):   # (the brushes, the library and the layer settings are no use while baking)
+        return {BAKE_PAGES[active]} if active == "tex_assets" or ready(context, 'BAKE') else set()
     if active in START_EMPTY and no_project(context):
         return set()   # (the start card in Texture Sets says what to do)
     need = PAGE_NEEDS.get(active)
@@ -5081,17 +5270,20 @@ def pages_old(context, active):
 
 def draw_header_sets(layout, context):
     layout.label(text="Texture Sets")
-    if no_project(context) and context.workspace.m3d_page_right != "tex_bake":
+    if no_project(context) and not baking_mode(context):
         return   # (the start card: nothing to isolate)
     layout.separator_spacer()
     layout.operator("m3d.tex_isolate", text="", icon='ZOOM_SELECTED', depress=context.scene.get("m3d_isolated") is not None)
 
 
-def draw_header_assets(layout, _context):
-    layout.label(text="Assets")
+def draw_header_assets(layout, context):
+    layout.label(text="Baked Maps" if baking_mode(context) else "Assets")
 
 
 def draw_header_props(layout, context):
+    if baking_mode(context):
+        layout.label(text="Bake Settings")
+        return
     if no_project(context):
         layout.label(text="Properties")
         return
@@ -5100,8 +5292,12 @@ def draw_header_props(layout, context):
 
 
 def draw_header_dock(layout, context):
+    """The dock's header: its tabs, or on the Bake page its name and Back to Painting (not while a bake runs: the progress is there)."""
     if W.active_page(context) == "tex_bake":
         layout.label(text="Bake Mesh Maps", icon='RENDER_STILL')
+        if not Q.running():
+            layout.separator_spacer()
+            layout.operator("m3d.tex_bake_mode", text="Back to Painting", icon='LOOP_BACK').on = False
     else:
         W.draw_tab_row(layout, context)
 
@@ -5312,6 +5508,7 @@ classes = (
     M3D_OT_tex_bake,
     M3D_OT_tex_bake_sets,
     M3D_OT_tex_bake_maps,
+    M3D_OT_tex_bake_tick,
     M3D_OT_tex_show_image,
     M3D_OT_tex_export,
     *PAGE_GATES,
@@ -5362,12 +5559,13 @@ classes = (
     PROPERTIES_PT_m3d_tx_options,
     PROPERTIES_PT_m3d_tx_cursor,
     PROPERTIES_PT_m3d_tx_palette,
-    PROPERTIES_PT_m3d_tx_bake_back,
     PROPERTIES_PT_m3d_tx_bake_high,
     PROPERTIES_PT_m3d_tx_bake_progress,
     PROPERTIES_PT_m3d_tx_bake_maps,
     PROPERTIES_PT_m3d_tx_bake_settings,
     PROPERTIES_PT_m3d_tx_bake_advanced,
+    PROPERTIES_PT_m3d_tx_baked,
+    PROPERTIES_PT_m3d_tx_bake_wait,
     PROPERTIES_PT_m3d_tx_export_preset,
     PROPERTIES_PT_m3d_tx_export_run,
     PROPERTIES_PT_m3d_tx_environment,

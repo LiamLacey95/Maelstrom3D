@@ -70,8 +70,9 @@ def _cage_changed(self, context):
 class M3D_BakeGroup(PropertyGroup):
     """Bake settings of one group (Scene.m3d_bake_groups); the name is the group key of Object.m3d_pair"""
     name: StringProperty(name="Group")
-    extrusion: FloatProperty(name="Extrusion", default=0.02, min=0.0, soft_max=1.0, unit='LENGTH', update=_extrusion_changed,
-                             description="Distance the rays start from the low-poly surface")
+    extrusion: FloatProperty(name="Cage Distance", default=0.02, min=0.0, soft_max=1.0, unit='LENGTH', update=_extrusion_changed,
+                             description="How far in front of the low-poly surface the rays start (the cage): raise it when the high "
+                                         "poly sticks out of the low poly (Auto-fit Cage measures it)")
     ray_distance: FloatProperty(name="Max Ray Distance", default=0.0, min=0.0, soft_max=1.0, unit='LENGTH',
                                 update=_settings_changed,
                                 description="Longest distance a ray travels to the high-poly meshes (0: no limit)")
@@ -568,7 +569,7 @@ def group_job(context, group):
             report('WARNING' if isinstance(error, Refused) else 'ERROR', str(error).strip())
             return False
         maps, size, seconds = result
-        T.after_bake(context)   # (the 3D view shows the material, the dock is back on the Layers)
+        T.after_bake(context)   # (the 3D view shows the material)
         report('INFO', "Baked %s: %s at %s px in %.1f s" % (group, ", ".join(m[1] for m in maps), size, seconds))
         return True
 
@@ -728,7 +729,8 @@ def names_line(label, obs, limit=3):
 
 
 def draw_group_settings(layout, context):
-    """Advanced > Group Settings: the extrusion, ray distance and cage of the group of the active mesh, the cage preview, the AO scope."""
+    """Advanced > Group Settings: the ray distance and cage mesh of the group of the active mesh (its Cage Distance is in High Poly), the cage
+    preview, the AO scope."""
     group = context.active_object.m3d_pair.group
     lows, highs = m3d_pair.group_of(context, group)
     entry = context.scene.m3d_bake_groups.get(group)
@@ -740,8 +742,7 @@ def draw_group_settings(layout, context):
         request_settings(context, group)
         return
     split_props(layout)
-    layout.prop(entry, "extrusion")
-    layout.prop(entry, "ray_distance")
+    layout.prop(entry, "ray_distance")   # (the Cage Distance is in High Poly, next to the cage check)
     sub = layout.column()
     sub.active = len(lows) == 1
     sub.prop(entry, "cage")
