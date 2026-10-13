@@ -227,6 +227,10 @@ def tool_button(layout, context, label, idname, icon, props):
     return o
 
 
+EDITOR_NAMES = {'INFO': "Log (the reports and the commands run)", 'OUTLINER': "Outliner", 'VIEW_3D': "3D Viewport",
+                'IMAGE_EDITOR': "Image Editor", 'ShaderNodeTree': "Shader Editor", 'TEXT_EDITOR': "Text Editor"}   # (tooltips)
+
+
 class M3D_OT_open_editor(Operator):
     """Open an editor in a new window (Windows menu)"""
     bl_idname = "m3d.open_editor"
@@ -236,7 +240,8 @@ class M3D_OT_open_editor(Operator):
 
     @classmethod
     def description(cls, _context, props):
-        return "Open " + props.ui_type + " window"
+        name = EDITOR_NAMES.get(props.ui_type, props.ui_type.replace("_", " ").title())
+        return "%s: open it in a window of its own" % name
 
     def execute(self, context):
         bpy.ops.wm.window_new()

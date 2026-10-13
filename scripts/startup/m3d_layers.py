@@ -317,7 +317,8 @@ class M3D_Layer(PropertyGroup):
                            description="Show the layers inside the folder in the list")
     frozen: BoolProperty(name="Frozen", default=False, description="The folder is baked into one image per channel: its "
                          "layers are kept, but cannot be edited until the folder is unfrozen")
-    visible: BoolProperty(name="Visible", default=True, update=_changed)
+    visible: BoolProperty(name="Visible", default=True, update=_changed,
+                          description="Show or hide the layer (a hidden layer adds nothing to the material)")
     use_alpha: BoolProperty(name="Image Alpha", default=True, update=_changed,
                             description="The image's transparency shows the layers below (off for the Base layer made from "
                             "existing paint slots, where alpha was never used)")
@@ -3616,8 +3617,9 @@ class M3D_PT_effect_look(_LookPanel, Panel):
 
 
 def thumb_button(layout, selected, **kw):
-    """A thumbnail of a row (an m3d.layer_pick button): the selected one is framed (pressed), the others are flat."""
-    return layout.operator("m3d.layer_pick", text="", emboss=selected, depress=selected, **kw)
+    """A thumbnail of a row (an m3d.layer_pick button): the selected one is framed (a grey button: it stands out from the blue of
+    the selected row, a pressed one did not), the others are flat."""
+    return layout.operator("m3d.layer_pick", text="", emboss=selected, **kw)
 
 
 class M3D_UL_layers(UIList):
@@ -3715,12 +3717,16 @@ class M3D_UL_layers(UIList):
 
 class M3D_UL_mask_effects(UIList):
     def draw_item(self, context, layout, _data, item, _icon, active_data, _active_propname, index):
-        """Eye, type icon, name, then the blend mode and opacity as in the layer list (buttons on the selected effect)."""
+        """Eye, type icon and name, then the blend mode and opacity as in the layer list (buttons on the selected effect). The name
+        is a button that selects the effect (as in the layer list): a right-click on it knows the effect, so the mask menu has Delete
+        Effect (the Effect panel renames it)."""
         row = look_row(context, layout, item, True, index == active_data.mask_index, EFFECT_SHORT,
                        item.kind not in MK.FILTERS)
         row.prop(item, "visible", text="", icon='HIDE_OFF' if item.visible else 'HIDE_ON', emboss=False)
-        row.label(text="", icon=MK.KIND_BY_ID[item.kind].icon)
-        row.prop(item, "name", text="", emboss=False)
+        name = row.row(align=True)
+        name.alignment = 'LEFT'
+        op = name.operator("m3d.layer_pick", text=item.name, icon=MK.KIND_BY_ID[item.kind].icon, emboss=False, translate=False)
+        op.part, op.effect = 'EFFECT', index
 
 
 # -----------------------------------------------------------------------------

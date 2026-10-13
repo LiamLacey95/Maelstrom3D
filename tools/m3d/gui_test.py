@@ -11830,6 +11830,72 @@ def t4_cleanup():
     bpy.ops.m3d.workspace(kind='MODEL')
 
 
+# --- UX part 5: on a narrow window the docks keep the size their panels fit in (the views give up the room); the keys in the
+# tooltips of the Texture tool strip come from the keymap.
+P5 = {}
+
+
+def p5_right():
+    """The editors of the Texture layout's right column (Texture Sets, the dock, Properties)."""
+    win = window()
+    return [a for a in win.screen.areas if a.type == 'PROPERTIES' and m3d_workspace.area_role(win, a) in {'SETS', 'RIGHT', 'PROPS'}]
+
+
+@step
+def p5_fit_open():
+    bpy.ops.m3d.workspace(kind='TEXTURE')
+
+
+@step
+def p5_fit_edge():
+    area = p5_right()[0]
+    event('MOUSEMOVE', xy=(area.x - 1, area.y + area.height // 2))   # (on an edge: area_move runs only there)
+
+
+@step
+def p5_fit_setup():
+    win = window()
+    area = next(a for a in p5_right() if m3d_workspace.area_role(win, a) == 'SETS')
+    P5["scale"] = bpy.context.preferences.system.ui_scale or 1.0
+    shrink = area.width - int(200 * P5["scale"])   # (the column narrower than its smallest size, as on a small screen)
+    with bpy.context.temp_override(window=win, screen=win.screen):
+        bpy.ops.screen.area_move(x=area.x - 1, y=area.y + area.height // 2, delta=shrink)
+
+
+@step
+def p5_fit_pointer():
+    """The pointer over an editor: area_move can't run, the fit waits (it tries again); then on the edge between two editors."""
+    win = window()
+    P5["before"] = [a.width for a in p5_right()]   # (the sizes are new after a redraw)
+    m3d_workspace._fitted[win.as_pointer()] = (win.width, win.height, win.screen.as_pointer())
+    area = p5_right()[0]
+    event('MOUSEMOVE', xy=(area.x + area.width // 2, area.y + area.height // 2))
+
+
+@step
+def p5_fit_wait():
+    check(m3d_workspace.fit_window(window().as_pointer()) == 0.25, "with the pointer over an editor the fit waits and tries again")
+    area = p5_right()[0]
+    event('MOUSEMOVE', xy=(area.x - 1, area.y + area.height // 2))
+
+
+@step
+def p5_fit():
+    check(m3d_workspace.fit_window(window().as_pointer()) is None, "...on the edge between two editors it fits the columns")
+
+
+@step
+def p5_fit_check():
+    need = int(next(px for role, side, px in m3d_workspace.MIN_SIZES['TEXTURE'] if (role, side) == ('SETS', 'W')) * P5["scale"])
+    widths = [a.width for a in p5_right()]
+    check(max(P5["before"]) < need and min(widths) >= need - 2,
+          "a column narrower than its smallest size gets wide enough again, all of it: %s -> %s (%d)" % (P5["before"], widths, need))
+    for tool, key in (('PAINT', "1"), ('CLONE', "6"), ('PICKER', "P")):
+        check("(%s)" % key in m3d_texture.M3D_OT_tex_tool.description(bpy.context, SimpleNamespace(tool=tool)), "the tool strip's tooltip has the key of %s" % tool)
+    check(not tracebacks(), "no Python error while fitting the columns")
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
 @step
 def finish():
     errors = "".join(stderr_tee.buf + sys.stdout.buf)

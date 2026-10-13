@@ -975,6 +975,8 @@ STATUS_LINES = {'MODEL': draw_status_line_model, 'SCULPT': draw_status_line_scul
 
 def draw_status_line(layout, context):
     """Status Line of the workspace's kind."""
+    from m3d_workspace import watch_window
+    watch_window(context)
     STATUS_LINES[current_kind(context)](layout, context)
 
 
@@ -1025,6 +1027,28 @@ def hint_item(items):
 
 def event_name(kmi):
     return bpy.types.Event.bl_rna.properties["type"].enum_items[kmi.type].name
+
+
+def key_text(context, km_name, idname, props=None):
+    """The key that runs `idname` with these option values in the user's keymap `km_name`, as text ("Shift+1"), for a tooltip
+    (Blender's own tooltips only find the keys of the editor the button is in); empty without one."""
+    try:
+        found = key_items(context, km_name, idname, props)
+    except AttributeError:   # (no window manager: a test)
+        return ""
+    if not found:
+        return ""
+    kmi = hint_item(found)
+    return "".join(m + "+" for m, on in (("Ctrl", kmi.ctrl), ("Shift", kmi.shift), ("Alt", kmi.alt)) if on) + event_name(kmi)
+
+
+def with_key(context, text, km_name, idname, props=None):
+    """`text` with the key in brackets after its first part (before a colon), when there is one: "Paint (1): ..."."""
+    key = key_text(context, km_name, idname, props)
+    if not key:
+        return text
+    head, colon, rest = text.partition(":")
+    return "%s (%s)%s%s" % (head, key, colon, rest)
 
 
 def draw_status_hints(layout, context):

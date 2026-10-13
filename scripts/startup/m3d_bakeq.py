@@ -234,12 +234,31 @@ def run_blocking(context, job, report):
     return job.finish(context, report, result, error)
 
 
-def report_later(level, text):
-    """A report of a queue that is over (its operator is gone): an internal operator says it."""
+def _report(level, text):
+    """m3d.bake_report: from a modal handler in a window (a report of an operator that Python runs reaches the status bar only so),
+    else at once (printed)."""
+    wm = bpy.context.window_manager
+    win = bpy.context.window or (wm.windows[0] if wm is not None and wm.windows else None)
     try:
-        bpy.ops.m3d.bake_report('EXEC_DEFAULT', level=level, text=text)
+        if win is None or bpy.app.background:
+            bpy.ops.m3d.bake_report('EXEC_DEFAULT', level=level, text=text)
+        else:
+            with bpy.context.temp_override(window=win, screen=win.screen):
+                bpy.ops.m3d.bake_report('INVOKE_DEFAULT', level=level, text=text)
     except RuntimeError:
         print("%s: %s" % (level, text))
+
+
+def report_later(level, text):
+    """A report of a queue (its operator is gone): an internal operator says it, in a window a moment later. Blender's bake
+    operator reports "Baking map saved to internal image, save it externally or pack it" for every map when its modal handler
+    ends, after the queue has gone on; this report comes after it and takes its place in the status bar (the maps are saved with
+    the project: m3d_texture.save_pre)."""
+    wm = bpy.context.window_manager
+    if bpy.app.background or wm is None or not wm.windows:
+        _report(level, text)
+        return
+    bpy.app.timers.register(lambda: _report(level, text), first_interval=0.5)
 
 
 # -----------------------------------------------------------------------------
@@ -408,6 +427,7 @@ def _advance(run, how):
             request = next(run.job.steps)
         else:
             run.count += 1
+            report_later('INFO', "Baked %d of %d" % (min(run.count, run.total), run.total))   # (in place of Blender's report)
             request = run.job.steps.send(None)
         while True:
             try:
@@ -668,6 +688,18 @@ class M3D_OT_bake_report(Operator):
     def execute(self, _context):
         self.report({self.level}, self.text)
         return {'FINISHED'}
+
+    def invoke(self, context, _event):
+        """Report from the first timer event of a modal handler: the window manager then shows it in the status bar."""
+        self._timer = context.window_manager.event_timer_add(0.01, window=context.window)
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if event.type != 'TIMER':
+            return {'PASS_THROUGH'}
+        context.window_manager.event_timer_remove(self._timer)
+        return self.execute(context)
 
 
 # -----------------------------------------------------------------------------

@@ -47,8 +47,8 @@ import m3d_workspace as W
 from m3d_layers import (CHANNEL_BY_ID, CHANNEL_ITEMS, CHANNELS, active_layer, entry_of, pixels_of, principled_of,
                         set_channel_space)
 from m3d_mode import _button
-from m3d_sculpt import (active_brush_id, brush_tiles, mesh_of, multires_of, reason, split_props, ui_scale_factor,
-                        viewport)
+from m3d_sculpt import (active_brush_id, brush_tiles, draw_lines, fits, mesh_of, multires_of, reason, split_props,
+                        ui_scale_factor, viewport)
 from m3d_workspace import _PagePanel
 
 # -----------------------------------------------------------------------------
@@ -491,6 +491,9 @@ class M3D_TexSettings(PropertyGroup):
     view_problem: FloatVectorProperty(name="Problem Color", size=3, subtype='COLOR', default=(1.0, 0.1, 0.1), min=0.0, max=1.0,
                                       update=_view_changed, description="Color of the parts of the cage where the rays find no high poly or start "
                                       "inside it")
+    view_outline: BoolProperty(name="Outlines and Stripes", default=True, update=_view_changed,
+                               description="Mark what the colors show in a way that needs no color: a thick outline around the "
+                                           "problem areas of the cage and stripes on the see-through high poly")
     sets: CollectionProperty(type=M3D_SetRow)
     set_index: IntProperty(name="Texture Set", get=set_index_get, set=set_index_set, description="The texture set that is painted")
     set_size: EnumProperty(name="Size", items=SIZES, get=set_size_get, set=set_size_set,
@@ -945,9 +948,12 @@ class M3D_OT_tex_tool(Operator):
     tool: EnumProperty(items=[(t[0], t[1], t[4]) for t in TOOLS])
 
     @classmethod
-    def description(cls, _context, props):
-        _id, label, key, _icon, what = TOOL_BY_ID[props.tool]
-        return "%s (%s): %s" % (label, key, what)
+    def description(cls, context, props):
+        """The tool's name, its key in the keymap (the Picker's is paint.sample_color's) and what it does."""
+        from m3d_ui import with_key
+        _id, label, _key, _icon, what = TOOL_BY_ID[props.tool]
+        op, args = ("paint.sample_color", {"merged": False}) if props.tool == 'PICKER' else ("m3d.tex_tool", {"tool": props.tool})
+        return with_key(context, "%s: %s" % (label, what), "Image Paint", op, args)
 
     @classmethod
     def poll(cls, context):
@@ -1162,11 +1168,16 @@ class M3D_OT_tex_set_visible(_SetOp, Operator):
 
 
 class M3D_OT_tex_isolate(Operator):
-    """Isolate the active texture set (Alt+Q): only its polygons are shown, and the other meshes are hidden; again shows
+    """Isolate Texture Set: only the polygons of the active texture set are shown, and the other meshes are hidden; again shows
     everything"""
     bl_idname = "m3d.tex_isolate"
     bl_label = "Isolate Texture Set"
     bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def description(cls, context, _props):
+        from m3d_ui import with_key
+        return with_key(context, " ".join(cls.__doc__.split()), "Image Paint", "m3d.tex_isolate")
 
     object: StringProperty(options={'SKIP_SAVE'}, description="Mesh of the texture set to isolate (empty: the active set)")
     material: StringProperty(options={'SKIP_SAVE'}, description="Material of the texture set to isolate (empty: the active set)")
@@ -1974,6 +1985,12 @@ class M3D_OT_tex_show_image(Operator):
     name: StringProperty()
 
     @classmethod
+    def description(cls, _context, props):
+        image = bpy.data.images.get(props.name)
+        return "%s, %d px: show it in the 2D view (it goes back to what it showed when you leave Bake Mesh Maps)" % (
+            props.name, image.size[0]) if image is not None else cls.__doc__
+
+    @classmethod
     def poll(cls, _context):
         return not Q.running()
 
@@ -2692,6 +2709,8 @@ def draw_view_mode(layout, context):
     space = area.spaces.active
     mode = view_mode_3d(context, space) if area.type == 'VIEW_3D' else view_mode_2d(context, space)
     text = mode_text(context, mode)
+    if not fits(context, (text, "View", "Editor Type", "Lit", "Material")):   # (a narrow view: without the layer's name)
+        text = mode_label(mode)
     row = layout.row()
     row.ui_units_x = dropdown_units(text)
     row.menu("M3D_MT_tex_view_mode", text=text, icon=mode_icon(mode), translate=False)
@@ -3313,9 +3332,10 @@ class M3D_OT_tex_bake_mode(Operator):
     on: BoolProperty(default=True, options={'SKIP_SAVE'})
 
     @classmethod
-    def description(cls, _context, props):
-        return ("Bake mesh maps: set them up and bake in the Bake page of the Layers dock (Ctrl+Shift+B)" if props.on
-                else "Back to painting: show the Layers again")
+    def description(cls, context, props):
+        from m3d_ui import with_key
+        return (with_key(context, "Bake Mesh Maps: set them up and bake in the Bake page of the Layers dock", "Image Paint",
+                         "m3d.tex_bake_mode", {"on": True}) if props.on else "Back to Painting: show the Layers again")
 
     def execute(self, context):
         context.workspace.m3d_page_right = "tex_bake" if self.on else "tex_layers"
@@ -3614,25 +3634,18 @@ def draw_previews(layout, context):
 
 
 def draw_brush(layout, context):
-    """Size, Hardness, Flow (Accumulate), Spacing, Size Space; Angle, Follow Path and the jitters; the Project Paint options."""
+    """Size, Flow (the strength), Hardness (m3d_sculpt.draw_brush_sliders, as in Sculpt), Accumulate, Spacing, Size Space; Angle,
+    Follow Path and the jitters; Lazy Mouse and the Stroke Type (as in Sculpt); the Project Paint options."""
     split_props(layout)
     brush, ipaint = image_brush(context), paint_settings(context)
-    ups = ipaint.unified_paint_settings
     col = layout.column()
-    size_owner = unified(context, brush, "use_unified_size")
-    UnifiedPaintPanel.prop_unified(col, context, brush, "unprojected_size" if size_owner.use_locked_size == 'SCENE' else "size",
-                                   unified_paint_settings_override=ups, unified_name="use_unified_size",
-                                   pressure_name="use_pressure_size", text="Size", slider=True)
-    col.prop(brush, "hardness", slider=True)
-    UnifiedPaintPanel.prop_unified(col, context, brush, "strength", unified_paint_settings_override=ups,
-                                   unified_name="use_unified_strength", pressure_name="use_pressure_strength", text="Flow",
-                                   slider=True)
+    S.draw_brush_sliders(col, context, brush, strength="Flow")
     if brush.image_paint_capabilities.has_accumulate:
         col.prop(brush, "use_accumulate", text="Accumulate")
     row = col.row(align=True)
     row.prop(brush, "spacing", slider=True)
     row.prop(brush, "use_pressure_spacing", text="")
-    col.row().prop(size_owner, "use_locked_size", text="Size Space", expand=True)
+    col.row().prop(unified(context, brush, "use_unified_size"), "use_locked_size", text="Size Space", expand=True)
     slot = brush.mask_texture_slot if brush.mask_texture is not None else None
     if slot is not None and slot.has_texture_angle:
         col.prop(slot, "angle", text="Angle")
@@ -3646,7 +3659,13 @@ def draw_brush(layout, context):
         col.prop(slot, "use_random", text="Angle Jitter")
         if slot.use_random:
             col.prop(slot, "random_angle", text="Amount")
-    col.separator()
+    if brush.brush_capabilities.has_smooth_stroke:
+        col.separator()
+        col.prop(brush, "use_smooth_stroke", text="Lazy Mouse")
+        if brush.use_smooth_stroke:
+            S.draw_lazy_settings(col, brush)
+    layout.label(text="Stroke Type")
+    S.stroke_tiles(layout, context, brush)
     col = layout.column(heading="Projection")
     col.prop(ipaint, "use_occlude", text="Occlude")
     col.prop(ipaint, "use_backface_culling", text="Backface Culling")
@@ -3656,40 +3675,14 @@ def draw_brush(layout, context):
     sub.prop(ipaint, "normal_angle", text="Falloff Angle")
 
 
-def draw_alpha_grid(layout, context, brush, stencil):
-    """The alpha library as small tiles: None, then every alpha. They give the brush its alpha (its Texture Mask), or with
-    `stencil` its stencil (its Texture, mapped as a Stencil)."""
-    names = S.alpha_names()
-    icons = S.alpha_icons(names)
-    texture = (brush.texture if stencil_on(brush) else None) if stencil else brush.mask_texture
-    active = texture.name if texture is not None else ""
-    flow = S.tile_grid(layout, context, columns=9)   # (None and the eight starter alphas in one row)
-    o = flow.operator("m3d.alpha_pick", text="None", depress=not active)
-    o.name, o.stencil = "", stencil
-    for name in names:
-        o = flow.operator("m3d.alpha_pick", text="" if name in icons else name, icon_value=icons.get(name, 0), depress=active == name)
-        o.name, o.stencil = name, stencil
+ALPHA_MODES = (('VIEW_PLANE', "Camera"), ('TILED', "Tiled"), ('RANDOM', "Random"), ('STENCIL', "Stencil"))   # (Camera: the stamp is
+# laid over the screen, Blender's View Plane mapping)
 
 
 def draw_alpha(layout, context):
-    """The alpha of the brush (its Texture Mask): thumbnail, name, Load Alpha, how it is placed, and the library to pick from."""
+    """The alpha of the brush (its Texture Mask), drawn as in Sculpt (m3d_sculpt.draw_alpha) with how it is placed."""
     brush = image_brush(context)
-    texture = brush.mask_texture
-    icon = S.alpha_icons([texture.name]).get(texture.name, 0) if texture is not None else 0
-    row = layout.row(align=True)
-    if icon:
-        row.template_icon(icon_value=icon, scale=3.0)
-    col = row.column(align=True)
-    col.label(text=texture.name if texture is not None else "No alpha: a soft round dab")
-    sub = col.row(align=True)
-    sub.operator("m3d.alpha_load", text="Load Alpha...", icon='FILE_FOLDER').stencil = False
-    if texture is not None:
-        o = sub.operator("m3d.alpha_pick", text="", icon='X')
-        o.name, o.stencil = "", False
-        sub = col.row(align=True)   # Camera: the stamp is laid over the screen (Blender's View Plane mapping)
-        for mode, text in (('VIEW_PLANE', "Camera"), ('TILED', "Tiled"), ('RANDOM', "Random"), ('STENCIL', "Stencil")):
-            sub.prop_enum(brush.mask_texture_slot, "mask_map_mode", mode, text=text)
-    draw_alpha_grid(layout, context, brush, False)
+    S.draw_alpha(layout, context, brush, brush.mask_texture, brush.mask_texture_slot, "mask_map_mode", ALPHA_MODES)
 
 
 def draw_stencil(layout, context):
@@ -3705,27 +3698,22 @@ def draw_stencil(layout, context):
     col = layout.column()
     split_props(col)
     col.prop(brush, "texture_overlay_alpha", text="Opacity", slider=True)
-    draw_alpha_grid(layout, context, brush, True)
     layout.operator("m3d.alpha_load", text="Load Stencil...", icon='FILE_FOLDER').stencil = True
+    S.alpha_grid(layout, context, brush.texture.name if on else "", stencil=True)
     reason(layout, "S: show it. RMB moves, Shift+RMB scales, Ctrl+RMB turns it")
 
 
 def draw_advanced(layout, context):
-    """What a stroke is made of (method, falloff, stabilizer, input samples), the seams and dithering, and the settings of the
-    brushes that have their own (Blur, Mask)."""
+    """The rest of what a stroke is made of (airbrush rate, falloff, input samples), the seams and dithering, and the settings of
+    the brushes that have their own (Blur, Mask)."""
     split_props(layout)
     brush, ipaint = image_brush(context), paint_settings(context)
     col = layout.column()
-    col.prop(brush, "stroke_method")
     if brush.stroke_method == 'AIRBRUSH':
         col.prop(brush, "rate", slider=True)
     if brush.image_paint_capabilities.has_space_attenuation:
         col.prop(brush, "use_space_attenuation")
-    if brush.brush_capabilities.has_smooth_stroke:
-        col.prop(brush, "smooth_stroke_factor", text="Stabilizer", slider=True)
-    col.prop(brush, "curve_distance_falloff_preset", text="Falloff")
-    if brush.curve_distance_falloff_preset == 'CUSTOM':
-        layout.template_curve_mapping(brush, "curve_distance_falloff", brush=True, use_negative_slope=True, show_presets=True)
+    S.draw_falloff(col, brush)
     UnifiedPaintPanel.prop_unified(col, context, brush, "input_samples", unified_paint_settings_override=ipaint.unified_paint_settings,
                                    unified_name="use_unified_input_samples", slider=True)
     col.prop(ipaint, "seam_bleed")
@@ -4521,23 +4509,6 @@ def stack_maps(owner):
     return [(key, *found[key]) for key, _l, _f in BAKE_MAPS if key in found]
 
 
-def draw_lines(layout, context, text, icon='INFO'):
-    """`text` on as many lines as the width of the region needs (the first with `icon`)."""
-    scale = context.preferences.system.ui_scale or 1.0
-    region = getattr(context, "region", None)
-    room = (region.width if region is not None else 400 * scale) - 50 * scale
-    lines, line = [], ""
-    for word in text.split():
-        if line and W.text_width(line + " " + word, scale) > room:
-            lines.append(line)
-            line = word
-        else:
-            line = (line + " " + word).strip()
-    col = layout.column(align=True)
-    for i, line in enumerate([*lines, line]):
-        col.label(text=line, icon=icon if i == 0 else 'BLANK1', translate=False)
-
-
 class PROPERTIES_PT_m3d_tx_bake_maps(_Bake, Panel):
     bl_label = "Maps"
     bl_order = 10
@@ -4551,9 +4522,7 @@ class PROPERTIES_PT_m3d_tx_bake_maps(_Bake, Panel):
         for key, label, flag in BAKE_MAPS:   # (each with what it is for; the tooltip says more)
             split = col.split(factor=0.5, align=True)
             split.prop(s, flag, text=BAKE_TEXT[label])
-            sub = split.row()
-            sub.active = False
-            sub.label(text=BAKE_HINTS[key])
+            split.label(text=BAKE_HINTS[key])   # (the normal text colour: a grey hint is hard to read)
         used = library_maps()
         if used:
             draw_lines(layout, context, "Smart materials and masks use " + ", ".join(
@@ -4680,7 +4649,12 @@ class PROPERTIES_PT_m3d_tx_baked(_PagePanel, Panel):
             def draw(flow):
                 icon = L.thumb_icon("baked:" + image.name, ('IMAGE', image.name, False))
                 flow.operator("m3d.tex_show_image", text="", icon_value=icon, depress=image == shown).name = image.name
-            return "%s  %d" % (MAP_SHORT.get(label, MAP_TEXT[label]), image.size[0]), draw
+            name = MAP_SHORT.get(label, MAP_TEXT[label])
+            return ("%s  %d" % (name, image.size[0]) if sized else name), draw
+        scale = context.preferences.system.ui_scale or 1.0   # (a narrow column: the names alone, the tooltip has the size)
+        region = getattr(context, "region", None)
+        name_px = W.text_width("World Normal  4096", scale) - (W.TAB_PAD - 8) * scale   # (the longest name, as a label)
+        sized = region is None or 2 * name_px <= region.width - 24 * scale
         m3d_library.tile_rows(layout, context, [cell(label, image) for label, image in maps], columns=2)
         reason(layout, "A click shows the map in the 2D view")
 
@@ -5297,7 +5271,8 @@ def draw_header_dock(layout, context):
         layout.label(text="Bake Mesh Maps", icon='RENDER_STILL')
         if not Q.running():
             layout.separator_spacer()
-            layout.operator("m3d.tex_bake_mode", text="Back to Painting", icon='LOOP_BACK').on = False
+            wide = fits(context, ("Bake Mesh Maps", "Back to Painting", "Editor"))   # (narrow: the icon, its tooltip says it)
+            layout.operator("m3d.tex_bake_mode", text="Back to Painting" if wide else "", icon='LOOP_BACK').on = False
     else:
         W.draw_tab_row(layout, context)
 

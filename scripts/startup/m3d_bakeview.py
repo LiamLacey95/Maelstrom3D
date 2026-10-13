@@ -33,7 +33,7 @@ import m3d_bakeq as Q
 import m3d_pair
 import m3d_texture as T
 import m3d_workspace as W
-from m3d_sculpt import mesh_of, reason, split_props
+from m3d_sculpt import fits, mesh_of, reason, split_props
 
 MATERIAL = "m3dViewHigh"
 KEY = "m3d_view"          # custom property of an object the view changed: what it had before
@@ -63,10 +63,10 @@ _view = {
 
 
 class Cage:
-    """What the check found for one low poly: the batches to draw (in the object space of the low poly), how many faces are bad and
-    which (a bool for each face)."""
-    def __init__(self, lines, tris, bad):
-        self.lines, self.tris, self.bad = lines, tris, bad
+    """What the check found for one low poly: the batches to draw (in the object space of the low poly: the wire, the bad faces and
+    the outline around them), how many faces are bad and which (a bool for each face)."""
+    def __init__(self, lines, tris, bad, outline=None):
+        self.lines, self.tris, self.bad, self.outline = lines, tris, bad, outline
         self.problems = int(bad.sum())
 
 
@@ -113,14 +113,49 @@ def signature(context, found):
     return (tuple((g, tuple(o.name for o in lows), tuple(o.name for o in highs),
                    tuple(settings_of(context, g, lows[0]))[:2] + (getattr(settings_of(context, g, lows[0])[2], "name", ""),))
                   for g, lows, highs in found if lows),
-            tex.view_hp, tex.view_cage, round(tex.view_opacity, 3), tuple(round(c, 3) for c in tex.view_problem))
+            tex.view_hp, tex.view_cage, round(tex.view_opacity, 3), tuple(round(c, 3) for c in tex.view_problem), tex.view_outline)
 
 
 # -----------------------------------------------------------------------------
 # The blue high poly
 
+STRIPES = 0.65   # how much of the high poly's opacity the stripes take away (Outlines and Stripes)
+
+
+def stripe_nodes(mat, bsdf):
+    """The stripes of the high poly: diagonal bands across the screen (they don't depend on the mesh's size) that take some of its
+    opacity away: alpha = opacity * (1 - strength * band). The nodes "m3d_opacity" and "m3d_stripes" hold the two values."""
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    coords = nodes.new("ShaderNodeTexCoord")
+    wave = nodes.new("ShaderNodeTexWave")
+    wave.wave_type, wave.bands_direction = 'BANDS', 'DIAGONAL'
+    wave.inputs["Scale"].default_value = 40.0
+    links.new(coords.outputs["Window"], wave.inputs["Vector"])
+    band = nodes.new("ShaderNodeMath")
+    band.operation = 'GREATER_THAN'
+    band.inputs[1].default_value = 0.5
+    links.new(wave.outputs["Fac"], band.inputs[0])
+    values = {}
+    for name in ("m3d_opacity", "m3d_stripes"):
+        values[name] = nodes.new("ShaderNodeValue")
+        values[name].name = name
+    cut = nodes.new("ShaderNodeMath")
+    cut.operation = 'MULTIPLY'
+    links.new(band.outputs[0], cut.inputs[0])
+    links.new(values["m3d_stripes"].outputs[0], cut.inputs[1])
+    keep = nodes.new("ShaderNodeMath")
+    keep.operation = 'SUBTRACT'
+    keep.inputs[0].default_value = 1.0
+    links.new(cut.outputs[0], keep.inputs[1])
+    alpha = nodes.new("ShaderNodeMath")
+    alpha.operation = 'MULTIPLY'
+    links.new(keep.outputs[0], alpha.inputs[0])
+    links.new(values["m3d_opacity"].outputs[0], alpha.inputs[1])
+    links.new(alpha.outputs[0], bsdf.inputs["Alpha"])
+
+
 def blue_material(context):
-    """The one material of the see-through high polys (made on the first use, its opacity follows the setting)."""
+    """The one material of the see-through high polys (made on the first use; its opacity and stripes follow the settings)."""
     tex = context.scene.m3d_tex
     mat = bpy.data.materials.get(MATERIAL)
     if mat is None:
@@ -134,8 +169,11 @@ def blue_material(context):
         bsdf.inputs["Emission Color"].default_value = (0.08, 0.3, 1.0, 1.0)   # (it stays blue in any light)
         bsdf.inputs["Emission Strength"].default_value = 1.0
     mat.diffuse_color = (0.08, 0.3, 1.0, tex.view_opacity)
-    bsdf = next(n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED')
-    bsdf.inputs["Alpha"].default_value = tex.view_opacity
+    nodes = mat.node_tree.nodes
+    if "m3d_stripes" not in nodes:   # (also the material of a file from before the stripes)
+        stripe_nodes(mat, next(n for n in nodes if n.type == 'BSDF_PRINCIPLED'))
+    nodes["m3d_opacity"].outputs[0].default_value = tex.view_opacity
+    nodes["m3d_stripes"].outputs[0].default_value = STRIPES if tex.view_outline else 0.0
     return mat
 
 
@@ -444,19 +482,41 @@ def count_areas(face_bad, s):
     return len({find(f) for f in parent})
 
 
+def outline_of(face_bad, s, nxt):
+    """The edges around the bad faces, as pairs of cage points: the edges of a bad face that no other bad face has (an edge is told
+    by its two vertices). `nxt`: the next loop of each loop in its face."""
+    loops = np.flatnonzero(face_bad[s["face_of"]])
+    if not len(loops):
+        return np.empty((0, 3), np.float32)
+    a, b = s["vert"][loops].astype(np.int64), s["vert"][nxt[loops]].astype(np.int64)
+    key = np.minimum(a, b) * (int(s["vert"].max()) + 1) + np.maximum(a, b)
+    _keys, inverse, counts = np.unique(key, return_inverse=True, return_counts=True)
+    once = loops[counts[inverse.reshape(-1)] == 1]
+    corner = s["corner"]
+    return np.concatenate([corner[once][:, None, :], corner[nxt[once]][:, None, :]], axis=1).reshape(-1, 3)
+
+
+def next_loops(s):
+    """The next loop of each loop in its face."""
+    start, total = s["start"], s["total"]
+    nxt = np.arange(len(s["corner"])) + 1
+    nxt[start + total - 1] = start
+    return nxt
+
+
 def make_cage(face_bad, s):
-    """The batches of one low poly: the wire of the cage (orange) and the triangles of the bad faces (red). Background mode has no GPU:
-    the count of the bad faces is all there is."""
+    """The batches of one low poly: the wire of the cage (orange), the triangles of the bad faces (red) and the outline around them.
+    Background mode has no GPU: the count of the bad faces is all there is."""
     if bpy.app.background:
         return Cage(None, None, face_bad)
     shader = gpu.shader.from_builtin('UNIFORM_COLOR')
-    start, total, corner = s["start"], s["total"], s["corner"]
-    nxt = np.arange(len(corner)) + 1
-    nxt[start + total - 1] = start
+    corner, nxt = s["corner"], next_loops(s)
     lines = batch_for_shader(shader, 'LINES', {"pos": np.concatenate([corner[:, None, :], corner[nxt][:, None, :]], axis=1).reshape(-1, 3)})
     pick = face_bad[s["tri_poly"]]
     tris = batch_for_shader(shader, 'TRIS', {"pos": corner[s["tri_loops"][pick]].reshape(-1, 3)}) if pick.any() else None
-    return Cage(lines, tris, face_bad)
+    edges = outline_of(face_bad, s, nxt)
+    outline = batch_for_shader(shader, 'LINES', {"pos": edges}) if len(edges) else None
+    return Cage(lines, tris, face_bad, outline)
 
 
 def start_check(context, found):
@@ -545,7 +605,8 @@ def status_text():
 # Drawing (batches that the check made: no work for the mesh)
 
 def _draw_cage():
-    """POST_VIEW: the wire of the cage, and its bad faces in red."""
+    """POST_VIEW: the wire of the cage, its bad faces in red, and (Outlines and Stripes) a thick outline around them, black under
+    white so that it shows on any color."""
     context = bpy.context
     if not _view["on"] or not _view["result"] or not context.scene.m3d_tex.view_cage:
         return
@@ -570,6 +631,12 @@ def _draw_cage():
             cage.tris.draw(shader)
         shader.uniform_float("color", CAGE_COLOR)
         cage.lines.draw(shader)
+        if cage.outline is not None and context.scene.m3d_tex.view_outline:
+            for width, rgba in ((6.0, (0.0, 0.0, 0.0, 1.0)), (3.0, (1.0, 1.0, 1.0, 1.0))):
+                gpu.state.line_width_set(width)
+                shader.uniform_float("color", rgba)
+                cage.outline.draw(shader)
+            gpu.state.line_width_set(1.5)
         gpu.matrix.pop()
     gpu.state.line_width_set(1.0)
     gpu.state.depth_mask_set(True)
@@ -622,7 +689,8 @@ def draw_cage(layout, context):
         return
     row = layout.row(align=True)
     row.prop(owner, "extrusion")
-    row.operator("m3d.bake_cage_fit", icon='MOD_SHRINKWRAP')
+    wide = fits(context, ("Cage Distance 0.000 m", "Auto-fit Cage"))   # (narrow: the button is its icon, the tooltip says the rest)
+    row.operator("m3d.bake_cage_fit", text="Auto-fit Cage" if wide else "", icon='MOD_SHRINKWRAP')
     if owner.cage is not None:
         reason(layout, "The rays start from the cage mesh %s" % owner.cage.name)
 
@@ -641,7 +709,13 @@ class PROPERTIES_PT_m3d_tx_bake_view(T._BakeMore, Panel):
         layout.prop(tex, "view_cage")
         if tex.view_cage:
             layout.prop(tex, "view_problem")
-            reason(layout, "Red: the rays find no high poly there, or start inside it")
+        if tex.view_hp or tex.view_cage:
+            layout.prop(tex, "view_outline")
+        if tex.view_hp:
+            reason(layout, "Blue%s: the high poly" % (", striped" if tex.view_outline else ""))
+        if tex.view_cage:
+            outlined = ", outlined" if tex.view_outline else ""
+            reason(layout, "Red%s: the cage is too tight there, or the rays find no high poly" % outlined)
 
 
 FIT_SAMPLES = 50_000   # points of a low poly Auto-fit Cage sends rays from, at most
@@ -695,8 +769,9 @@ def fit(context, lows, highs):
 
 
 class M3D_OT_bake_cage_fit(Operator):
-    """Measure how far the high poly sticks out of the low poly along its normals and set the Cage Distance just past it; a Max Ray
-    Distance that is set is raised when the rays would not reach the high poly. For each group and mesh the Bake button bakes"""
+    """Auto-fit Cage: measure how far the high poly sticks out of the low poly along its normals and set the Cage Distance just
+    past it; a Max Ray Distance that is set is raised when the rays would not reach the high poly. For each group and mesh the
+    Bake button bakes"""
     bl_idname = "m3d.bake_cage_fit"
     bl_label = "Auto-fit Cage"
     bl_options = {'REGISTER', 'UNDO'}

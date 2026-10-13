@@ -1101,10 +1101,11 @@ def phase1b():
     check(S.alpha_names()[-1] == "ramp_source" and "ramp_source" in S.alpha_icons(S.alpha_names()), "the loaded alpha is a tile with a thumbnail")
     check(bpy.ops.m3d.alpha_load(filepath=os.path.join(alpha_folder, "nothing.png")) == {'CANCELLED'}, "Load Alpha: a missing file is refused")
     log = []
-    S.alpha_tiles(Rec(log), ctx, brush)
+    S.alpha_grid(Rec(log), ctx, brush.texture.name)
     tiles = [r for r in log if r._kind == "operator"]
     check(len(tiles) == len(S.STARTER_ALPHAS) + 2 and sum(bool(r._kw.get("depress")) for r in tiles) == 1
-          and tiles[-1].values()["name"] == "ramp_source" and tiles[-1]._kw.get("depress"), "alpha tiles: None, the starter set, the loaded one")
+          and tiles[-1].values()["name"] == "ramp_source" and tiles[-1]._kw.get("depress")
+          and tiles[0].values()["name"] == "" and tiles[0]._kw.get("icon") == 'CANCEL', "alpha tiles: None (an icon), the starter set, the loaded one")
     bpy.ops.m3d.alpha_pick(name="")
     check(brush.texture is None, "None alpha")
     log = []
@@ -1901,8 +1902,10 @@ S_alphas_tex = tempfile.mkdtemp(prefix="m3d_alpha_tex_")   # (the alpha library 
 S.alpha_dir = lambda create=False: S_alphas_tex
 check([t[0] for t in T.TOOLS] == ['PAINT', 'ERASER', 'PROJECTION', 'POLYFILL', 'SMUDGE', 'CLONE', 'PICKER']
       and [t[2] for t in T.TOOLS] == ['1', '2', '3', '4', '5', '6', 'P'], "the tools of the strip and their keys")
-check(all(T.TOOL_BY_ID[t][2] in T.M3D_OT_tex_tool.description(None, NS(tool=t)) and T.TOOL_BY_ID[t][1] in T.M3D_OT_tex_tool.description(None, NS(tool=t))
-          and T.TOOL_BY_ID[t][3] in icons for t in T.TOOL_BY_ID), "each tool's tooltip names the tool and its key, and its icon exists")
+check(all("(%s)" % T.TOOL_BY_ID[t][2] in T.M3D_OT_tex_tool.description(bpy.context, NS(tool=t))
+          and T.M3D_OT_tex_tool.description(bpy.context, NS(tool=t)).startswith(T.TOOL_BY_ID[t][1])
+          and T.TOOL_BY_ID[t][3] in icons for t in T.TOOL_BY_ID), "each tool's tooltip names the tool and its key (from the keymap), and its icon exists: %s"
+      % [T.M3D_OT_tex_tool.description(bpy.context, NS(tool=t))[:16] for t in T.TOOL_BY_ID])
 bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
 tool_ob = bpy.context.active_object
 
@@ -3639,13 +3642,17 @@ mtop.mask_index = 2
 LY.M3D_UL_mask_effects.draw_item(None, mctx, Rec(log), None, mtop.mask_stack[2], 0, mtop, "", 2)
 check_calls("mask effect row", log)
 looks = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.layer_look"]
-check({r._args[1] for r in log if r._kind == "prop"} == {"visible", "name"} and len(looks) == 1 and looks[0].values().get("effect")
+names_ = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.layer_pick"]
+check({r._args[1] for r in log if r._kind == "prop"} == {"visible"} and len(looks) == 1 and looks[0].values().get("effect")
+      and len(names_) == 1 and names_[0]._kw["text"] == mtop.mask_stack[2].name and names_[0].values().get("part") == 'EFFECT'
+      and names_[0].values().get("effect") == 2
       and looks[0]._kw["text"] == LY.look_text(mtop.mask_stack[2], LY.EFFECT_SHORT, True, True),
       "the selected effect's row: eye, name, and its blend mode and opacity as one button (it opens them): %s" % [r._kw.get("text") for r in looks])
 mtop.mask_stack[3].blend, mtop.mask_stack[3].opacity = 'LIGHTEN', 0.5
 log = []
 LY.M3D_UL_mask_effects.draw_item(None, mctx, Rec(log), None, mtop.mask_stack[3], 0, mtop, "", 3)
-check([r._kw.get("text") for r in log if r._kind == "label" and r._kw.get("text")] == ["Max 50%"] and not any(r._kind == "operator" for r in log),
+check([r._kw.get("text") for r in log if r._kind == "label" and r._kw.get("text")] == ["Max 50%"]
+      and not any(r._kind == "operator" and r._args[0] == "m3d.layer_look" for r in log),
       "another effect's row says only what is not Normal at 100%, in short words: Max 50%")
 mtop.mask_stack[3].blend, mtop.mask_stack[3].opacity = 'MIX', 1.0
 log = []
@@ -3654,7 +3661,8 @@ check(not [r for r in log if r._kind == "label" and r._kw.get("text")], "...and 
 mtop.mask_index = 8
 log = []
 LY.M3D_UL_mask_effects.draw_item(None, mctx, Rec(log), None, mtop.mask_stack[8], 0, mtop, "", 8)
-check([r._kw["text"] for r in log if r._kind == "operator"] == ["%d%%" % round(mtop.mask_stack[8].opacity * 100)], "a filter's row has no blend mode, only its opacity")
+check([r._kw["text"] for r in log if r._kind == "operator" and r._args[0] == "m3d.layer_look"] == ["%d%%" % round(mtop.mask_stack[8].opacity * 100)],
+      "a filter's row has no blend mode, only its opacity")
 log = []
 T.M3D_MT_mask_add.draw(NS(layout=Rec(log)), mctx)
 added = [r for r in log if r._kind == "operator"]
@@ -12256,6 +12264,7 @@ def fb_ctx(kind, space, ws=None):
     c = VCtx(kind, space)
     c.space_data, c.workspace = space, ws or tex_ws
     c.area.show_menus = True
+    c.region = NS(type='HEADER', width=900)
     return c
 
 
@@ -12268,6 +12277,11 @@ T.draw_view_mode(Rec(log), c3)
 row_, menu_ = [r for r in log if r._kind == "row"][0], [r for r in log if r._kind == "menu"][0]
 check(menu_._kw["text"] == "Base Color (Rust)" and row_.values()["ui_units_x"] == T.dropdown_units("Base Color (Rust)") and row_.values()["ui_units_x"] >= 9.0 and menu_._kw.get("translate") is False,
       "the 3D view's dropdown shows 'Base Color (Rust)' whole and is wider for the longer name: %s %s" % (menu_._kw["text"], row_.values()))
+log = []
+c3.region.width = 250
+T.draw_view_mode(Rec(log), c3)
+check([r for r in log if r._kind == "menu"][0]._kw["text"] == "Base Color", "...in a narrow view the channel alone (nothing cut off)")
+c3.region.width = 900
 check(T.dropdown_units("Material") == 7.0 and T.dropdown_units("Crate4_Material_Base_BaseColor (Rust)") > T.dropdown_units("Base Color (Rust)") > T.dropdown_units("Material"), "...it grows with the text")
 try:
     import blf
@@ -12651,16 +12665,16 @@ tint.mask_index = 1
 tint.paint_mask = True
 log = rw_row("Tint")
 effects = [r for r in log if r._kind == "operator" and r.values().get("part") == 'EFFECT']
-check([r._kw["emboss"] for r in effects] == [False, True, False] and any(r._kind == "operator" and r.values().get("part") == 'MASK' and r._kw.get("depress") for r in log)
-      and not any(r._kind == "operator" and r._args[0] == "m3d.layer_pick" and "part" not in r.values() and r._kw.get("depress") for r in log),
+check([r._kw["emboss"] for r in effects] == [False, True, False] and any(r._kind == "operator" and r.values().get("part") == 'MASK' and r._kw.get("emboss") for r in log)
+      and not any(r._kind == "operator" and r._args[0] == "m3d.layer_pick" and "part" not in r.values() and r._kw.get("emboss") for r in log),
       "while the mask is selected, the selected effect and the mask thumbnail are framed, not the content thumbnail")
 looks_ = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.layer_look"]
 check(len(looks_) == 2 and looks_[1].values().get("effect") and looks_[1]._kw["text"] == LY.look_text(tint.mask_stack[1], LY.EFFECT_SHORT, True, True),
       "...the selected effect's row has its own blend and opacity button: %s" % [r._kw.get("text") for r in looks_])
 tint.paint_mask = False
 log = rw_row("Tint")
-check(any(r._kind == "operator" and r._args[0] == "m3d.layer_pick" and "part" not in r.values() and r._kw.get("depress") for r in log)
-      and not any(r._kind == "operator" and r.values().get("part") == 'MASK' and r._kw.get("depress") for r in log), "the content selected: the content thumbnail is framed")
+check(any(r._kind == "operator" and r._args[0] == "m3d.layer_pick" and "part" not in r.values() and r._kw.get("emboss") for r in log)
+      and not any(r._kind == "operator" and r.values().get("part") == 'MASK' and r._kw.get("emboss") for r in log), "the content selected: the content thumbnail is framed")
 check(bpy.ops.m3d.layer_pick(part='EFFECT', index=LY.index_of(rw_mat, tint.uid), effect=2) == {'FINISHED'} and tint.mask_index == 2 and tint.paint_mask,
       "clicking an effect row selects that effect and the mask (Properties - Mask shows it)")
 tint.paint_mask = False
@@ -13270,10 +13284,11 @@ check([[m.name if m else None for m in ob.data.materials] for ob in (bq_hp_a, bq
       "the mesh data and its materials are not touched: %s" % bq_mesh_mats())
 check(bq_hp_c.data.materials[:] == [None] and bg_state("Vw") == 'BAKED', "(a mesh without a slot has an empty one meanwhile; the group does not go stale from the view)")
 mat = bpy.data.materials[VV.MATERIAL]
-check(abs(mat.node_tree.nodes["Principled BSDF"].inputs["Alpha"].default_value - bpy.context.scene.m3d_tex.view_opacity) < 1e-6 and mat.surface_render_method == 'BLENDED', "the blue follows High Poly Opacity")
+check(abs(mat.node_tree.nodes["m3d_opacity"].outputs[0].default_value - bpy.context.scene.m3d_tex.view_opacity) < 1e-6 and mat.surface_render_method == 'BLENDED'
+      and mat.node_tree.nodes["Principled BSDF"].inputs["Alpha"].is_linked, "the blue follows High Poly Opacity (the stripes take some away)")
 bpy.context.scene.m3d_tex.view_opacity = 0.6
 VV.enter(bpy.context, bq_found)
-check(abs(mat.node_tree.nodes["Principled BSDF"].inputs["Alpha"].default_value - 0.6) < 1e-6 and abs(mat.diffuse_color[3] - 0.6) < 1e-6, "...and changes with it")
+check(abs(mat.node_tree.nodes["m3d_opacity"].outputs[0].default_value - 0.6) < 1e-6 and abs(mat.diffuse_color[3] - 0.6) < 1e-6, "...and changes with it")
 bpy.context.scene.m3d_tex.view_opacity = 0.35
 bpy.context.scene.m3d_tex.view_hp = False
 VV.enter(bpy.context, bq_found)
@@ -13552,6 +13567,124 @@ bpy.data.images.remove(u4_before)
 clean_scene()
 for im_ in [i for i in bpy.data.images if i.name.startswith("U4Tex")]:
     bpy.data.images.remove(im_)
+
+# --- UX part 5 (both pages): the brush settings drawn by the same functions in Sculpt and Texture, keys in the tooltips, narrow
+# editors (labels to icons, wrapped hints, fewer asset columns), the bake view's marks that need no colour, the mask effect menu.
+p5_o, p5_m = fresh_cube("P5Tex", '64')
+bpy.ops.m3d.tex_project('EXEC_DEFAULT', resolution='64', template='DEFAULT', unwrap=True, bake_after=False)
+p5_calls = []
+p5_shared = ("draw_brush_sliders", "draw_lazy_settings", "stroke_tiles", "draw_alpha", "alpha_grid", "draw_falloff")
+p5_real = {n_: getattr(S, n_) for n_ in p5_shared}
+for n_, f_ in p5_real.items():   # (record which shared helper each page calls)
+    setattr(S, n_, (lambda n_, f_: lambda *a, **k: (p5_calls.append(n_), f_(*a, **k))[1])(n_, f_))
+p5_tb = T.image_brush(bpy.context)
+p5_tb.use_smooth_stroke = True
+p5_logs = {}
+for name_, draw_ in (("brush", T.draw_brush), ("alpha", T.draw_alpha), ("advanced", T.draw_advanced)):
+    p5_logs[name_] = []
+    draw_(Rec(p5_logs[name_]), bpy.context)
+    check_calls("Texture " + name_, p5_logs[name_])
+p5_tex_calls, p5_calls[:] = list(p5_calls), []
+check(set(p5_shared) <= set(p5_tex_calls), "Texture's Properties draw the brush with the shared functions: %s" % p5_tex_calls)
+bpy.ops.object.mode_set(mode='SCULPT')
+p5_sb = S.sculpt_brush(bpy.context)
+p5_sb.use_smooth_stroke = True
+p5_slog = []
+for cls_ in (S.PROPERTIES_PT_m3d_sc_tuning, S.PROPERTIES_PT_m3d_sc_lazy, S.PROPERTIES_PT_m3d_sc_strokes, S.PROPERTIES_PT_m3d_sc_alpha,
+             S.PROPERTIES_PT_m3d_sc_falloff):
+    cls_.draw(type("Inst", (), {"layout": Rec(p5_slog)})(), bpy.context)
+check_calls("Sculpt tray", p5_slog)
+check(set(p5_shared) <= set(p5_calls), "...and Sculpt's tray with the same ones: %s" % p5_calls)
+for n_, f_ in p5_real.items():
+    setattr(S, n_, f_)
+
+
+def p5_texts(log, props):
+    return [r._kw.get("text") for r in log if r._kind == "prop" and r._args[1] in props]
+
+
+check(p5_texts(p5_slog, {"size", "unprojected_size", "strength", "hardness"}) == ["Size", "Strength", "Hardness"]
+      and p5_texts(p5_logs["brush"], {"size", "unprojected_size", "strength", "hardness"}) == ["Size", "Flow", "Hardness"],
+      "the same order and labels: Size, Strength (Flow in Texture), Hardness: %s / %s"
+      % (p5_texts(p5_slog, {"size", "strength", "hardness"}), p5_texts(p5_logs["brush"], {"size", "strength", "hardness"})))
+check(p5_texts(p5_slog, {"smooth_stroke_radius", "smooth_stroke_factor"}) == p5_texts(p5_logs["brush"], {"smooth_stroke_radius", "smooth_stroke_factor"})
+      == ["Distance", "Smoothing"], "Lazy Mouse: Distance and Smoothing in both")
+check(p5_texts(p5_slog, {"curve_distance_falloff_preset"}) == p5_texts(p5_logs["advanced"], {"curve_distance_falloff_preset"}) == ["Falloff"]
+      and "falloff_shape" in [r._args[1] for r in p5_slog if r._kind == "prop"], "Falloff in both (Sculpt adds its shape)")
+check("stroke_method" not in [r._args[1] for r in p5_logs["advanced"] if r._kind == "prop"]
+      and len([r for r in p5_logs["brush"] if r._kind == "operator" and r._args[0] == "m3d.stroke_pick"]) == len(S.STROKES),
+      "Texture picks the stroke type with the tiles of Sculpt, not a dropdown")
+p5_a = [r for r in p5_logs["alpha"] if r._kind == "operator"]
+check([r._args[0] for r in p5_a[:2]] == ["m3d.alpha_load", "m3d.alpha_pick"] and p5_a[1]._kw.get("icon") == 'CANCEL'
+      and S.ALPHA_NONE in bg_text(p5_logs["alpha"]), "the alpha: what the brush does without one, Load Alpha..., then the tiles (None first)")
+check([r._args[0] for r in p5_slog if r._kind == "operator" and r._args[0].startswith("m3d.alpha")][:2] == ["m3d.alpha_load", "m3d.alpha_pick"],
+      "...the same in Sculpt")
+p5_tb.use_smooth_stroke = p5_sb.use_smooth_stroke = False
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+check(bpy.ops.m3d.stroke_pick(stroke='DOTS') == {'FINISHED'} and T.image_brush(bpy.context).stroke_method == 'DOTS', "a stroke tile in Texture Paint sets the texture brush")
+T.image_brush(bpy.context).stroke_method = 'SPACE'
+# the keys in the tooltips come from the keymap (a button of a dock or the top bar finds no key of the 3D view's keymap itself)
+check(S.M3D_OT_brush_pick.description(bpy.context, NS(identifier=S.BRUSH_ASSET + "Draw")) == "Draw (Shift+1)", "a brush tile's tooltip: its name and key")
+check("(Ctrl+Shift+E)" in TS.M3D_OT_tex_export_dialog.description(bpy.context, None), "Export Textures says its key")
+check("(Alt+Q)" in T.M3D_OT_tex_isolate.description(bpy.context, None) and "(Ctrl+Shift+B)" in T.M3D_OT_tex_bake_mode.description(bpy.context, NS(on=True)),
+      "Isolate and Bake Mesh Maps say theirs")
+check(m3d_ui.key_text(bpy.context, "Image Paint", "m3d.tex_set_rename") == "" and m3d_ui.key_text(None, "Image Paint", "m3d.tex_isolate") == "",
+      "no key: nothing added (no window manager: none)")
+import m3d_mode as P5_MODE
+check(P5_MODE.M3D_OT_open_editor.description(None, NS(ui_type='INFO')).startswith("Log"), "the dock strip's Log button says what it opens")
+check(LY.M3D_Layer.bl_rna.properties["visible"].description and MK.M3D_MaskEffect.bl_rna.properties["visible"].description, "the eyes have tooltips")
+# narrow editors
+p5_narrow = NS(region=NS(width=150), preferences=bpy.context.preferences)
+p5_wide = NS(region=NS(width=900), preferences=bpy.context.preferences)
+check(not S.fits(p5_narrow, ("Add", "Subtract", "Wireframe")) and S.fits(p5_wide, ("Add", "Subtract")) and S.fits(NS(region=None), ("x" * 99,)),
+      "fits: measured with the UI font (no region: it fits)")
+log = []
+S.draw_lines(Rec(log), p5_narrow, "Red, outlined: the cage is too tight there, or the rays find no high poly")
+p5_lines = [r for r in log if r._kind == "label"]
+check(len(p5_lines) > 1 and p5_lines[0]._kw["icon"] == 'INFO' and all(r._kw["icon"] == 'BLANK1' for r in p5_lines[1:])
+      and " ".join(r._kw["text"] for r in p5_lines) == "Red, outlined: the cage is too tight there, or the rays find no high poly",
+      "a hint goes on more lines in a narrow editor, nothing cut off")
+p5_cells = [("White Plastic %d" % i_, lambda flow: flow.operator("m3d.library_apply", text="")) for i_ in range(6)]
+
+
+def p5_columns(ctx_):
+    log_ = []
+    m3d_library.tile_rows(Rec(log_), ctx_, p5_cells)
+    return next(r._kw["columns"] for r in log_ if r._kind == "grid_flow")
+
+
+check(p5_columns(NS(region=NS(width=230), preferences=bpy.context.preferences)) == 2 and p5_columns(p5_wide) >= 3,
+      "Assets: fewer columns where the names would be cut off")
+check(set(W.MIN_SIZES) == {'SCULPT', 'TEXTURE'} and W.fit_window(0) is None, "narrow windows: the docks keep a size (the GUI suite moves them)")
+# the bake view: an outline around the problem areas and stripes on the high poly, Outlines and Stripes (on by default)
+p5_s = dict(face_of=np.array([0, 0, 0, 0, 1, 1, 1, 1]), vert=np.array([0, 1, 4, 3, 1, 2, 5, 4]), start=np.array([0, 4]), total=np.array([4, 4]),
+            corner=np.array([(x_, y_, 0.0) for x_, y_ in ((0, 0), (1, 0), (1, 1), (0, 1), (1, 0), (2, 0), (2, 1), (1, 1))], np.float32))
+p5_nxt = VV.next_loops(p5_s)
+check(len(VV.outline_of(np.array([True, False]), p5_s, p5_nxt)) == 8 and len(VV.outline_of(np.array([True, True]), p5_s, p5_nxt)) == 12
+      and len(VV.outline_of(np.array([False, False]), p5_s, p5_nxt)) == 0, "the outline: the edges of the bad faces that no other bad face shares")
+tex_ = bpy.context.scene.m3d_tex
+check(tex_.view_outline and T.M3D_TexSettings.bl_rna.properties["view_outline"].default, "Outlines and Stripes is on by default")
+p5_mat = VV.blue_material(bpy.context)
+check(abs(p5_mat.node_tree.nodes["m3d_stripes"].outputs[0].default_value - VV.STRIPES) < 1e-6, "the high poly is striped")
+tex_.view_outline = False
+check(VV.blue_material(bpy.context).node_tree.nodes["m3d_stripes"].outputs[0].default_value == 0.0, "...not with Outlines and Stripes off")
+tex_.view_outline = True
+bpy.data.materials.remove(p5_mat)
+tex_ws.m3d_page_right = "tex_bake"
+log = bg_draw(VV.PROPERTIES_PT_m3d_tx_bake_view, TCtx('PROPS'))
+check("view_outline" in [r._args[1] for r in log if r._kind == "prop"]
+      and "Red, outlined: the cage is too tight there, or the rays find no high poly" in " ".join(bg_text(log)), "the legend says it in the words of the cage lines")
+log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_maps, TCtx())
+check(not any(r.values().get("active") is False for r in log) and "surface bumps" in bg_text(log), "the maps' hints are in the normal text colour")
+tex_ws.m3d_page_right = "tex_layers"
+check(hasattr(QQ.M3D_OT_bake_report, "modal"), "the bake's own reports reach the status bar from a modal moment (in place of Blender's)")
+# a right-click on the name of a mask effect knows the effect: the menu has Delete Effect
+check(LY.hovered(NS(button_pointer=None, button_operator=NS(index=-1, part='EFFECT', effect=1)), p5_m) == ("", True, 1),
+      "the name of an effect in Properties' list is a button that knows its effect")
+log = []
+LY.draw_mask_menu(Rec(log), "", 1)
+check("Delete Effect" in [r._kw.get("text") for r in log if r._kind == "operator"], "...so its menu has Delete Effect")
+clean_scene()
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

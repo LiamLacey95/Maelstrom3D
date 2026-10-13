@@ -1036,10 +1036,14 @@ def tile_rows(layout, context, cells, min_px=84, columns=0, width=0):
     """Square tiles with the name under each one. `cells` are (name, draw) pairs: draw(flow) adds the tile's button to
     the grid row (the buttons are children of the grid, which is what makes an icon-only button fill its cell). Row by
     row: a grid of tiles, a grid of names; the last row is padded so its tiles are as wide as the others. The number of
-    columns follows the width of the region; a popover gives both (`columns`, `width` in pixels at UI scale 1)."""
+    columns follows the width of the region, with fewer (down to 2) where the names would be cut off; a popover gives both
+    (`columns`, `width` in pixels at UI scale 1)."""
+    from m3d_workspace import TAB_PAD, text_width
     ui_scale = context.preferences.system.ui_scale or 1.0   # 0 without a window
     avail = width * ui_scale if width else (context.region.width if context.region else 300) - 24 * ui_scale
-    columns = columns or min(max(int(avail // (min_px * ui_scale)), 3), 8)
+    if not columns:
+        longest = max((text_width(name, ui_scale) - (TAB_PAD - 4) * ui_scale for name, _draw in cells), default=0)
+        columns = min(max(int(avail // (min_px * ui_scale)), 3), 8, max(int(avail // max(longest, 1)), 2))
     for i in range(0, len(cells), columns):
         row = cells[i:i + columns]
         tiles = layout.grid_flow(row_major=True, columns=columns, even_columns=True, even_rows=True, align=True)

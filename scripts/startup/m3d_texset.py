@@ -285,10 +285,15 @@ def write_bake_meshes(context, sets):
 
 
 class M3D_OT_tex_export_dialog(Operator):
-    """Export Textures (Ctrl+Shift+E): pick the texture sets, the template (the engine the files are for), the file type, size
-    and padding, and write the maps; a list of the files written follows"""
+    """Export Textures: pick the texture sets, the template (the engine the files are for), the file type, size and padding,
+    and write the maps; a list of the files written follows"""
     bl_idname = "m3d.tex_export_dialog"
     bl_label = "Export Textures"
+
+    @classmethod
+    def description(cls, context, _props):
+        from m3d_ui import with_key
+        return with_key(context, " ".join(cls.__doc__.split()), "Image Paint", "m3d.tex_export_dialog")
 
     @classmethod
     def poll(cls, context):

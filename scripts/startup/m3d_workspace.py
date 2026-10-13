@@ -285,6 +285,66 @@ def texture_role(context):
     return names[min(i, len(names) - 1)]
 
 
+# --- Narrow windows: a window smaller than the layout was made for shrinks every editor alike; the trays and docks keep the
+# size their panels fit in (pixels at UI scale 1) and the views give up the room. Done once for each window size and screen, so
+# an editor the user drags narrower afterwards stays so.
+MIN_SIZES = {
+    'SCULPT': (('LEFT', 'W', 220), ('RIGHT', 'W', 300)),
+    'TEXTURE': (('ASSETS', 'W', 200), ('SETS', 'W', 330), ('SETS', 'H', 165)),
+}
+_fitted = {}   # window pointer -> (width, height, screen pointer) it was fitted for
+
+
+def area_role(win, area):
+    """The role of a Properties editor of the window's workspace, as side_of gives it (without a context)."""
+    from types import SimpleNamespace
+    if workspace_kind(win.workspace) == 'TEXTURE' and getattr(win.workspace, "m3d_layout", 1) >= 1:
+        return texture_role(SimpleNamespace(area=area, window=win, screen=win.screen))
+    return side_of_area(area.x, area.width, win.width)
+
+
+def watch_window(context):
+    """From the Status Line's draw: when the window got another size (or shows another workspace), fit_window a moment later
+    (drawing may not change the screen)."""
+    win = context.window
+    if win is None or workspace_kind(context.workspace) not in MIN_SIZES:
+        return
+    key, now = win.as_pointer(), (win.width, win.height, win.screen.as_pointer())
+    if _fitted.get(key) != now:
+        _fitted[key] = now
+        bpy.app.timers.register(lambda: fit_window(key), first_interval=0.1)
+
+
+def fit_window(key):
+    """Make the trays and docks of the window `key` (a pointer) at least as big as MIN_SIZES says, by moving the edge between
+    each and the view next to it (screen.area_move moves the whole edge: the column of editors that share it moves along). A timer:
+    area_move works only while the pointer is over no editor (outside the window, or on an edge between two), so it tries again
+    a moment later until then."""
+    win = next((w for w in bpy.context.window_manager.windows if w.as_pointer() == key), None)
+    if win is None or _fitted.get(key) != (win.width, win.height, win.screen.as_pointer()):
+        return None   # (gone, or another size: the next draw asks again)
+    with bpy.context.temp_override(window=win, screen=win.screen):
+        if not bpy.ops.screen.area_move.poll():
+            return 0.25   # ponytail: polls until the pointer leaves the editors; a C path that ignores the pointer if this lags
+        scale = bpy.context.preferences.system.ui_scale or 1.0
+        for role, side, size in MIN_SIZES.get(workspace_kind(win.workspace), ()):
+            area = next((a for a in win.screen.areas if a.type == 'PROPERTIES' and area_role(win, a) == role), None)
+            need = int(size * scale) - (area.width if side == 'W' else area.height) if area is not None else 0
+            if need <= 0:
+                continue
+            if side == 'H':   # (the bottom edge goes down)
+                x, y, delta = area.x + area.width // 2, area.y - 1, -need
+            elif area.x + area.width / 2 < win.width / 2:   # (a column on the left: its right edge goes right)
+                x, y, delta = area.x + area.width, area.y + area.height // 2, need
+            else:   # (on the right: its left edge goes left)
+                x, y, delta = area.x - 1, area.y + area.height // 2, -need
+            try:
+                bpy.ops.screen.area_move(x=x, y=y, delta=delta)
+            except RuntimeError:
+                pass
+    return None
+
+
 def side_of(context):
     """LEFT when the Properties editor sits in the left half of the window (the left tray), else RIGHT; in the Texture layout
     the role of the editor (TEXTURE_ROLES)."""
@@ -594,9 +654,7 @@ class M3D_PT_workspace_settings(Panel):
             layout.separator()
             layout.prop(bpy.context.scene.m3d_tex, "bake_gpu")
             m3d_bakeq.check_gpu_soon()
-            row = layout.row()
-            row.active = False
-            row.label(text=m3d_bakeq.device_note(bpy.context), translate=False)
+            layout.label(text=m3d_bakeq.device_note(bpy.context), icon='INFO', translate=False)   # (a hint: the normal text colour)
         layout.separator()
         layout.operator("screen.userpref_show", text="Keyboard Shortcuts...", icon='KEYINGSET').section = 'KEYMAP'
         layout.operator("wm.save_homefile", text="Save Layouts as Default", icon='FILE_TICK')

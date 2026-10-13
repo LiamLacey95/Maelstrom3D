@@ -147,7 +147,8 @@ class M3D_MaskEffect(PropertyGroup):
     uid: StringProperty(description="Names the effect's nodes")
     kind: EnumProperty(name="Type", default='PAINT', items=[(k.id, k.label, k.text) for k in KINDS])
     name: StringProperty(name="Name", default="Effect", update=_changed)
-    visible: BoolProperty(name="Visible", default=True, update=_changed)
+    visible: BoolProperty(name="Visible", default=True, update=_changed,
+                          description="Show or hide this effect of the mask (a hidden effect changes nothing)")
     opacity: FloatProperty(name="Opacity", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_changed,
                            description="How strongly the effect applies (0: it does nothing)")
     opacity_pct: percent_of("opacity", "How strongly the effect applies (0: it does nothing)")

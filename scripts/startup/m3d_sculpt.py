@@ -131,21 +131,26 @@ class M3D_OT_brush_pick(Operator):
     identifier: bpy.props.StringProperty()   # relative asset identifier, "brushes/<file>.blend/Brush/<name>"
 
     @classmethod
-    def description(cls, _context, props):
-        return props.identifier.rpartition("/")[2]
+    def description(cls, context, props):
+        """The brush's name and its key (Sculpt's Shift+1-7)."""
+        from m3d_ui import key_text
+        key = key_text(context, "Sculpt" if props.identifier.startswith(BRUSH_ASSET) else "Image Paint", "brush.asset_activate",
+                       {"relative_asset_identifier": props.identifier})
+        name = props.identifier.rpartition("/")[2]
+        return "%s (%s)" % (name, key) if key else name
 
     def execute(self, _context):
         return bpy.ops.brush.asset_activate(asset_library_type='ESSENTIALS', relative_asset_identifier=self.identifier)
 
 
-def tile_grid(layout, context, units_x=0, min_px=46, columns=0):
-    """Grid for square tiles (icon-only buttons this tall draw their thumbnail at the button size). The columns and
-    the tile height follow the width of the region (or of a popover, `units_x` wide) so the tiles stay square; `columns`
-    asks for that many instead."""
+def tile_grid(layout, context, units_x=0, min_px=46, columns=0, most=8):
+    """Grid for square tiles (icon-only buttons this tall draw their thumbnail at the button size). The columns (at most
+    `most`) and the tile height follow the width of the region (or of a popover, `units_x` wide) so the tiles stay square;
+    `columns` asks for that many instead."""
     ui_scale = context.preferences.system.ui_scale or 1.0   # 0 without a window
     width = units_x * 20 * ui_scale if units_x else context.region.width if context.region else 300
     avail = width - 24 * ui_scale
-    columns = columns or min(max(int(avail // (min_px * ui_scale)), 3), 8)
+    columns = columns or min(max(int(avail // (min_px * ui_scale)), 3), most)
     flow = layout.grid_flow(row_major=True, columns=columns, even_columns=True, even_rows=True, align=True)
     flow.scale_y = avail / columns / (20 * ui_scale)
     return flow
@@ -314,17 +319,19 @@ def stroke_tiles(layout, context, brush, units_x=0):
     layout.label(text=next(label for kind, label, _d in STROKES if kind == brush.stroke_method))
 
 
-def alpha_tiles(layout, context, brush, units_x=0):
-    """Alpha picker: None, then a tile per alpha (the one the brush uses is pressed)."""
+def alpha_grid(layout, context, active, stencil=False):
+    """The alpha library as small tiles: None (no alpha), then every alpha (the starter set, then the loaded ones); the one named
+    `active` is pressed. A click gives the brush its alpha, or with `stencil` (Texture Paint) its stencil."""
     names = alpha_names()
     icons = alpha_icons(names)
-    flow = tile_grid(layout, context, units_x, min_px=38)
-    flow.operator("m3d.alpha_pick", text="None", depress=brush.texture is None).name = ""
-    active = brush.texture.name if brush.texture else ""
+    flow = tile_grid(layout, context, min_px=34, most=9)   # (None and the eight starter alphas in one row where it fits)
+    # (None is an icon: a word is cut off on a small tile)
+    o = flow.operator("m3d.alpha_pick", text="", icon='CANCEL', depress=not active)
+    o.name, o.stencil = "", stencil
     for name in names:
         o = flow.operator("m3d.alpha_pick", text="" if name in icons else name, icon_value=icons.get(name, 0),
                           depress=active == name)
-        o.name = name
+        o.name, o.stencil = name, stencil
 
 
 def studio_lights(context, kind):
@@ -460,8 +467,39 @@ def tool_is_active(context, tool, op, props):
     return all(getattr(cur_props, k, None) == v for k, v in props.items())
 
 
+def draw_lines(layout, context, text, icon='INFO'):
+    """`text` on as many lines as the width of the region needs (the first with `icon`), in the normal text colour."""
+    from m3d_workspace import text_width
+    scale = context.preferences.system.ui_scale or 1.0
+    region = getattr(context, "region", None)
+    room = (region.width if region is not None else 400 * scale) - 50 * scale
+    lines, line = [], ""
+    for word in text.split():
+        if line and text_width(line + " " + word, scale) > room:
+            lines.append(line)
+            line = word
+        else:
+            line = (line + " " + word).strip()
+    col = layout.column(align=True)
+    for i, line in enumerate([*lines, line]):
+        col.label(text=line, icon=icon if i == 0 else 'BLANK1', translate=False)
+
+
 def reason(layout, text):
-    layout.label(text=text, icon='INFO')
+    """A hint (why something is missing, what a click does): the info icon and the text in the normal text colour, on as many
+    lines as it needs (nothing is cut off on a narrow panel)."""
+    draw_lines(layout, bpy.context, text)
+
+
+def fits(context, texts, share=1.0):
+    """Do buttons showing `texts` fit side by side in `share` of the region's width (less a panel's margins)? Measured with
+    the UI font like the dock tabs; True without a region (a test). Where they don't, a row drops to icons (tooltips)."""
+    from m3d_workspace import text_width
+    region = getattr(context, "region", None)
+    if region is None or not getattr(region, "width", 0):
+        return True
+    scale = context.preferences.system.ui_scale or 1.0
+    return sum(text_width(t, scale) for t in texts) <= (region.width - 40 * scale) * share
 
 
 def grid(layout, context, items, columns=2, active=None):
@@ -497,36 +535,89 @@ def sculpt_brush(context):
 
 
 def alpha_brush(context):
-    """The brush an alpha goes to: the active brush of Texture Paint Mode (the Library tab of the Texture workspace
-    shares the alphas), else the sculpt brush."""
+    """The brush of the mode, which the alphas and the stroke types go to: the active brush of Texture Paint Mode (the
+    Texture workspace shares the alphas and the brush settings' drawing), else the sculpt brush."""
     if context.mode == 'PAINT_TEXTURE':
         paint = context.tool_settings.image_paint
         return paint.brush if paint else None
     return sculpt_brush(context)
 
 
-def draw_size_strength(layout, context, brush, header=False, only=None):
+# --- Brush settings: drawn by the same functions in Sculpt (the tray, on the left) and Texture (Properties, on the right), so
+# they have the same order, labels and look in both: Size, Strength (Flow in Texture), Hardness; Lazy Mouse; Stroke Type;
+# Alpha; Falloff. What only one mode has is passed in or drawn around them.
+
+def draw_size_strength(layout, context, brush, header=False, only=None, strength="Strength"):
     """Size and Strength sliders of the brush (`only`: just one of them): the scene-wide ones when Unified Size /
-    Strength is on. In a header (the Status Line) the pressure and Unified buttons are left out."""
+    Strength is on. In a header (the Status Line) the pressure and Unified buttons are left out. `strength`: its label
+    (Texture says Flow)."""
+    texture = context.mode == 'PAINT_TEXTURE'
     caps = brush.sculpt_capabilities
-    ups = context.tool_settings.sculpt.unified_paint_settings   # (the header has no brush tool: pass it in)
+    paint = context.tool_settings.image_paint if texture else context.tool_settings.sculpt
+    ups = paint.unified_paint_settings   # (the header has no brush tool: pass it in)
     if only in {None, "size"}:
         owner = ups if ups.use_unified_size else brush
         size = "unprojected_size" if owner.use_locked_size == 'SCENE' else "size"
+        pressure = (texture or caps.has_size_pressure) and not header
         UnifiedPaintPanel.prop_unified(layout, context, brush, size, unified_paint_settings_override=ups,
                                        unified_name="use_unified_size", text="Size", slider=True, header=header,
-                                       pressure_name="use_pressure_size" if caps.has_size_pressure and not header else None)
+                                       pressure_name="use_pressure_size" if pressure else None)
     if only in {None, "strength"}:
+        pressure = (texture or caps.has_strength_pressure) and not header
         UnifiedPaintPanel.prop_unified(layout, context, brush, "strength", unified_paint_settings_override=ups,
-                                       unified_name="use_unified_strength", text="Strength", slider=True, header=header,
-                                       pressure_name="use_pressure_strength" if caps.has_strength_pressure and not header
-                                       else None)
+                                       unified_name="use_unified_strength", text=strength, slider=True, header=header,
+                                       pressure_name="use_pressure_strength" if pressure else None)
 
 
-def draw_hardness(layout, brush):
-    """Hardness: how long the brush stays at full strength before it falls off (the Falloff curve shapes the rest)."""
-    if brush.sculpt_capabilities.has_hardness:
+def draw_hardness(layout, brush, always=False):
+    """Hardness: how long the brush stays at full strength before it falls off (the Falloff curve shapes the rest).
+    `always`: a texture brush, which always has it."""
+    if always or brush.sculpt_capabilities.has_hardness:
         layout.prop(brush, "hardness", text="Hardness", slider=True)
+
+
+def draw_brush_sliders(layout, context, brush, strength="Strength"):
+    """Size, Strength (`strength`: its label) and Hardness: the first brush settings, in Sculpt and Texture."""
+    draw_size_strength(layout, context, brush, strength=strength)
+    draw_hardness(layout, brush, always=context.mode == 'PAINT_TEXTURE')
+
+
+def draw_lazy_settings(layout, brush):
+    """Lazy Mouse's settings (while it is on): how far the stroke lags behind the cursor, and how much it is smoothed."""
+    col = layout.column()
+    col.prop(brush, "smooth_stroke_radius", text="Distance", slider=True)
+    col.prop(brush, "smooth_stroke_factor", text="Smoothing", slider=True)
+
+
+def draw_falloff(layout, brush, shape=False):
+    """Falloff: the preset of the brush's falloff curve (the curve itself when it is Custom); `shape`: Sphere / Projected
+    too (Sculpt)."""
+    layout.prop(brush, "curve_distance_falloff_preset", text="Falloff")
+    if brush.curve_distance_falloff_preset == 'CUSTOM':
+        layout.template_curve_mapping(brush, "curve_distance_falloff", brush=True, use_negative_slope=True, show_presets=True)
+    if shape:
+        layout.row().prop(brush, "falloff_shape", expand=True)
+
+
+ALPHA_NONE = "No alpha: a round dab"
+
+
+def draw_alpha(layout, context, brush, texture, slot=None, prop="", modes=()):
+    """The brush's alpha: its thumbnail and name (or what the brush does without one), Load Alpha..., the ways it can be
+    placed while it has one (`modes`: (value, text) of `slot`.`prop`; Texture's Camera / Tiled / Random / Stencil), then the
+    library to pick from (its first tile: no alpha)."""
+    icon = alpha_icons([texture.name]).get(texture.name, 0) if texture is not None else 0
+    row = layout.row(align=True)
+    if icon:
+        row.template_icon(icon_value=icon, scale=3.0)
+    col = row.column(align=True)
+    col.label(text=texture.name if texture is not None else ALPHA_NONE, translate=False)
+    col.operator("m3d.alpha_load", text="Load Alpha...", icon='FILE_FOLDER').stencil = False
+    if texture is not None and modes:
+        sub = col.row(align=True)
+        for value, text in modes:
+            sub.prop_enum(slot, prop, value, text=text)
+    alpha_grid(layout, context, texture.name if texture is not None else "")
 
 
 def draw_direction(layout, brush, labels=True):
@@ -543,7 +634,7 @@ def draw_lazy(layout, brush, label=True):
         row = layout.row(align=True)
         row.prop(brush, "use_smooth_stroke", text="Lazy Mouse" if label else "", icon='MOD_SMOOTH', toggle=True)
         if brush.use_smooth_stroke:
-            row.prop(brush, "smooth_stroke_radius", text="Radius" if label else "", slider=True)
+            row.prop(brush, "smooth_stroke_radius", text="Distance" if label else "", slider=True)
 
 
 # -----------------------------------------------------------------------------
@@ -1013,10 +1104,10 @@ class M3D_OT_stroke_pick(Operator):
 
     @classmethod
     def poll(cls, context):
-        return sculpt_brush(context) is not None
+        return alpha_brush(context) is not None
 
     def execute(self, context):
-        sculpt_brush(context).stroke_method = self.stroke
+        alpha_brush(context).stroke_method = self.stroke
         return {'FINISHED'}
 
 
@@ -1290,10 +1381,10 @@ class PROPERTIES_PT_m3d_sc_tuning(_Page, Panel):
         if brush is None:
             layout.label(text="Pick a brush above")
             return
-        col = layout.column()
-        draw_size_strength(col, context, brush)
-        draw_hardness(col, brush)
-        draw_direction(layout, brush)
+        draw_brush_sliders(layout.column(), context, brush)
+        row = layout.row()
+        row.use_property_split = False   # (two buttons the width of the panel)
+        draw_direction(row, brush, labels=fits(context, ("Add", "Subtract")))
 
 
 class PROPERTIES_PT_m3d_sc_lazy(_BrushPage, Panel):
@@ -1315,9 +1406,7 @@ class PROPERTIES_PT_m3d_sc_lazy(_BrushPage, Panel):
             return
         layout = self.layout
         split_props(layout)
-        col = layout.column()
-        col.prop(brush, "smooth_stroke_radius", text="Radius", slider=True)
-        col.prop(brush, "smooth_stroke_factor", text="Factor", slider=True)
+        draw_lazy_settings(layout, brush)
 
 
 class PROPERTIES_PT_m3d_sc_strokes(_BrushPage, Panel):
@@ -1333,10 +1422,8 @@ class PROPERTIES_PT_m3d_sc_alpha(_BrushPage, Panel):
     bl_label = "Alpha"
 
     def draw(self, context):
-        layout = self.layout
         brush = sculpt_brush(context)
-        alpha_tiles(layout, context, brush)
-        layout.operator("m3d.alpha_load", text="Load Alpha...", icon='FILE_FOLDER')
+        draw_alpha(self.layout, context, brush, brush.texture)   # (how it is placed: More Brush Settings > Alpha Settings)
 
 
 class PROPERTIES_PT_m3d_sc_more_brush(_PagePanel, Panel):
@@ -1362,7 +1449,7 @@ class PROPERTIES_PT_m3d_sc_alpha_settings(_MoreBrush, Panel):
     def draw(self, context):
         brush = sculpt_brush(context)
         if brush.texture is None:
-            self.layout.label(text="Pick an alpha above", icon='INFO')
+            reason(self.layout, "Pick an alpha above")
             return
         brush_texture_settings(self.layout.column(), brush, context.sculpt_object)
 
@@ -1376,7 +1463,10 @@ class PROPERTIES_PT_m3d_sc_more(_MoreBrush, Panel):
 
 
 class PROPERTIES_PT_m3d_sc_falloff(_MoreBrush, FalloffPanel, Panel):
-    pass
+    def draw(self, context):
+        brush = sculpt_brush(context)
+        split_props(self.layout)
+        draw_falloff(self.layout.column(), brush, shape=brush.sculpt_brush_type != 'POSE')
 
 
 class PROPERTIES_PT_m3d_sc_stroke(_MoreBrush, StrokePanel, Panel):
@@ -1847,7 +1937,8 @@ def draw_shading(layout, context, units_x=0):
         layout.label(text="No 3D Viewport in this workspace")
         return
     shading = space.shading
-    layout.row().prop(shading, "type", expand=True)
+    names = [i.name for i in shading.bl_rna.properties["type"].enum_items]
+    layout.row().prop(shading, "type", expand=True, icon_only=not fits(context, names))   # (icons and tooltips when narrow)
     if shading.type != 'SOLID':
         reason(layout, "Lighting and cavity are for Solid shading")
         return
@@ -1890,6 +1981,7 @@ class PROPERTIES_PT_m3d_sc_overlays(_Display, Panel):
         for flag, opacity, label in (("show_sculpt_face_sets", "sculpt_mode_face_sets_opacity", "Face Sets"),
                                      ("show_wireframes", "wireframe_opacity", "Wireframe")):
             row = layout.row(align=True)
+            row.use_property_split = False   # (the whole width: the toggle and its opacity both fit on a narrow dock)
             row.prop(overlay, flag, text=label, toggle=True)
             if getattr(overlay, flag):
                 row.prop(overlay, opacity, text="Opacity")
@@ -1904,9 +1996,8 @@ class PROPERTIES_PT_m3d_sc_performance(_Display, Panel):
 
     def draw(self, context):
         layout = self.layout
-        split_props(layout)
         sculpt = context.tool_settings.sculpt
-        col = layout.column(heading="Display", align=True)
+        col = layout.column(align=True)   # (no split: the long names fit on a narrow dock)
         col.prop(sculpt, "show_low_resolution", text="Low Resolution While Navigating")
         col.prop(sculpt, "use_sculpt_delay_updates", text="Delay Updates While Stroking")
         col.prop(sculpt, "use_deform_only", text="Deform Only (no topology update)")
@@ -2051,7 +2142,7 @@ class M3D_PT_sculpt_shading(Panel):
 
 
 class M3D_PT_sculpt_brush(Panel):
-    """Brush options: size, strength, hardness, add / subtract, falloff, Lazy Mouse, stroke type"""
+    """Brush options: size, strength, hardness, add / subtract, Lazy Mouse, stroke type, falloff"""
     bl_space_type = 'TOPBAR'
     bl_region_type = 'HEADER'
     bl_label = "Brush"
@@ -2065,25 +2156,17 @@ class M3D_PT_sculpt_brush(Panel):
         layout = self.layout
         split_props(layout)
         brush = sculpt_brush(context)
-        col = layout.column()
-        draw_size_strength(col, context, brush)
-        draw_hardness(col, brush)
+        draw_brush_sliders(layout.column(), context, brush)
         draw_direction(layout, brush)
-        col = layout.column(align=True)
-        col.prop(brush, "curve_distance_falloff_preset", text="Falloff")
-        if brush.curve_distance_falloff_preset == 'CUSTOM':
-            col.template_curve_mapping(brush, "curve_distance_falloff", brush=True, use_negative_slope=True,
-                                       show_presets=True)
-        col.row().prop(brush, "falloff_shape", expand=True)
         if brush.brush_capabilities.has_smooth_stroke:
             layout.separator()
             layout.prop(brush, "use_smooth_stroke", text="Lazy Mouse")
             if brush.use_smooth_stroke:
-                col = layout.column(align=True)
-                col.prop(brush, "smooth_stroke_radius", text="Radius", slider=True)
-                col.prop(brush, "smooth_stroke_factor", text="Factor", slider=True)
+                draw_lazy_settings(layout, brush)
         layout.separator()
         stroke_tiles(layout, context, brush, M3D_PT_sculpt_brush.bl_ui_units_x)
+        layout.separator()
+        draw_falloff(layout.column(align=True), brush, shape=brush.sculpt_brush_type != 'POSE')
 
 
 class M3D_PT_sculpt_remesh(Panel):
