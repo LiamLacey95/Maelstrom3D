@@ -489,7 +489,7 @@ MENUS = {
         op("Add Mask", "m3d.layer_mask_add", 'MOD_MASK'),
         op("Invert Mask", "m3d.layer_mask_invert", 'ARROW_LEFTRIGHT'),
         op("Remove Mask", "m3d.layer_mask_remove", 'X'),
-        op("Paint Mask", "m3d.layer_paint_mask", 'BRUSH_DATA'),
+        op("Switch Layer / Mask", "m3d.layer_paint_mask", 'BRUSH_DATA'),
         SEP,
         op("Merge Down", "m3d.layer_merge_down", 'TRIA_DOWN_BAR'),
         op("Flatten", "m3d.layer_flatten", 'IMAGE_DATA'),

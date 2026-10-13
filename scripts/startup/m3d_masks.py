@@ -135,6 +135,13 @@ def _changed(self, context):
         _hook[0](self, context)
 
 
+def percent_of(prop, description):
+    """A 0-100 % view of the 0-1 property `prop` (nothing stored: a list row shows "50%" where the factor reads "0.500"). Setting
+    it sets `prop`, whose update does the rest."""
+    return FloatProperty(name="Opacity", subtype='PERCENTAGE', min=0.0, max=100.0, precision=0, description=description,
+                         get=lambda self: getattr(self, prop) * 100.0, set=lambda self, value: setattr(self, prop, value / 100.0))
+
+
 class M3D_MaskEffect(PropertyGroup):
     """One effect of a layer's mask stack."""
     uid: StringProperty(description="Names the effect's nodes")
@@ -143,6 +150,7 @@ class M3D_MaskEffect(PropertyGroup):
     visible: BoolProperty(name="Visible", default=True, update=_changed)
     opacity: FloatProperty(name="Opacity", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_changed,
                            description="How strongly the effect applies (0: it does nothing)")
+    opacity_pct: percent_of("opacity", "How strongly the effect applies (0: it does nothing)")
     blend: EnumProperty(name="Blend", default='MIX', items=[(k, label, "") for k, label in BLENDS], update=_changed,
                         description="How the effect combines with the result below it")
     image: PointerProperty(type=bpy.types.Image, update=_changed)    # Paint pixels, the blur cache, or the first baked map.
@@ -663,7 +671,7 @@ def refresh_blurs(layer, force=False):
 def copy_params(src, dst):
     """Copy an effect's settings (not its uid or images)."""
     for prop in src.bl_rna.properties:
-        if prop.identifier not in {"rna_type", "uid", "image", "image2"}:
+        if prop.identifier not in {"rna_type", "uid", "image", "image2", "opacity_pct"}:
             setattr(dst, prop.identifier, getattr(src, prop.identifier))
 
 

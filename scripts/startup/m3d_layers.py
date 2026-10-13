@@ -50,7 +50,7 @@ import bpy.utils.previews
 import numpy as np
 from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProperty, FloatVectorProperty,
                        IntProperty, PointerProperty, StringProperty)
-from bpy.types import Menu, Operator, PropertyGroup, UIList
+from bpy.types import Menu, Operator, Panel, PropertyGroup, UIList
 
 import m3d_masks as MK
 from m3d_masks import image_size, muted, pixels_of, write_pixels
@@ -252,6 +252,16 @@ def _changed(self, context):
         refresh(context, self.id_data)
 
 
+def _index_changed(self, context):
+    """Material.m3d_layer_index set by a click in the list (on a row, its name): the layer is picked with its content, like a
+    click on its content thumbnail (strokes paint it, Properties shows its settings). Code that keeps the part sets it muted."""
+    layer = active_layer(self) if not MK._muted[0] else None
+    if layer is not None and layer.paint_mask:
+        with muted():
+            layer.paint_mask = False
+    _changed(self, context)
+
+
 def _texture_changed(self, context):
     """A fill's texture was picked: a file the stack has not seen takes the color space of the channel (the first channel an
     image is used for decides it; a generated image keeps its own: choosing the color space again blanks it)."""
@@ -279,6 +289,7 @@ class M3D_LayerChannel(PropertyGroup):
                         description="How the layer combines with the layers below in this channel")
     opacity: FloatProperty(name="Opacity", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_changed,
                            description="How strongly the layer applies in this channel")
+    opacity_pct: MK.percent_of("opacity", "How strongly the layer applies in this channel")   # (the list rows: "50%")
 
 
 def _expanded_changed(self, context):
@@ -312,13 +323,16 @@ class M3D_Layer(PropertyGroup):
                             "existing paint slots, where alpha was never used)")
     per_channel: BoolProperty(description="The blend mode and opacity are the channels' own. Off: a layer saved before that, "
                               "whose one blend and opacity (raw properties 'blend' and 'opacity') `upgrade` copies into every channel")
-    use_mask: BoolProperty(name="Mask On", default=True, update=_changed,
+    use_mask: BoolProperty(name="Use Mask", default=True, update=_changed,
                            description="The layer's mask applies (off: the layer shows as if it had none; the mask is kept)")
     channels: CollectionProperty(type=M3D_LayerChannel)
     mask_stack: CollectionProperty(type=MK.M3D_MaskEffect)   # The mask: effects combined from the bottom up.
     mask_index: IntProperty(name="Active Effect", default=0, min=0, update=_changed)
-    paint_mask: BoolProperty(name="Paint Mask", default=False, update=_changed,
-                             description="Brush strokes go to the mask's Paint effect instead of the layer's channel")
+    # Which thumbnail of the layer is selected (see mask_active): the mask (strokes paint its Paint effect, Properties shows it)
+    # or the content (strokes paint the channels, Properties shows the layer). The name is from when it was a Paint Mask switch.
+    paint_mask: BoolProperty(name="Mask Selected", default=False, update=_changed,
+                             description="The mask thumbnail is selected: strokes paint the mask's Paint effect and Properties "
+                             "shows the mask (off: the layer's content)")
     # The UV transform of a fill layer's textures (the Mapping node in front of them): see fill_mapping.
     uv_tiling: FloatVectorProperty(name="Tiling", size=2, default=(1.0, 1.0), min=0.01, soft_max=32.0, update=_changed,
                                    description="How many times the texture repeats over the UV map, across and up")
@@ -396,6 +410,11 @@ def active_layer(mat):
 def active_effect(layer):
     stack = layer.mask_stack
     return stack[layer.mask_index] if 0 <= layer.mask_index < len(stack) else None
+
+
+def mask_active(layer):
+    """Is the layer's mask selected (its thumbnail) rather than its content? Then strokes paint the mask and Properties shows it."""
+    return layer.paint_mask and bool(layer.mask_stack)
 
 
 def paint_effect(layer):
@@ -1674,17 +1693,17 @@ def stroke_targets(context, mat, layer, create):
 
 def target_set(context, mat, create):
     """(canvas, [(channel, image)]): the image strokes should go to, and the images one stroke paints at once (see
-    stroke_targets; the canvas is the first of them). With Paint Mask on (always for a fill layer or a folder) strokes go to
-    the active layer's Paint effect alone. A paint layer paints the channels of the brush material; when it has none of
-    them the channel being shown (Material.m3d_channel) is painted alone, which is how Normal is painted. The canvas is
-    None for a fill layer or a folder without a Paint effect, a layer in a frozen folder (its layers are no paint slots:
-    nothing can be painted), or a channel the layer does not have. The images are made here when `create`."""
+    stroke_targets; the canvas is the first of them). With the mask thumbnail selected (mask_active) strokes go to the active
+    layer's Paint effect alone. A paint layer paints the channels of the brush material; when it has none of them the channel
+    being shown (Material.m3d_channel) is painted alone, which is how Normal is painted. The canvas is None for the content of
+    a fill layer or a folder, a mask without a Paint effect, a layer in a frozen folder (its layers are no paint slots: nothing
+    can be painted), or a channel the layer does not have. The images are made here when `create`."""
     layer = active_layer(mat)
     if layer is None or in_frozen(layer):
         return None, []
-    effect = paint_effect(layer)
-    if effect is not None and (layer.paint_mask or layer.kind != 'PAINT'):
-        return effect.image, []
+    if mask_active(layer):
+        effect = paint_effect(layer)
+        return (effect.image if effect is not None else None), []
     if layer.kind != 'PAINT':
         return None, []
     targets = stroke_targets(context, mat, layer, create)
@@ -1764,10 +1783,11 @@ def paint_channel(context, ob, ch):
         mat.m3d_channel = ch.id
         if in_frozen(layer):
             raise RuntimeError("The folder is frozen: unfreeze it to paint its layers")
-        if layer.kind == 'FOLDER' and paint_effect(layer) is None:
-            raise RuntimeError("A folder cannot be painted: pick a layer inside it")
-        if layer.kind == 'FILL' and paint_effect(layer) is None:
-            raise RuntimeError("A Fill Layer cannot be painted: use Convert to Paint Layer")
+        if layer.kind == 'FOLDER' and not mask_active(layer):
+            raise RuntimeError("A folder cannot be painted: pick a layer inside it" + (", or its mask" if layer.mask_stack else ""))
+        if layer.kind == 'FILL' and not mask_active(layer):
+            raise RuntimeError("A Fill Layer cannot be painted: " + ("click its mask thumbnail to paint the mask, or "
+                                                                     if layer.mask_stack else "") + "use Convert to Paint Layer")
         if layer.kind == 'PAINT':
             entry_of(layer, ch.id).use = True
             layer.paint_mask = False
@@ -2716,7 +2736,7 @@ class M3D_OT_layer_mask_invert(_ActiveLayerOp, Operator):
                 stack.remove(len(stack) - 1)
             else:
                 add_effect(layer, 'INVERT')
-            layer.mask_index = len(stack) - 1
+            layer.mask_index, layer.paint_mask = len(stack) - 1, True
         return _done(context, mat)
 
 
@@ -2745,7 +2765,7 @@ class M3D_OT_layer_mask_clear(_ActiveLayerOp, Operator):
             layer.mask_stack.clear()
             e = add_effect(layer, 'PAINT', white=white)
             e.image = make_mask_image(mat, layer, size, white)
-            layer.mask_index = 0
+            layer.mask_index, layer.paint_mask = 0, True
         rebuild_all(mat)
         release(images)
         return _done(context, mat)
@@ -2800,28 +2820,29 @@ class M3D_OT_layer_mask_paste(_ActiveLayerOp, Operator):
         with muted():
             layer.mask_stack.clear()
             copy_mask(mat, src, layer)
-            layer.use_mask = True
-            layer.paint_mask = paint_effect(layer) is not None
+            layer.use_mask = layer.paint_mask = True
         rebuild_all(mat)
         release(images)
         return _done(context, mat)
 
 
 class M3D_OT_layer_paint_mask(_ActiveLayerOp, Operator):
-    """Switch between painting the active layer's mask (its selected Paint effect; one is added when it has none) and
-    its channel"""
+    """Switch the active layer between its content and its mask: what strokes paint and Properties shows (a click on the
+    layer's thumbnail or mask thumbnail does the same). A mask without a Paint effect gets one (white)"""
     bl_idname = "m3d.layer_paint_mask"
-    bl_label = "Paint Mask"
+    bl_label = "Switch Layer / Mask"
 
     def execute(self, context):
         mat = self.material(context)
         layer = active_layer(mat)
-        if not layer.paint_mask and paint_effect(layer) is None:
+        to_mask = not mask_active(layer)
+        if to_mask and paint_effect(layer) is None:
             e = add_effect(layer, 'PAINT')
             with muted():
                 e.image = make_mask_image(mat, layer, new_size(context, mat), True)
                 place_effect(layer)
-        layer.paint_mask = not layer.paint_mask
+        with muted():
+            layer.paint_mask = to_mask
         return _done(context, mat)
 
 
@@ -2863,7 +2884,7 @@ class M3D_OT_mask_effect_add(_ActiveLayerOp, Operator):
         with muted():
             if self.kind == 'PAINT':
                 e.image = make_mask_image(mat, layer, new_size(context, mat), white)
-                layer.paint_mask = True
+            layer.paint_mask = True   # (the mask is selected: Properties shows the new effect)
             for key, image in images.items():
                 assign_map(e, key, image)
             if self.kind == 'COLORID':   # (the first colour of the ID map to start with)
@@ -2894,7 +2915,7 @@ class M3D_OT_mask_effect_remove(_ActiveLayerOp, Operator):
         with muted():
             layer.mask_stack.remove(i)
             layer.mask_index = max(0, min(i, len(layer.mask_stack) - 1))
-            if paint_effect(layer) is None:
+            if not layer.mask_stack:
                 layer.paint_mask = False
         rebuild_all(mat)
         release(images)
@@ -2984,7 +3005,7 @@ class M3D_OT_mask_rebake(_ActiveLayerOp, Operator):
     """Bake the maps the mask effects read again (Edges, Cavity, Top-down, Thickness, Noise in Object space), at the
     resolution of the Bake tab. Use it after the mesh or the bake settings changed"""
     bl_idname = "m3d.mask_rebake"
-    bl_label = "Rebake Maps"
+    bl_label = "Rebake Mesh Maps"
     bl_options = {'REGISTER'}
 
     @classmethod
@@ -3077,8 +3098,8 @@ class M3D_OT_layer_fill_reset(_ActiveLayerOp, Operator):
 # Picking parts of a row, the clipboard, a mask from an image, the right-click commands
 
 class M3D_OT_layer_pick(_LayerOp, Operator):
-    """Select a layer of the list (its thumbnail); with `part` MASK its mask (Properties shows it), with EFFECT one of the
-    effects of its mask"""
+    """Select a layer of the list with its content (its thumbnail: strokes paint the layer, Properties shows it); with `part`
+    MASK with its mask (strokes paint the mask, Properties shows it), with EFFECT one of the effects of its mask"""
     bl_idname = "m3d.layer_pick"
     bl_label = "Select"
     bl_options = {'INTERNAL', 'UNDO'}
@@ -3093,11 +3114,11 @@ class M3D_OT_layer_pick(_LayerOp, Operator):
     @classmethod
     def description(cls, _context, props):
         if props.part == 'MASK':
-            return ("Select the layer's mask: Properties shows it. Alt+click shows the mask on its own (Show Mask), "
-                    "Shift+click switches it off and on, right-click opens the mask's commands")
+            return ("Select the layer's mask: strokes paint it, Properties shows it. Alt+click also shows the mask on its own "
+                    "(Show Mask), Shift+click switches it off and on (Use Mask), right-click opens the mask's commands")
         if props.part == 'EFFECT':
             return "Select this effect of the mask: Properties shows it"
-        return "Select the layer: Properties shows its settings"
+        return "Select the layer: strokes paint it, Properties shows its settings"
 
     def invoke(self, context, event):
         if self.part == 'MASK' and self.action == 'PICK' and (event.alt or event.shift):
@@ -3109,24 +3130,17 @@ class M3D_OT_layer_pick(_LayerOp, Operator):
         i = mat.m3d_layer_index if self.index < 0 else self.index
         if not 0 <= i < len(mat.m3d_layers):
             return {'CANCELLED'}
-        if i != mat.m3d_layer_index:
-            mat.m3d_layer_index = i
         layer = mat.m3d_layers[i]
-        tex = context.scene.m3d_tex
-        if self.part == 'LAYER':
-            if tex.props_mode == 'MASK':
-                tex.props_mode = 'AUTO'
-        elif self.part == 'EFFECT':
-            if 0 <= self.effect < len(layer.mask_stack):
+        with muted():   # (one refresh below)
+            mat.m3d_layer_index = i
+            layer.paint_mask = self.part != 'LAYER' and bool(layer.mask_stack)
+            if self.part == 'EFFECT' and 0 <= self.effect < len(layer.mask_stack):
                 layer.mask_index = self.effect
-            tex.props_mode = 'MASK'
-        elif self.action == 'SHOW':
-            mat.m3d_show_mask = not mat.m3d_show_mask
-        elif self.action == 'TOGGLE':
-            if layer.mask_stack:
+            if self.action == 'TOGGLE' and layer.mask_stack:
                 layer.use_mask = not layer.use_mask
-        else:
-            tex.props_mode = 'MASK'
+        if self.action == 'SHOW':
+            mat.m3d_show_mask = not mat.m3d_show_mask
+        refresh(context, mat)
         return {'FINISHED'}
 
 
@@ -3253,7 +3267,7 @@ LAYER_ACTIONS = {
     'MASK_INVERT': ("layer_mask_invert", {}, False), 'MASK_TOGGLE': ("layer_pick", {"part": 'MASK', "action": 'TOGGLE'}, False),
     'MASK_CLEAR_WHITE': ("layer_mask_clear", {"fill": 'WHITE'}, False), 'MASK_CLEAR_BLACK': ("layer_mask_clear", {"fill": 'BLACK'}, False),
     'MASK_COPY': ("layer_mask_copy", {}, False), 'MASK_PASTE': ("layer_mask_paste", {}, False),
-    'MASK_REMOVE': ("layer_mask_remove", {}, False),
+    'MASK_REMOVE': ("layer_mask_remove", {}, False), 'EFFECT_REMOVE': ("mask_effect_remove", {}, False),
 }
 
 
@@ -3486,24 +3500,124 @@ def thumbs_clear():
 KIND_ICONS = {'PAINT': 'IMAGE_DATA', 'FILL': 'COLOR', 'FOLDER': 'FILE_FOLDER'}
 ROW = 1.4           # height of a layer row in widget heights; its thumbnails are as wide (a preview is drawn at the size of its button from 1.5 up: icon sized below)
 EFFECT_ROW = 1.0    # height of a row of the mask's effects
-LOOK_UNITS = 3.6    # widget widths of the right column of a layer row (the blend mode over the opacity) ...
-EFFECT_LOOK_UNITS = 6.2   # ... and of an effect row (blend mode, opacity and the x), whatever the width of the editor
-LIST_MARGIN = 3.6   # widget widths of the editor the list does not have (the panel margins, the arrows beside it, the scroll bar)
+EFFECT_SHORT = {**BLEND_SHORT, 'LIGHTEN': "Max", 'DARKEN': "Min"}   # short names of the mask effects' blend modes (their labels differ)
 
 
-def draw_look(layout, entry):
-    """Blend mode (abbreviated; a menu of all modes) over opacity, of one channel entry."""
-    layout.prop_menu_enum(entry, "blend", text=BLEND_SHORT[entry.blend])
-    layout.prop(entry, "opacity", text="", slider=True)
+def text_units(text, extra=12):
+    """Widget widths a button showing `text` needs: the text and `extra` pixels at UI scale 1 (the padding; more for an arrow)."""
+    import blf
+    scale = bpy.context.preferences.system.ui_scale or 1.0
+    blf.size(0, 11 * scale)
+    return (blf.dimensions(0, text)[0] + extra * scale) / (20 * scale)
+
+
+def look_text(owner, short, blend=True, selected=False):
+    """What a row says of a blend mode and opacity: "Mult 50%", "Mult", "50%", only what is not the default ("" for Normal at 100%;
+    the `selected` row always has the opacity). `blend` False: a filter, only its opacity."""
+    words = [short[owner.blend]] if blend and owner.blend != 'MIX' else []
+    if selected or owner.opacity < 0.9995:
+        words.append("%d%%" % round(owner.opacity * 100))
+    return " ".join(words)
+
+
+LIST_MARGIN = 3.6   # widget widths of the editor a list row does not have (the panel margins, the arrows beside it, the scroll bar)
 
 
 def split_factor(context, units, default):
-    """The share of a list row its left side gets so that the column at the right is `units` widget widths wide, in a narrow
+    """The share of a list row its left side gets so that the part at the right is `units` widget widths wide, in a narrow
     editor as in a wide one (`default` without a region to measure)."""
     region = getattr(context, "region", None)
     unit = 20 * (bpy.context.preferences.system.ui_scale or 1.0)
     width = region.width / unit - LIST_MARGIN if region is not None else 0
-    return min(max(1.0 - units / width, 0.4), 0.85) if width > units else default
+    return min(max(1.0 - units / width, 0.4), 0.95) if width > units else default
+
+
+def look_row(context, layout, owner, effect, selected, short=BLEND_SHORT, blend=True):
+    """A list row that ends in the blend mode and opacity of `owner` (a layer's channel entry, a mask effect) as a short text
+    (look_text): on the selected row a button that opens the blend modes and the opacity (m3d.layer_look), on the others a label,
+    only where they are not Normal at 100%. The text takes the width it needs, the row returned (left of it) the rest, so the name
+    in it is not cut off. `effect`: the owner is the selected mask effect; `blend` False: a filter (it has no blend mode)."""
+    text = look_text(owner, short, blend, selected)
+    if not text:
+        return layout.row(align=True)
+    split = layout.split(factor=split_factor(context, text_units(text, 16 if selected else 8), 0.7), align=True)
+    row, look = split.row(align=True), split.row(align=True)
+    look.alignment = 'RIGHT'
+    if selected:
+        look.operator("m3d.layer_look", text=text, translate=False).effect = effect
+    else:
+        look.label(text=text, translate=False)
+    return row
+
+
+class M3D_OT_layer_look(Operator):
+    """Blend mode and opacity of the selected layer in the channel the list shows"""
+    bl_idname = "m3d.layer_look"
+    bl_label = "Blend Mode and Opacity"
+    bl_options = {'INTERNAL'}
+
+    effect: BoolProperty(options={'SKIP_SAVE', 'HIDDEN'}, description="Of the selected mask effect")
+
+    @classmethod
+    def description(cls, _context, props):
+        return "Blend mode and opacity of the selected mask effect" if props.effect else cls.__doc__
+
+    def invoke(self, context, _event):
+        return bpy.ops.wm.call_panel(name="M3D_PT_effect_look" if self.effect else "M3D_PT_layer_look", keep_open=True)
+
+
+class _LookPanel:
+    """The popup of m3d.layer_look (a header region draws no panels, so it shows nowhere else)."""
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'HEADER'
+    bl_ui_units_x = 9
+
+    @classmethod
+    def poll(cls, context):
+        return cls.owner(context) is not None
+
+    def draw(self, context):
+        owner = self.owner(context)
+        layout = self.layout
+        layout.label(text=self.title(context), translate=False)
+        if getattr(owner, "kind", None) not in MK.FILTERS:   # (a filter has no blend mode)
+            layout.prop(owner, "blend", text="")
+        layout.prop(owner, "opacity_pct", text="Opacity", slider=True)
+
+    @staticmethod
+    def layer(context):
+        ob = mesh_of(context)
+        mat = ob.active_material if ob is not None else None
+        return active_layer(mat) if mat is not None else None
+
+
+class M3D_PT_layer_look(_LookPanel, Panel):
+    bl_label = "Blend Mode"
+
+    @classmethod
+    def owner(cls, context):
+        layer = cls.layer(context)
+        return entry_of(layer, layer.id_data.m3d_row_channel) if layer is not None else None
+
+    def title(self, context):
+        return "%s: %s" % (self.layer(context).name, CHANNEL_BY_ID[self.layer(context).id_data.m3d_row_channel].label)
+
+
+class M3D_PT_effect_look(_LookPanel, Panel):
+    bl_label = "Effect Blend Mode"
+
+    @classmethod
+    def owner(cls, context):
+        layer = cls.layer(context)
+        return active_effect(layer) if layer is not None else None
+
+    def title(self, context):
+        return "Mask effect: " + self.owner(context).name
+
+
+def thumb_button(layout, selected, **kw):
+    """A thumbnail of a row (an m3d.layer_pick button): the selected one is framed (pressed), the others are flat."""
+    return layout.operator("m3d.layer_pick", text="", emboss=selected, depress=selected, **kw)
 
 
 class M3D_UL_layers(UIList):
@@ -3523,23 +3637,24 @@ class M3D_UL_layers(UIList):
         return [0 if hidden(l) else self.bitflag_filter_item for l in layers], []
 
     def draw_item(self, context, layout, _data, item, _icon, _active_data, _active_propname, index):
-        """One line: eye, folder arrow, content thumbnail, mask thumbnail, name; at the right the blend mode over the opacity of
-        the channel picked in the panel header. A column has the same width in every row (a stack with no folder or no mask has
-        no arrow or mask column), so the names line up. The active layer shows the effects of its mask as thin rows under it."""
+        """One line: eye, folder arrow, content thumbnail, mask thumbnail, name (it takes the free width), then the blend mode and
+        opacity of the channel picked in the panel header (see look_row: a button on the active layer that opens them, elsewhere a
+        short text where they are not Normal at 100%). On the active layer the selected thumbnail (content or mask: what strokes paint and Properties
+        shows) is framed. A column has the same width in every row (a stack with no folder or no mask has no arrow or mask column),
+        so the names line up. The active layer shows the effects of its mask as thin rows under it."""
         mat = item.id_data
         ch_id = mat.m3d_row_channel
-        tex = getattr(bpy.context.scene, "m3d_tex", None)
-        on_mask = tex is not None and tex.props_mode == 'MASK'
         active = index == mat.m3d_layer_index
+        on_mask = active and mask_active(item)
         editable = not in_frozen(item)   # (a frozen folder's layers are kept, not editable)
         folders = any(l.kind == 'FOLDER' for l in mat.m3d_layers)
         masks = any(l.mask_stack for l in mat.m3d_layers)
         depth = depth_of(item)
         col = layout.column(align=True)
-        split = col.split(factor=split_factor(context, LOOK_UNITS, 0.72), align=True)   # (a split keeps the blend modes in one column, whatever the indent)
-        row = split.row(align=True)
-        row.enabled = editable
-        row.scale_y = ROW
+        line = col.row(align=True)
+        line.enabled = editable
+        line.scale_y = ROW
+        row = look_row(context, line, entry_of(item, ch_id), False, active)
         if depth:
             row.separator(factor=2.0 * depth)
         folder = item.kind == 'FOLDER'
@@ -3553,12 +3668,12 @@ class M3D_UL_layers(UIList):
         spec, icon = content_thumb(mat, item, ch_id)
         shown = active and not on_mask
         if folder:
-            op = sub.operator("m3d.layer_pick", text="", icon='FILE_FOLDER', emboss=shown)
+            op = thumb_button(sub, shown, icon='FILE_FOLDER')
         elif spec is not None:
-            op = sub.operator("m3d.layer_pick", text="", icon_value=icon, emboss=shown)
+            op = thumb_button(sub, shown, icon_value=icon)
         else:   # (nothing in this channel)
             sub.active = False
-            op = sub.operator("m3d.layer_pick", text="", icon=KIND_ICONS[item.kind], emboss=shown)
+            op = thumb_button(sub, shown, icon=KIND_ICONS[item.kind])
         op.index = index
         if item.mask_stack or masks:
             sub = row.row(align=True)
@@ -3566,12 +3681,10 @@ class M3D_UL_layers(UIList):
             if item.mask_stack:
                 sub.active = item.use_mask
                 spec, icon = mask_thumb(mat, item)
-                shown = active and on_mask
                 if spec is not None:
-                    op = sub.operator("m3d.layer_pick", text="", icon_value=icon, emboss=shown)
+                    op = thumb_button(sub, on_mask, icon_value=icon)
                 else:
-                    op = sub.operator("m3d.layer_pick", text="", icon=MK.KIND_BY_ID[item.mask_stack[len(item.mask_stack) - 1].kind].icon,
-                                      emboss=shown)
+                    op = thumb_button(sub, on_mask, icon=MK.KIND_BY_ID[item.mask_stack[len(item.mask_stack) - 1].kind].icon)
                 op.part, op.index = 'MASK', index
             else:   # (the place of a mask thumbnail)
                 sub.label(text="", icon='BLANK1')
@@ -3580,48 +3693,34 @@ class M3D_UL_layers(UIList):
             op = row.operator("m3d.layer_unfreeze" if item.frozen else "m3d.layer_freeze", text="", icon='FREEZE',
                               emboss=item.frozen, depress=item.frozen)
             op.index = index
-        look = split.column(align=True)
-        look.enabled = editable
-        look.scale_y = ROW / 2
-        draw_look(look, entry_of(item, ch_id))
         if active and item.mask_stack:
             for i in reversed(range(len(item.mask_stack))):
                 effect = item.mask_stack[i]
-                sub = col.split(factor=split_factor(context, EFFECT_LOOK_UNITS, 0.62), align=True)
-                sub.enabled = editable
-                sub.scale_y = EFFECT_ROW
-                left = sub.row(align=True)
+                selected = on_mask and i == item.mask_index
+                line = col.row(align=True)
+                line.enabled = editable
+                line.scale_y = EFFECT_ROW
+                sub = look_row(context, line, effect, True, selected, EFFECT_SHORT, effect.kind not in MK.FILTERS)
                 if depth:
-                    left.separator(factor=2.0 * depth)
+                    sub.separator(factor=2.0 * depth)
                 for _blank in range(2 if folders else 1):   # (under the layer's eye and arrow: the effects are under its thumbnails)
-                    left.label(text="", icon='BLANK1')
-                left.prop(effect, "visible", text="", icon='HIDE_OFF' if effect.visible else 'HIDE_ON', emboss=False)
-                name = left.row(align=True)
+                    sub.label(text="", icon='BLANK1')
+                sub.prop(effect, "visible", text="", icon='HIDE_OFF' if effect.visible else 'HIDE_ON', emboss=False)
+                name = sub.row(align=True)
                 name.alignment = 'LEFT'   # (the text of a button is centered: this makes the button as wide as its text, at the left)
-                op = name.operator("m3d.layer_pick", text=effect.name, icon=MK.KIND_BY_ID[effect.kind].icon,
-                                   emboss=on_mask and i == item.mask_index, translate=False)
+                op = name.operator("m3d.layer_pick", text=effect.name, icon=MK.KIND_BY_ID[effect.kind].icon, emboss=selected,
+                                   depress=selected, translate=False)
                 op.part, op.index, op.effect = 'EFFECT', index, i
-                right = sub.row(align=True)
-                pair = right.split(factor=0.5, align=True)
-                if effect.kind in MK.FILTERS:   # A filter changes what is below it: only how much is left to say.
-                    pair.label(text="")
-                else:
-                    pair.prop_menu_enum(effect, "blend", text=BLEND_SHORT[effect.blend])
-                pair.prop(effect, "opacity", text="", slider=True)
-                right.operator("m3d.mask_effect_remove", text="", icon='X', emboss=False).index = i
 
 
 class M3D_UL_mask_effects(UIList):
-    def draw_item(self, _context, layout, _data, item, _icon, _active_data, _active_propname, _index):
-        row = layout.row(align=True)
+    def draw_item(self, context, layout, _data, item, _icon, active_data, _active_propname, index):
+        """Eye, type icon, name, then the blend mode and opacity as in the layer list (buttons on the selected effect)."""
+        row = look_row(context, layout, item, True, index == active_data.mask_index, EFFECT_SHORT,
+                       item.kind not in MK.FILTERS)
         row.prop(item, "visible", text="", icon='HIDE_OFF' if item.visible else 'HIDE_ON', emboss=False)
         row.label(text="", icon=MK.KIND_BY_ID[item.kind].icon)
         row.prop(item, "name", text="", emboss=False)
-        if item.kind not in MK.FILTERS:   # A filter changes what is below it: only how much is left to say.
-            sub = row.row(align=True)
-            sub.scale_x = 0.9
-            sub.prop(item, "blend", text="")
-        row.prop(item, "opacity", text="", slider=True)
 
 
 # -----------------------------------------------------------------------------
@@ -3683,9 +3782,11 @@ def draw_mask_items(layout, uid=None):
 
 
 def draw_mask_menu(layout, uid=None, pick=-1):
-    """The commands of a mask (the menu of its thumbnail, of its effect rows and of the Mask panel): the Add items, then Invert,
-    Toggle, Clear (a menu), Copy, Paste, Create Smart Mask and Remove."""
+    """The commands of a mask (the menu of its thumbnail, of its effect rows and of the Mask panel): the Add items, Delete Effect
+    (on an effect), then Invert, Toggle, Clear (a menu), Copy, Paste, Create Smart Mask and Remove."""
     draw_effect_items(layout, uid, pick)
+    if pick >= 0:
+        action_entry(layout, "Delete Effect", 'EFFECT_REMOVE', uid, 'X')
     layout.separator()
     action_entry(layout, "Invert Mask", 'MASK_INVERT', uid, 'ARROW_LEFTRIGHT')
     action_entry(layout, "Toggle Mask", 'MASK_TOGGLE', uid, 'HIDE_OFF')
@@ -3723,7 +3824,7 @@ class M3D_MT_mask_clear(Menu):
 
 
 class M3D_MT_mask_more(Menu):
-    """The "..." menu of the Mask panel: the commands of the mask."""
+    """The commands of the mask: add an effect, invert, switch off, clear, copy, paste, create a smart mask, remove the mask"""
     bl_label = "Mask Commands"
 
     def draw(self, _context):
@@ -3908,6 +4009,9 @@ classes = (
     M3D_OT_layer_key,
     M3D_UL_layers,
     M3D_UL_mask_effects,
+    M3D_OT_layer_look,
+    M3D_PT_layer_look,
+    M3D_PT_effect_look,
     M3D_MT_layer_effect_add,
     M3D_MT_layer_mask_add,
     M3D_MT_layer_ctx_effect_add,
@@ -3995,7 +4099,7 @@ def register():
         bpy.utils.register_class(cls)
     mat = bpy.types.Material
     mat.m3d_layers = CollectionProperty(type=M3D_Layer)
-    mat.m3d_layer_index = IntProperty(name="Active Layer", default=0, min=0, update=_changed)
+    mat.m3d_layer_index = IntProperty(name="Active Layer", default=0, min=0, update=_index_changed)
     mat.m3d_channel = EnumProperty(name="Channel", default='BASE_COLOR', items=CHANNEL_ITEMS, update=_changed,
                                    description="Channel shown on its own (C). It is painted too only when the brush "
                                    "material has no channel on, or when it is Normal")

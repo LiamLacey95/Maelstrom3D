@@ -4833,7 +4833,7 @@ def mk_paint_check():
     layer = mk_layer()
     paint = layer.mask_stack[3]
     check([e.kind for e in layer.mask_stack] == ['FILL', 'EDGES', 'LEVELS', 'PAINT'] and paint.blend == 'MULTIPLY' and layer.paint_mask,
-          "P added a white Paint effect that multiplies, and turned Paint Mask on: %s" % [(e.kind, e.blend) for e in layer.mask_stack])
+          "P added a white Paint effect that multiplies, and selected the mask: %s" % [(e.kind, e.blend) for e in layer.mask_stack])
     check(m.texture_paint_images[m.paint_active_slot] == paint.image, "the brush is aimed at the Paint effect's image")
     check(px(paint.image)[:, :3].min() == 1.0, "a new Paint effect is white")
     check(np.abs(mk_mask() - mk_mask().max()).max() < 1e-6, "...so it changes nothing yet")
@@ -4934,7 +4934,8 @@ def mk_show_off_check():
 def mk_remove_check():
     layer = mk_layer()
     check([e.kind for e in layer.mask_stack] == ['FILL', 'EDGES', 'LEVELS'] and GIZMO["mk_paint_name"] not in bpy.data.images
-          and not layer.paint_mask, "Remove deleted the Paint effect and its image: %s" % [e.kind for e in layer.mask_stack])
+          and layer.paint_mask and LY.target_image(bpy.context, lay_mat(), False) is None,
+          "Remove deleted the Paint effect and its image (the mask stays selected, with nothing to paint): %s" % [e.kind for e in layer.mask_stack])
     check(bpy.data.images["Crate_Curvature"].get("m3d_stamp") == GIZMO["mk_stamp"], "the baked map was kept, not baked again")
     check(not tracebacks(), "Python error in the mask effect tests")
     lay_show_tab()
@@ -6183,7 +6184,6 @@ def tex4_setup():
     bpy.ops.m3d.tex_add_material()
     bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
     bpy.context.scene.m3d_tex.resolution = '128'
-    bpy.context.scene.m3d_tex.props_mode = 'AUTO'
     window().workspace.m3d_page_right = "tex_layers"
     press_ok("m3d.layer_add", _area=tex4_dock(), kind='PAINT')
     press_ok("m3d.tex_tool", _area=tex_roles()["tools"], tool='PAINT')
@@ -6196,10 +6196,10 @@ step(wait_until(lambda: bpy.context.mode == 'PAINT_TEXTURE' and tex4_2d()[2].ima
 @step
 def tex4_ctx_paint():
     check(m3d_texture.props_context(bpy.context) == 'PAINT' and window().workspace.m3d_layout == 1, "a Paint Layer: Properties - Paint")
-    check(tex4_sections() == {"pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_material", "pp_more"},
+    check(tex4_sections() == {"pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_material", "pp_more", "layer_props"},
           "Properties - Paint with the Paint tool shows previews, Brush, Alpha, Stencil, Material and the More Settings button: %s" % sorted(tex4_sections()))
     bpy.context.scene.m3d_tex.props_more = True
-    check(tex4_sections() == {"pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_material", "pp_advanced", "pp_cursor", "pp_more"},
+    check(tex4_sections() == {"pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_material", "pp_advanced", "pp_cursor", "pp_more", "layer_props"},
           "...More Settings adds Advanced and Cursor: %s" % sorted(tex4_sections()))
     bpy.context.scene.m3d_tex.props_more = False
     check(not tracebacks(), "Python error drawing Properties - Paint")
@@ -6220,7 +6220,7 @@ def _tex4_tool_steps():
             tex4_redraw()
 
         def verify(tool=tool, want=want):
-            check(m3d_texture.tool_of(bpy.context) == tool and tex4_sections() == want,
+            check(m3d_texture.tool_of(bpy.context) == tool and tex4_sections() == want | {"layer_props"},
                   "Properties - Paint, %s tool: %s (want %s)" % (tool, sorted(tex4_sections()), sorted(want)))
             check(not tracebacks(), "Python error drawing Properties - Paint with the %s tool and its toolbar" % tool)
         pick.__name__, verify.__name__ = "tex4_tool_" + tool.lower(), "tex4_tool_check_" + tool.lower()
@@ -6296,8 +6296,8 @@ def tex4_fill_add():
 
 @step
 def tex4_ctx_fill():
-    check(m3d_texture.props_context(bpy.context) == 'FILL' and tex4_sections() == {"fl_fill", "fl_material"},
-          "a Fill Layer: Properties - Fill with Fill and Material (%s)" % sorted(tex4_sections()))
+    check(m3d_texture.props_context(bpy.context) == 'FILL' and tex4_sections() == {"fl_fill", "fl_material", "layer_props"},
+          "a Fill Layer: Properties - Fill with Fill, Material and Layer Settings (%s)" % sorted(tex4_sections()))
     check(not tracebacks(), "Python error drawing Properties - Fill and its toolbar")
     # the toolbar follows: the UV transform instead of the brush (the operators it draws run too)
     layer = LY.active_layer(tex_mat())
@@ -6348,33 +6348,31 @@ def tex4_folder_add():
 
 @step
 def tex4_ctx_folder():
-    check(m3d_texture.props_context(bpy.context) == 'FOLDER' and tex4_sections() == {"fd_folder", "mk_stack"},
-          "a Folder: Properties - Folder with the folder and its mask (%s)" % sorted(tex4_sections()))
+    check(m3d_texture.props_context(bpy.context) == 'FOLDER' and tex4_sections() == {"fd_folder"},
+          "a Folder: Properties - Folder (%s)" % sorted(tex4_sections()))
     check(not tracebacks(), "Python error drawing Properties - Folder")
     press_ok("m3d.layer_mask_add", _area=tex_roles()["props"], fill='WHITE')
-    check(m3d_texture.props_context(bpy.context) == 'MASK', "(a mask is painted when it is made: Properties - Mask)")
-    LY.active_layer(tex_mat()).paint_mask = False
+    check(m3d_texture.props_context(bpy.context) == 'MASK', "(a mask is selected when it is made: Properties - Mask)")
+    LY.active_layer(tex_mat()).paint_mask = False   # (the folder's content again)
     tex4_redraw()
 
 
 @step
 def tex4_ctx_folder_mask():
-    check(tex4_sections() == {"fd_folder", "mk_stack", "mk_effect"}, "...the folder's mask adds its effect: %s" % sorted(tex4_sections()))
+    check(tex4_sections() == {"fd_folder"}, "...the folder's content selected: the folder alone (its mask thumbnail shows the mask): %s" % sorted(tex4_sections()))
     check(not tracebacks(), "Python error drawing the folder's mask")
     press_ok("m3d.layer_add", _area=tex4_dock(), kind='PAINT')
     press_ok("m3d.layer_mask_add", _area=tex_roles()["props"], fill='WHITE')
     for kind in ('NOISE', 'LEVELS'):
         press_ok("m3d.mask_effect_add", _area=tex_roles()["props"], kind=kind)
-    bpy.context.scene.m3d_tex.props_mode = 'MASK'
-    LY.active_layer(tex_mat()).paint_mask = False
     tex4_redraw()
 
 
 @step
 def tex4_ctx_mask():
     layer = LY.active_layer(tex_mat())
-    check(m3d_texture.props_context(bpy.context) == 'MASK' and tex4_sections() == {"mk_stack", "mk_effect"} and layer.mask_stack[layer.mask_index].kind == 'LEVELS',
-          "the Mask button: Properties - Mask with the stack and the selected effect (%s)" % sorted(tex4_sections()))
+    check(m3d_texture.props_context(bpy.context) == 'MASK' and {"mk_stack", "mk_effect", "pp_brush"} <= tex4_sections() and layer.mask_stack[layer.mask_index].kind == 'LEVELS',
+          "a new effect selects the mask: Properties - Mask with the stack, the selected effect and the brush (%s)" % sorted(tex4_sections()))
     check(not tracebacks(), "Python error drawing Properties - Mask")
     layer.mask_index = next(i for i, e in enumerate(layer.mask_stack) if e.kind == 'NOISE')
     tex4_redraw()
@@ -6394,7 +6392,6 @@ def tex4_ctx_mask_paint():
           "painting the mask: the Paint sections follow the mask's, with the grays (%s)" % sorted(tex4_sections()))
     check(not tracebacks(), "Python error drawing Properties - Mask while the mask is painted")
     LY.active_layer(tex_mat()).paint_mask = False
-    bpy.context.scene.m3d_tex.props_mode = 'AUTO'
     tex4_redraw()
 
 
@@ -6628,12 +6625,13 @@ def s3e_setup():
             bpy.ops.m3d.mask_effect_add(kind='NOISE')
             bpy.ops.m3d.mask_effect_add(kind='LEVELS')
     s3e_mat().m3d_layer_index = 1   # (Fill B: its effects are listed under it)
-    S3E["real_look"], S3E["looks"] = LY.draw_look, []
+    S3E["real_look"], S3E["looks"] = LY.look_row, []
 
-    def recorded(layout, entry):
-        S3E["looks"].append((entry.id_data.name, entry.channel, entry.blend, round(entry.opacity, 3)))
-        S3E["real_look"](layout, entry)
-    LY.draw_look = recorded
+    def recorded(context, layout, owner, effect, selected, *args):
+        if not effect:   # (a layer's row: the channel entry it shows)
+            S3E["looks"].append((owner.id_data.name, owner.channel, owner.blend, round(owner.opacity, 3)))
+        return S3E["real_look"](context, layout, owner, effect, selected, *args)
+    LY.look_row = recorded
     LY.thumbs_clear()
     S3E["real_menu"] = LY.draw_list_menu
     bpy.types.UI_MT_button_context_menu.remove(LY.draw_list_menu)
@@ -6803,7 +6801,6 @@ def s3e_mask_find():
     check(bool(hits), "Paint A's mask thumbnail is a button of its row (found at %d points)" % len(hits))
     S3E["mask_xy"] = s3e_center(hits) if hits else S3E["rows"].get(0)
     mat = s3e_mat()
-    S3E["props_before"] = bpy.context.scene.m3d_tex.props_mode
     check(mat.m3d_layer_index == 2 and not mat.m3d_show_mask, "Paint C is the active layer before the clicks")
     xy = S3E["mask_xy"]
     event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]))
@@ -6812,18 +6809,48 @@ def s3e_mask_find():
     event('LEFTMOUSE', 'RELEASE', xy)
 
 
-step(wait_until(lambda: bpy.context.scene.m3d_tex.props_mode == 'MASK', "a click on the mask thumbnail to show the mask in Properties", tries=15))
+step(wait_until(lambda: s3e_mat().m3d_layer_index == 0 and LY.active_layer(s3e_mat()).paint_mask, "a click on the mask thumbnail to select the mask", tries=15))
 
 
 @step
 def s3e_mask_selected():
     mat = s3e_mat()
-    check(mat.m3d_layer_index == 0 and LY.active_layer(mat).name == "Paint A", "the click selected Paint A")
+    layer = LY.active_layer(mat)
+    check(layer.name == "Paint A", "the click selected Paint A")
     check(m3d_texture.props_context(bpy.context) == 'MASK', "Properties shows the mask")
+    check(LY.target_image(bpy.context, mat, False) == LY.paint_effect(layer).image and LY.TARGETS not in bpy.context.window_manager,
+          "strokes paint the mask's Paint effect alone")
+    check(m3d_texture.paint_status(bpy.context, mat, layer) == "Painting Paint A mask", "the Layers panel says so")
     tex4_redraw()
 
 
 step(wait_until(lambda: "mk_stack" in tex4_sections(), "Properties to draw the Mask section", tries=15))
+
+
+@step
+def s3e_content_click():
+    check({"mk_stack", "mk_effect", "pp_brush"} <= tex4_sections(), "Properties - Mask: the mask, its effect and the brush (%s)" % sorted(tex4_sections()))
+    xy = S3E["rows"][0]   # Paint A's content thumbnail
+    event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]))
+    event('MOUSEMOVE', xy=xy)
+    event('LEFTMOUSE', 'PRESS', xy)
+    event('LEFTMOUSE', 'RELEASE', xy)
+
+
+step(wait_until(lambda: not LY.active_layer(s3e_mat()).paint_mask, "a click on the content thumbnail to select the layer's content", tries=15))
+
+
+@step
+def s3e_content_selected():
+    mat = s3e_mat()
+    layer = LY.active_layer(mat)
+    check(layer.name == "Paint A" and m3d_texture.props_context(bpy.context) == 'PAINT', "the content thumbnail: Paint A, Properties - Paint")
+    check(LY.target_image(bpy.context, mat, False) == LY.entry_of(layer, 'BASE_COLOR').image, "strokes paint the layer's Base Color again")
+    check(m3d_texture.paint_status(bpy.context, mat, layer).startswith("Painting Paint A: "), "the Layers panel says so")
+    tex4_redraw()
+
+
+step(wait_until(lambda: "mk_stack" not in tex4_sections() and "pp_brush" in tex4_sections(), "Properties to draw the brush without the mask", tries=15))
 
 
 def s3e_modifier_click(name, key, mods, cond, what):
@@ -6979,9 +7006,76 @@ step(wait_until(lambda: len(s3e_mat().m3d_layers) == S3E["count"] - 1, "Delete o
 
 
 @step
+def s3e_fill_scan():
+    # Fill B: its mask thumbnail (a generator's icon), then a click on its name
+    check(not tracebacks(), "Python error deleting")
+    area, region = s3e_region()
+    s3e_scan([(S3E["mask_xy"][0], y) for y in range(region.y + region.height - 12, region.y + 12, -5)])
+
+
+step(wait_until(s3e_scanned, "the probes of the mask column", tries=40))
+
+
+@step
+def s3e_fill_mask_click():
+    hits = s3e_hits(r"layer_pick\(part='MASK', index=1\)")
+    check(bool(hits), "Fill B's mask thumbnail is in the mask column (found at %d points)" % len(hits))
+    S3E["fill_xy"] = s3e_top_center(hits, 30) if hits else S3E["mask_xy"]
+    LY.active_layer(s3e_mat()).paint_mask = False
+    xy = S3E["fill_xy"]
+    event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]))
+    event('MOUSEMOVE', xy=xy)
+    event('LEFTMOUSE', 'PRESS', xy)
+    event('LEFTMOUSE', 'RELEASE', xy)
+
+
+step(wait_until(lambda: LY.active_layer(s3e_mat()).name == "Fill B" and LY.active_layer(s3e_mat()).paint_mask, "a click on Fill B's mask thumbnail", tries=15))
+
+
+@step
+def s3e_fill_name_click():
+    mat = s3e_mat()
+    check(m3d_texture.props_context(bpy.context) == 'MASK' and LY.target_image(bpy.context, mat, False) is None,
+          "Fill B's mask (generators only) selected: Properties - Mask, nothing to paint")
+    check(m3d_texture.paint_status(bpy.context, mat, LY.active_layer(mat)) == "The mask has no Paint effect: add one to paint it", "...the hint says why")
+    scale = bpy.context.preferences.system.ui_scale or 1.0
+    xy = S3E["name_xy"] = (S3E["fill_xy"][0] + int(60 * scale), S3E["fill_xy"][1])   # (the name, right of the mask thumbnail)
+    event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]))
+    event('MOUSEMOVE', xy=xy)
+    event('LEFTMOUSE', 'PRESS', xy)
+    event('LEFTMOUSE', 'RELEASE', xy)
+
+
+step(wait_until(lambda: not LY.active_layer(s3e_mat()).paint_mask, "a click on Fill B's name to select its content", tries=15))
+
+
+@step
+def s3e_fill_content():
+    mat = s3e_mat()
+    check(LY.active_layer(mat).name == "Fill B" and m3d_texture.props_context(bpy.context) == 'FILL',
+          "a click on the name of a fill whose mask was selected: Properties - Fill (%s)" % m3d_texture.props_context(bpy.context))
+    check(m3d_texture.paint_status(bpy.context, mat, LY.active_layer(mat)) == "Fill Layer: click the mask thumbnail to paint", "...the hint says how to paint it")
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.ed.undo()
+
+
+step(wait_until(lambda: LY.active_layer(s3e_mat()).paint_mask, "Undo to select the mask again", tries=15))
+
+
+@step
+def s3e_fill_undone():
+    check(LY.active_layer(s3e_mat()).name == "Fill B" and m3d_texture.props_context(bpy.context) == 'MASK', "Undo brought the selected mask back")
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.ed.redo()
+
+
+step(wait_until(lambda: not LY.active_layer(s3e_mat()).paint_mask, "Redo to select the content again", tries=15))
+
+
+@step
 def s3e_done():
     check(not tracebacks(), "Python error in the layer stack tests")
-    LY.draw_look = S3E["real_look"]
+    LY.look_row = S3E["real_look"]
     bpy.types.UI_MT_button_context_menu.remove(S3E["menu_spy"])
     bpy.types.UI_MT_button_context_menu.append(S3E["real_menu"])
     S3E["km"].keymap_items.remove(S3E["kmi"])
@@ -7046,7 +7140,6 @@ def s3f_setup():
     bpy.ops.m3d.tex_channel(channel='BASE_COLOR')
     mat.m3d_row_channel = 'BASE_COLOR'
     mat.m3d_layer_index = LY.index_of(mat, s3e_layer("Fill Tint").uid)
-    bpy.context.scene.m3d_tex.props_mode = 'AUTO'
     LY.thumbs_clear()
     S3F["real_menu"] = LY.draw_list_menu
     bpy.types.UI_MT_button_context_menu.remove(LY.draw_list_menu)
@@ -7263,24 +7356,53 @@ def s3f_b_added():
     tex4_redraw()
 
 
-# the effects of the Mask panel (Properties): a right-click on one of its rows opens the mask menu too
+# the effects of the Mask panel (Properties): closed at first under their heading; open, a right-click on one of its rows opens the mask
+# menu too
+def s3f_props_column():
+    region = S3F["props_region"]
+    s3e_scan([(region.x + int(region.width * f), y) for f in (0.05, 0.08, 0.11, 0.4) for y in range(region.y + region.height - 8, region.y + 8, -4)])
+
+
 @step
 def s3f_props_scan():
     area = tex_roles()["props"]
-    region = next(r for r in area.regions if r.type == 'WINDOW')
-    S3F["props_region"] = region
-    s3e_scan([(region.x + int(region.width * f), y) for f in (0.74, 0.78) for y in range(region.y + region.height - 8, region.y + 8, -4)])
+    S3F["props_region"] = next(r for r in area.regions if r.type == 'WINDOW')
+    s3f_props_column()
 
 
 step(wait_until(s3e_scanned, "the probes of the Properties editor", tries=60))
 
 
 @step
+def s3f_effects_open():
+    hits = s3e_hits(r"layer_mask_invert")
+    check(bool(hits), "Invert Mask is a button of the Mask section (found at %d points)" % len(hits))
+    check(not s3e_hits(r"mask_stack\[1\]\.name$"), "the mask's effects are closed under their heading at first")
+    if hits:
+        scale = bpy.context.preferences.system.ui_scale or 1.0
+        x, y = s3e_top_center(hits, 20)
+        xy = (x, y - int(25 * scale))   # (the heading Mask Effects, under Invert Mask)
+        event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]))
+        event('MOUSEMOVE', xy=xy)
+        event('LEFTMOUSE', 'PRESS', xy)
+        event('LEFTMOUSE', 'RELEASE', xy)
+    tex4_redraw()
+
+
+@step
+def s3f_effects_scan():
+    s3f_props_column()
+
+
+step(wait_until(s3e_scanned, "the probes of the open effects", tries=60))
+
+
+@step
 def s3f_props_click():
     import re
-    hits = [xy for xy, text in S3E["probes"].items() if re.search(r"mask_stack\[1\]\.opacity$", text)]
-    check(bool(hits), "the opacity of the second effect is a button in the Mask panel's list (found at %d points)" % len(hits))
-    S3F["xy"] = s3e_center(hits) if hits else None
+    hits = [xy for xy, text in S3E["probes"].items() if re.search(r"mask_stack\[1\]\.visible$", text)]
+    check(bool(hits), "a click on the heading opened the effects: the second effect's eye is in the Mask panel's list (found at %d points)" % len(hits))
+    S3F["xy"] = s3e_top_center(hits, 20) if hits else None
     S3F["menu"].clear()
     if S3F["xy"]:
         xy = S3F["xy"]

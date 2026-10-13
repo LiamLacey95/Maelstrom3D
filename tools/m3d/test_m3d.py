@@ -775,6 +775,12 @@ def draw_stub(cls, ctx):
     return log
 
 
+def row_look(log):
+    """The blend mode and opacity text at the end of a recorded list row ("" when it has none)."""
+    texts = [r._kw.get("text") for r in log if (r._kind == "label" or (r._kind == "operator" and r._args[0] == "m3d.layer_look")) and r._kw.get("text")]
+    return texts[-1] if texts else ""
+
+
 ctx = SCtx()
 for cls in S.classes:
     if issubclass(cls, bpy.types.Panel) and hasattr(cls, "draw"):
@@ -1579,7 +1585,7 @@ check(tex_pages == {"tex_layers", "tex_settings", "tex_bake", "tex_tools", "tex_
 check([t.id for t in W.DOCK_TABS['TEXTURE_OLD']['RIGHT']] == ["tex_layers", "tex_brush", "tex_library", "tex_bake", "tex_export", "tex_display"]
       and [t.id for t in W.DOCK_TABS['TEXTURE_OLD']['LEFT']] == ["tex_brushes"], "the old Texture tabs are kept for files with the old layout")
 # Every page a panel is on is one an editor shows: a dock tab, or what the page sets add (Properties, the old tabs).
-shown_pages = {*tex_pages, T.PAINT_PAGE, T.FILL_PAGE, T.FOLDER_PAGE, T.MASK_PAGE, "tex_layer", "tex_mask", *(p for pages in T.OLD_PAGES.values() for p in pages), "tex_export", "tex_display",
+shown_pages = {*tex_pages, T.PAINT_PAGE, T.FILL_PAGE, T.FOLDER_PAGE, T.MASK_PAGE, T.LAYER_PAGE, "tex_layer", "tex_mask", *(p for pages in T.OLD_PAGES.values() for p in pages), "tex_export", "tex_display",
                "tex_brush", "tex_brushes", "tex_library"}
 panel_pages = {c.page for c in (*T.classes, *TS.classes, *m3d_library.classes) if hasattr(c, "page")}
 check(panel_pages <= shown_pages and tex_pages <= panel_pages, "every Texture panel is on a page an editor shows, and every page has panels: %s" % sorted(panel_pages ^ shown_pages))
@@ -1815,10 +1821,13 @@ def draw_page_panels(label):
 check(draw_page_panels("Texture") >= 14, "the Texture pages drew")
 # Properties: what it shows follows the active layer (the title says which); each context's panels draw
 tex_scene = bpy.context.scene
-for props_mode in ('AUTO', 'LAYER', 'MASK'):
-    tex_scene.m3d_tex.props_mode = props_mode
+tex_ob_ = m3d_layers.mesh_of(bpy.context)
+tex_layer_ = m3d_layers.active_layer(tex_ob_.active_material) if tex_ob_ is not None and tex_ob_.active_material is not None else None
+for props_mode in ('CONTENT', 'MASK'):   # (the thumbnail selected in the list)
+    if tex_layer_ is not None:
+        tex_layer_.paint_mask = props_mode == 'MASK'
     names = tex_shown("tex_props")
-    check(names, "Properties shows panels in mode %s: %s" % (props_mode, names))
+    check(names, "Properties shows panels for the %s: %s" % (props_mode, names))
     ctx = TCtx('PROPS')
     for cls in tex_panels("tex_props"):
         if cls.__name__ in names:
@@ -1826,7 +1835,8 @@ for props_mode in ('AUTO', 'LAYER', 'MASK'):
                 check_calls("props %s %s" % (props_mode, cls.__name__), draw_stub(cls, ctx))
             except Exception as err:
                 check(False, "props %s %s draw: %r" % (props_mode, cls.__name__, err))
-tex_scene.m3d_tex.props_mode = 'AUTO'
+if tex_layer_ is not None:
+    tex_layer_.paint_mask = False
 check(T.props_context(TCtx('PROPS')) == 'PAINT' and "PROPERTIES_PT_m3d_tx_pp_brush" in tex_shown("tex_props"), "no layer: Properties - Paint with the brush")
 # ...also the gates and the panels that do not need paint mode, in Object Mode too.
 for mode in ('OBJECT', 'TEXTURE_PAINT'):
@@ -2163,26 +2173,33 @@ bpy.ops.m3d.layer_folder_add()
 check(T.props_context(TCtx('PROPS')) == 'FOLDER', "a folder: Properties - Folder")
 bpy.ops.m3d.layer_add(kind='PAINT')
 check(T.props_context(TCtx('PROPS')) == 'PAINT' and "PROPERTIES_PT_m3d_tx_pp_brush" in tex_shown("tex_props")
-      and "PROPERTIES_PT_m3d_tx_layer" not in tex_shown("tex_props"), "a paint layer: Properties - Paint, the brush (the layer's own settings are one click away)")
+      and "PROPERTIES_PT_m3d_tx_layer" not in tex_shown("tex_props") and "PROPERTIES_PT_m3d_tx_layer_props" in tex_shown("tex_props")
+      and 'DEFAULT_CLOSED' in T.PROPERTIES_PT_m3d_tx_layer_props.bl_options,
+      "a paint layer: Properties - Paint, the brush, and the layer's own settings in a closed Layer Settings section")
+check(not hasattr(bpy.context.scene.m3d_tex, "props_mode"), "no Auto / Layer / Mask switch: Properties follows the thumbnail picked in the list")
 bpy.ops.m3d.layer_mask_add(fill='WHITE')
-LY.active_layer(d_mat).paint_mask = False
-bpy.context.scene.m3d_tex.props_mode = 'MASK'
-check(T.props_context(TCtx('PROPS')) == 'MASK' and "PROPERTIES_PT_m3d_tx_mk_stack" in tex_shown("tex_props")
-      and "PROPERTIES_PT_m3d_tx_pp_brush" not in tex_shown("tex_props"), "asked for the mask: Properties - Mask")
-bpy.context.scene.m3d_tex.props_mode = 'AUTO'
+check(LY.active_layer(d_mat).paint_mask and T.props_context(TCtx('PROPS')) == 'MASK'
+      and {"PROPERTIES_PT_m3d_tx_mk_stack", "PROPERTIES_PT_m3d_tx_pp_brush"} <= set(tex_shown("tex_props")),
+      "a new mask is selected: Properties - Mask, with the brush (strokes paint the mask)")
+d_i_ = d_mat.m3d_layer_index
+check(bpy.ops.m3d.layer_pick(index=d_i_) == {'FINISHED'} and not LY.active_layer(d_mat).paint_mask and T.props_context(TCtx('PROPS')) == 'PAINT'
+      and "PROPERTIES_PT_m3d_tx_mk_stack" not in tex_shown("tex_props"), "a click on the content thumbnail: Properties - Paint, no mask")
+check(bpy.ops.m3d.layer_pick(part='MASK', index=d_i_) == {'FINISHED'} and LY.active_layer(d_mat).paint_mask and T.props_context(TCtx('PROPS')) == 'MASK',
+      "a click on the mask thumbnail: Properties - Mask")
+d_mat.m3d_layer_index = d_i_   # (as a click on the row: the list sets the index)
+check(not LY.active_layer(d_mat).paint_mask and T.props_context(TCtx('PROPS')) == 'PAINT', "a click on the row (its name): the content, Properties - Paint")
+LY.active_layer(d_mat).mask_stack[0].kind = 'FILL'   # a mask without a Paint effect: Properties - Mask without the brush
 LY.active_layer(d_mat).paint_mask = True
-check(T.props_context(TCtx('PROPS')) == 'MASK' and {"PROPERTIES_PT_m3d_tx_mk_stack", "PROPERTIES_PT_m3d_tx_pp_brush"} <= set(tex_shown("tex_props")),
-      "painting the mask: Properties - Mask with the brush too")
+check(T.props_context(TCtx('PROPS')) == 'MASK' and "PROPERTIES_PT_m3d_tx_pp_brush" not in tex_shown("tex_props")
+      and LY.target_set(bpy.context, d_mat, False)[0] is None, "a mask without a Paint effect: nothing to paint, no brush in Properties")
+LY.active_layer(d_mat).mask_stack[0].kind = 'PAINT'
 LY.active_layer(d_mat).paint_mask = False
-bpy.context.scene.m3d_tex.props_mode = 'LAYER'
-check(T.props_context(TCtx('PROPS')) == 'LAYER' and "PROPERTIES_PT_m3d_tx_mk_stack" not in tex_shown("tex_props"), "asked for the layer: its own settings")
-bpy.context.scene.m3d_tex.props_mode = 'AUTO'
-for ctx_kind_ in ('PAINT', 'FILL', 'MASK', 'FOLDER', 'LAYER'):
+for ctx_kind_ in ('PAINT', 'FILL', 'MASK', 'FOLDER'):
     check(T.PROPS_TITLES[ctx_kind_], "Properties has a title for " + ctx_kind_)
 log = []
 T.draw_header_props(Rec(log), TCtx('PROPS'))
-check(any(r._kind == "label" and r._kw.get("text").startswith("Properties - ") for r in log) and any(r._kind == "prop" and r._args[1] == "props_mode" for r in log),
-      "the Properties header says what it shows and offers Layer / Mask")
+check(any(r._kind == "label" and r._kw.get("text").startswith("Properties - ") for r in log) and not any(r._kind == "prop" for r in log),
+      "the Properties header says what it shows (no switch)")
 drop_tex_object(d_ob)
 
 # --- The old layout (a file saved before this one): its tray and six tabs show the same panels
@@ -2720,10 +2737,13 @@ check(bpy.ops.m3d.layer_mask_invert() == {'FINISHED'} and fill.mask_stack[-1].ki
       and any(n.type == 'GROUP' and n.node_tree.name == "m3d_mask.invert" for n in mat.node_tree.nodes if n.get("m3d_mask") == fill.uid),
       "Invert Mask adds an Invert effect (a node group in the mask chain)")
 check(not bpy.ops.m3d.layer_mask_add.poll(), "Add Mask is for a layer without a mask")
-check(bpy.ops.m3d.layer_paint_mask() == {'FINISHED'} and not fill.paint_mask and slot_image(mat) == fmask,
-      "Paint Mask toggles off, but a fill layer's only paintable image is its mask's Paint effect")
+check(bpy.ops.m3d.layer_paint_mask() == {'FINISHED'} and not fill.paint_mask and slot_image(mat) != fmask and slot_image(mat) not in LY.stack_images(mat),
+      "Switch Layer / Mask to the fill's content: nothing is painted (a fill has no image; the brush is on the scratch image)")
+check(T.paint_status(bpy.context, mat, fill) == "Fill Layer: click the mask thumbnail to paint", "...the Layers panel says how to paint it")
+check(bpy.ops.m3d.tex_channel(channel='METALLIC') == {'CANCELLED'}, "...picking a channel says to pick the mask (nothing painted)")
+check(bpy.ops.m3d.layer_paint_mask() == {'FINISHED'} and fill.paint_mask and slot_image(mat) == fmask, "...and back to the mask")
 check(bpy.ops.m3d.tex_channel(channel='METALLIC') == {'FINISHED'} and slot_image(mat) == fmask and T.active_channel(mat) == 'METALLIC',
-      "channels can be picked while a masked fill layer is active")
+      "channels can be picked while a fill layer's mask is selected")
 # A paint layer: mask target vs channel target.
 mat.m3d_layer_index = 1
 paint_layer = mat.m3d_layers[1]
@@ -2740,7 +2760,9 @@ paint_layer.paint_mask = True
 mat.m3d_layer_index = 0
 check(slot_image(mat) == LY.entry_of(mat.m3d_layers[0], 'ROUGHNESS').image, "target: another layer, same channel")
 mat.m3d_layer_index = 1
-check(slot_image(mat) == pmask, "target: Paint Mask is remembered per layer")
+check(slot_image(mat) == LY.entry_of(paint_layer, 'ROUGHNESS').image and not paint_layer.paint_mask,
+      "target: a click on a layer's row picks its content (not the mask it had)")
+check(bpy.ops.m3d.layer_pick(part='MASK', index=1) == {'FINISHED'} and slot_image(mat) == pmask, "target: its mask thumbnail picks the mask")
 check(bpy.ops.m3d.layer_mask_remove() == {'FINISHED'} and not paint_layer.mask_stack and not paint_layer.paint_mask
       and not [n for n in mat.node_tree.nodes if n.get("m3d_mask") == paint_layer.uid] and pmask_name not in bpy.data.images, "Remove Mask")
 check(slot_image(mat) == LY.entry_of(paint_layer, 'ROUGHNESS').image, "...and the brush is back on the channel")
@@ -3140,13 +3162,13 @@ ctx = TCtx()
 tex_ws.m3d_page_right = "tex_layers"
 shown_names = [c.__name__ for c in tex_panels("tex_layers") if c.poll(ctx)]
 check(shown_names == ["PROPERTIES_PT_m3d_tx_stack"], "the Layers tab shows the stack: %s" % shown_names)
-tex_scene_ = bpy.context.scene
-tex_scene_.m3d_tex.props_mode = 'LAYER'
-check({"PROPERTIES_PT_m3d_tx_layer"} <= set(tex_shown("tex_props")), "Properties shows the active layer's settings: %s %s %s" % (
+tex_layer_ = LY.active_layer(mem_mat)
+tex_layer_.paint_mask = False
+check({"PROPERTIES_PT_m3d_tx_layer_props", "PROPERTIES_PT_m3d_tx_fl_fill"} <= set(tex_shown("tex_props")), "Properties shows the active layer's settings: %s %s %s" % (
     tex_shown("tex_props"), T.props_context(TCtx('PROPS')), (bpy.context.mode, T.missing(bpy.context))))
-tex_scene_.m3d_tex.props_mode = 'MASK'
+tex_layer_.paint_mask = True
 check({"PROPERTIES_PT_m3d_tx_mk_stack"} <= set(tex_shown("tex_props")), "...and its mask")
-tex_scene_.m3d_tex.props_mode = 'AUTO'
+tex_layer_.paint_mask = False
 tex_ws.m3d_page_right = "tex_settings"
 check({"PROPERTIES_PT_m3d_tx_set_general", "PROPERTIES_PT_m3d_tx_set_channels", "PROPERTIES_PT_m3d_tx_set_maps"} <= set(tex_shown("tex_settings")),
       "Texture Set Settings shows General, the channels and the mesh maps")
@@ -3167,8 +3189,12 @@ for active in (0, 1):   # Paint layer, then the fill layer with a mask
 log = []
 LY.M3D_UL_layers.draw_item(None, ctx, Rec(log), None, mem_mat.m3d_layers[1], 0, None, "", 0)
 check_calls("layer list row", log)
-check({r._args[1] for r in log if r._kind == "prop"} >= {"visible", "name", "opacity"} and any(r._kind == "prop_menu_enum" and r._args[1] == "blend" for r in log),
-      "the list row shows eye, name, blend and opacity")
+check({r._args[1] for r in log if r._kind == "prop"} >= {"visible", "name"} and not any(r._kind == "prop_menu_enum" for r in log) and row_look(log) == "",
+      "the list row shows eye and name (blend and opacity only where useful)")
+log = []
+LY.M3D_UL_layers.draw_item(None, ctx, Rec(log), None, mem_mat.m3d_layers[1], 0, None, "", 1)
+check_calls("active layer list row", log)
+check(row_look(log) == "100%" and any(r._kind == "operator" and r._args[0] == "m3d.layer_look" for r in log), "...the active row has a button for them")
 log = []
 T.draw_status_line(Rec(log), ctx)
 check_calls("Texture status line with layers", log)
@@ -3586,9 +3612,9 @@ bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
 setup([(k.id, {}) for k in MK.KINDS])
 mctx = TCtx()
 tex_ws.m3d_page_right = "tex_layers"
-bpy.context.scene.m3d_tex.props_mode = 'MASK'
+mtop.paint_mask = True
 check("PROPERTIES_PT_m3d_tx_mk_stack" in tex_shown("tex_props"), "the Mask panel is shown")
-bpy.context.scene.m3d_tex.props_mode = 'AUTO'
+mtop.paint_mask = False
 shown_kinds = []
 for i, e in enumerate(mtop.mask_stack):
     mtop.mask_index = i
@@ -3606,12 +3632,26 @@ check(any(r._kind == "template_list" and r._args[0] == "M3D_UL_mask_effects" for
 check(any(r._kind == "operator" and r._args[0] == "m3d.mask_rebake" for r in log) and any(r._kind == "prop" and r._args[1] == "m3d_show_mask" for r in log),
       "...has Rebake maps and Show Mask")
 log = []
-LY.M3D_UL_mask_effects.draw_item(None, mctx, Rec(log), None, mtop.mask_stack[2], 0, None, "", 0)
+mtop.mask_index = 2
+LY.M3D_UL_mask_effects.draw_item(None, mctx, Rec(log), None, mtop.mask_stack[2], 0, mtop, "", 2)
 check_calls("mask effect row", log)
-check({r._args[1] for r in log if r._kind == "prop"} >= {"visible", "name", "blend", "opacity"}, "the effect row shows eye, name, blend and opacity")
+looks = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.layer_look"]
+check({r._args[1] for r in log if r._kind == "prop"} == {"visible", "name"} and len(looks) == 1 and looks[0].values().get("effect")
+      and looks[0]._kw["text"] == LY.look_text(mtop.mask_stack[2], LY.EFFECT_SHORT, True, True),
+      "the selected effect's row: eye, name, and its blend mode and opacity as one button (it opens them): %s" % [r._kw.get("text") for r in looks])
+mtop.mask_stack[3].blend, mtop.mask_stack[3].opacity = 'LIGHTEN', 0.5
 log = []
-LY.M3D_UL_mask_effects.draw_item(None, mctx, Rec(log), None, mtop.mask_stack[8], 0, None, "", 0)
-check("blend" not in {r._args[1] for r in log if r._kind == "prop"}, "a filter's row has no blend mode")
+LY.M3D_UL_mask_effects.draw_item(None, mctx, Rec(log), None, mtop.mask_stack[3], 0, mtop, "", 3)
+check([r._kw.get("text") for r in log if r._kind == "label" and r._kw.get("text")] == ["Max 50%"] and not any(r._kind == "operator" for r in log),
+      "another effect's row says only what is not Normal at 100%, in short words: Max 50%")
+mtop.mask_stack[3].blend, mtop.mask_stack[3].opacity = 'MIX', 1.0
+log = []
+LY.M3D_UL_mask_effects.draw_item(None, mctx, Rec(log), None, mtop.mask_stack[3], 0, mtop, "", 3)
+check(not [r for r in log if r._kind == "label" and r._kw.get("text")], "...and nothing at Normal 100%")
+mtop.mask_index = 8
+log = []
+LY.M3D_UL_mask_effects.draw_item(None, mctx, Rec(log), None, mtop.mask_stack[8], 0, mtop, "", 8)
+check([r._kw["text"] for r in log if r._kind == "operator"] == ["%d%%" % round(mtop.mask_stack[8].opacity * 100)], "a filter's row has no blend mode, only its opacity")
 log = []
 T.M3D_MT_mask_add.draw(NS(layout=Rec(log)), mctx)
 added = [r for r in log if r._kind == "operator"]
@@ -3971,8 +4011,7 @@ for layer in fo_mat.m3d_layers:
     LY.M3D_UL_layers.draw_item(None, fo_ctx, Rec(log), None, layer, 0, None, "", LY.index_of(fo_mat, layer.uid))
     check_calls("layer list row of " + layer.name, log)
     props = {r._args[1] for r in log if r._kind == "prop"}
-    check(props >= {"visible", "name", "opacity"} and any(r._kind == "prop_menu_enum" and r._args[1] == "blend" for r in log)
-          and ("expanded" in props) == (layer.kind == 'FOLDER'), "list row of %s: %s" % (layer.name, sorted(props)))
+    check(props >= {"visible", "name"} and ("expanded" in props) == (layer.kind == 'FOLDER'), "list row of %s: %s" % (layer.name, sorted(props)))
     check(any(r._kind == "separator" for r in log) == bool(layer.parent), "...children are indented")
     check(any(r._kind == "operator" and r._args[0] == "m3d.layer_freeze" for r in log) == (layer.kind == 'FOLDER'), "...a folder row has the freeze toggle")
 check(bpy.ops.m3d.layer_folder_add.poll(), "New Folder works in Texture Paint Mode")
@@ -9770,7 +9809,6 @@ check(not mc_list(), "without a mesh the list is empty")
 # The Material section of Properties - Paint and the toggles of the context toolbar.
 mc_reset()
 o, m = fresh_cube("MultiUI", '64')
-bpy.context.scene.m3d_tex.props_mode = 'AUTO'
 mc_ctx = TCtx('PROPS')
 check("PROPERTIES_PT_m3d_tx_pp_material" not in tex_shown("tex_props") and T.no_project(mc_ctx), "no project: Properties waits for it (the start card)")
 log = draw_stub(T.PROPERTIES_PT_m3d_tx_pp_material, mc_ctx)
@@ -9819,7 +9857,6 @@ pp_alphas = tempfile.mkdtemp(prefix="m3d_alpha_props_")
 S.alpha_dir = lambda create=False: pp_alphas
 tex_ws.m3d_layout = 1
 pp_scene = bpy.context.scene
-pp_scene.m3d_tex.props_mode = 'AUTO'
 pp_ctx = TCtx('PROPS')
 pp_wide = TCtx('RIGHT')   # (a wide window: the toolbar with all its labels; the workspace is the current one)
 pp_wide.region = NS(type='HEADER', width=2560)
@@ -9861,20 +9898,20 @@ PAINT_TOOL_SECTIONS = {
     'CLONE': {"pp_preview", "pp_brush", "pp_clone", "pp_advanced", "pp_cursor", "pp_more"},
 }
 bpy.context.scene.m3d_tex.props_more = False
-check(bpy.ops.m3d.tex_tool(tool='PAINT') == {'FINISHED'} and pp_sections() == PAINT_TOOL_SECTIONS['PAINT'] - {"pp_advanced", "pp_cursor"},
+check(bpy.ops.m3d.tex_tool(tool='PAINT') == {'FINISHED'} and pp_sections() == PAINT_TOOL_SECTIONS['PAINT'] - {"pp_advanced", "pp_cursor"} | {"layer_props"},
       "Properties - Paint hides Advanced and Cursor until More Settings: %s" % sorted(pp_sections()))
 bpy.context.scene.m3d_tex.props_more = True
 for tool, want in PAINT_TOOL_SECTIONS.items():
     check(bpy.ops.m3d.tex_tool(tool=tool) == {'FINISHED'}, "(tool %s)" % tool)
     got = pp_sections()
-    check(T.props_context(pp_ctx) == 'PAINT' and got == want, "Properties - Paint, %s: its sections %s (want %s)" % (tool, sorted(got), sorted(want)))
+    check(T.props_context(pp_ctx) == 'PAINT' and got == want | {"layer_props"}, "Properties - Paint, %s: its sections %s (want %s and Layer Settings)" % (tool, sorted(got), sorted(want)))
     for name in sorted(got):
         try:
             pp_draw(name, "Properties - Paint, %s, %s" % (tool, name))
         except Exception as err:
             check(False, "Properties - Paint, %s, %s draws: %r" % (tool, name, err))
 bpy.ops.m3d.tex_tool(tool='PAINT')
-check(T.PAINT_PAGE in T.props_pages(pp_ctx) and len(T.props_pages(pp_ctx)) == 1, "Paint draws the paint page only")
+check(T.props_pages(pp_ctx) == {T.PAINT_PAGE, T.LAYER_PAGE}, "Paint draws the paint page and the layer's settings")
 order = sorted((c for c in T.classes if getattr(c, "page", "") == T.PAINT_PAGE), key=lambda c: c.bl_order)
 check([c.__name__[len(PP):] for c in order if c.__name__[len(PP):] in PAINT_TOOL_SECTIONS['PAINT']] ==
       ["pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_material", "pp_advanced", "pp_cursor", "pp_more"],
@@ -9993,8 +10030,11 @@ mc_reset()
 # --- Properties - Fill
 check(bpy.ops.m3d.layer_add(kind='FILL') == {'FINISHED'}, "(a fill layer)")
 fill = LY.active_layer(m)
-check(T.props_context(pp_ctx) == 'FILL' and pp_sections() == {"fl_fill", "fl_material"} and T.props_pages(pp_ctx) == {T.FILL_PAGE},
-      "Properties - Fill: Fill and Material (%s)" % sorted(pp_sections()))
+check(T.props_context(pp_ctx) == 'FILL' and pp_sections() == {"fl_fill", "fl_material", "layer_props"} and T.props_pages(pp_ctx) == {T.FILL_PAGE, T.LAYER_PAGE},
+      "Properties - Fill: Fill, Material and Layer Settings (%s)" % sorted(pp_sections()))
+log = pp_draw("layer_props")
+check({"name", "blend", "opacity", "visible"} <= {n for n, _o in pp_props(log)} and "color" not in {n for n, _o in pp_props(log)},
+      "...Layer Settings: name, every channel's blend and opacity, visible (the values are in Material)")
 log = pp_draw("fl_fill")
 check([(n, o == fill) for n, o in pp_props(log)] == [("uv_tiling", True), ("uv_rotation", True), ("uv_offset", True)]
       and [r._args[0] for r in log if r._kind == "operator"] == ["m3d.layer_fill_reset"], "Fill: the UV transform of the layer (Tiling, Rotation, Offset) and Reset")
@@ -10241,27 +10281,27 @@ o, m = fresh_cube("PropsFolder", '64')
 bpy.ops.m3d.layer_add(kind='PAINT')
 bpy.ops.m3d.layer_folder_add()
 fold = LY.active_layer(m)
-check(T.props_context(pp_ctx) == 'FOLDER' and pp_sections() == {"fd_folder", "mk_stack"} and T.props_pages(pp_ctx) == {T.FOLDER_PAGE, T.MASK_PAGE},
-      "Properties - Folder: the folder and its mask (%s)" % sorted(pp_sections()))
+check(T.props_context(pp_ctx) == 'FOLDER' and pp_sections() == {"fd_folder"} and T.props_pages(pp_ctx) == {T.FOLDER_PAGE},
+      "Properties - Folder: the folder (its mask thumbnail shows the mask) (%s)" % sorted(pp_sections()))
 log = pp_draw("fd_folder")
 check({"name", "blend", "opacity"} <= {n for n, _o in pp_props(log)} and any(r._kind == "operator" and r._args[0] == "m3d.layer_freeze" for r in log),
       "Folder: blend, opacity, Freeze")
 check(bpy.ops.m3d.layer_mask_add(fill='WHITE') == {'FINISHED'} and fold.mask_stack and fold.paint_mask and T.props_context(pp_ctx) == 'MASK',
-      "a mask on a folder is painted at once: Properties - Mask")
+      "a mask on a folder is selected at once (painted): Properties - Mask")
+check(pp_sections() >= {"mk_stack", "mk_effect", "pp_brush"}, "...with the brush: strokes paint the mask (%s)" % sorted(pp_sections()))
 fold.paint_mask = False
-check(T.props_context(pp_ctx) == 'FOLDER' and pp_sections() == {"fd_folder", "mk_stack", "mk_effect"},
-      "...not painted: the folder's properties show its effect too (%s)" % sorted(pp_sections()))
+check(T.props_context(pp_ctx) == 'FOLDER' and pp_sections() == {"fd_folder"} and LY.target_set(bpy.context, m, False)[0] is None,
+      "...the folder's content selected: the folder's properties, nothing painted (%s)" % sorted(pp_sections()))
 bpy.ops.m3d.layer_add(kind='PAINT')
 paint_layer = LY.active_layer(m)
 bpy.ops.m3d.layer_mask_add(fill='WHITE')
 paint_layer.paint_mask = False
-pp_scene.m3d_tex.props_mode = 'MASK'
-check(T.props_context(pp_ctx) == 'MASK' and pp_sections() == {"mk_stack", "mk_effect"} and T.props_pages(pp_ctx) == {T.MASK_PAGE},
-      "Properties - Mask: the stack and the selected effect (%s)" % sorted(pp_sections()))
-pp_scene.m3d_tex.props_mode = 'AUTO'
+check(T.props_context(pp_ctx) == 'PAINT' and "mk_stack" not in pp_sections() and "layer_props" in pp_sections(),
+      "the content of a layer with a mask selected: Properties - Paint, with Layer Settings (%s)" % sorted(pp_sections()))
 paint_layer.paint_mask = True
-check(T.props_context(pp_ctx) == 'MASK' and pp_sections() == {"mk_stack", "mk_effect", "pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_gray", "pp_advanced", "pp_cursor", "pp_more"},
-      "Properties - Mask while the mask is painted: the Paint sections follow, with the grays instead of the Material (%s)" % sorted(pp_sections()))
+check(T.props_context(pp_ctx) == 'MASK' and pp_sections() == {"mk_stack", "mk_effect", "pp_preview", "pp_brush", "pp_alpha", "pp_stencil", "pp_gray", "pp_advanced", "pp_cursor", "pp_more"}
+      and T.props_pages(pp_ctx) == {T.MASK_PAGE, T.PAINT_PAGE},
+      "Properties - Mask while the mask is selected: the stack and the effect, then the Paint sections, with the grays instead of the Material (%s)" % sorted(pp_sections()))
 log = pp_draw("pp_gray")
 check([n for n, _o in pp_props(log)] == ["color", "secondary_color"] and any(r._kind == "operator" and r._args[0] == "paint.brush_colors_flip" for r in log), "Grayscale: the two brush colors and X")
 paint_layer.paint_mask = False
@@ -10274,7 +10314,7 @@ for kind in MK.KINDS:
     with LY.muted():
         e = LY.add_effect(mask_layer, kind.id)
         mask_layer.mask_index = len(mask_layer.mask_stack) - 1
-    pp_scene.m3d_tex.props_mode = 'MASK'
+        mask_layer.paint_mask = True
     log = pp_draw("mk_effect", "Properties - Mask, effect " + kind.id)
     first = [r for r in log if r._kind == "prop"][0]
     labels = [r._kw.get("text") for r in log if r._kind == "label"]
@@ -10282,7 +10322,7 @@ for kind in MK.KINDS:
     check(T.EFFECT_TYPES[kind.id] in (labels[0] or "") and (kind.label in labels[0]), "...then its type and kind: %r" % labels[:1])
     check([n for n, o in pp_props(log) if o == e][1:] == [p for p, _l in MK.PARAM_UI.get(kind.id, ())], "...then its settings: %s" % [n for n, o in pp_props(log) if o == e][1:])
 check(set(T.EFFECT_TYPES.values()) == {"Paint", "Fill", "Generator", "Levels", "Filter"} and set(T.EFFECT_TYPES) == {k.id for k in MK.KINDS}, "every effect kind has a type: Paint, Fill, Generator, Levels, Filter")
-pp_scene.m3d_tex.props_mode = 'AUTO'
+mask_layer.paint_mask = False
 
 # --- The context toolbar of each tool
 bpy.ops.m3d.layer_add(kind='PAINT')
@@ -10329,10 +10369,6 @@ log = []
 T.draw_status_line(Rec(log), narrow_)
 check_calls("Texture context toolbar (narrow, fill)", log)
 check({"uv_tiling", "uv_rotation", "uv_offset"} <= {n for n, _o in pp_props(log)}, "...also on a narrow window")
-pp_scene.m3d_tex.props_mode = 'LAYER'
-_log, names, _ops = toolbar()
-check("uv_tiling" in names, "(the toolbar follows the selected layer)")
-pp_scene.m3d_tex.props_mode = 'AUTO'
 bpy.ops.m3d.layer_remove()
 check(T.props_context(pp_ctx) == 'PAINT', "(back on a paint layer)")
 bpy.ops.object.mode_set(mode='OBJECT')
@@ -10359,7 +10395,7 @@ log = draw_stub(T.PROPERTIES_PT_m3d_tx_layer, TCtx('RIGHT'))
 check_calls("old layout Layer panel", log)
 log = draw_stub(T.PROPERTIES_PT_m3d_tx_mask, TCtx('RIGHT'))
 check_calls("old layout Mask panel", log)
-check(any(r._kind == "template_list" for r in log) and any(r._kind == "operator" and r._args[0] == "m3d.mask_rebake" for r in log), "the old Mask panel still lists the effects")
+check(any(r._kind == "template_list" and r._kw.get("show_handles") is False for r in log), "the old Mask panel still lists the effects")
 log = []
 T.draw_status_line(Rec(log), pp_wide)
 check_calls("old layout toolbar", log)
@@ -10819,6 +10855,8 @@ LY.thumbs_clear()
 check(len(LY.thumb_collection()) == 0 and not LY._thumbs["made"], "thumbs_clear forgets them (a new file)")
 
 # --- The rows of the list (a recording layout)
+
+
 th_ctx = TCtx()
 thumb_mat.m3d_layer_index = 0
 rows3 = {}
@@ -10829,13 +10867,16 @@ for ch_id in ('BASE_COLOR', 'HEIGHT'):
         LY.M3D_UL_layers.draw_item(None, th_ctx, Rec(log), None, layer, 0, None, "", LY.index_of(thumb_mat, layer.uid))
         check_calls("row of %s (%s)" % (layer.name, ch_id), log)
         rows3[(ch_id, layer.name)] = log
-        menus = [r for r in log if r._kind == "prop_menu_enum" and r._args[1] == "blend"]
-        check(menus and menus[0]._args[0] == LY.entry_of(layer, ch_id) and menus[0]._kw["text"] == LY.BLEND_SHORT[LY.entry_of(layer, ch_id).blend],
-              "the %s row shows the %s blend of its entry, abbreviated: %s" % (layer.name, ch_id, [m_._kw.get("text") for m_ in menus]))
-        check(any(r._kind == "prop" and r._args[1] == "opacity" and r._args[0] == LY.entry_of(layer, ch_id) for r in log), "...and its opacity")
+        active_ = LY.index_of(thumb_mat, layer.uid) == thumb_mat.m3d_layer_index
+        want_ = LY.look_text(LY.entry_of(layer, ch_id), LY.BLEND_SHORT, True, active_)
+        check(row_look(log) == want_ and (not active_ or [r for r in log if r._kind == "operator" and r._args[0] == "m3d.layer_look"]),
+              "the %s row ends in the %s blend and opacity of its entry, short, only where useful (%s): %r" % (
+                  layer.name, ch_id, "a button on the active layer" if active_ else "a label elsewhere", row_look(log)))
+        check(not [r for r in log if r._kind in {"prop", "prop_menu_enum"} and r._args[1] in {"blend", "opacity", "opacity_pct"}], "...no blend menu or opacity slider in the row")
         check(any(r._kind == "operator" and r._args[0] == "m3d.layer_pick" for r in log), "...and a thumbnail button")
-check([r for r in rows3[('HEIGHT', "Paint Layer")] if r._kind == "prop_menu_enum" and r._args[1] == "blend"][0]._kw["text"] == "LLgt", "on Height the rows show Linear Light (LLgt)")
-check([r for r in rows3[('BASE_COLOR', "Paint Layer")] if r._kind == "prop_menu_enum" and r._args[1] == "blend"][0]._kw["text"] == "Norm", "...and Norm on Base Color")
+check(row_look(rows3[('HEIGHT', "Paint Layer")]).startswith("LLgt"), "on Height the rows show Linear Light (LLgt)")
+check(row_look(rows3[('BASE_COLOR', th_fill.name)]) == "",
+      "...and nothing for Normal at 100% on Base Color")
 log = rows3[('BASE_COLOR', "Paint Layer")]
 check(any(r._kind == "operator" and r._args[0] == "m3d.layer_pick" and "icon_value" in r._kw for r in log), "the paint layer's row has a content thumbnail")
 check(any(r._kind == "operator" and r._args[0] == "m3d.layer_pick" and r.values().get("part") == 'MASK' and "icon_value" in r._kw for r in log),
@@ -10849,11 +10890,9 @@ LY.M3D_UL_layers.draw_item(None, th_ctx, Rec(log), None, th_fill, 0, None, "", 1
 check_calls("row of the fill layer with a mask", log)
 effects = [r for r in log if r._kind == "operator" and r.values().get("part") == 'EFFECT']
 check([r.values()["effect"] for r in effects] == [0] and effects[0]._kw["text"] == th_fill.mask_stack[0].name
-      and any(r._kind == "operator" and r._args[0] == "m3d.mask_effect_remove" and r.values().get("index") == 0 for r in log)
-      and any(r._kind == "prop" and r._args[0] == th_fill.mask_stack[0] and r._args[1] == "visible" for r in log)
-      and any(r._kind == "prop" and r._args[0] == th_fill.mask_stack[0] and r._args[1] == "opacity" for r in log)
-      and any(r._kind == "prop_menu_enum" and r._args[0] == th_fill.mask_stack[0] and r._args[1] == "blend" for r in log),
-      "the active layer lists the effects of its mask under it: eye, icon, name, blend, opacity, x")
+      and not any(r._kind == "operator" and r._args[0] == "m3d.mask_effect_remove" for r in log)
+      and any(r._kind == "prop" and r._args[0] == th_fill.mask_stack[0] and r._args[1] == "visible" for r in log),
+      "the active layer lists the effects of its mask under it: eye, icon, name (no x: Delete Effect is in its menu)")
 log = []
 LY.M3D_UL_layers.draw_item(None, th_ctx, Rec(log), None, th_paint, 0, None, "", 0)
 check(not [r for r in log if r._kind == "operator" and r.values().get("part") == 'EFFECT'], "...a layer that is not active lists none")
@@ -10863,18 +10902,22 @@ check(any(r._kind == "operator" and r._args[0] == "m3d.layer_pick" and r._kw.get
       and any(r._kind == "operator" and r._args[0] == "m3d.layer_freeze" for r in log), "a folder's row has a folder icon in place of the thumbnail, and the freeze button")
 
 # --- Picking: thumbnails select the layer, its mask, or an effect; Alt shows the mask, Shift switches it off
-tex = bpy.context.scene.m3d_tex
-tex.props_mode = 'AUTO'
 thumb_mat.m3d_layer_index = 2
-check(bpy.ops.m3d.layer_pick(part='MASK', index=0) == {'FINISHED'} and thumb_mat.m3d_layer_index == 0 and tex.props_mode == 'MASK' and T.props_context(bpy.context) == 'MASK',
-      "a mask thumbnail selects the layer and Properties shows its mask")
-check(bpy.ops.m3d.layer_pick(part='LAYER', index=1) == {'FINISHED'} and thumb_mat.m3d_layer_index == 1 and tex.props_mode == 'AUTO',
-      "a content thumbnail selects the layer and Properties shows the layer again")
-check(bpy.ops.m3d.layer_pick(part='EFFECT', index=1, effect=0) == {'FINISHED'} and tex.props_mode == 'MASK' and th_fill.mask_index == 0,
+check(bpy.ops.m3d.layer_pick(part='MASK', index=0) == {'FINISHED'} and thumb_mat.m3d_layer_index == 0 and th_paint.paint_mask and T.props_context(bpy.context) == 'MASK'
+      and LY.target_image(bpy.context, thumb_mat, False) == LY.paint_effect(th_paint).image,
+      "a mask thumbnail selects the layer and its mask: strokes paint the mask, Properties shows it")
+check(bpy.ops.m3d.layer_pick(part='LAYER', index=0) == {'FINISHED'} and not th_paint.paint_mask and T.props_context(bpy.context) == 'PAINT'
+      and LY.target_image(bpy.context, thumb_mat, False) != LY.paint_effect(th_paint).image,
+      "its content thumbnail: strokes paint the layer, Properties shows the brush")
+check(bpy.ops.m3d.layer_pick(part='LAYER', index=1) == {'FINISHED'} and thumb_mat.m3d_layer_index == 1 and T.props_context(bpy.context) == 'FILL',
+      "a fill's content thumbnail selects the layer and Properties shows the fill")
+check(bpy.ops.m3d.layer_pick(part='EFFECT', index=1, effect=0) == {'FINISHED'} and th_fill.paint_mask and T.props_context(bpy.context) == 'MASK' and th_fill.mask_index == 0,
       "an effect row selects the effect: Properties - Mask")
-tex.props_mode = 'AUTO'
+thumb_mat.m3d_layer_index = 1   # (a click on the row: the list sets the index)
+check(not th_fill.paint_mask and T.props_context(bpy.context) == 'FILL', "a click on the fill's row (whose mask was selected): Properties - Fill")
+thumb_mat.m3d_layer_index = 2
 check(not thumb_mat.m3d_show_mask and bpy.ops.m3d.layer_pick(part='MASK', index=0, action='SHOW') == {'FINISHED'} and thumb_mat.m3d_show_mask
-      and thumb_mat.m3d_layer_index == 0 and tex.props_mode == 'AUTO', "Alt+click on a mask thumbnail shows the mask alone (Show Mask) and leaves Properties as it is")
+      and thumb_mat.m3d_layer_index == 0 and th_paint.paint_mask, "Alt+click on a mask thumbnail shows the mask alone (Show Mask) and selects the mask")
 check(thumb_mat.node_tree.nodes[LY.MASKVIEW].inputs["Color"].links, "...the material shows the mask")
 bpy.ops.m3d.layer_pick(part='MASK', index=0, action='SHOW')
 check(not thumb_mat.m3d_show_mask and thumb_mat.node_tree.nodes.get(LY.MASKVIEW) is None, "...and again the shader")
@@ -12459,13 +12502,13 @@ shutil.rmtree(ld_dir, ignore_errors=True)
 
 rw_ctx = TCtx()
 rw_tex = bpy.context.scene.m3d_tex
-rw_tex.props_mode = 'AUTO'
 
 
 def rw_row(name, active=None, mat=None):
     """The calls that draw the list row of the layer `name` while the layer `active` (default: that one) is the active one."""
     mat = mat or rw_mat
-    mat.m3d_layer_index = LY.index_of(mat, named(mat, active or name).uid)
+    with LY.muted():   # (as code that keeps the selected thumbnail; a click on the row would select the content)
+        mat.m3d_layer_index = LY.index_of(mat, named(mat, active or name).uid)
     log = []
     LY.M3D_UL_layers.draw_item(None, rw_ctx, Rec(log), None, named(mat, name), 0, None, "", LY.index_of(mat, named(mat, name).uid))
     check_calls("row of %s" % name, log)
@@ -12474,7 +12517,7 @@ def rw_row(name, active=None, mat=None):
 
 def rw_lead(log):
     """What comes before the name in a row: separators (the indent), eye, arrow or its blank, thumbnail, mask thumbnail or its blank."""
-    items = [r for r in log if r._kind in {"prop", "operator", "label", "separator"}]
+    items = [r for r in log if r._kind in {"prop", "operator", "label", "separator"} and not r._kw.get("text") and r._args[:1] != ("m3d.layer_look",)]
     first = next(i for i, r in enumerate(items) if r._kind == "prop" and r._args[1] == "name")
     return [r._kind if r._kind != "operator" else r._args[0] for r in items[:first]]
 
@@ -12525,42 +12568,76 @@ log = rows_log["Base"]
 order = [rw_at(log, lambda r: r._kind == "prop" and r._args[1] == "visible"),
          rw_at(log, lambda r: r._kind == "operator" and r._args[0] == "m3d.layer_pick" and "part" not in r.values()),
          rw_at(log, lambda r: r._kind == "operator" and r._args[0] == "m3d.layer_pick" and r.values().get("part") == 'MASK'),
-         rw_at(log, lambda r: r._kind == "prop" and r._args[1] == "name"),
-         rw_at(log, lambda r: r._kind == "prop_menu_enum" and r._args[1] == "blend"),
-         rw_at(log, lambda r: r._kind == "prop" and r._args[1] == "opacity")]
-check(order == sorted(order), "a row reads: eye, thumbnail, mask thumbnail, name, blend mode, opacity")
+         rw_at(log, lambda r: r._kind == "prop" and r._args[1] == "name")]
+check(order == sorted(order), "a row reads: eye, thumbnail, mask thumbnail, name")
 name_prop = log[rw_at(log, lambda r: r._kind == "prop" and r._args[1] == "name")]
 check(name_prop._kw.get("text") == "" and name_prop._kw.get("emboss") is False, "the name is the layer's name property in the list (left-aligned text, double-click renames)")
 rows_ = [r for r in log if r._kind == "row"]
 check(rows_[0].values().get("scale_y") == LY.ROW and LY.ROW in [r.values().get("scale_x") for r in rows_], "the row has one height and its thumbnails are as wide")
-check([r for r in log if r._kind == "column"][1].values().get("scale_y") == LY.ROW / 2, "the blend mode and the opacity are stacked at the right, as high as the row together")
+check(not [r for r in log if r._kind == "column" and "scale_y" in r.values()], "one line: no blend mode over opacity column")
 check(not [r for r in rw_row("Base", active="Plain") if r._kind == "operator" and r.values().get("part") == 'EFFECT'], "a layer that is not active lists no effects")
+# the blend mode and opacity: a button on the active row, a short text where they are not Normal at 100%, nothing elsewhere
+base_ = named(rw_mat, "Base")
+check(row_look(rw_row("Base", active="Plain")) == "", "an inactive row at Normal 100%% says nothing of them: %r" % row_look(rw_row("Base", active="Plain")))
+LY.set_look(base_, blend='MULTIPLY', opacity=0.5, channel='BASE_COLOR')
+log = rw_row("Base", active="Plain")
+split_ = [r for r in log if r._kind == "split"]
+check(row_look(log) == "Mult 50%" and split_ and 0.4 <= split_[0]._kw["factor"] <= 0.95, "...a Multiply at 50%%: Mult 50%% at the right end: %r" % row_look(log))
+LY.set_look(base_, blend='MIX', opacity=0.75, channel='BASE_COLOR')
+check(row_look(rw_row("Base", active="Plain")) == "75%", "...Normal at 75%: only 75%")
+LY.set_look(base_, blend='MIX', opacity=1.0, channel='BASE_COLOR')
+log = rw_row("Base")
+looks_ = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.layer_look"]
+looks_ = [r for r in looks_ if not r.values().get("effect")]
+check(len(looks_) == 1 and looks_[0]._kw["text"] == "100%",
+      "the active row: a button with the opacity (and a blend mode that is not Normal): %s" % [r._kw for r in looks_])
+check(LY.text_units("Mult 50%") < LY.text_units("Mult 50% and more"), "(the text decides the width of the right end)")
+entry_ = LY.entry_of(base_, 'BASE_COLOR')
+entry_.opacity_pct = 40.0
+check(abs(entry_.opacity - 0.4) < 1e-6 and abs(entry_.opacity_pct - 40.0) < 1e-4, "the % opacity of the popup is the opacity")
+entry_.opacity = 1.0
+check(LY.M3D_PT_layer_look.bl_region_type == 'HEADER' and LY.M3D_PT_effect_look.bl_region_type == 'HEADER',
+      "the button opens a popup (a panel of a header region: it is drawn nowhere else)")
+log = []
+with LY.muted():
+    rw_mat.m3d_layer_index = LY.index_of(rw_mat, base_.uid)
+LY.M3D_PT_layer_look.draw(NS(layout=Rec(log), owner=LY.M3D_PT_layer_look.owner, title=lambda c: "Base"), bpy.context)
+check_calls("blend popup", log)
+check([(r._args[0], r._args[1]) for r in log if r._kind == "prop"] == [(LY.entry_of(base_, rw_mat.m3d_row_channel), "blend"), (LY.entry_of(base_, rw_mat.m3d_row_channel), "opacity_pct")],
+      "...the popup: the blend mode (full names) and the opacity of the layer in the channel the list shows")
 
 # --- The effect rows of the active layer's mask: thin, indented, aligned
-rw_tex.props_mode = 'AUTO'
 log = rw_row("Tint")
 effects = [r for r in log if r._kind == "operator" and r.values().get("part") == 'EFFECT']
 check([r.values()["effect"] for r in effects] == [2, 1, 0] and [r._kw["text"] for r in effects] == ["Blur", "Noise", "Paint"]
       and all(r.values()["index"] == LY.index_of(rw_mat, tint.uid) and r._kw.get("icon") == MK.KIND_BY_ID[tint.mask_stack[r.values()["effect"]].kind].icon for r in effects),
       "the active layer's mask lists its effects, the top one first, each with its type icon and its name (the Paint effect is called Paint like the others): %s" % [r._kw["text"] for r in effects])
-effect_splits = [r for r in log if r._kind == "split" and "scale_y" in r.values()]
-check(len(effect_splits) == 3 and all(r.values()["scale_y"] == LY.EFFECT_ROW for r in effect_splits), "...in thin rows, one under the other")
-for i in (2, 1, 0):
-    e = tint.mask_stack[i]
-    props = [(r._kind, r._args[1]) for r in log if r._kind in {"prop", "prop_menu_enum"} and r._args[0] == e]
-    want = [("prop", "visible")] + ([] if e.kind in MK.FILTERS else [("prop_menu_enum", "blend")]) + [("prop", "opacity")]
-    removes = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.mask_effect_remove" and r.values().get("index") == i]
-    check(props == want and len(removes) == 1, "the effect row of %s: eye, %sopacity, x: %s" % (e.name, "(a filter has no blend mode) " if e.kind in MK.FILTERS else "blend mode, ", props))
-check(all(not r._kw.get("emboss") for r in effects), "no effect is highlighted while Properties shows the layer")
-rw_tex.props_mode = 'MASK'
-tint.mask_index = 1
+effect_rows = [r for r in log if r._kind == "row" and r.values().get("scale_y") == LY.EFFECT_ROW]
+check(len(effect_rows) == 3, "...in thin rows, one under the other")
+check(not any(r._kind == "operator" and r._args[0] == "m3d.mask_effect_remove" for r in log)
+      and not any(r._kind in {"prop", "prop_menu_enum"} and r._args[1] in {"blend", "opacity"} for r in log),
+      "...no x and no blend or opacity widgets in the rows (Delete Effect is in the mask menu)")
+tint.paint_mask = False
 log = rw_row("Tint")
 effects = [r for r in log if r._kind == "operator" and r.values().get("part") == 'EFFECT']
-check([r._kw["emboss"] for r in effects] == [False, True, False] and any(r._kind == "operator" and r.values().get("part") == 'MASK' and r._kw.get("emboss") for r in log)
-      and not any(r._kind == "operator" and r._args[0] == "m3d.layer_pick" and "part" not in r.values() and r._kw.get("emboss") for r in log),
-      "while Properties shows the mask, the selected effect and the mask thumbnail are highlighted")
-check(bpy.ops.m3d.layer_pick(part='EFFECT', index=LY.index_of(rw_mat, tint.uid), effect=2) == {'FINISHED'} and tint.mask_index == 2, "clicking an effect row selects that effect (Properties - Mask shows it)")
-rw_tex.props_mode = 'AUTO'
+check(all(not r._kw.get("emboss") for r in effects), "no effect is highlighted while the layer's content is selected")
+tint.mask_index = 1
+tint.paint_mask = True
+log = rw_row("Tint")
+effects = [r for r in log if r._kind == "operator" and r.values().get("part") == 'EFFECT']
+check([r._kw["emboss"] for r in effects] == [False, True, False] and any(r._kind == "operator" and r.values().get("part") == 'MASK' and r._kw.get("depress") for r in log)
+      and not any(r._kind == "operator" and r._args[0] == "m3d.layer_pick" and "part" not in r.values() and r._kw.get("depress") for r in log),
+      "while the mask is selected, the selected effect and the mask thumbnail are framed, not the content thumbnail")
+looks_ = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.layer_look"]
+check(len(looks_) == 2 and looks_[1].values().get("effect") and looks_[1]._kw["text"] == LY.look_text(tint.mask_stack[1], LY.EFFECT_SHORT, True, True),
+      "...the selected effect's row has its own blend and opacity button: %s" % [r._kw.get("text") for r in looks_])
+tint.paint_mask = False
+log = rw_row("Tint")
+check(any(r._kind == "operator" and r._args[0] == "m3d.layer_pick" and "part" not in r.values() and r._kw.get("depress") for r in log)
+      and not any(r._kind == "operator" and r.values().get("part") == 'MASK' and r._kw.get("depress") for r in log), "the content selected: the content thumbnail is framed")
+check(bpy.ops.m3d.layer_pick(part='EFFECT', index=LY.index_of(rw_mat, tint.uid), effect=2) == {'FINISHED'} and tint.mask_index == 2 and tint.paint_mask,
+      "clicking an effect row selects that effect and the mask (Properties - Mask shows it)")
+tint.paint_mask = False
 
 # --- What a right-click was on
 tint_i = LY.index_of(rw_mat, tint.uid)
@@ -12584,13 +12661,14 @@ for pointer, pick in (("mask", -1), ("effect_button", 0), ("effect", 0), ("mask_
     check_calls("mask menu (%s)" % pointer, log)
     items = [r._kw["text"] if r._kind == "operator" else r._args[0] for r in log if r._kind in {"operator", "menu"}]
     ops = [r for r in log if r._kind == "operator"]
-    check(items == MASK_MENU, "right-click (%s): the mask menu, not the layer menu: %s" % (pointer, items))
+    want_ = MASK_MENU[:7] + (["Delete Effect"] if pick >= 0 else []) + MASK_MENU[7:]
+    check(items == want_, "right-click (%s): the mask menu, not the layer menu (Delete Effect on an effect): %s" % (pointer, items))
     check(all(r._args[0] == "m3d.layer_do" and r.values().get("uid") == tint.uid and r.values().get("pick") == pick for r in ops) and LY._menu_target["uid"] == tint.uid
           and not {r.values().get("action") for r in ops} & {'CUT', 'DELETE', 'DUPLICATE', 'GROUP'},
           "...every command is for the layer of the mask (and for the effect under the pointer: %d)" % pick)
 actions = [r.values().get("action") for r in log if r._kind == "operator"]
-check(actions == ['EFFECT'] * 5 + ['MASK_INVERT', 'MASK_TOGGLE', 'MASK_COPY', 'MASK_PASTE', 'SMART_MASK', 'MASK_REMOVE'],
-      "...Add Fill, Paint, Levels and Color Selection, Invert, Toggle, Copy, Paste, Create Smart Mask, Remove: %s" % actions)
+check(actions == ['EFFECT'] * 5 + ['EFFECT_REMOVE', 'MASK_INVERT', 'MASK_TOGGLE', 'MASK_COPY', 'MASK_PASTE', 'SMART_MASK', 'MASK_REMOVE'],
+      "...Add Fill, Paint, Levels and Color Selection, Delete Effect, Invert, Toggle, Copy, Paste, Create Smart Mask, Remove: %s" % actions)
 log = []
 LY.draw_list_menu(NS(layout=Rec(log)), MenuCtx(tint, "layer"))
 check([r._args[0] for r in log if r._kind == "menu"] == ["M3D_MT_layer_ctx_effect_add", "M3D_MT_layer_ctx_mask_add"] and any(r.values().get("action") == 'DELETE' for r in log if r._kind == "operator"),
@@ -12710,7 +12788,6 @@ check(mask_do("F", 'MASK_COPY') == {'FINISHED'}, "(the Fill mask is copied)")
 cm_other_ob, cm_other = fresh_cube("Mask3h", '64')
 bpy.ops.m3d.layer_add(kind='PAINT')
 check(bpy.ops.m3d.layer_mask_paste() == {'FINISHED'} and [e.kind for e in LY.active_layer(cm_other).mask_stack] == ['FILL'], "Paste Mask works in another material")
-rw_tex.props_mode = 'AUTO'
 
 # --- Bakes that do not block: the Cycles device, the samples of each map, the queue, the guard, the cage check and the Bake mode view
 # (m3d_bakeq.py, m3d_bakeview.py). The bake job itself needs a window (the GUI tests have it); here the queue is driven by hand.
@@ -13255,6 +13332,69 @@ check(ux_key and ux_key[0].properties.mode == 'TOGGLE' and ux_key2 and ux_key2[0
       "Ctrl+Space in Texture Paint Mode and in the 2D view: the view under the pointer alone, or both views")
 check(T.M3D_OT_tex_layout.invoke(NS(mode='TOGGLE', execute=lambda c: {'FINISHED'}), fb_ctx('VIEW_3D', fb_v3d, bpy.data.workspaces["Modeling"]), None) == {'PASS_THROUGH'},
       "...outside the Texture workspace it is Blender's maximize (the key passes through)")
+bpy.ops.object.mode_set(mode='OBJECT')
+clean_scene()
+
+# --- Texture UX part 3: one selected thumbnail decides what strokes paint and what Properties shows; the mask controls
+u3_ob, u3_mat = fresh_cube("Ux3", '64')
+bpy.ops.m3d.layer_add(kind='FILL')
+u3_fill = LY.active_layer(u3_mat)
+check(LY.target_image(bpy.context, u3_mat, False) is None and T.paint_status(bpy.context, u3_mat, u3_fill) == "Fill Layer: add a mask to paint it",
+      "a fill without a mask: nothing painted, the Layers panel says to add a mask")
+log = draw_stub(T.PROPERTIES_PT_m3d_tx_stack, TCtx())
+check(any(r._kind == "operator" and r._args[0] == "m3d.layer_convert" for r in log) and "Fill Layer: add a mask to paint it" in [r._kw.get("text") for r in log],
+      "...with Convert to Paint Layer under it")
+check(bpy.ops.m3d.mask_effect_add(kind='LEVELS') == {'FINISHED'} and u3_fill.paint_mask and LY.mask_active(u3_fill) and T.props_context(TCtx('PROPS')) == 'MASK',
+      "a new effect of any kind selects the mask (Properties shows it)")
+check(LY.target_image(bpy.context, u3_mat, False) is None and T.paint_status(bpy.context, u3_mat, u3_fill) == "The mask has no Paint effect: add one to paint it"
+      and T.PAINT_PAGE not in T.props_pages(TCtx('PROPS')), "a mask without a Paint effect: nothing painted, no brush sections, a hint that says why")
+check(bpy.ops.m3d.mask_effect_add(kind='PAINT', fill='BLACK') == {'FINISHED'} and LY.target_image(bpy.context, u3_mat, False) == LY.paint_effect(u3_fill).image
+      and T.paint_status(bpy.context, u3_mat, u3_fill) == "Painting %s mask" % u3_fill.name, "a Paint effect: strokes paint it; one wording in Layers ...")
+log = []
+T.draw_effect(Rec(log), u3_fill, LY.paint_effect(u3_fill))
+hints = [r._kw.get("text") for r in log if r._kind == "label" and r._kw.get("icon") == 'INFO']
+check(hints == ["Painting %s mask" % u3_fill.name], "...and in Properties (no 'Turn on Paint Mask' while the mask is painted): %s" % hints)
+u3_fill.paint_mask = False
+log = []
+T.draw_effect(Rec(log), u3_fill, LY.paint_effect(u3_fill))
+check([r._kw.get("text") for r in log if r._kind == "label" and r._kw.get("icon") == 'INFO'] == ["Click the mask thumbnail to paint it"],
+      "the content selected: the effect says how to paint it")
+u3_fill.paint_mask = True
+# the Mask section: Use Mask, Show Mask, Invert and the mask menu; the effects closed under a heading; Rebake Mesh Maps only when needed
+log = []
+T.draw_mask_stack(RecP(log), TCtx('PROPS'), u3_mat, u3_fill, explain=False)
+check_calls("Mask section", [r for r in log if hasattr(r, "_args")])
+props_ = [(r._args[1], r._kw.get("text")) for r in log if getattr(r, "_kind", "") == "prop"]
+check(("use_mask", None) in props_ and ("m3d_show_mask", "Show Mask") in props_ and u3_fill.bl_rna.properties["use_mask"].name == "Use Mask",
+      "Use Mask (a checkbox named for what it does) and Show Mask: %s" % props_)
+check(not any(getattr(r, "_kind", "") == "operator" and r._args[0] in {"m3d.layer_paint_mask", "m3d.layer_mask_remove"} for r in log),
+      "no Paint Mask toggle (the thumbnails do it) and no x: Remove Mask is in the mask menu")
+check(any(getattr(r, "_kind", "") == "menu" and r._args[0] == "M3D_MT_mask_more" for r in log)
+      and any(getattr(r, "_kind", "") == "operator" and r._args[0] == "m3d.layer_mask_invert" for r in log), "Invert Mask and the mask menu")
+panels_ = [r for r in log if getattr(r, "_kind", "") == "panel_call"]
+check(len(panels_) == 1 and panels_[0].closed and any(getattr(r, "_kind", "") == "template_list" and r._kw.get("show_handles") is False for r in log)
+      and "Mask Effects (2)" in [r._kw.get("text") for r in log if getattr(r, "_kind", "") == "label"],
+      "the effects are under a heading with their count, closed at first, in a list without handles")
+check(not any(getattr(r, "_kind", "") == "operator" and r._args[0] == "m3d.mask_rebake" for r in log), "no Rebake Mesh Maps for a mask that reads no baked maps")
+with LY.muted():
+    u3_edges = LY.add_effect(u3_fill, 'EDGES')
+log = []
+T.draw_mask_stack(RecP(log), TCtx('PROPS'), u3_mat, u3_fill, explain=False)
+check([r._kw.get("text") for r in log if getattr(r, "_kind", "") == "operator" and r._args[0] == "m3d.mask_rebake"] == ["Rebake Mesh Maps"],
+      "...an Edges effect reads one: Rebake Mesh Maps")
+check(any("needs the Curvature map: Rebake Mesh Maps" in (r._kw.get("text") or "") for r in log if getattr(r, "_kind", "") == "label"), "...and says which map is missing")
+# Delete Effect in the mask menu, for the effect the right-click was on
+u3_i = LY.index_of(u3_mat, u3_fill.uid)
+check(bpy.ops.m3d.layer_do(action='EFFECT_REMOVE', uid=u3_fill.uid, pick=len(u3_fill.mask_stack) - 1) == {'FINISHED'}
+      and 'EDGES' not in [e.kind for e in u3_fill.mask_stack] and u3_fill.mask_stack, "Delete Effect removes the effect under the pointer")
+# the Layers menu entry and the operator switch the same state
+check(bpy.ops.m3d.layer_paint_mask() == {'FINISHED'} and not u3_fill.paint_mask and T.props_context(TCtx('PROPS')) == 'FILL'
+      and bpy.ops.m3d.layer_paint_mask() == {'FINISHED'} and u3_fill.paint_mask and T.props_context(TCtx('PROPS')) == 'MASK',
+      "Switch Layer / Mask (Layers menu) flips between the content and the mask, as the thumbnails do")
+check(bpy.ops.m3d.layer_mask_remove() == {'FINISHED'} and not u3_fill.paint_mask and T.props_context(TCtx('PROPS')) == 'FILL', "Remove Mask: back on the content")
+check(bpy.ops.m3d.layer_mask_add(fill='WHITE') == {'FINISHED'} and u3_fill.paint_mask and bpy.ops.m3d.layer_mask_invert() == {'FINISHED'} and u3_fill.paint_mask,
+      "Add Mask and Invert Mask select the mask")
+check(bpy.ops.m3d.layer_pick(index=u3_i) == {'FINISHED'} and not u3_fill.paint_mask, "a click on the content thumbnail: the content again")
 bpy.ops.object.mode_set(mode='OBJECT')
 clean_scene()
 

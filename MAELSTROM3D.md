@@ -276,7 +276,7 @@ view headers are short (see Headers below); everything else of Blender is in the
 | 3D view and 2D view | The 3D view (Material Preview, lit by a studio environment that shows blurred behind the model; no floor grid or axis lines, **Grid** in its More menu brings the grid back) and the 2D paint view (the Image Editor in Paint mode). Their headers hold only what texturing needs (see Headers below): a short **View** menu and, at the top right, the **display mode** dropdown: Material, each channel on its own, the baked mesh maps, the mask of the active layer. The 3D header also has the **viewport type**, the view layout, Display Settings and More |
 | Texture Set List (right, top) | One row for each material of the active mesh, then the materials with layers of the other meshes (a texture set is a material and its layers). A row has an **eye** that shows or hides the set, its **name** (a double-click renames it), the mesh it is on when that is not the active one, and the size of its images; a click on a row makes it the active material (the Layers follow). In Bake Mesh Maps each row also has a **Bake** checkbox. The right-click menu of a row has **Rename**, **Show / Hide** and **Isolate**; the button in the header isolates the active set (Alt+Q). The list is as tall as its rows. While no material has layers it is the start card (see above) |
 | Layers \| Texture Set Settings (right, middle) | Two tabs. **Layers** is the layer stack (see Layers below). **Texture Set Settings** has **General** (name, **Size**, **Normal Map Format**), **Channels** (a row for each channel of the set with its format and an x, **Add Channel**), **Mesh Maps** (a slot for each baked map, and a big **Bake Mesh Maps** button) and All Paint Slots (behind **More Brush Settings**; see Texture set settings below). **Bake Mesh Maps** replaces the tabs by the Bake page (see Bake below); **Back to Painting**, or a finished bake, brings the Layers back, and a new project always ends on the Layers |
-| Properties (right, bottom) | Titled by what is selected: **Properties - Paint** (previews, then the sections of the tool: Brush, Alpha, Stencil, Material ...), **Properties - Fill** (the fill's UV transform and its Material), **Properties - Mask** (the effects of the layer's mask and the selected effect; the Paint sections follow while the mask is painted) and **Properties - Folder** (the folder and its mask). The buttons **Auto \| Layer \| Mask** in its header pick the layer's own settings or its mask when the title is not the one you want. The settings that are rarely needed (Advanced, Cursor) are behind **More Brush Settings** at the bottom. See Properties below |
+| Properties (right, bottom) | Follows the thumbnail you clicked in the layer list, and its title says what it shows: **Properties - Paint** (a paint layer's content: previews, then the sections of the tool: Brush, Alpha, Stencil, Material ..., and **Layer Settings**, closed), **Properties - Fill** (a fill's content: its UV transform, its Material and Layer Settings), **Properties - Mask** (a mask thumbnail: the layer's mask and the selected effect; the Paint sections follow when the mask has a Paint effect, which strokes then paint) and **Properties - Folder**. The settings that are rarely needed (Advanced, Cursor) are behind **More Brush Settings** at the bottom. See Properties below |
 | Dock strip (far right) | Icons that open a popover: **Display Settings** (the viewport type, AO in viewport, the environment: a thumbnail for each studio HDRI, rotation, exposure, background and blur, Channel View, UV checker), **Shader Settings** (the Principled shader of the active material and its displacement), **History** (the undo steps, a click goes back to that step), **Export Textures** (opens the Export Textures dialog; Ctrl+Shift+E), and **Log** (the Info window with the reports) |
 | Toolbar (top bar) | Left: the controls of the active tool, **Size** and **Flow** (the brush strength) with their pen pressure buttons, **Spacing**, **Lazy Mouse** (its distance shows while it is on), **Symmetry** X Y Z (the channels a stroke paints are in Properties > Material). Polygon Fill shows its fill mode instead of the brush controls; Projection adds the stencil's opacity, **Reset** and **Fit**; when a fill layer is selected the toolbar shows its UV transform (**Tiling**, **Rotation**, **Offset**, **Reset**) instead of the brush. Right: the view layout (3D \| 2D, 3D only, 2D only: one view takes the space of both while the panels stay; 3D \| 2D puts the edge back where it was, also after saving; Ctrl+Space over a view does the same), perspective / orthographic, **Bake Mesh Maps**, **Export Textures**, the workspace picker. There are no shelf rows in this workspace (Show Shelf in Workspace Settings brings them back) |
 | Status bar (bottom) | The keys of the active tool, read from the keymap (so they follow your own keys): LMB with the tool's name (Paint, Eraser, Projection...), Ctrl+RMB Size / Hardness, Ctrl+LMB Flow / Angle, Shift+RMB Turn Environment, P Picker, X Swap Colors, 1-6 Tools. While a tool or gesture runs, the bar shows that tool's keys instead |
@@ -328,7 +328,9 @@ of channel buttons and the value of each channel that is on (see Painting severa
 stroke method, the stabilizer, the falloff, input samples, seam bleed, dither and the cavity mask, and what the Blur and Mask
 brushes have of their own. **Cursor** (closed) is Blender's brush cursor display. Both are hidden until you press **More
 Brush Settings** at the bottom of Properties - Paint (**Fewer Brush Settings** hides them again); the same button shows All Paint Slots in
-Texture Set Settings. While a mask is painted (**Properties - Mask**) the
+Texture Set Settings. **Layer Settings** (closed, at the bottom) has the rest of the layer's own settings: the name, the blend mode
+and opacity of every channel, the eye, Image Alpha, the channels the layer has and its image sizes, and Save to Library. While a mask is
+painted (**Properties - Mask**) the
 Material is replaced by the two **Grayscale** colors: white shows the layer, black hides it, X swaps them.
 
 For a Fill Layer it is **Properties - Fill**. **Fill** has the UV transform of the layer's textures, **Tiling**, **Rotation**
@@ -336,10 +338,11 @@ and **Offset**, with **Reset** (tiling and rotation turn around the middle of th
 is a row of buttons for the channels the fill has (**Base Color**, **Height**, **Roughness**, **Metallic**, **Emission**, **Normal**; **Color**, **Rough**... when the editor is narrow), and below it, for each one that is on, its
 value and a texture slot: an image picked there (Open loads a file) replaces the value, follows the UV map through the layer's UV
 transform and does not use the image's alpha. A file picked for a channel takes that channel's color space (sRGB for Base Color and
-Emission, Non-Color for the rest); a Normal channel with a texture is a normal map. For a **Folder** it is **Properties - Folder**:
-name, the blend mode and opacity of each channel, **Freeze**, **Merge Folder**, and the folder's mask. **Properties - Mask** has the **Mask** section
-(the effect list and its buttons: see Masks) and the **Effect** section: the selected effect's name, its type (Paint, Fill,
-Generator, Levels or Filter) and its settings.
+Emission, Non-Color for the rest); a Normal channel with a texture is a normal map. Its **Layer Settings** has the name, the blend
+mode and opacity of every channel and the eye. For a **Folder** it is **Properties - Folder**:
+name, the blend mode and opacity of each channel, **Freeze** and **Merge Folder** (its mask thumbnail shows the folder's mask). **Properties - Mask** has the **Mask** section
+(Use Mask, Show Mask, Invert Mask, the mask's commands and its effects: see Masks) and the **Effect** section: the selected effect's name, its type (Paint, Fill,
+Generator, Levels or Filter) and its settings; for a Paint effect a line says whether strokes paint it, in the words of the Layers panel.
 
 The **2D view** frames the whole image (the same as F over it) when the workspace opens, the first time it shows an image
 (Blender shows a new image 1:1, a small square in a big empty area), when the image has another size, and when the view
@@ -453,7 +456,7 @@ painted. What each tool does with them:
 | Smudge, Clone, Blur | The first channel that is on only (they move the color that is there: the other channels need a smear of their own, which is not done yet) |
 
 With Base Color off the first channel that is on is the one the brush is aimed at, and it gets its own value, not the brush
-color. Paint Mask, a Fill Layer, a folder and a frozen folder have nothing to paint besides the mask: the section says so and
+color. A selected mask, a Fill Layer, a folder and a frozen folder have nothing to paint besides the mask: the section says so and
 the toolbar buttons are hidden. In the 2D view the image shown there is painted and every other channel that is on goes along with it, so a
 stroke in the 2D view changes the same channels as one in the 3D view. Not done yet: UDIM tiles (a stroke on a mesh with
 UDIM paints its own image only).
@@ -607,9 +610,12 @@ without asking.
 the Normal Map / Bump settings, and the Base layer ignores image alpha so the look does not change). A Paint Layer is transparent and holds one image per channel; the image of a channel
 is only made (at the "new slot" size) when that layer and channel are first picked for painting, so unused channels cost
 no memory. A Fill Layer is a value or color over the whole mesh, or a texture (Properties - Fill); limit it with a **Mask** (next paragraphs).
-**Paint Mask** sends strokes to the mask's Paint effect instead of the channel (on a Fill Layer strokes always go to
-it; a Fill Layer without a Paint effect can be turned into a Paint Layer with Convert, and until then the brush is
-aimed at a tiny hidden scratch image so no layer is painted by mistake).
+**What a stroke paints** is the thumbnail selected in the list: the content thumbnail (or the name) paints the layer's channels,
+the mask thumbnail (or an effect row) paints the mask's Paint effect. The content of a Fill Layer or a folder is not painted: click
+its mask thumbnail to paint the mask, or turn the fill into a Paint Layer with Convert (the Layers panel offers it for a fill
+without a mask); until then the brush is aimed at a tiny hidden scratch image so no layer is painted by mistake. The line under the
+list says what is painted ("Painting Paint Layer: Base Color", "Painting Fill Layer mask") or what to click; **Switch Layer / Mask**
+in the Layers menu does the same as the thumbnails.
 The brush paints the active layer's images of the channels that are on in the brush material (next paragraph). Every layer
 has its own **blend mode and opacity for each channel** (next paragraph). Double-click a name to rename it. In the shader each
 channel has a frame with one Image Texture and Mix node per layer; only nodes made by the stack are ever changed. **Merge Down**
@@ -628,17 +634,21 @@ menu: White Mask, Black Mask and Image Mask, which reads an image file, then the
 folder), **Add Folder** and **Delete**. The **...** menu has Merge Down, Flatten, Group, Move In and Move Out, Freeze (Unfreeze),
 Merge Folder, Convert to Paint Layer and Cut, Copy and Paste. The list shows the top layer first and grows with the stack (it has no filter options or resize grip). A row is one line: the eye, the folder
 triangle (folders), the **content thumbnail**, the **mask thumbnail** when the layer has a mask, the name (a double-click renames
-it), and at the right the blend mode (a short name: Norm, Pthr, Repl, Mult, Add ...) over the opacity. The columns have the
+it; it takes the free width, so it is not cut short), and at the right the blend mode and the opacity where they say something:
+on the active layer always, as a button ("100%", "Mult 50%") that opens the blend modes and an opacity slider, on the other rows only
+when they are not Normal at 100%, as a short text (Mult 50%, Ovrl, 75%: Norm, Pthr, Repl, Mult, Add ...). The columns have the
 same width in every row, so the names line up. The thumbnail is a small picture of the layer's image,
 a flat swatch for a fill, a folder icon for a folder, and the layer's kind in grey when it has nothing in the channel. The mask
 thumbnail is the picture of the mask's Paint effect, or the icon of its top effect when it has none (a generator). The row
 at its right shows **the channel picked in the dropdown**: the thumbnail, the blend mode and the opacity of Base Color, Roughness,
-Metallic, Normal, Height or Emission (it changes nothing else: the other channels keep their own). A click on a thumbnail selects
-the layer (Properties shows the layer); a click on the mask thumbnail selects the mask (Properties - Mask), **Alt+click** shows the
-mask alone in the 3D view (Show Mask, again to go back) and **Shift+click** switches the mask off and on (the layer shows as if it
-had none; the mask is kept, and the Mask section has the same switch). The active layer lists the effects of its mask under it, each in
-a thin row with an eye, its icon and name, blend mode (a filter has none), opacity and an **x** that removes it: a click on the
-name selects the effect (Properties - Mask). The arrows beside the list move the active layer (a list cannot be dragged); the button under them duplicates it.
+Metallic, Normal, Height or Emission (it changes nothing else: the other channels keep their own). A click on the content thumbnail
+(or on the name) selects the layer with its content: strokes paint the layer and Properties shows its settings; a click on the mask
+thumbnail selects the layer with its mask: strokes paint the mask and Properties shows it (Properties - Mask). The selected thumbnail of
+the active layer is framed. **Alt+click** on the mask thumbnail also shows the mask alone in the 3D view (Show Mask, again to go back)
+and **Shift+click** switches the mask off and on (Use Mask: the layer shows as if it had none; the mask is kept). The active layer lists
+the effects of its mask under it, each in a thin row with an eye, its icon and name, and its blend mode and opacity by the same rule as
+the layer rows (a filter has no blend mode): a click on the name selects the effect and the mask (Properties - Mask); **Delete Effect**
+is in its right-click menu. The arrows beside the list move the active layer (a list cannot be dragged); the button under them duplicates it.
 
 The blend modes are Normal (a mix), **Passthrough** (the layer does not touch this channel: it has no nodes in it and nothing
 is exported for it), **Replace** (the layer's pixels replace what is below, also where its image is transparent; opacity and
@@ -648,7 +658,7 @@ is **Linear Light**: Height is stored with 0.5 as flat, and Linear Light leaves 
 what is below (what Add does to a signed height in other painting tools), so painted or filled bumps add up. The Base layer
 made from existing paint slots, or by Flatten, mixes Height, so the look does not change. The Normal channel mixes its layers; the baked normal map is not a layer: the layers' normal goes on top of it as detail (see Baked maps in the viewport). Every mode is exact in the numbers Merge Down,
 Flatten, Freeze and Export use, and was compared with a Cycles bake of the shader nodes. Color Burn and Color Dodge need one more
-Mix node in the channel (their node formulas are not linear in the strength). **Properties - Layer** (and Folder) has the
+Mix node in the channel (their node formulas are not linear in the strength). **Layer Settings** (in Properties - Paint and Fill) and Properties - Folder have the
 blend mode and opacity of every channel. Layers from older files open with their one blend mode and opacity in every channel
 (the Normal channel keeps mixing), so they look the same.
 
@@ -658,7 +668,7 @@ first): **Cut**, **Copy**, **Paste**, **Duplicate**, **Delete**, **Group**, **Ad
 (Unfreeze). Copy and Cut take the active layer (a folder with its layers); Paste puts a copy above the active layer, with its own
 images, also in another material (after Cut it moves the layer instead). A right-click on the **mask thumbnail**, on an effect row
 of its mask, or on the effects in the Mask panel opens the **mask menu** instead, for that layer: **Add Fill**, **Add Paint**
-(white or black), **Add Generator** and **Add Filter** (menus), **Add Levels**, **Add Color Selection**, then **Invert Mask**,
+(white or black), **Add Generator** and **Add Filter** (menus), **Add Levels**, **Add Color Selection**, **Delete Effect** (on an effect), then **Invert Mask**,
 **Toggle Mask**, **Clear Mask** (to white or to black), **Copy Mask**, **Paste Mask** (replaces the mask of the layer with a copy,
 also from another material), **Create Smart Mask** and **Remove Mask**. From an effect row a new effect goes above that effect.
 The Mask panel has the same menu behind its **...** button. In the Layers tab the keys are Ctrl+C, Ctrl+X, Ctrl+V
@@ -670,8 +680,10 @@ needs empty space; Ctrl+Shift+V works over a thumbnail).
 mask is a list of **effects** that combine from the bottom up (the list shows the top effect first, like the layer
 list). The result starts out white, so a layer without effects shows everywhere; each effect then changes the result
 below it. In the Mask panel: **White (Show All)** / **Black (Hide All)** start a mask with a Paint effect (an image you
-paint: black hides, white shows); **Add Mask Effect** adds one above the selected effect; the arrows move it, the
-buttons beside the list duplicate and delete it. **Image Mask** (Add Mask in the Layers panel) makes a Paint effect from an image file,
+paint: black hides, white shows). A mask has **Use Mask** (off: the layer shows as if it had none; the mask is kept), **Show Mask**,
+**Invert Mask** and the mask menu (the button at its right: the commands of the right-click menu, **Remove Mask** among them). Its
+effects are under **Mask Effects (N)**, closed at first (the layer list shows them too): **Add Mask Effect** adds one above the
+selected effect; the arrows move it, the buttons beside the list duplicate and delete it. A new mask or effect selects the mask. **Image Mask** (Add Mask in the Layers panel) makes a Paint effect from an image file,
 by its brightness. Every effect has an eye, a name, an opacity (how strongly it applies;
 at 0 it does nothing) and, for the sources, a blend mode (Normal, Multiply, Add, Subtract, Max, Min: Multiply keeps
 only what both agree on, Add and Max grow the white). A new effect on top of others multiplies (a black Paint adds),
@@ -679,7 +691,7 @@ so it starts out gentle; the first one simply sets the mask.
 
 | Effect | What it makes |
 |---|---|
-| Paint | An image you paint with the brush (Paint Mask on). Starts white (paint black to hide) or black (paint white to show) |
+| Paint | An image you paint with the brush (the mask thumbnail selected). Starts white (paint black to hide) or black (paint white to show) |
 | Fill | One value, 0 (black) to 1 (white), over the whole mesh |
 | Edges | White on convex edges, for edge wear: Amount, Softness, Invert. Needs the Curvature map, so it works best on meshes with enough polygons |
 | Cavity | White in crevices, for dirt: Amount, Contrast, Invert (from the ambient occlusion map) |
@@ -695,13 +707,13 @@ so it starts out gentle; the first one simply sets the mask.
 Filters work on everything below them, so their place in the list matters; sources and generators are combined with
 the result below by their blend mode. **Show Mask** shows the active layer's mask in the 3D view (white where the layer
 shows); switching it off puts the material back exactly as it was. **Invert Mask** adds an Invert effect on top (or
-takes it off again), **X** next to it removes the whole mask. **Rebake Maps** makes the maps again after the mesh or the
-Bake page's settings changed.
+takes it off again); **Remove Mask** (mask menu) removes the whole mask. **Rebake Mesh Maps**, shown when an effect of the mask reads baked
+maps, makes the maps again after the mesh or the Bake page's settings changed.
 
 The generators read maps baked from the mesh (Curvature, AO, Position, Thickness, ID, plus the world normal). The first time
 an effect needs one, it is baked with Cycles at the Bake page's resolution, like the Bake page does (named
 `<mesh>_<Map>`, with the high-poly mesh when one is set; for a low poly of a group: from its group, together with the other low polys of its texture set, named after the material) and kept with the file; every layer and effect then reuses it,
-and only a new resolution, Rebake Maps or the Bake page bake it again. Nothing in the mesh's materials changes while
+and only a new resolution, Rebake Mesh Maps or the Bake page bake it again. Nothing in the mesh's materials changes while
 baking. A mesh without UVs shows the usual "Auto Unwrap" message first.
 
 In the shader each layer's mask is one more chain in a frame of its own ("Mask: layer name"), made of one node group
@@ -727,8 +739,8 @@ above its folder. Folders can hold folders, to any depth. Duplicate copies a fol
 images, Delete removes the folder, its layers and their images (images used elsewhere stay), **Merge Down** merges a
 layer or folder into the layer below it in the same folder (not into a folder: merge that first), and **Merge Folder**
 turns a folder into one Paint Layer holding what its layers made together, with the folder's name, blend mode, opacity,
-eye and mask (the look does not change). The folder's mask is shown in Properties - Folder, like a layer's in Properties - Mask; a folder itself cannot be
-painted, pick a layer inside it.
+eye and mask (the look does not change). The folder's mask thumbnail shows its mask in Properties - Mask, like a layer's; a folder itself cannot be
+painted, pick a layer inside it (or its mask).
 
 **Freezing.** A folder of many layers costs one Image Texture, Mix and several helper nodes per layer and channel while
 you work: in a material with two channels, a live folder of eight layers is about 100 shader nodes. **Freeze** (the
@@ -754,7 +766,7 @@ before folders open unchanged.
 
 **Library.** The Assets panel (see above) holds ready-made things to apply and the things you saved. A material is a Fill layer
 or a folder of them, and a mask preset is a mask stack, so applying one only makes layers and effects; each click is one undo
-step and one rebuild of the nodes (the maps the generators read are baked once; Rebake Maps keeps them current). A mesh
+step and one rebuild of the nodes (the maps the generators read are baked once; Rebake Mesh Maps keeps them current). A mesh
 without a material gets one. Everything in it can be toggled, faded, masked, frozen or deleted like any layer.
 
 The starter **plain materials** are one Fill layer each (see the Materials row above) with plausible PBR values (metals have

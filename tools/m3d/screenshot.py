@@ -839,7 +839,7 @@ def props_mask():
     mat = bpy.context.active_object.active_material
     layer = L.active_layer(mat) or mat.m3d_layers[-1]
     layer.mask_index = next(i for i, e in enumerate(layer.mask_stack) if e.kind == 'NOISE')
-    bpy.context.scene.m3d_tex.props_mode = 'MASK'
+    layer.paint_mask = True   # (the mask thumbnail selected: Properties - Mask)
 
 
 def snap():

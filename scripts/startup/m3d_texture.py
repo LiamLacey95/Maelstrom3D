@@ -497,10 +497,6 @@ class M3D_TexSettings(PropertyGroup):
         ('POLYGON', "Polygon", "The polygon under the cursor"),
         ('ISLAND', "UV Island", "The UV island under the cursor: every polygon that is connected to it in the UV map"),
         ('MESH', "Mesh", "Every polygon of the mesh")), description="What a click with the Polygon Fill tool fills")
-    props_mode: EnumProperty(name="Properties", default='AUTO', items=(
-        ('AUTO', "Auto", "Properties show the active layer's settings: Paint, Fill or Mask"),
-        ('LAYER', "Layer", "Properties show the layer's own settings"),
-        ('MASK', "Mask", "Properties show the layer's mask")), description="What the Properties editor shows for the active layer")
 
 
 class M3D_BakeSettings(PropertyGroup):
@@ -3350,12 +3346,12 @@ def button_texts(context, buttons):
 
 
 def paint_layer_active(context):
-    """The active layer when a stroke paints the channels of the brush material (a paint layer that is not frozen, with
-    Paint Mask off), else None."""
+    """The active layer when a stroke paints the channels of the brush material (a paint layer that is not frozen, with its
+    content selected, not its mask), else None."""
     ob = mesh_of(context)
     mat = ob.active_material if ob is not None else None
     layer = active_layer(mat) if mat is not None and principled_of(mat) is not None else None
-    return layer if layer is not None and layer.kind == 'PAINT' and not layer.paint_mask and not L.in_frozen(layer) else None
+    return layer if layer is not None and layer.kind == 'PAINT' and not L.mask_active(layer) and not L.in_frozen(layer) else None
 
 
 def material_buttons(context):
@@ -3823,6 +3819,25 @@ def draw_layers_header(layout, mat):
     row.menu("M3D_MT_layer_more", text="", icon='DOWNARROW_HLT')
 
 
+def paint_status(context, mat, layer):
+    """What strokes paint, in the words the Layers panel and Properties both use: "Painting <layer>: <channels>", "Painting <layer>
+    mask", or why nothing is painted and what to click instead (it follows the thumbnail selected in the list)."""
+    if L.in_frozen(layer):
+        return "Frozen with its folder: nothing to paint"
+    if L.mask_active(layer):
+        effect = L.paint_effect(layer)
+        if effect is None:
+            return "The mask has no Paint effect: add one to paint it"
+        several = sum(e.kind == 'PAINT' for e in layer.mask_stack) > 1
+        return "Painting %s mask" % layer.name + (" (%s)" % effect.name if several else "")
+    if layer.kind == 'FOLDER':
+        return "A folder holds layers: pick one to paint" + (", or its mask" if layer.mask_stack else "")
+    if layer.kind == 'FILL':
+        return "Fill Layer: click the mask thumbnail to paint" if layer.mask_stack else "Fill Layer: add a mask to paint it"
+    channels = [ch.label for ch, _image in L.target_set(context, mat, False)[1]] or [CHANNEL_BY_ID[mat.m3d_channel].label]
+    return "Painting %s: %s" % (layer.name, ", ".join(channels))
+
+
 class PROPERTIES_PT_m3d_tx_stack(_Page, Panel):
     page = "tex_layers"
     bl_label = "Layers"
@@ -3844,11 +3859,6 @@ class PROPERTIES_PT_m3d_tx_stack(_Page, Panel):
             reason(layout, "The %d paint slots become the Base layer" % n if n else "Add a layer to start painting")
             layout.operator("m3d.tex_project", icon='FILE_NEW')
             return
-        if layer.kind == 'FILL' and L.paint_effect(layer) is None and context.mode == 'PAINT_TEXTURE':
-            # A fill layer is normal; only say where strokes can go while painting.
-            row = layout.row(align=True)
-            row.label(text="Fill layer: paint its Mask, or", icon='INFO')
-            row.operator("m3d.layer_convert", text="Convert to Paint", icon='IMAGE_DATA')
         row = layout.row()
         # (a UI list has no drag and drop: the arrows move the layer; it grows with the stack, so it has no filter options or grip)
         row.template_list("M3D_UL_layers", "", mat, "m3d_layers", mat, "m3d_layer_index", rows=6, maxrows=14,
@@ -3858,16 +3868,9 @@ class PROPERTIES_PT_m3d_tx_stack(_Page, Panel):
         col.operator("m3d.layer_move", text="", icon='TRIA_DOWN').delta = -1
         col.separator()
         col.operator("m3d.layer_duplicate", text="", icon='DUPLICATE')
-        effect = L.paint_effect(layer)
-        if L.in_frozen(layer):
-            reason(layout, "Frozen with its folder: nothing to paint")
-        elif layer.kind == 'FOLDER' and effect is None:
-            reason(layout, "A folder holds layers: pick one to paint")
-        else:
-            channels = [ch.label for ch, _image in L.target_set(context, mat, False)[1]] or [CHANNEL_BY_ID[mat.m3d_channel].label]
-            target = layer.name + (" mask" if effect is not None and (layer.paint_mask or layer.kind != 'PAINT')
-                                   else ": " + ", ".join(channels))
-            reason(layout, "Painting " + target)
+        reason(layout, paint_status(context, mat, layer))
+        if layer.kind == 'FILL' and not layer.mask_stack and context.mode == 'PAINT_TEXTURE':
+            layout.operator("m3d.layer_convert", icon='IMAGE_DATA')   # (the other way to paint a fill)
         equivalent = L.memory_equivalent(mat)
         if equivalent > L.MEMORY_WARN:   # (only as a warning: what a stack uses is no news while it is small)
             row = layout.row()
@@ -3923,50 +3926,75 @@ def draw_folder(layout, layer):
     row.operator("m3d.layer_merge_folder", icon='TRIA_DOWN_BAR')
 
 
-class PROPERTIES_PT_m3d_tx_layer(_Page, Panel):
-    page = "tex_layer"
-    bl_label = "Layer"
-    bl_order = 10   # (after the stack in the old Layers tab, after the brush panels in Properties)
-
+class _LayerPage(_Page):
+    """A section for the active layer."""
     @classmethod
     def page_poll(cls, context):
         return ready(context, 'PAINT') and has_active_layer(mesh_of(context).active_material)
 
+
+class PROPERTIES_PT_m3d_tx_layer(_LayerPage, Panel):
+    page = "tex_layer"
+    bl_label = "Layer"
+    bl_order = 10   # (after the stack in the old Layers tab, after the brush panels in Properties)
+
     def draw(self, context):
-        layout = self.layout
-        split_props(layout)
-        mat = mesh_of(context).active_material
-        layer = active_layer(mat)
-        layout = frozen_banner(layout, mat, layer)
-        layout.operator("m3d.library_save", text="Save to Library", icon='ASSET_MANAGER').kind = 'MATERIAL'
-        if layer.kind == 'FOLDER':
-            draw_folder(layout, layer)
-            return
-        layout.prop(layer, "name")
-        draw_looks(layout, layer)
-        layout.prop(layer, "visible")
-        if layer.kind == 'PAINT':
-            layout.prop(layer, "use_alpha")
-        flow = layout.grid_flow(row_major=True, columns=2, even_columns=True, align=True)
-        for ch in CHANNELS:
-            flow.prop(entry_of(layer, ch.id), "use", text=ch.label, toggle=True)
-        if layer.kind == 'PAINT':
-            for ch in CHANNELS:
-                e = entry_of(layer, ch.id)
-                if e.image is not None:
-                    w, h = L.image_size(e.image)
-                    layout.label(text="%s: %d x %d" % (ch.label, w, h))
-            return
+        draw_layer(self.layout, context)
+
+
+def draw_layer(layout, context, fill_values=True):
+    """The settings of the active layer: name, blend mode and opacity of every channel, visibility, its channels and (`fill_values`)
+    a fill's values (Properties - Fill has its own)."""
+    split_props(layout)
+    mat = mesh_of(context).active_material
+    layer = active_layer(mat)
+    layout = frozen_banner(layout, mat, layer)
+    layout.operator("m3d.library_save", text="Save to Library", icon='ASSET_MANAGER').kind = 'MATERIAL'
+    if layer.kind == 'FOLDER':
+        draw_folder(layout, layer)
+        return
+    layout.prop(layer, "name")
+    draw_looks(layout, layer)
+    layout.prop(layer, "visible")
+    if layer.kind == 'PAINT':
+        layout.prop(layer, "use_alpha")
+    elif not fill_values:
+        return
+    flow = layout.grid_flow(row_major=True, columns=2, even_columns=True, align=True)
+    for ch in CHANNELS:
+        flow.prop(entry_of(layer, ch.id), "use", text=ch.label, toggle=True)
+    if layer.kind == 'PAINT':
         for ch in CHANNELS:
             e = entry_of(layer, ch.id)
-            if not e.use:
-                continue
-            if ch.id == 'NORMAL':
-                layout.label(text="Normal: flat")
-            elif ch.id in L.SCALARS:
-                layout.prop(e, "value", text=ch.label, slider=True)
-            else:
-                layout.prop(e, "color", text=ch.label)
+            if e.image is not None:
+                w, h = L.image_size(e.image)
+                layout.label(text="%s: %d x %d" % (ch.label, w, h))
+        return
+    for ch in CHANNELS:
+        e = entry_of(layer, ch.id)
+        if not e.use:
+            continue
+        if ch.id == 'NORMAL':
+            layout.label(text="Normal: flat")
+        elif ch.id in L.SCALARS:
+            layout.prop(e, "value", text=ch.label, slider=True)
+        else:
+            layout.prop(e, "color", text=ch.label)
+
+
+LAYER_PAGE = "tex_layer_props"
+
+
+class PROPERTIES_PT_m3d_tx_layer_props(_LayerPage, Panel):
+    """Properties - Paint and Fill: the rest of the layer's settings (the blend mode and opacity of every channel, Image Alpha, its
+    channels ...), closed: a list row has the name and the look of one channel."""
+    page = LAYER_PAGE
+    bl_label = "Layer Settings"
+    bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 50
+
+    def draw(self, context):
+        draw_layer(self.layout, context, fill_values=False)
 
 
 MASK_HELP = "White shows the layer, black hides it. Effects combine from the bottom up."
@@ -3980,8 +4008,10 @@ class M3D_MT_mask_add(Menu):
 
 
 def draw_mask_stack(layout, context, mat, layer, explain=True):
-    """The mask of a layer: how it works (`explain`; always while it has no effects), its effects (list, order, add, remove, save),
-    Paint Mask, Show Mask, Rebake Maps, Invert. False when it has no effects yet (the buttons to make one are drawn)."""
+    """The mask of a layer: how it works (`explain`; always while it has no effects), Use Mask, Show Mask, Invert Mask and the mask's
+    commands (the mask menu: Remove Mask is there), its effects (a list under a heading, closed at first: the layer list shows them
+    too) and, when an effect reads maps baked from the mesh, Rebake Mesh Maps. False when it has no effects yet (the buttons to make
+    one are drawn)."""
     if explain or not layer.mask_stack:
         first, _dot, second = MASK_HELP.partition(". ")   # (two lines: the dock can be narrow)
         reason(layout, first + ".")
@@ -3993,35 +4023,38 @@ def draw_mask_stack(layout, context, mat, layer, explain=True):
         layout.menu("M3D_MT_mask_add", icon='ADD')
         reason(layout, "No mask: the layer shows everywhere")
         return False
-    row = layout.row()
-    row.template_list("M3D_UL_mask_effects", "", layer, "mask_stack", layer, "mask_index", rows=4,
-                      sort_reverse=True, sort_lock=True)
-    col = row.column(align=True)
-    col.operator("m3d.mask_effect_move", text="", icon='TRIA_UP').delta = 1
-    col.operator("m3d.mask_effect_move", text="", icon='TRIA_DOWN').delta = -1
-    col.separator()
-    col.operator("m3d.mask_effect_duplicate", text="", icon='DUPLICATE')
-    col.operator("m3d.mask_effect_remove", text="", icon='TRASH')
     row = layout.row(align=True)
-    row.menu("M3D_MT_mask_add", icon='ADD')
-    row.operator("m3d.library_save", text="", icon='ASSET_MANAGER').kind = 'MASK'
-    row.menu("M3D_MT_mask_more", text="", icon='DOWNARROW_HLT')
-    row = layout.row(align=True)
-    row.operator("m3d.layer_paint_mask", text="Paint Mask", icon='BRUSH_DATA', depress=layer.paint_mask)
+    row.prop(layer, "use_mask")
     row.prop(mat, "m3d_show_mask", text="Show Mask", toggle=True, icon='HIDE_OFF')
-    row.prop(layer, "use_mask", text="On", toggle=True)
     row = layout.row(align=True)
-    row.operator("m3d.mask_rebake", icon='FILE_REFRESH')
     row.operator("m3d.layer_mask_invert", icon='ARROW_LEFTRIGHT',
                  depress=layer.mask_stack[len(layer.mask_stack) - 1].kind == 'INVERT')
-    row.operator("m3d.layer_mask_remove", text="", icon='X')
-    for e, key in MK.missing_maps(layer):
-        reason(layout, "%s needs the %s map: Rebake maps" % (e.name, MK.MAP_LABELS[key]))
+    row.menu("M3D_MT_mask_more", text="", icon='COLLAPSEMENU')
+    header, body = layout.panel("m3d_mask_effects", default_closed=True)
+    header.label(text="Mask Effects (%d)" % len(layer.mask_stack))
+    if body is not None:
+        row = body.row()
+        row.template_list("M3D_UL_mask_effects", "", layer, "mask_stack", layer, "mask_index", rows=2, maxrows=8,
+                          sort_reverse=True, sort_lock=True, show_handles=False)
+        col = row.column(align=True)
+        col.operator("m3d.mask_effect_move", text="", icon='TRIA_UP').delta = 1
+        col.operator("m3d.mask_effect_move", text="", icon='TRIA_DOWN').delta = -1
+        col.separator()
+        col.operator("m3d.mask_effect_duplicate", text="", icon='DUPLICATE')
+        col.operator("m3d.mask_effect_remove", text="", icon='TRASH')
+        row = body.row(align=True)
+        row.menu("M3D_MT_mask_add", icon='ADD')
+        row.operator("m3d.library_save", text="", icon='ASSET_MANAGER').kind = 'MASK'
+    if any(MK.KIND_BY_ID[e.kind].maps for e in layer.mask_stack):   # (only a mask that reads baked maps can need them again)
+        for e, key in MK.missing_maps(layer):
+            reason(layout, "%s needs the %s map: Rebake Mesh Maps" % (e.name, MK.MAP_LABELS[key]))
+        layout.operator("m3d.mask_rebake", text="Rebake Mesh Maps", icon='FILE_REFRESH')
     return True
 
 
-def draw_effect(layout, effect):
-    """The settings of a mask effect (its kind decides which: MK.PARAM_UI), and a note on what it does."""
+def draw_effect(layout, layer, effect):
+    """The settings of a mask effect (its kind decides which: MK.PARAM_UI), and a note on what it does (for a Paint effect: whether
+    strokes paint it, in the words of the Layers panel)."""
     col = layout.column()
     split_props(col)
     if effect.kind in {'PAINT', 'BLUR'} and effect.image is not None:
@@ -4030,7 +4063,8 @@ def draw_effect(layout, effect):
     for prop, label in MK.PARAM_UI.get(effect.kind, ()):
         col.prop(effect, prop, text=label, slider=prop not in {"direction", "space", "invert", "seed", "color"})
     if effect.kind == 'PAINT':
-        reason(col, "Turn on Paint Mask to paint it")
+        painted = L.mask_active(layer) and L.paint_effect(layer) == effect
+        reason(col, paint_status(bpy.context, layer.id_data, layer) if painted else "Click the mask thumbnail to paint it")
     elif effect.kind == 'BLUR':
         reason(col, "Blurs the stack below; it follows brush strokes after a moment")
     elif effect.kind == 'INVERT':
@@ -4039,7 +4073,7 @@ def draw_effect(layout, effect):
         ids = MK.id_colors(effect.image)
         for name in list(ids)[:12]:
             col.operator("m3d.mask_id_pick", text=name, icon='COLOR').name = name
-        reason(col, "Pick a colour, or the one of the ID map in the picker" if ids else "Bake the ID map first (Rebake Maps)")
+        reason(col, "Pick a colour, or the one of the ID map in the picker" if ids else "Bake the ID map first (Rebake Mesh Maps)")
 
 
 class PROPERTIES_PT_m3d_tx_mask(_Page, Panel):
@@ -4062,7 +4096,7 @@ class PROPERTIES_PT_m3d_tx_mask(_Page, Panel):
             return
         box = layout.box()
         box.label(text=effect.name, icon=MK.KIND_BY_ID[effect.kind].icon)
-        draw_effect(box, effect)
+        draw_effect(box, layer, effect)
 
 
 # --- Properties - Fill, Folder and Mask: the layer's own sections (pages tex_fill_props, tex_folder_props, tex_mask_props)
@@ -4072,13 +4106,6 @@ FILL_BUTTONS = (*MATERIAL_BUTTONS, ('NORMAL', "Normal", "Normal"))   # the chann
 EFFECT_TYPES = {'PAINT': "Paint", 'FILL': "Fill", 'EDGES': "Generator", 'CAVITY': "Generator", 'TOPDOWN': "Generator",
                 'THICKNESS': "Generator", 'NOISE': "Generator", 'COLORID': "Generator", 'LEVELS': "Levels", 'BLUR': "Filter",
                 'INVERT': "Filter", 'SHARPEN': "Filter"}
-
-
-class _LayerPage(_Page):
-    """A section for the active layer."""
-    @classmethod
-    def page_poll(cls, context):
-        return ready(context, 'PAINT') and has_active_layer(mesh_of(context).active_material)
 
 
 def draw_fill(layout, layer):
@@ -4183,7 +4210,7 @@ class PROPERTIES_PT_m3d_tx_mk_effect(_LayerPage, Panel):
         layout.prop(effect, "name", text="", icon=kind.icon)
         kind_text = EFFECT_TYPES[effect.kind]
         layout.label(text=kind_text if kind_text == kind.label else "%s: %s" % (kind_text, kind.label))
-        draw_effect(layout, effect)
+        draw_effect(layout, layer, effect)
 
 
 class PROPERTIES_PT_m3d_tx_slots(_Page, Panel):
@@ -5003,36 +5030,34 @@ PAGE_NEEDS = {"tex_brushes": 'PAINT', "tex_layers": 'PAINT', "tex_brush": 'PAINT
 # The old layout's pages: the tray, and the Layers tab with the panels the new layout spreads over its editors.
 OLD_PAGES = {"tex_layers": {"tex_layers", "tex_layer", "tex_mask", "tex_settings"},
              "tex_brushes": {"tex_brushes", "tex_brush_grid"}, "tex_library": {"tex_library", "tex_assets"}}
-PROPS_TITLES = {'PAINT': "Paint", 'FILL': "Fill", 'MASK': "Mask", 'FOLDER': "Folder", 'LAYER': "Layer"}
+PROPS_TITLES = {'PAINT': "Paint", 'FILL': "Fill", 'MASK': "Mask", 'FOLDER': "Folder"}
 
 
 def props_context(context):
-    """What Properties shows, and says in its title: the settings of the active paint layer's brush (PAINT), of a fill layer
-    (FILL), of a folder (FOLDER), of the layer's mask (MASK: when its mask is painted, or asked for with Properties > Mask), or
-    only the layer's own (LAYER, asked for). Without a layer it is the brush."""
+    """What Properties shows, and says in its title: it follows the thumbnail selected in the layer list. The content of a paint
+    layer: the brush (PAINT), of a fill layer: the fill (FILL), of a folder: the folder (FOLDER); the mask thumbnail: the mask (MASK).
+    Without a layer it is the brush."""
     ob = mesh_of(context)
     mat = ob.active_material if ob is not None else None
     layer = active_layer(mat) if mat is not None and principled_of(mat) is not None else None
     if layer is None:
         return 'PAINT'
-    mode = context.scene.m3d_tex.props_mode
-    if mode == 'LAYER':
-        return 'LAYER'
-    if mode == 'MASK' or layer.paint_mask:
+    if L.mask_active(layer):
         return 'MASK'
     return {'FOLDER': 'FOLDER', 'FILL': 'FILL'}.get(layer.kind, 'PAINT')
 
 
 def props_pages(context):
-    """The pages Properties draws for what is selected: Paint (the tool's sections), Fill, Folder (with its mask), Mask (with the
-    Paint sections while the mask is painted), or the layer's own settings."""
+    """The pages Properties draws for what is selected: Paint (the tool's sections) or Fill, each with the layer's settings
+    (closed), Folder, or Mask (with the Paint sections when the mask has a Paint effect: strokes paint it)."""
     kind = props_context(context)
-    if kind == 'PAINT':
-        return {PAINT_PAGE}
+    ob = mesh_of(context)
+    layer = active_layer(ob.active_material) if ob is not None and ob.active_material is not None else None
     if kind == 'MASK':
-        layer = active_layer(mesh_of(context).active_material)
-        return {MASK_PAGE, *({PAINT_PAGE} if layer.paint_mask else ())}
-    return {'FILL': {FILL_PAGE}, 'FOLDER': {FOLDER_PAGE, MASK_PAGE}}.get(kind, {"tex_layer"})
+        return {MASK_PAGE, *({PAINT_PAGE} if L.paint_effect(layer) is not None else ())}
+    if kind == 'PAINT':
+        return {PAINT_PAGE, *({LAYER_PAGE} if layer is not None else ())}
+    return {FILL_PAGE, LAYER_PAGE} if kind == 'FILL' else {FOLDER_PAGE}
 
 
 START_EMPTY = {"tex_layers", "tex_settings", "tex_props"}   # the pages that show nothing while the start card is up
@@ -5072,9 +5097,6 @@ def draw_header_props(layout, context):
         return
     ready_ = ready(context, 'PAINT')
     layout.label(text="Properties - " + PROPS_TITLES[props_context(context) if ready_ else 'PAINT'])
-    layout.separator_spacer()
-    if ready_ and active_layer(mesh_of(context).active_material) is not None:
-        layout.row(align=True).prop(context.scene.m3d_tex, "props_mode", expand=True)
 
 
 def draw_header_dock(layout, context):
@@ -5163,12 +5185,12 @@ def draw_fill_controls(layout, layer, tier):
 
 
 def fill_selected(context):
-    """Is a fill layer the active layer, with no painting of its mask? Its UV transform is then the toolbar's (the brush has no
-    canvas on it)."""
+    """Is a fill layer the active layer, with its content selected (not its mask)? Its UV transform is then the toolbar's (the
+    brush has no canvas on it)."""
     ob = mesh_of(context)
     mat = ob.active_material if ob is not None else None
     layer = active_layer(mat) if mat is not None and principled_of(mat) is not None else None
-    return layer is not None and layer.kind == 'FILL' and not layer.paint_mask and ready(context, 'PAINT')
+    return layer is not None and layer.kind == 'FILL' and not L.mask_active(layer) and ready(context, 'PAINT')
 
 
 def draw_status_line(layout, context):
@@ -5321,6 +5343,7 @@ classes = (
     PROPERTIES_PT_m3d_tx_pp_more,
     PROPERTIES_PT_m3d_tx_stack,
     PROPERTIES_PT_m3d_tx_layer,
+    PROPERTIES_PT_m3d_tx_layer_props,
     M3D_MT_mask_add,
     PROPERTIES_PT_m3d_tx_mask,
     PROPERTIES_PT_m3d_tx_fl_fill,
