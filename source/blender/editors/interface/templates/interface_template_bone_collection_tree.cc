@@ -479,7 +479,7 @@ void BoneCollectionDragController::on_drag_start(bContext & /*C*/, AbstractViewI
 
 }  // namespace bonecollections
 
-void template_bone_collection_tree(Layout *layout, bContext *C)
+void template_bone_collection_tree(Layout *layout, bContext *C, const bool show_handles)
 {
   bArmature *armature = ED_armature_context(C);
   if (armature == nullptr) {
@@ -494,12 +494,16 @@ void template_bone_collection_tree(Layout *layout, bContext *C)
 
   Block *block = layout->block();
 
+  /* Maelstrom3D: without handles the tree has no default height (so no filter toggle, resize grip or scroll bar: it is
+   * as tall as its items), under a name of its own so a height saved for the other one is not applied. */
   AbstractTreeView *tree_view = block_add_view(
       *block,
-      "Bone Collection Tree View",
+      show_handles ? "Bone Collection Tree View" : "Bone Collection Tree View Fit",
       std::make_unique<bonecollections::BoneCollectionTreeView>(*armature, armature_object));
   tree_view->set_context_menu_title("Bone Collection");
-  tree_view->set_default_rows(5);
+  if (show_handles) {
+    tree_view->set_default_rows(5);
+  }
 
   TreeViewBuilder::build_tree_view(*C, *tree_view, *layout);
 }

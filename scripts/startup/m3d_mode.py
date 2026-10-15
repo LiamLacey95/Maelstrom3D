@@ -1288,6 +1288,9 @@ def m3d_startup_layout(*_args, screens=None):
                 space.show_region_ui = False   # The Render View needs no sidebar.
             elif area.type == 'IMAGE_EDITOR' and screen.name in new_texture:
                 space.show_region_tool_header = False   # (Blender's startup defaults show it: the Status Line is the toolbar)
+            elif area.type == 'DOPESHEET_EDITOR' and area.ui_type != 'TIMELINE' and kind_of.get(screen.name) == 'ANIM':
+                from m3d_anim import tidy_bottom_editor
+                tidy_bottom_editor(area)   # (Blender's startup defaults open the Dope Sheet's sidebar)
     bpy.app.timers.register(_timeline_controls_below, first_interval=0.3)
 
 

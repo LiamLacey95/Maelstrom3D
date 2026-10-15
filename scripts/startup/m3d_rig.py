@@ -1522,29 +1522,53 @@ class M3D_OT_rig_driver_remove(Operator):
         return {'CANCELLED'}
 
 
-def bottom_area(screen):
-    """The editor the Timeline / Drivers switch works on: the lowest Timeline, Drivers or Graph Editor area."""
-    found = [a for a in screen.areas if a.ui_type in {'TIMELINE', 'DRIVERS'}] if screen is not None else []
-    return min(found, key=lambda a: a.y) if found else None
+def drivers_area(screen):
+    """The screen's Drivers editor, or None."""
+    return next((a for a in screen.areas if a.ui_type == 'DRIVERS'), None) if screen is not None else None
 
 
 def drivers_open(screen):
-    area = bottom_area(screen)
-    return area is not None and area.ui_type == 'DRIVERS'
+    return drivers_area(screen) is not None
+
+
+DRIVERS_SHARE = 0.4   # of the viewport's height the Drivers editor takes (under it, over the Time Slider)
+
+
+def run_in(context, area, op, **props):
+    """Run a screen operator in `area`'s main region."""
+    region = next(r for r in area.regions if r.type == 'WINDOW')
+    with context.temp_override(area=area, region=region):
+        op(**props)
 
 
 class M3D_OT_rig_drivers_editor(Operator):
-    """Switch the bottom editor between the Timeline and the Drivers editor"""
+    """Open or close the Drivers editor, under the viewport (the Time Slider stays)"""
     bl_idname = "m3d.rig_drivers_editor"
     bl_label = "Drivers Editor"
 
     def execute(self, context):
-        area = bottom_area(context.screen)
-        if area is None:
-            self.report({'WARNING'}, "This workspace has no Timeline or Drivers editor")
+        screen = context.screen
+        area, timeline = drivers_area(screen), next((a for a in screen.areas if a.ui_type == 'TIMELINE'), None)
+        views = [a for a in screen.areas if a.type == 'VIEW_3D']
+        if area is not None and timeline is not None:
+            run_in(context, area, bpy.ops.screen.area_close)
+        elif area is not None or (timeline is not None and not views):
+            # (a file where the bottom Timeline itself became the Drivers editor, or a screen without a viewport: switch it)
+            area = area or timeline
+            area.ui_type = 'TIMELINE' if area.ui_type == 'DRIVERS' else 'DRIVERS'
+        elif views:
+            view = max(views, key=lambda a: a.width * a.height)
+            before = {a.as_pointer() for a in screen.areas}
+            run_in(context, view, bpy.ops.screen.area_split, direction='HORIZONTAL', factor=DRIVERS_SHARE)
+            # The new area is the lower part (a share under one half); the areas' places are only updated on the next redraw.
+            lower = next(a for a in screen.areas if a.as_pointer() not in before)
+            lower.ui_type = 'DRIVERS'
+            lower.spaces.active.show_region_ui = True   # (the sidebar edits the driver)
+        else:
+            self.report({'WARNING'}, "This workspace has no viewport or Timeline for the Drivers editor")
             return {'CANCELLED'}
-        area.ui_type = 'TIMELINE' if area.ui_type == 'DRIVERS' else 'DRIVERS'
-        area.tag_redraw()
+        for a in screen.areas:
+            a.tag_redraw()
         return {'FINISHED'}
 
 
@@ -2410,7 +2434,7 @@ class PROPERTIES_PT_m3d_rg_drivers(_Drive, Panel):
     def draw(self, context):
         layout = self.layout
         layout.operator("m3d.rig_drivers_editor", text="Drivers Editor" if not drivers_open(context.screen) else
-                        "Back to Timeline", icon='DRIVER', depress=drivers_open(context.screen))
+                        "Close Drivers Editor", icon='DRIVER', depress=drivers_open(context.screen))
         ob = context.active_object
         found = drivers_of(ob) if ob is not None else []
         if not found:
@@ -2505,17 +2529,21 @@ class _Collections(_Page):
 
 
 def draw_bone_collections(layout, context, arm, compact=False):
-    """The bone collection tree with its buttons (add, remove, move, assign, select)."""
+    """The bone collection tree with its buttons (add, remove, move, assign, select): like the other lists of the docks, no
+    resize grip and as tall as its items."""
     row = layout.row()
-    row.template_bone_collection_tree()
+    row.template_bone_collection_tree(show_handles=False)
     col = row.column(align=True)
     col.operator("armature.collection_add", icon='ADD', text="")
+    if not len(arm.collections_all):
+        reason(layout, "No bone collections: add one with +")
+        return
     col.operator("armature.collection_remove", icon='REMOVE', text="")
     if arm.collections.active is not None:
         col.separator()
         col.operator("armature.collection_move", icon='TRIA_UP', text="").direction = 'UP'
         col.operator("armature.collection_move", icon='TRIA_DOWN', text="").direction = 'DOWN'
-    if context.mode in {'POSE', 'EDIT_ARMATURE', 'PAINT_WEIGHT'}:
+    if context.mode in {'POSE', 'EDIT_ARMATURE', 'PAINT_WEIGHT'} and arm.collections.active is not None:
         row = layout.row()
         sub = row.row(align=True)
         sub.operator("armature.collection_assign", text="Assign")

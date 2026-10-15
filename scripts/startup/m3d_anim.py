@@ -420,9 +420,21 @@ def show_editor(screen, editor):
     area = bottom_area(screen)
     if area is None:
         return False
+    space_type = {'GRAPH': 'GRAPH_EDITOR', 'DOPESHEET': 'DOPESHEET_EDITOR'}[editor]
+    new = not any(s.type == space_type for s in area.spaces)
     area.ui_type = {'GRAPH': 'FCURVES', 'DOPESHEET': 'DOPESHEET'}[editor]
+    if new:   # (an editor shown here for the first time: like the other one)
+        tidy_bottom_editor(area)
     area.tag_redraw()
     return True
+
+
+def tidy_bottom_editor(area):
+    """One transport row in the Animation workspace, the Time Slider's: the Graph Editor / Dope Sheet show no playback footer,
+    and no sidebar (the dock has the pose tools; N or View > Sidebar opens it)."""
+    for space in area.spaces:
+        if space.type in {'DOPESHEET_EDITOR', 'GRAPH_EDITOR'}:
+            space.show_region_footer = space.show_region_ui = False
 
 
 class M3D_OT_anim_editor(Operator):
@@ -1499,11 +1511,22 @@ def limit_playback_redraw(screen):
     screen.use_play_3d_editors = screen.use_play_animation_editors = screen.use_play_top_left_3d_editor = True
 
 
+ANIM_LAYOUT = 1   # Workspace.m3d_layout of the Animation workspace: 1 has one transport row (tidy_bottom_editor)
+
+
 def follow(wm):
-    """Workspace timer: an Animation workspace from an older file gets the playback redraw limits too."""
+    """Workspace timer: an Animation workspace from an older file gets the playback redraw limits too, and once the one
+    transport row (afterwards the footer and sidebar are the user's)."""
     win = wm.windows[0] if wm.windows else None
-    if win is not None and workspace_kind(win.workspace) == 'ANIM' and win.screen.use_play_properties_editors:
+    if win is None or workspace_kind(win.workspace) != 'ANIM':
+        return
+    if win.screen.use_play_properties_editors:
         limit_playback_redraw(win.screen)
+    if win.workspace.m3d_layout < ANIM_LAYOUT:
+        area = bottom_area(win.screen)
+        if area is not None:
+            tidy_bottom_editor(area)
+        win.workspace.m3d_layout = ANIM_LAYOUT
 
 
 classes = (

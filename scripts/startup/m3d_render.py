@@ -339,6 +339,58 @@ def follow(wm):
             show_render_result(SimpleNamespace(workspace=win.workspace, screen=win.screen))
 
 
+def render_view_empty(context):
+    """Is this Image Editor the Rendering workspace's Render View with nothing to show (no image, or a Render Result without a
+    render: renders are not saved in the file)?"""
+    space = context.space_data
+    if current_kind(context) != 'RENDER' or space is None or space.type != 'IMAGE_EDITOR' or space.mode != 'VIEW':
+        return False
+    image = space.image
+    return image is None or (image.type == 'RENDER_RESULT' and not _rendered[0])
+
+
+_rendered = [False]   # a render was started in this session (the Render Result has pixels; Python can't ask the image)
+
+
+@bpy.app.handlers.persistent
+def _render_started(*_args):
+    _rendered[0] = True
+
+
+@bpy.app.handlers.persistent
+def _file_loaded(*_args):
+    _rendered[0] = False   # (a file has no render in it)
+
+
+def empty_hint(context):
+    """The line an empty Render View shows: how to render, with the key from the user's keymap."""
+    from m3d_ui import key_text
+    key = key_text(context, "Screen Editing", "m3d.render", {"animation": False})
+    return "Nothing rendered yet: Render%s to see it here" % (" (%s)" % key if key else "")
+
+
+def draw_empty_hint():
+    """Draw handler of the Image Editors: the empty Render View's hint, centred (a line over the checkerboard)."""
+    context = bpy.context
+    if not render_view_empty(context):
+        return
+    import blf
+    from m3d_sculpt import ui_scale_factor
+    region, text = context.region, empty_hint(context)
+    font, scale = 0, ui_scale_factor(context)
+    blf.size(font, 13 * scale)
+    width, height = blf.dimensions(font, text)
+    blf.color(font, 0.85, 0.85, 0.85, 1.0)
+    blf.enable(font, blf.SHADOW)
+    blf.shadow(font, 5, 0.0, 0.0, 0.0, 1.0)
+    blf.position(font, (region.width - width) / 2, (region.height - height) / 2, 0)
+    blf.draw(font, text)
+    blf.disable(font, blf.SHADOW)
+
+
+_draw_handlers = []
+
+
 class M3D_OT_render(Operator):
     """Render the scene: a still, or the whole animation. The result shows in the Render View"""
     bl_idname = "m3d.render"
@@ -1399,9 +1451,18 @@ def register():
         bpy.utils.register_class(cls)
     bpy.types.Scene.m3d_render = PointerProperty(type=M3D_RenderSettings)
     bpy.app.handlers.load_post.append(render_path_default)
+    bpy.app.handlers.load_post.append(_file_loaded)
+    bpy.app.handlers.render_init.append(_render_started)
+    if not bpy.app.background:
+        _draw_handlers.append(bpy.types.SpaceImageEditor.draw_handler_add(draw_empty_hint, (), 'WINDOW', 'POST_PIXEL'))
 
 
 def unregister():
+    while _draw_handlers:
+        bpy.types.SpaceImageEditor.draw_handler_remove(_draw_handlers.pop(), 'WINDOW')
+    for handlers, fn in ((bpy.app.handlers.load_post, _file_loaded), (bpy.app.handlers.render_init, _render_started)):
+        if fn in handlers:
+            handlers.remove(fn)
     if render_path_default in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(render_path_default)
     del bpy.types.Scene.m3d_render

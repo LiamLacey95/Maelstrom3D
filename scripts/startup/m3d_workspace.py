@@ -746,8 +746,8 @@ def register():
     ws.m3d_layout = bpy.props.IntProperty(
         name="Layout", default=0, min=0, max=9,
         description="Version of the workspace's layout (the Texture workspace: 0 is the brush tray with the six-tab dock, "
-                    "1 the tool strip, Assets, Texture Sets, Layers, Properties and the dock strip). Reset Workspace "
-                    "brings the newest")
+                    "1 the tool strip, Assets, Texture Sets, Layers, Properties and the dock strip; the Animation workspace: "
+                    "1 one transport row, the Time Slider's). Reset Workspace brings the newest")
     ws.m3d_show_shelf = bpy.props.BoolProperty(
         name="Show Shelf", default=True, update=_shelf_visibility_changed,
         description="Show the shelf tabs and the shelf under the Status Line (off: the viewport gets the space; "

@@ -877,11 +877,14 @@ class IMAGE_HT_header(Header):
             draw_image_header(layout, context)
             return
 
-        if sima.mode != 'UV':
+        # Maelstrom3D: the Render View (the Rendering workspace's Image Editor) only shows images: no View / Paint / Mask
+        # mode dropdown (it read "View" next to the View menu), no New / Open buttons (in the Image menu).
+        from m3d_workspace import current_kind
+        render_view = current_kind(context) == 'RENDER' and sima.mode == 'VIEW'
+        if sima.mode != 'UV' and not render_view:
             layout.prop(sima, "ui_mode", text="")
 
         # UV editing. Maelstrom3D: the UV workspace's Status Line has UV Sync, the select mode and Shell select.
-        from m3d_workspace import current_kind
         if show_uvedit and current_kind(context) != 'UV':
             layout.prop(tool_settings, "use_uv_select_sync", text="")
 
@@ -913,7 +916,10 @@ class IMAGE_HT_header(Header):
 
         IMAGE_HT_header.draw_xform_template(layout, context)
 
-        layout.template_ID(sima, "image", new="image.new", open="image.open")
+        if render_view:
+            layout.template_ID(sima, "image")
+        else:
+            layout.template_ID(sima, "image", new="image.new", open="image.open")
 
         if show_maskedit:
             layout.template_ID(sima, "mask", new="mask.new")

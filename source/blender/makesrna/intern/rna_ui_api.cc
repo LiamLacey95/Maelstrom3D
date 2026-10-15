@@ -2553,6 +2553,12 @@ void RNA_api_ui_layout(StructRNA *srna)
   func = RNA_def_function(srna, "template_bone_collection_tree", "template_bone_collection_tree");
   RNA_def_function_ui_description(func, "Show bone collections tree");
   RNA_def_function_flag(func, FUNC_USE_CONTEXT);
+  RNA_def_boolean(func,
+                  "show_handles",
+                  true,
+                  "",
+                  "Show the row under the tree (the filter options toggle and the resize grip); without it the "
+                  "tree is as tall as its items");
 
   func = RNA_def_function(
       srna, "template_grease_pencil_layer_tree", "template_grease_pencil_layer_tree");

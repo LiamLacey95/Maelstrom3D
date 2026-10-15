@@ -1182,17 +1182,21 @@ def draw_node_tabs(layout, context):
     return True
 
 
-def draw_panel_toolbar(layout, context):
-    """Panel toolbar: camera, grid, shading and display toggles under the panel menus."""
+def draw_panel_toolbar(layout, context, short=False):
+    """Panel toolbar: camera, grid, shading and display toggles under the panel menus (`short`: the shading buttons only;
+    the panel menus have the others)."""
     space = context.space_data
     shading, overlay = space.shading, space.overlay
-    row = layout.row(align=True)
-    row.operator("view3d.view_camera", text="", icon='CAMERA_DATA')
-    row.prop(overlay, "show_floor", text="", icon='GRID')
+    if not short:
+        row = layout.row(align=True)
+        row.operator("view3d.view_camera", text="", icon='CAMERA_DATA')
+        row.prop(overlay, "show_floor", text="", icon='GRID')
     row = layout.row(align=True)
     for value, icon in (('WIREFRAME', 'SHADING_WIRE'), ('SOLID', 'SHADING_SOLID'), ('MATERIAL', 'SHADING_TEXTURE'),
                         ('RENDERED', 'SHADING_RENDERED')):
         row.prop_enum(shading, "type", value, text="", icon=icon)
+    if short:
+        return
     row = layout.row(align=True)
     row.prop(overlay, "show_wireframes", text="", icon='MOD_WIREFRAME')
     if shading.type == 'SOLID':
@@ -1473,13 +1477,84 @@ class TOPBAR_HT_m3d_shelf(bpy.types.Header):
         draw_shelf(self.layout, context)
 
 
-def draw_panel_menus(layout, context):
+def draw_panel_menus(layout, context, collapsed=False):
+    """The 3D view header's menus: the panel menus, then Blender's own menus of the mode (object and component modes: in
+    one "Blender Menus" button; sculpt / paint modes whose menus are in the menu bar: none; other modes: inline, without
+    Blender's View menu, which is under View > More). `collapsed`: drawn as the items of the one menu button."""
+    from types import SimpleNamespace
+    from m3d_workspace import menu_bar_has_mode
     for idname in PANEL_MENUS:
         layout.menu(idname)
     if context.mode in {'OBJECT', 'EDIT_MESH'}:
-        layout.menu("M3D_MT_blender_menus", text="", icon='COLLAPSEMENU')
-    layout.separator()
-    draw_panel_toolbar(layout, context)
+        layout.menu("M3D_MT_blender_menus", text="Blender Menus" if collapsed else "", icon='COLLAPSEMENU')
+    elif not menu_bar_has_mode(context):
+        bpy.types.VIEW3D_MT_editor_menus.draw_blender(SimpleNamespace(layout=layout), context, view=False)
+
+
+# Header widths in UI units (20 pixels at scale 1) that view_header_fit estimates with: the editor type button with the
+# margins and the smallest gap between the left and right parts, a menu label's padding, an icon button, the gap between two
+# groups, an icon with its popover arrow (and the gap), the one menu button of the collapsed menus.
+HEADER_FIXED, MENU_PAD, ICON, GAP = 4.0, 0.8, 1.0, 0.4
+POP, COLLAPSED = ICON + 0.8 + GAP, 1.4
+
+
+def view_header_fit(context, classic):
+    """How much of the 3D view header fits its width: 0 all of it, 1 the menus as one button, 2 the panel toolbar with
+    the shading buttons only, 3 no panel toolbar, 4 also none of Blender's object type and gizmo buttons, 5 also the mode
+    and orientation dropdowns as icons. Everything left out is in the menus (the mode and orientation in their dropdowns).
+    Estimated in UI units, the labels measured with the UI font; 0 without a region (a test)."""
+    region = getattr(context, "region", None)
+    if region is None or not getattr(region, "width", 0):
+        return 0
+    import blf
+    unit = 20 * m3d_sculpt.ui_scale_factor(context)
+    blf.size(0, 11 * unit / 20)
+
+    def text(label):
+        return blf.dimensions(0, label)[0] / unit
+
+    ob = context.active_object
+    mode = ob.mode if ob is not None else 'OBJECT'
+    menus = sum(text(MENUS[idname][0]) + MENU_PAD for idname in PANEL_MENUS)
+    middle = compact = 0.0
+    if classic:
+        menus += COLLAPSED if context.mode in {'OBJECT', 'EDIT_MESH'} else 0.0
+        right = 2 * POP + (ICON if context.mode == 'EDIT_MESH' else 0.0)   # overlays, shading
+        optional = 0.0
+    else:
+        label = bpy.types.Object.bl_rna.properties["mode"].enum_items[mode].name
+        middle += text(label) + POP + MENU_PAD   # the mode dropdown
+        compact += text(label) + MENU_PAD
+        menus += sum(text(label) + MENU_PAD for label in ("Select", "Object") + (("Add",) if mode == 'OBJECT' else ()))
+        if mode in {'OBJECT', 'EDIT', 'POSE'}:   # orientation, pivot, snapping (+ proportional editing)
+            middle += text("Global") + POP + POP + (POP + ICON) * (2 if mode != 'POSE' else 1)
+            compact += text("Global")
+        right = 2 * POP + (ICON if mode in {'POSE', 'EDIT'} else 0.0)   # overlays (+ the mode's), shading
+        optional = 2 * POP   # object types, gizmos
+    if mode == 'SCULPT':   # (snapping and auto-masking popovers; the color attribute one with a paint brush)
+        brush = m3d_sculpt.sculpt_brush(context) if getattr(context, "tool_settings", None) else None
+        paint = brush is not None and brush.sculpt_brush_type in {'PAINT', 'SMEAR'}
+        middle += 2 * POP + (text("Color Attributes") + POP if paint else 0.0)
+    elif mode in {'WEIGHT_PAINT', 'TEXTURE_PAINT', 'VERTEX_PAINT'}:
+        middle += text("Vertex Groups") + 2 * POP
+    shading = context.space_data.shading if context.space_data is not None else None
+    toolbar = (2 + 4 + 3 + (2 if shading is not None and shading.type == 'SOLID' else 0)) * ICON + 4 * GAP
+    widths = (menus + toolbar + optional, COLLAPSED + toolbar + optional, COLLAPSED + 4 * ICON + GAP + optional,
+              COLLAPSED + optional, COLLAPSED, COLLAPSED - compact)
+    room = region.width / unit - HEADER_FIXED - middle - right
+    return next((level for level, width in enumerate(widths) if width <= room), len(widths) - 1)
+
+
+def draw_view_menus(layout, context, fit):
+    """The 3D view header's menus and panel toolbar, as much as fits (`fit`: view_header_fit): the menus become one button
+    first (also with the header's Show Menus off), then the toolbar keeps only the shading buttons, then goes."""
+    if fit >= 1 or not context.area.show_menus:
+        layout.menu("VIEW3D_MT_editor_menus", text="", icon='COLLAPSEMENU')
+    else:
+        draw_panel_menus(layout.row(align=True), context)
+    if fit < 3:
+        layout.separator()
+        draw_panel_toolbar(layout, context, short=fit >= 2)
 
 
 classes = (

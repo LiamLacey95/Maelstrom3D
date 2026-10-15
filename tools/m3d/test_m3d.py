@@ -5692,8 +5692,8 @@ check(bpy.ops.pose.selection_set_add_and_assign() == {'FINISHED'} and len(rig.se
 bpy.ops.m3d.rig_mode(mode='OBJECT')
 
 # --- Drivers editor toggle works on a screen (the real windows are covered in gui_test.py)
-check(R.drivers_open(None) is False and R.bottom_area(NS(areas=[NS(ui_type='TIMELINE', y=10), NS(ui_type='VIEW_3D', y=100)])).ui_type == 'TIMELINE',
-      "bottom editor is the lowest Timeline / Drivers area")
+check(R.drivers_open(None) is False and R.drivers_area(NS(areas=[NS(ui_type='TIMELINE'), NS(ui_type='DRIVERS', y=5)])).y == 5,
+      "the Drivers editor of a screen")
 check(R.drivers_open(NS(areas=[NS(ui_type='DRIVERS', y=0)])) and not R.drivers_open(NS(areas=[NS(ui_type='TIMELINE', y=0)])), "drivers_open")
 
 # --- Rigify: off until asked, enabled on first use, failures handled
@@ -13956,6 +13956,58 @@ for pb_width, pb_cols in ((240, 1), (600, 2)):
           "Orient Shells / Match Texel Scale in a %d px dock: %d column(s)" % (pb_width, pb_cols))
 check(U.UVTK_CUT_SEW[-1][0] == "Seams from Shells", "Seams from Shells (was Auto Seams (from shells), cut off)")
 clean_scene()
+
+# --- Layouts and views: narrow 3D view headers, one transport row in Animation, the empty Render View, bone collections.
+import m3d_anim as PCA, m3d_render as PCR, m3d_rig as PCG
+
+
+def pc_ctx(width, mode='OBJECT'):
+    return NS(region=NS(width=width), active_object=None, mode=mode, space_data=NS(shading=NS(type='SOLID')),
+              preferences=bpy.context.preferences)
+
+
+for pc_classic in (True, False):
+    pc_levels = [m3d_ui.view_header_fit(pc_ctx(w), pc_classic) for w in (3000, 1200, 800, 600, 450, 300, 150)]
+    check(pc_levels == sorted(pc_levels) and pc_levels[0] == 0 and pc_levels[-1] >= 3,
+          "3D view header (%s): gives way step by step as it narrows: %s" % ("object mode" if pc_classic else "other modes", pc_levels))
+check(m3d_ui.view_header_fit(NS(region=None), True) == 0, "3D view header without a region (a test): all of it")
+pc_log = []
+m3d_ui.draw_panel_toolbar(Rec(pc_log), NS(space_data=NS(shading=NS(type='SOLID'), overlay=NS())), short=True)
+check([r._args[2] for r in pc_log if r._kind == "prop_enum"] == ['WIREFRAME', 'SOLID', 'MATERIAL', 'RENDERED']
+      and not [r for r in pc_log if r._kind in {"operator", "prop"}], "a narrow header's toolbar: the shading buttons only")
+
+pc_spaces = [NS(type='DOPESHEET_EDITOR', show_region_footer=True, show_region_ui=True),
+             NS(type='GRAPH_EDITOR', show_region_footer=True, show_region_ui=True), NS(type='VIEW_3D', show_region_ui=True)]
+PCA.tidy_bottom_editor(NS(spaces=pc_spaces))
+check(not any(s.show_region_footer or s.show_region_ui for s in pc_spaces[:2]) and pc_spaces[2].show_region_ui,
+      "Animation: the Dope Sheet / Graph Editor lose the second transport row and the sidebar (nothing else)")
+
+pc_render = NS(type='IMAGE_EDITOR', mode='VIEW', image=None)
+pc_rctx = lambda space: NS(workspace=bpy.data.workspaces["Rendering"], space_data=space)
+check(PCR.render_view_empty(pc_rctx(pc_render)), "an empty Render View: the hint")
+PCR._render_started()
+check(not PCR.render_view_empty(pc_rctx(NS(type='IMAGE_EDITOR', mode='VIEW', image=NS(type='RENDER_RESULT')))),
+      "...a Render Result after a render: no hint")
+PCR._file_loaded()
+check(PCR.render_view_empty(pc_rctx(NS(type='IMAGE_EDITOR', mode='VIEW', image=NS(type='RENDER_RESULT')))),
+      "...a file opened (renders are not saved): the hint again")
+check(not PCR.render_view_empty(pc_rctx(NS(type='IMAGE_EDITOR', mode='VIEW', image=NS(type='IMAGE')))), "an image shown: no hint")
+check(not PCR.render_view_empty(NS(workspace=bpy.data.workspaces["Modeling"], space_data=pc_render)), "other workspaces: no hint")
+check("Render" in PCR.empty_hint(bpy.context), "the hint says how: %s" % PCR.empty_hint(bpy.context))
+
+pc_arm = bpy.data.armatures.new("pc_arm")
+pc_log = []
+PCG.draw_bone_collections(Rec(pc_log), RCtx(), pc_arm)
+pc_names = [r._kind for r in pc_log]
+check(any(r._kind == "template_bone_collection_tree" and r._kw.get("show_handles") is False for r in pc_log)
+      and "armature.collection_remove" not in pb_ops(pc_log) and any("No bone collections" in str(r._kw.get("text")) for r in pc_log),
+      "Bone Collections: no list handles; empty: a hint, no Remove (%s)" % pc_names)
+pc_arm.collections.new("Arms")
+pc_log = []
+PCG.draw_bone_collections(Rec(pc_log), RCtx(), pc_arm)
+check("armature.collection_remove" in pb_ops(pc_log), "...with one: Remove")
+bpy.data.armatures.remove(pc_arm)
+check(PCG.drivers_area(NS(areas=[NS(ui_type='VIEW_3D')])) is None, "no Drivers editor in a screen without one")
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

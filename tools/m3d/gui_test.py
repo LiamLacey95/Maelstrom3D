@@ -7557,9 +7557,11 @@ def rig_layout_check():
     check(len(props_areas()) == 2 and len(outliner) == 1, "Rigging: Outliner and bone collections left, one dock right")
     check(outliner and outliner[0].x < view.x < dock.x and left.x < view.x and left.y < outliner[0].y, "Rigging layout: left column (Outliner over bone collections), viewport, dock")
     check(view.width > left.width * 4 and dock.width >= 600, "the viewport is the large one (%d vs %d, dock %d)" % (view.width, left.width, dock.width))
-    bottom = m3d_rig.bottom_area(screen)
-    check(bottom is not None and bottom.ui_type == 'TIMELINE' and bottom.height < 400, "Rigging: a short Timeline at the bottom (%s)" %
-          ((bottom.ui_type, bottom.height) if bottom else None,))
+    bottom = next((a for a in screen.areas if a.ui_type == 'TIMELINE'), None)
+    check(bottom is not None and bottom.y < view.y and bottom.height < view.height / 6, "Rigging: a Time Slider at the bottom, short (%s)" %
+          ((bottom.height, view.height) if bottom else None,))
+    header = next(r for r in bottom.regions if r.type == 'HEADER') if bottom else None
+    check(header is not None and header.alignment == 'BOTTOM', "...with its controls under the slider, like the other workspaces")
     check(len([a for a in screen.areas if a.type == 'VIEW_3D']) == 1, "one viewport")
     check(outliner and outliner[0].spaces.active.use_filter_object_content, "the Outliner shows the object contents (bones)")
     check(left.spaces.active.context == dock.spaces.active.context == 'MODELING_TOOLKIT', "docks open on pages")
@@ -7931,23 +7933,29 @@ def rig_reset_check():
 # --- Drivers editor toggle (Status Line button and Drive tab button)
 @step
 def rig_drivers_open():
-    check(m3d_rig.bottom_area(window().screen).ui_type == 'TIMELINE', "Timeline at first")
+    check(not m3d_rig.drivers_open(window().screen), "no Drivers editor at first")
     rig_status("m3d.rig_drivers_editor")
 
 
 @step
 def rig_drivers_check():
-    area = m3d_rig.bottom_area(window().screen)
-    check(area is not None and area.ui_type == 'DRIVERS' and area.type == 'GRAPH_EDITOR' and area.spaces.active.mode == 'DRIVERS',
-          "Status Line button: the bottom editor is the Drivers editor (%s)" % ((area.type, area.ui_type) if area else None,))
-    check(m3d_rig.drivers_open(window().screen), "drivers_open")
+    screen = window().screen
+    area, (view, _region) = m3d_rig.drivers_area(screen), rig_view()
+    timeline = next((a for a in screen.areas if a.ui_type == 'TIMELINE'), None)
+    check(area is not None and area.type == 'GRAPH_EDITOR' and area.spaces.active.mode == 'DRIVERS',
+          "Status Line button: a Drivers editor opens (%s)" % ((area.type, area.ui_type) if area else None,))
+    check(area is not None and timeline is not None and timeline.y < area.y < view.y and area.x == view.x and area.width == view.width,
+          "...under the viewport, over the Time Slider (which stays)")
+    check(area is not None and area.height > timeline.height * 2 and area.spaces.active.show_region_ui, "...tall enough, with its sidebar")
     press_ok("m3d.rig_drivers_editor")
 
 
 @step
 def rig_drivers_back():
-    area = m3d_rig.bottom_area(window().screen)
-    check(area is not None and area.ui_type == 'TIMELINE', "...and again: back to the Timeline")
+    screen = window().screen
+    check(not m3d_rig.drivers_open(screen) and len([a for a in screen.areas if a.type == 'VIEW_3D']) == 1,
+          "...and again: closed, the viewport gets its room back")
+    check(any(a.ui_type == 'TIMELINE' for a in screen.areas), "the Time Slider is still there")
     check(not tracebacks(), "Python error with the Drivers editor")
 
 
@@ -8234,6 +8242,10 @@ def anim_layout_check():
           "playback redraws only viewports and animation editors")
     header = next(r for r in timelines[0].regions if r.type == 'HEADER')
     check(header.alignment == 'BOTTOM', "the Timeline controls sit below the slider")
+    space = bottom.spaces.active if bottom else None
+    check(space is not None and not space.show_region_footer and not space.show_region_ui,
+          "one transport row (the Time Slider's): the Dope Sheet has no playback footer, its sidebar is closed")
+    check(window().workspace.m3d_layout == m3d_anim.ANIM_LAYOUT, "the factory layout is the one-transport-row one")
     check(m3d_ui.shelf_key(bpy.context.window_manager, 'ANIM') == 'ANIM_ANIMATE', "Animate shelf tab first")
     check(window().workspace.object_mode == 'POSE', "workspace enters Pose Mode")
     check(not tracebacks(), "Python error drawing the Animation workspace")
@@ -8249,6 +8261,7 @@ def anim_graph_toggle():
 def anim_graph_toggle_check():
     area = m3d_anim.bottom_area(window().screen)
     check(area is not None and area.type == 'GRAPH_EDITOR' and area.ui_type == 'FCURVES', "Status Line: the bottom editor is the Graph Editor")
+    check(area is not None and not area.spaces.active.show_region_footer, "...without a second transport row")
     check(not tracebacks(), "Python error drawing the Graph Editor")
     an_status("m3d.anim_editor", editor='DOPESHEET')
 
@@ -8718,6 +8731,11 @@ def rn_layout_check():
     check(views and views[0].spaces.active.shading.type == 'MATERIAL', "the 3D view starts in Material Preview (Rendered is heavy)")
     check(image and image.spaces.active.image is not None and image.spaces.active.image.type == 'RENDER_RESULT',
           "the Render View shows the Render Result")
+    if image is not None:
+        with bpy.context.temp_override(window=window(), area=image, region=next(r for r in image.regions if r.type == 'WINDOW')):
+            check(m3d_render.render_view_empty(bpy.context) == (not m3d_render._rendered[0]),
+                  "the Render View says how to render until there is a render")
+            check(image.spaces.active.mode == 'VIEW' and not tracebacks(), "...drawn without errors")
     check(len(props_areas()) == 1 and dock.spaces.active.context == 'MODELING_TOOLKIT' and dock.width >= 700,
           "one dock on its pages (%s, %d px)" % (dock.spaces.active.context, dock.width))
     check(window().workspace.m3d_page_right in ("", "render_camera"), "the dock opens on Camera (%s)" % window().workspace.m3d_page_right)
@@ -8972,6 +8990,8 @@ def rn_render_still_check():
     image = rn_image_area().spaces.active.image
     check(RN_DONE["renders"] >= 1, "Shift+F12 rendered the frame")
     check(image is not None and image.type == 'RENDER_RESULT', "the render shows in the Render View")
+    with bpy.context.temp_override(window=window(), area=rn_image_area()):
+        check(not m3d_render.render_view_empty(bpy.context), "...and the empty Render View's hint is gone")
     check(len(bpy.context.window_manager.windows) == GIZMO["rn_windows"], "...without a new window (%d windows)" % len(bpy.context.window_manager.windows))
     shot = os.path.join(tempfile.mkdtemp(prefix="m3d_gui_shot_"), "still.png")
     image.save_render(shot)   # (the Render Result reports no size itself)

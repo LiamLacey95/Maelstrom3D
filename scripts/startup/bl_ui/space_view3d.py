@@ -703,7 +703,8 @@ class VIEW3D_HT_header(Header):
     bl_space_type = 'VIEW_3D'
 
     @staticmethod
-    def draw_xform_template(layout, context):
+    def draw_xform_template(layout, context, compact=False):
+        # Maelstrom3D: `compact`, the orientation as an icon (a narrow header).
         obj = context.active_object
         object_mode = 'OBJECT' if obj is None else obj.mode
         has_pose_mode = (
@@ -726,6 +727,7 @@ class VIEW3D_HT_header(Header):
                 orient_slot,
                 "type",
                 text="",
+                icon_only=compact,
                 panel="VIEW3D_PT_transform_orientations",
             )
 
@@ -857,11 +859,15 @@ class VIEW3D_HT_header(Header):
         act_mode_item = bpy.types.Object.bl_rna.properties["mode"].enum_items[object_mode]
         act_mode_i18n_context = bpy.types.Object.bl_rna.properties["mode"].translation_context
 
+        # Maelstrom3D: how much of the header fits its width (m3d_ui.view_header_fit; the narrowest: the mode as an icon).
+        from m3d_ui import view_header_fit
+        fit = view_header_fit(context, classic_header)
+
         if not classic_header:
             sub = row.row(align=True)
             sub.operator_menu_enum(
                 "object.mode_set", "mode",
-                text=iface_(act_mode_item.name, act_mode_i18n_context),
+                text="" if fit >= 5 else iface_(act_mode_item.name, act_mode_i18n_context),
                 icon=act_mode_item.icon,
             )
             layout.template_header_3D_mode()
@@ -929,7 +935,10 @@ class VIEW3D_HT_header(Header):
 
         overlay = view.overlay
 
-        VIEW3D_MT_editor_menus.draw_collapsible(context, layout)
+        # Maelstrom3D: the panel menus and the panel toolbar, as much as the header's width fits (m3d_ui.draw_view_menus:
+        # a narrow view gets the menus as one button, then fewer toolbar buttons, then fewer of the buttons on the right).
+        from m3d_ui import draw_view_menus
+        draw_view_menus(layout, context, fit)
 
         layout.separator_spacer()
 
@@ -996,7 +1005,9 @@ class VIEW3D_HT_header(Header):
             row = layout.row()
             row.active = is_paint_tool and color_type == 'VERTEX'
 
-            if context.preferences.experimental.use_sculpt_texture_paint:
+            if not is_paint_tool:
+                pass   # Maelstrom3D: the color attribute matters to the paint brushes only (hidden, not greyed out).
+            elif context.preferences.experimental.use_sculpt_texture_paint:
                 canvas_source = tool_settings.paint_mode.canvas_source
                 icon = 'GROUP_VCOL' if canvas_source == 'COLOR_ATTRIBUTE' else canvas_source
                 row.popover(panel="VIEW3D_PT_slots_paint_canvas", icon=icon)
@@ -1052,7 +1063,7 @@ class VIEW3D_HT_header(Header):
             )
         elif not classic_header:
             # Transform settings depending on tool header visibility
-            VIEW3D_HT_header.draw_xform_template(layout, context)
+            VIEW3D_HT_header.draw_xform_template(layout, context, compact=fit >= 5)
 
         layout.separator_spacer()
 
@@ -1071,23 +1082,25 @@ class VIEW3D_HT_header(Header):
             layout.popover(panel="VIEW3D_PT_shading", text="", icon='SHADING_SOLID')
             return
 
-        # Viewport Settings
-        layout.popover(
-            panel="VIEW3D_PT_object_type_visibility",
-            icon_value=view.icon_from_show_object_viewport,
-            text="",
-        )
+        # Maelstrom3D: a narrow header leaves these out (the Show panel menu has the object types and Manipulators).
+        if fit < 4:
+            # Viewport Settings
+            layout.popover(
+                panel="VIEW3D_PT_object_type_visibility",
+                icon_value=view.icon_from_show_object_viewport,
+                text="",
+            )
 
-        # Gizmo toggle & popover.
-        row = layout.row(align=True)
-        # FIXME: place-holder icon.
-        row.prop(view, "show_gizmo", text="", toggle=True, icon='GIZMO')
-        sub = row.row(align=True)
-        sub.active = view.show_gizmo
-        sub.popover(
-            panel="VIEW3D_PT_gizmo_display",
-            text="",
-        )
+            # Gizmo toggle & popover.
+            row = layout.row(align=True)
+            # FIXME: place-holder icon.
+            row.prop(view, "show_gizmo", text="", toggle=True, icon='GIZMO')
+            sub = row.row(align=True)
+            sub.active = view.show_gizmo
+            sub.popover(
+                panel="VIEW3D_PT_gizmo_display",
+                text="",
+            )
 
         # Overlay toggle & popover.
         row = layout.row(align=True)
@@ -1122,19 +1135,9 @@ class VIEW3D_HT_header(Header):
         ):
             sub.popover(panel="VIEW3D_PT_overlay_bones", text="", icon='POSE_HLT')
 
-        row = layout.row()
-        row.active = (object_mode == 'EDIT') or (shading.type in {'WIREFRAME', 'SOLID'})
-
-        _toggle_xray_operator(row, context, text="")
-
-        row = layout.row(align=True)
-        row.prop(shading, "type", text="", expand=True)
-        sub = row.row(align=True)
-        # TODO, currently render shading type ignores mesh two-side, until it's supported
-        # show the shading popover which shows double-sided option.
-
-        # sub.enabled = shading.type != 'RENDERED'
-        sub.popover(panel="VIEW3D_PT_shading", text="")
+        # Maelstrom3D: the panel toolbar (and the Shading panel menu) has X-Ray and the shading modes: only their
+        # options here, like the header of the object and component modes.
+        layout.popover(panel="VIEW3D_PT_shading", text="", icon='SHADING_SOLID')
 
     @staticmethod
     def _mesh_paint_automasking_icon(paint):
@@ -1173,22 +1176,21 @@ class VIEW3D_MT_editor_menus(Menu):
     bl_label = ""
 
     def draw(self, context):
-        # Maelstrom3D: Maya panel menus. Blender's own menus stay inline for sculpt/paint
-        # modes and are tucked into the "..." menu otherwise.
+        # Maelstrom3D: the header's menus as one button (a narrow header, or Show Menus off): Maya panel menus, then
+        # Blender's own menus of the mode (m3d_ui.draw_panel_menus; the header draws them in a row when they fit).
         from m3d_ui import draw_panel_menus
-        from m3d_workspace import menu_bar_has_mode
-        draw_panel_menus(self.layout, context)
-        if context.mode not in {'OBJECT', 'EDIT_MESH'} and not menu_bar_has_mode(context):
-            self.draw_blender(context)
+        draw_panel_menus(self.layout, context, collapsed=True)
 
-    def draw_blender(self, context):
+    def draw_blender(self, context, view=True):
+        # Maelstrom3D: `view` False leaves out Blender's View menu (the View panel menu has it under More).
         layout = self.layout
         obj = context.active_object
         mode_string = context.mode
         edit_object = context.edit_object
         tool_settings = context.tool_settings
 
-        layout.menu("VIEW3D_MT_view")
+        if view:
+            layout.menu("VIEW3D_MT_view")
 
         # Select Menu
         if mode_string in {'PAINT_WEIGHT', 'PAINT_VERTEX', 'PAINT_TEXTURE'}:

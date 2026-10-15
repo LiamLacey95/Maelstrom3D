@@ -166,6 +166,17 @@ def move_edge(screen, at, delta):
         yield 0.3
 
 
+def time_slider_below(screen):
+    """Maya: the Time Slider sits above its playback / range controls (the Timeline's header at the bottom), in every
+    workspace. A generator: `yield from` it while the screen is shown."""
+    for area in screen.areas:
+        header = next((r for r in area.regions if r.type == 'HEADER'), None)
+        if area.ui_type == 'TIMELINE' and header is not None and header.alignment == 'TOP':
+            with bpy.context.temp_override(window=window(), screen=screen, area=area, region=header):
+                bpy.ops.screen.region_flip()
+            yield 0.3
+
+
 def texture_old_layout(screen):
     """From Blender's own Texture workspace (the paint view left of the 3D view, the Outliner over the Properties editor on the
     right) to the layout of the files made before the redesign: a brush tray, the 3D view, the paint view and the wider dock."""
@@ -293,7 +304,8 @@ def phase3_texture():
 def phase4_rigging():
     """Rigging: the small left 3D view becomes the Outliner (the armature hierarchy: bones show under their armature) with
     a Properties editor under it (bone collections), the Outliner of the right column is closed so the dock gets its
-    height, the bottom editor is a short Timeline (the Status Line and the Drive tab switch it to the Drivers editor)."""
+    height, the bottom editor is a Time Slider as short as the Rendering workspace's (the Status Line and the Drive tab open the
+    Drivers editor under the viewport)."""
     ws = bpy.data.workspaces["Rigging"]
     show(ws)
     yield 0.6
@@ -336,6 +348,11 @@ def phase4_rigging():
         lower = min(areas(screen, 'OUTLINER'), key=lambda a: a.y)
         lower.ui_type = 'PROPERTIES'
         yield 0.3
+    view = areas(screen, 'VIEW_3D')[0]
+    timeline = next(a for a in screen.areas if a.ui_type == 'TIMELINE')
+    if timeline.height > RIG_TIMELINE_HEIGHT + 4:   # (the layout made before the Drivers editor opened in an area of its own)
+        yield from move_edge(screen, (view.x + view.width // 2, view.y - 1), RIG_TIMELINE_HEIGHT - timeline.height)
+    yield from time_slider_below(screen)
     view = areas(screen, 'VIEW_3D')[0]
     view.spaces.active.shading.type = 'SOLID'
     view.spaces.active.overlay.show_xray_bone = True   # Bones show through the mesh in Pose Mode.
@@ -394,6 +411,8 @@ def phase5_animation():
     main.spaces.active.shading.type = 'SOLID'
     main.spaces.active.overlay.show_xray_bone = True
     areas(screen, 'PROPERTIES')[0].spaces.active.context = 'CHANNEL_BOX'
+    m3d_anim.tidy_bottom_editor(m3d_anim.bottom_area(screen))   # one transport row: the Time Slider's
+    ws.m3d_layout = m3d_anim.ANIM_LAYOUT
     ws.m3d_page_right = "anim_pick"
     m3d_anim.limit_playback_redraw(screen)
 
@@ -419,6 +438,7 @@ def phase6_rendering():
         with bpy.context.temp_override(window=window(), screen=screen):
             bpy.ops.screen.area_move(x=edge[0], y=edge[1], delta=-RENDER_DOCK_WIDER)
         yield 0.3
+    yield from time_slider_below(screen)
     areas(screen, 'VIEW_3D')[0].spaces.active.shading.type = 'MATERIAL'
     areas(screen, 'PROPERTIES')[0].spaces.active.context = 'MODELING_TOOLKIT'
     ws.m3d_page_right = "render_camera"
@@ -437,7 +457,7 @@ ANIM_TIMELINE_HEIGHT = 130  # pixels the Timeline under the Graph Editor / Dope 
 
 RIG_LEFT_WIDTH = 300  # pixels of the 2560 px build window: Outliner and bone collections
 RIG_LEFT_SPLIT = 0.4  # share of the left column the bone collections get (the lower part; the Outliner keeps the rest)
-RIG_TIMELINE_HEIGHT = 230  # pixels the bottom Timeline keeps (the Drivers editor is the same area)
+RIG_TIMELINE_HEIGHT = 89  # pixels the bottom Time Slider keeps: the Rendering workspace's (the Drivers editor opens over it)
 
 DOCK_WIDER = 170  # pixels of the 2560 px build window: seven tabs, All Settings and the tab menu fit
 UV_WIDER = 250  # pixels the UV editor gets from the 3D view
@@ -473,6 +493,7 @@ def driver():
                 yield from phase()
             show(bpy.data.workspaces["Modeling"])
             yield 0.6
+            yield from time_slider_below(window().screen)
             save()
         steps = all_phases()
     try:
