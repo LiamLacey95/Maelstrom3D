@@ -440,6 +440,8 @@ def phase6_rendering():
         yield 0.3
     yield from time_slider_below(screen)
     areas(screen, 'VIEW_3D')[0].spaces.active.shading.type = 'MATERIAL'
+    import m3d_render
+    m3d_render.show_scene_lights(ws)   # (the scene's lights in Material Preview: Workspace.m3d_layout 1)
     areas(screen, 'PROPERTIES')[0].spaces.active.context = 'MODELING_TOOLKIT'
     ws.m3d_page_right = "render_camera"
     scene = bpy.context.scene

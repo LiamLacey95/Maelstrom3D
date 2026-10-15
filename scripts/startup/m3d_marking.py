@@ -318,24 +318,6 @@ def draw_object_list(layout):
     layout.menu("M3D_MT_hplp", icon='MOD_MULTIRES')
 
 
-class M3D_OT_assign_existing_material(Operator):
-    """Assign an existing material to the selection"""
-    bl_idname = "m3d.assign_existing_material"
-    bl_label = "Assign Existing Material"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    material: bpy.props.EnumProperty(items=lambda _s, _c: [(m.name, m.name, "") for m in bpy.data.materials]
-                                     or [("", "(no materials)", "")])
-
-    def execute(self, context):
-        mat = bpy.data.materials.get(self.material)
-        for ob in context.selected_objects:
-            if mat and ob.type in {'MESH', 'CURVE', 'SURFACE', 'FONT', 'META'}:
-                ob.data.materials.clear()
-                ob.data.materials.append(mat)
-        return {'FINISHED'}
-
-
 class M3D_MT_transform_mm(Menu):
     """Ctrl+Shift+right click: transform options (symmetry, soft select, selection)"""
     bl_label = "Transform Options"
@@ -715,7 +697,6 @@ classes = (
     M3D_MT_menu_set_mm,
     M3D_MT_keyframe_mm,
     M3D_MT_shift_rmb,
-    M3D_OT_assign_existing_material,
     M3D_MT_transform_mm,
     M3D_OT_extrude_resize,
     M3D_OT_duplicate_resize,

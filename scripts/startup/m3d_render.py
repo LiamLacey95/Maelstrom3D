@@ -13,11 +13,12 @@ m3d_workspace.py, the menus and shelves in m3d_ui.py.
 
 import math
 import os
+import re
 from types import SimpleNamespace
 
 import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, PointerProperty, StringProperty
-from bpy.types import Operator, Panel, PropertyGroup
+from bpy.types import Menu, Operator, Panel, PropertyGroup
 from mathutils import Vector
 
 from m3d_mode import _button
@@ -79,26 +80,79 @@ def _same(a, b):
     return math.isclose(a, b, abs_tol=1e-6) if isinstance(b, float) else a == b
 
 
-def quality_matches(scene, preset):
+PRESET_PATHS = [path for values in PRESET_VALUES['MEDIUM'].values() for path in values]   # what a preset of the user's keeps
+
+
+def user_presets():
+    """{name: values} of the presets the user saved (m3d_user.json "render_presets": {name: {path: value}}; only the paths a
+    preset has are read)."""
+    import m3d_user
+    found = m3d_user.data().get("render_presets")
+    presets = {}
+    for name, flat in (found.items() if isinstance(found, dict) else ()):
+        if isinstance(flat, dict):
+            flat = {path: flat[path] for path in PRESET_PATHS if path in flat}
+            presets[name] = {part: {path: value for path, value in flat.items() if path in paths}
+                             for part, paths in PRESET_VALUES['MEDIUM'].items()}
+    return presets
+
+
+def preset_values(preset):
+    """A preset's values: a built-in one by key, the user's by name (None: there is none)."""
+    return PRESET_VALUES.get(preset) or user_presets().get(preset)
+
+
+def quality_matches(scene, preset, values=None):
     """Do the active engine's settings (and the size) equal the preset's?"""
-    values = {**PRESET_VALUES[preset]['ALL'], **PRESET_VALUES[preset].get(scene.render.engine, {})}
-    return all(_same(getattr(*_owner(scene, path)), value) for path, value in values.items())
+    values = values or preset_values(preset)
+    flat = {**values['ALL'], **values.get(scene.render.engine, {})}
+    try:
+        return bool(flat) and all(_same(getattr(*_owner(scene, path)), value) for path, value in flat.items())
+    except TypeError:   # (a damaged value of the user's)
+        return False
 
 
 def apply_quality(scene, preset):
-    for values in PRESET_VALUES[preset].values():
+    for values in preset_values(preset).values():
         for path, value in values.items():
             owner, name = _owner(scene, path)
-            setattr(owner, name, value)
-    scene.m3d_render.preset = preset
+            try:
+                setattr(owner, name, value)
+            except (TypeError, ValueError):   # (a damaged value in a preset of the user's: the others still apply)
+                pass
+    builtin = preset in PRESET_VALUES
+    scene.m3d_render.preset, scene.m3d_render.user_preset = (preset, "") if builtin else ('CUSTOM', preset)
 
 
 def current_quality(scene):
-    """The preset the settings match, else 'CUSTOM' (a value was edited since): the preset applied last wins a tie."""
-    stored = scene.m3d_render.preset
-    if stored in PRESET_VALUES and quality_matches(scene, stored):
+    """The preset the settings match (a built-in key, or the name of one of the user's), else 'CUSTOM' (a value was edited
+    since): the preset applied last wins a tie."""
+    s = scene.m3d_render
+    stored = s.user_preset or s.preset
+    if stored != 'CUSTOM' and preset_values(stored) and quality_matches(scene, stored):
         return stored
-    return next((p for p in PRESET_VALUES if quality_matches(scene, p)), 'CUSTOM')
+    found = next((p for p in PRESET_VALUES if quality_matches(scene, p)), None)
+    return found or next((name for name, values in sorted(user_presets().items()) if quality_matches(scene, name, values)), 'CUSTOM')
+
+
+def quality_note(scene):
+    """The line under the presets: what the preset does, or why it reads Custom."""
+    now = current_quality(scene)
+    if now in PRESET_NOTES:
+        return PRESET_NOTES[now]
+    if now != 'CUSTOM':
+        return "Your preset \"%s\"" % now
+    s = scene.m3d_render
+    return "Custom: a value was edited since the preset" if s.preset != 'CUSTOM' or s.user_preset else "Custom: no preset applied yet"
+
+
+def use_gpu(context):
+    """Cycles renders on the GPU when there is one that passes a test bake (m3d_bakeq.find_gpu; asked once). True when it does."""
+    import m3d_bakeq
+    if m3d_bakeq.find_gpu(context)[0]:
+        context.scene.cycles.device = 'GPU'
+        return True
+    return False
 
 
 class M3D_OT_render_preset(Operator):
@@ -108,15 +162,103 @@ class M3D_OT_render_preset(Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     preset: EnumProperty(items=[(k, v, "") for k, v in QUALITY])
+    user_preset: StringProperty(options={'SKIP_SAVE'}, description="One of your presets (instead of the built-in one)")
 
     @classmethod
     def description(cls, _context, props):
-        return "%s quality: %s (Custom shows once you edit one of these values)" % (
+        if props.user_preset:
+            return "Your preset \"%s\": its samples, bounces / ray tracing and size for Cycles and EEVEE" % props.user_preset
+        return "%s quality: %s (Custom shows once you edit one of these values). Cycles renders on the GPU when there is one" % (
             props.preset.title(), PRESET_NOTES[props.preset])
 
     def execute(self, context):
-        apply_quality(context.scene, self.preset)
+        preset = self.user_preset or self.preset
+        if preset_values(preset) is None:
+            self.report({'WARNING'}, "No preset \"%s\"" % preset)
+            return {'CANCELLED'}
+        apply_quality(context.scene, preset)
+        use_gpu(context)
         return {'FINISHED'}
+
+
+def _taken(name):
+    return name.strip().upper() in {*PRESET_VALUES, 'CUSTOM'}
+
+
+class M3D_OT_render_preset_save(Operator):
+    """Save the scene's quality settings (samples, bounces / ray tracing, size, for Cycles and EEVEE) as a preset of your own,
+    for every scene"""
+    bl_idname = "m3d.render_preset_save"
+    bl_label = "Save as Preset"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    name: StringProperty(name="Name", default="My Preset")
+
+    def invoke(self, context, _event):
+        return context.window_manager.invoke_props_dialog(self, confirm_text="Save")
+
+    def execute(self, context):
+        import m3d_user
+        name = self.name.strip()
+        if not name or _taken(name):
+            self.report({'WARNING'}, "Pick another name: \"%s\" is a built-in preset" % name if name else "The preset needs a name")
+            return {'CANCELLED'}
+        root = m3d_user.data()
+        if not isinstance(root.get("render_presets"), dict):
+            root["render_presets"] = {}
+        root["render_presets"][name] = {path: getattr(*_owner(context.scene, path)) for path in PRESET_PATHS}
+        m3d_user.save()
+        context.scene.m3d_render.preset, context.scene.m3d_render.user_preset = 'CUSTOM', name
+        self.report({'INFO'}, "Saved the preset \"%s\"" % name)
+        return {'FINISHED'}
+
+
+_preset_items = []   # (kept here: Blender reads the item strings after the callback has returned)
+
+
+def _user_preset_items(_self, _context):
+    _preset_items[:] = [(name, name, "") for name in sorted(user_presets())] or [("", "(no presets)", "")]
+    return _preset_items
+
+
+class M3D_OT_render_preset_delete(Operator):
+    """Delete one of your quality presets"""
+    bl_idname = "m3d.render_preset_delete"
+    bl_label = "Delete Preset"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    preset: EnumProperty(name="Preset", items=_user_preset_items)
+
+    def execute(self, context):
+        import m3d_user
+        name = self.preset   # (read once: the items change when it is gone)
+        found = m3d_user.data().get("render_presets")
+        if not isinstance(found, dict) or name not in found:
+            return {'CANCELLED'}
+        del found[name]
+        m3d_user.save()
+        for scene in bpy.data.scenes:
+            if scene.m3d_render.user_preset == name:
+                scene.m3d_render.user_preset = ""
+        self.report({'INFO'}, "Deleted the preset \"%s\"" % name)
+        return {'FINISHED'}
+
+
+class M3D_MT_render_presets(Menu):
+    """Your quality presets: apply, save the scene's settings as one, delete one"""
+    bl_label = "Your Presets"
+
+    def draw(self, context):
+        layout = self.layout
+        names = sorted(user_presets())
+        now = current_quality(context.scene)
+        for name in names:
+            layout.operator("m3d.render_preset", text=name, icon='CHECKMARK' if name == now else 'PRESET').user_preset = name
+        if names:
+            layout.separator()
+        layout.operator("m3d.render_preset_save", text="Save as Preset...", icon='ADD')
+        if names:
+            layout.operator_menu_enum("m3d.render_preset_delete", "preset", text="Delete Preset", icon='TRASH')
 
 
 # -----------------------------------------------------------------------------
@@ -197,6 +339,7 @@ class M3D_RenderSettings(PropertyGroup):
     """Rendering workspace options (Scene.m3d_render)."""
     preset: EnumProperty(name="Quality", default='CUSTOM', items=[*[(k, v, "") for k, v in QUALITY], ('CUSTOM', "Custom", "")],
                          description="The quality preset applied last (Custom once a value was edited)")
+    user_preset: StringProperty(name="Your Preset", description="The preset of yours applied last (empty: a built-in one)")
     hdri_path: StringProperty(name="HDRI File", subtype='FILE_PATH', description="An .exr or .hdr image for the sky")
     hdri_rotation: FloatProperty(
         name="Rotation", subtype='ANGLE', unit='ROTATION', soft_min=-math.pi, soft_max=math.pi, description=
@@ -241,6 +384,7 @@ is kept: Back to Previous World puts it back"""
             s.previous_world = scene.world
         scene.world = world
         s.hdri_path = path
+        show_world(True)
         return {'FINISHED'}
 
 
@@ -258,6 +402,67 @@ class M3D_OT_hdri_clear(Operator):
         s = context.scene.m3d_render
         context.scene.world = s.previous_world
         s.previous_world = None
+        show_world(False)
+        return {'FINISHED'}
+
+
+def render_views():
+    """The 3D views of the Rendering workspace (F7)."""
+    return [a.spaces.active for ws in bpy.data.workspaces if workspace_kind(ws) == 'RENDER' for screen in ws.screens
+            for a in screen.areas if a.type == 'VIEW_3D']
+
+
+def show_world(on):
+    """The sky lights the Material Preview of F7's 3D view (HDRI Sky), or the studio light does again (Back to Previous
+    World: a plain world is dark)."""
+    for space in render_views():
+        space.shading.use_scene_world = on
+
+
+RENDER_LAYOUT = 1   # Workspace.m3d_layout of the Rendering workspace: 1 lights its Material Preview with the scene's lights
+
+
+def show_scene_lights(ws):
+    """Once for a Rendering workspace (startup, or an older file): its Material Preview shows the scene's lights (afterwards the
+    choice is the user's: the Lighting menu)."""
+    if ws.m3d_layout < RENDER_LAYOUT:
+        for screen in ws.screens:
+            for area in screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.spaces.active.shading.use_scene_lights = True
+        ws.m3d_layout = RENDER_LAYOUT
+
+
+class M3D_OT_view_lighting(Operator):
+    """Lighting of the 3D view"""
+    bl_idname = "m3d.view_lighting"
+    bl_label = "Viewport Lighting"
+    bl_options = {'REGISTER'}
+
+    LIGHTING = (('DEFAULT', "Use Default Lighting", "Light the view with the studio light (not the scene's lights or sky)"),
+                ('FLAT', "Use Flat Lighting", "Flat colors, no lighting (Solid shading)"),
+                ('ALL', "Use All Lights", "Light the view with the scene's lights (Material Preview)"))
+    lighting: EnumProperty(items=LIGHTING)
+
+    @classmethod
+    def description(cls, _context, props):
+        return {key: text for key, _label, text in cls.LIGHTING}[props.lighting]
+
+    def execute(self, context):
+        space = context.space_data if context.space_data is not None and context.space_data.type == 'VIEW_3D' else viewport(context)
+        if space is None:
+            self.report({'WARNING'}, "No 3D Viewport here")
+            return {'CANCELLED'}
+        shading = space.shading
+        if self.lighting == 'ALL':
+            if shading.type not in {'MATERIAL', 'RENDERED'}:
+                shading.type = 'MATERIAL'
+            shading.use_scene_lights = shading.use_scene_lights_render = True
+        elif self.lighting == 'FLAT':
+            shading.type, shading.light = 'SOLID', 'FLAT'
+        else:
+            shading.light = 'STUDIO'
+            shading.use_scene_lights = shading.use_scene_world = False
         return {'FINISHED'}
 
 
@@ -331,9 +536,10 @@ def show_render_result(context):
 
 def follow(wm):
     """Workspace timer: a Rendering workspace with an empty Render View (just reset, or from an older file) shows the Render
-    Result as soon as there is one."""
+    Result as soon as there is one; its Material Preview gets the scene's lights once (show_scene_lights)."""
     win = wm.windows[0] if wm.windows else None
     if win is not None and workspace_kind(win.workspace) == 'RENDER':
+        show_scene_lights(win.workspace)
         area = render_view_area(win.screen)
         if area is not None and area.spaces.active.image is None:
             show_render_result(SimpleNamespace(workspace=win.workspace, screen=win.screen))
@@ -391,39 +597,211 @@ def draw_empty_hint():
 _draw_handlers = []
 
 
+# --- Before a render: the camera it renders from, the frames that are there already
+
+_camera_ok = set()   # cameras the first-render question was answered for in this session (by name)
+
+
+def hidden_camera(context):
+    """The scene camera when the render would come from a camera nobody sees (the hidden "persp" of a new scene, or another
+    hidden one) and the view doesn't look through it, the first time in this session; else None."""
+    import m3d_user
+    cam, space = context.scene.camera, viewport(context)
+    if cam is None or cam.name in _camera_ok or m3d_user.data().get("render_camera_ask") is False:
+        return None
+    if space is not None and space.region_3d is not None and space.region_3d.view_perspective == 'CAMERA':
+        return None
+    return cam if not cam.visible_get(view_layer=context.view_layer) else None
+
+
+def name_frames(scene):
+    """Frames named after the scene: an output path that is only a folder ("//render/") gets "<scene>_" (else the frames are
+    0001.png, 0002.png...)."""
+    r = scene.render
+    if r.filepath and r.filepath[-1] in "/\\":
+        r.filepath += bpy.path.clean_name(scene.name) + "_"
+
+
+def frame_numbers(scene):
+    return range(scene.frame_start, scene.frame_end + 1, max(scene.frame_step, 1))
+
+
+def existing_frames(scene):
+    """Frames of the range whose files are there already (a video: its one file)."""
+    r = scene.render
+    if r.image_settings.media_type == 'VIDEO':
+        return [scene.frame_start] if os.path.isfile(r.frame_path(frame=scene.frame_start)) else []
+    return [f for f in frame_numbers(scene) if os.path.isfile(r.frame_path(frame=f))]
+
+
+def output_folder(scene):
+    return os.path.dirname(scene.render.frame_path(frame=scene.frame_start))
+
+
+VERSION_FOLDER = re.compile(r"^v(\d{3,})$")
+
+
+def next_version(path):
+    """The output path in the next version folder that isn't there yet: render/shot_ -> render/v002/shot_,
+    render/v002/shot_ -> render/v003/shot_ (the frames of the first render are version 1)."""
+    relative = path.startswith("//")
+    folder, _sep, name = path[2 if relative else 0:].replace("\\", "/").rpartition("/")
+    parent, _sep, last = folder.rpartition("/")
+    found = VERSION_FOLDER.match(last)
+    base, number = (parent, int(found.group(1)) + 1) if found else (folder, 2)
+    prefix = ("//" if relative else "") + (base + "/" if base else "")
+    while os.path.exists(bpy.path.abspath("%sv%03d" % (prefix, number))):
+        number += 1
+    return "%sv%03d/%s" % (prefix, number, name)
+
+
+_animation = {"scene": None, "frames": 0}   # the animation render that runs (the report after it)
+
+
+def animation_done():
+    """Timer while an animation renders: then say how many frames are where, with Open Folder."""
+    if bpy.app.is_job_running('RENDER'):
+        return 0.5
+    scene = bpy.data.scenes.get(_animation["scene"] or "")
+    _animation["scene"] = None
+    if scene is None:
+        return None
+    text = render_report(scene, _animation["frames"])
+    import m3d_bakeq
+    m3d_bakeq.report_later('INFO', text)
+    wm = bpy.context.window_manager
+    folder = output_folder(scene)
+    if wm.windows and not bpy.app.background:
+        def draw(menu, _context):
+            menu.layout.operator("wm.path_open", text="Open Folder", icon='FILE_FOLDER').filepath = folder
+        win = wm.windows[0]
+        with bpy.context.temp_override(window=win, screen=win.screen):
+            wm.popup_menu(draw, title=text, icon='RENDER_ANIMATION')
+    return None
+
+
+def render_report(scene, frames):
+    found = len(existing_frames(scene)) if scene.render.image_settings.media_type != 'VIDEO' else frames
+    done = "%d frames" % found if found == frames else "%d of %d frames" % (found, frames)
+    return "Rendered %s to %s" % (done, output_folder(scene))
+
+
 class M3D_OT_render(Operator):
     """Render the scene: a still, or the whole animation. The result shows in the Render View"""
     bl_idname = "m3d.render"
     bl_label = "Render"
 
     animation: BoolProperty(default=False, options={'SKIP_SAVE'}, description="Render the whole frame range")
+    existing: EnumProperty(name="Frames There", default='ASK', options={'SKIP_SAVE'}, items=(
+        ('ASK', "Ask", "Render over them as Blender does (the Overwrite setting)"),
+        ('OVERWRITE', "Overwrite", "Render over the frames that are there"),
+        ('VERSION', "New Version Folder", "Render into the next version folder (v002, v003...): the frames there stay")))
+    camera: EnumProperty(name="Camera", default='ASK', options={'SKIP_SAVE'}, items=(
+        ('ASK', "Ask", "Render from the scene camera"),
+        ('MATCH', "Match Camera to View", "Move the scene camera to this view, then render"),
+        ('ANYWAY', "Render Anyway", "Render from the scene camera as it is")))
+    dont_ask: BoolProperty(name="Don't ask again", options={'SKIP_SAVE'},
+                           description="Never ask about a hidden camera again (on this computer)")
+    asked_camera: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    asked_frames: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    interactive: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
 
     @classmethod
     def description(cls, _context, props):
         return "Render the animation (Ctrl+Shift+F12)" if props.animation else "Render the current frame (Shift+F12)"
 
     def invoke(self, context, _event):
-        # The Rendering workspace has its Render View: while it shows the Render Result, no render window opens (the
-        # preference "Render In" is put back as soon as the render has started).
-        view = context.preferences.view
-        display = view.render_display_type
-        if show_render_result(context):
-            view.render_display_type = 'NONE'
-        try:
-            bpy.ops.render.render('INVOKE_DEFAULT', animation=self.animation, use_viewport=True)
-        except RuntimeError as err:
-            self.report({'ERROR'}, str(err).strip())
+        scene = context.scene
+        if self.animation and not bpy.data.filepath and scene.render.filepath.startswith("//"):
+            self.report({'WARNING'}, "Save the scene first: the frames go into a folder next to it")
+            bpy.ops.wm.save_as_mainfile('INVOKE_DEFAULT')
             return {'CANCELLED'}
-        finally:
-            view.render_display_type = display
-        return {'FINISHED'}
+        self.interactive = True
+        cam = hidden_camera(context)
+        if self.animation:
+            name_frames(scene)
+        self.asked_camera = cam.name if cam is not None else ""
+        self.asked_frames = self.animation and bool(existing_frames(scene))
+        if not (self.asked_camera or self.asked_frames):
+            return self.execute(context)
+        if self.asked_camera:
+            self.camera = 'MATCH'
+        if self.asked_frames:
+            self.existing = 'VERSION'
+        return context.window_manager.invoke_props_dialog(self, width=420, title="Render Animation" if self.animation
+                                                          else "Render", confirm_text="Render")
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+        if self.asked_camera:
+            layout.label(text="Rendering from camera \"%s\", not this view" % self.asked_camera, icon='CAMERA_DATA')
+            row = layout.row(align=True)
+            for key in ('MATCH', 'ANYWAY'):
+                row.prop_enum(self, "camera", key)
+            layout.prop(self, "dont_ask")
+        if self.asked_frames:
+            layout.label(text="%d frames are in %s already" % (len(existing_frames(scene)), output_folder(scene)),
+                         icon='FILE_FOLDER')
+            row = layout.row(align=True)
+            for key in ('VERSION', 'OVERWRITE'):
+                row.prop_enum(self, "existing", key)
+
+    def answer(self, context):
+        """What the dialog asked (or the properties say)."""
+        scene = context.scene
+        if self.camera != 'ASK' and scene.camera is not None:
+            _camera_ok.add(scene.camera.name)
+            if self.camera == 'MATCH':
+                if bpy.ops.m3d.render_camera_from_view.poll():
+                    bpy.ops.m3d.render_camera_from_view(mode='MATCH')
+                else:
+                    self.report({'WARNING'}, "Match Camera to View needs Object Mode and a 3D view: rendering from the camera as it is")
+        if self.dont_ask:
+            import m3d_user
+            m3d_user.data()["render_camera_ask"] = False
+            m3d_user.save()
+        if self.animation:
+            name_frames(scene)
+            if self.existing == 'VERSION':
+                scene.render.filepath = next_version(scene.render.filepath)
+            elif self.existing == 'OVERWRITE':
+                scene.render.use_overwrite = True
+        if scene.render.engine == 'CYCLES' and scene.cycles.device == 'GPU':
+            import m3d_bakeq
+            if not m3d_bakeq.find_gpu(context)[0]:   # (sets Cycles' preferences up for the GPU: asked once)
+                self.report({'WARNING'}, "No GPU passed a test bake: Cycles renders on the CPU")
 
     def execute(self, context):
+        self.answer(context)
+        scene = context.scene
+        if self.interactive:
+            # The Rendering workspace has its Render View: while it shows the Render Result, no render window opens (the
+            # preference "Render In" is put back as soon as the render has started).
+            view = context.preferences.view
+            display = view.render_display_type
+            if show_render_result(context):
+                view.render_display_type = 'NONE'
+            try:
+                bpy.ops.render.render('INVOKE_DEFAULT', animation=self.animation, use_viewport=True)
+            except RuntimeError as err:
+                self.report({'ERROR'}, str(err).strip())
+                return {'CANCELLED'}
+            finally:
+                view.render_display_type = display
+            if self.animation:
+                _animation["scene"], _animation["frames"] = scene.name, len(frame_numbers(scene))
+                if not bpy.app.timers.is_registered(animation_done):
+                    bpy.app.timers.register(animation_done, first_interval=1.0)
+            return {'FINISHED'}
         try:
-            return bpy.ops.render.render(animation=self.animation, use_viewport=True)
+            result = bpy.ops.render.render(animation=self.animation, use_viewport=True)
         except RuntimeError as err:
             self.report({'ERROR'}, str(err).strip())
             return {'CANCELLED'}
+        if self.animation:
+            self.report({'INFO'}, render_report(scene, len(frame_numbers(scene))))
+        return result
 
 
 class M3D_OT_render_view(Operator):
@@ -956,12 +1334,32 @@ class PROPERTIES_PT_m3d_rn_quality(_Render, Panel):
         row.scale_y = 1.3
         for key, label in QUALITY:
             row.operator("m3d.render_preset", text=label, depress=now == key).preset = key
-        layout.label(text=PRESET_NOTES[now] if now in PRESET_NOTES else "Custom: a value was edited since the preset")
+        row.menu("M3D_MT_render_presets", text=now if now not in PRESET_VALUES and now != 'CUSTOM' else "",
+                 icon='PRESET')
+        reason(layout, quality_note(scene))
         split_props(layout)
         layout.prop(scene.render, "resolution_percentage", text="Scale", slider=True)
         layout.label(text="Renders at " + _size_text(scene))
         if scene.render.engine not in dict(ENGINES):
             reason(layout, "This engine has no quality settings here: see All Settings")
+
+
+def draw_device(layout, context):
+    """Cycles' device, and what is known of the GPU (m3d_bakeq.find_gpu: a test bake, asked a moment after the first draw):
+    "GPU found ... [Use GPU]" while it renders on the CPU."""
+    import m3d_bakeq as Q
+    cy = context.scene.cycles
+    layout.prop(cy, "device")
+    found = Q.known_gpu()
+    if found is None:
+        Q.check_gpu_soon()
+        return
+    if cy.device == 'CPU' and found[0]:
+        reason(layout, "GPU found: %s (%s)" % (", ".join(found[1]), found[0]))
+        o = layout.operator("wm.context_set_enum", text="Use GPU", icon='CHECKMARK')
+        o.data_path, o.value = "scene.cycles.device", 'GPU'
+    elif cy.device == 'GPU' and not found[0]:
+        reason(layout, "Renders on the CPU: " + found[2])
 
 
 class PROPERTIES_PT_m3d_rn_cycles(_CyclesPanel, Panel):
@@ -971,7 +1369,7 @@ class PROPERTIES_PT_m3d_rn_cycles(_CyclesPanel, Panel):
         layout = self.layout
         cy = context.scene.cycles
         split_props(layout)
-        layout.prop(cy, "device")
+        draw_device(layout, context)
         layout.prop(cy, "samples", text="Render Samples")
         layout.prop(cy, "preview_samples", text="Viewport Samples")
         layout.prop(cy, "use_adaptive_sampling", text="Noise Threshold")
@@ -1043,6 +1441,9 @@ class _Output(_PagePanel):
     page = "render_output"
 
 
+OUTPUT_TYPES = (('IMAGE', "Image Sequence"), ('MULTI_LAYER_IMAGE', "Multilayer EXR"), ('VIDEO', "Video"))
+
+
 class PROPERTIES_PT_m3d_rn_output(_Output, Panel):
     bl_label = "Output"
 
@@ -1054,10 +1455,26 @@ class PROPERTIES_PT_m3d_rn_output(_Output, Panel):
         layout.prop(r, "filepath", text="Path")
         if r.filepath.startswith("//") and not bpy.data.filepath:
             reason(layout, "Save the file first: // is the folder of the saved file")
-        layout.prop(im, "file_format", text="Format")
-        layout.prop(im, "color_mode", text="Color")
-        layout.prop(im, "color_depth", text="Depth")
-        layout.prop(r, "use_overwrite")
+        row = layout.row(align=True)   # (the whole width: the three types fit on a narrow dock)
+        row.use_property_split = False
+        for key, label in OUTPUT_TYPES:
+            row.prop_enum(im, "media_type", key, text=label)
+        if im.media_type == 'VIDEO':
+            ff = r.ffmpeg
+            layout.prop(ff, "format", text="Container")
+            layout.prop(ff, "codec", text="Codec")
+            if ff.codec in {'H264', 'H265', 'MPEG4', 'WEBM', 'AV1'}:   # (the codecs with a quality setting)
+                layout.prop(ff, "constant_rate_factor", text="Quality")
+        elif im.media_type == 'MULTI_LAYER_IMAGE':
+            layout.prop(im, "color_depth", text="Depth")
+            layout.prop(im, "exr_codec", text="Compression")
+            reason(layout, "One file per frame with every pass and render layer")
+        else:
+            layout.prop(im, "file_format", text="Format")
+            layout.prop(im, "color_mode", text="Color")
+            layout.prop(im, "color_depth", text="Depth")
+        layout.prop(r, "use_overwrite", text="Overwrite Existing Frames")
+        draw_pass_warning(layout, context)
 
 
 class PROPERTIES_PT_m3d_rn_frames(_Output, Panel):
@@ -1076,6 +1493,9 @@ class PROPERTIES_PT_m3d_rn_frames(_Output, Panel):
         row.scale_y = 1.3
         row.operator("m3d.render", text="Render", icon='RENDER_STILL')
         row.operator("m3d.render", text="Render Animation", icon='RENDER_ANIMATION').animation = True
+        folder = output_folder(scene)
+        if (bpy.data.filepath or not scene.render.filepath.startswith("//")) and os.path.isdir(folder):
+            layout.operator("wm.path_open", text="Open Render Folder", icon='FILE_FOLDER').filepath = folder
 
 
 class PROPERTIES_PT_m3d_rn_color(_Output, Panel):
@@ -1097,14 +1517,82 @@ class _Passes(_PagePanel):
     page = "render_passes"
 
 
+class M3D_OT_render_layer_from_selection(Operator):
+    """New Render Layer from Selection: a render layer with only the selected objects (and the scene's lights): they go into a
+    collection of their own (they stay in theirs too), the other collections are left out of the new layer"""
+    bl_idname = "m3d.render_layer_from_selection"
+    bl_label = "New Render Layer from Selection"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'OBJECT' and bool(context.selected_objects)
+
+    def execute(self, context):
+        scene, picked = context.scene, list(context.selected_objects)
+        active = context.active_object if context.active_object in picked else picked[0]
+        name = active.name + " Layer"
+        coll = bpy.data.collections.new(name)
+        scene.collection.children.link(coll)
+        for ob in {*picked, *(o for o in scene.objects if o.type == 'LIGHT')}:
+            coll.objects.link(ob)
+        layer = scene.view_layers.new(coll.name)
+        for lc in layer.layer_collection.children:
+            lc.exclude = lc.collection != coll
+        if context.window is not None:
+            context.window.view_layer = layer
+        loose = [o for o in scene.collection.objects if o not in picked and o.type != 'LIGHT']
+        if loose:
+            self.report({'WARNING'}, "Render layer \"%s\": %d objects in no collection render in it too (%s)" % (
+                layer.name, len(loose), ", ".join(o.name for o in loose[:3])))
+        else:
+            self.report({'INFO'}, "Render layer \"%s\": %d objects and the scene's lights" % (layer.name, len(picked)))
+        return {'FINISHED'}
+
+
 class PROPERTIES_PT_m3d_rn_view_layers(_Passes, Panel):
-    bl_label = "View Layers"
+    bl_label = "Render Layers"
 
     def draw(self, context):
         layout = self.layout
         layout.template_search(context.window, "view_layer", context.scene, "view_layers", new="scene.view_layer_add",
                                unlink="scene.view_layer_remove")
         layout.prop(context.view_layer, "use", text="Render This Layer")
+        if M3D_OT_render_layer_from_selection.poll(context):
+            layout.operator("m3d.render_layer_from_selection", icon='RENDERLAYERS')
+        else:
+            reason(layout, "Select objects (Object Mode) for a New Render Layer from Selection")
+
+
+PASSES = [("Combined", "use_pass_combined"), ("Depth", "use_pass_z"), ("Mist", "use_pass_mist"),
+          ("Normal", "use_pass_normal"), ("Position", "use_pass_position"), ("Vector", "use_pass_vector"),
+          ("Diffuse Direct", "use_pass_diffuse_direct"), ("Diffuse Color", "use_pass_diffuse_color"),
+          ("Glossy Direct", "use_pass_glossy_direct"), ("Glossy Color", "use_pass_glossy_color"),
+          ("Emission", "use_pass_emit"), ("Environment", "use_pass_environment"),
+          ("Ambient Occlusion", "use_pass_ambient_occlusion"), ("Shadow", "use_pass_shadow")]
+CYCLES_PASSES = [("Diffuse Indirect", "use_pass_diffuse_indirect"), ("Glossy Indirect", "use_pass_glossy_indirect"),
+                 ("Transmission", "use_pass_transmission_direct")]
+CRYPTOMATTE = (("Object", "use_pass_cryptomatte_object"), ("Material", "use_pass_cryptomatte_material"),
+               ("Asset", "use_pass_cryptomatte_asset"))
+
+
+def extra_passes(scene):
+    """Does a render layer that renders make passes besides Combined (passes, Cryptomatte, AOVs, light groups)?"""
+    names = [name for _label, name in (*PASSES[1:], *CRYPTOMATTE)]
+    cycles = scene.render.engine == 'CYCLES'
+    return any(any(getattr(vl, name) for name in names) or len(vl.aovs) or (cycles and (
+        len(vl.lightgroups) or any(getattr(vl, name) for _label, name in CYCLES_PASSES) or vl.cycles.use_pass_shadow_catcher))
+        for vl in scene.view_layers if vl.use)
+
+
+def draw_pass_warning(layout, context):
+    """Passes are written only into a Multilayer EXR: say so, with the switch, while the output is another type."""
+    scene = context.scene
+    if scene.render.image_settings.media_type != 'MULTI_LAYER_IMAGE' and extra_passes(scene):
+        box = layout.box()
+        box.label(text="Passes are saved only in a Multilayer EXR", icon='ERROR')
+        o = box.operator("wm.context_set_enum", text="Switch Output to Multilayer EXR", icon='RENDERLAYERS')
+        o.data_path, o.value = "scene.render.image_settings.media_type", 'MULTI_LAYER_IMAGE'
 
 
 class PROPERTIES_PT_m3d_rn_passes(_Passes, Panel):
@@ -1114,15 +1602,10 @@ class PROPERTIES_PT_m3d_rn_passes(_Passes, Panel):
         layout = self.layout
         vl = context.view_layer
         cycles = engine(context) == 'CYCLES'
-        rows = [("Combined", "use_pass_combined"), ("Depth", "use_pass_z"), ("Mist", "use_pass_mist"),
-                ("Normal", "use_pass_normal"), ("Position", "use_pass_position"), ("Vector", "use_pass_vector"),
-                ("Diffuse Direct", "use_pass_diffuse_direct"), ("Diffuse Color", "use_pass_diffuse_color"),
-                ("Glossy Direct", "use_pass_glossy_direct"), ("Glossy Color", "use_pass_glossy_color"),
-                ("Emission", "use_pass_emit"), ("Environment", "use_pass_environment"),
-                ("Ambient Occlusion", "use_pass_ambient_occlusion"), ("Shadow", "use_pass_shadow")]
+        draw_pass_warning(layout, context)
+        rows = list(PASSES)
         if cycles:
-            rows[8:8] = [("Diffuse Indirect", "use_pass_diffuse_indirect"), ("Glossy Indirect", "use_pass_glossy_indirect"),
-                         ("Transmission", "use_pass_transmission_direct")]
+            rows[8:8] = CYCLES_PASSES
         flow = layout.grid_flow(row_major=True, columns=2, even_columns=True, align=True)
         for label, name in rows:
             flow.prop(vl, name, text=label, toggle=True)
@@ -1130,8 +1613,7 @@ class PROPERTIES_PT_m3d_rn_passes(_Passes, Panel):
             flow.prop(vl.cycles, "use_pass_shadow_catcher", text="Shadow Catcher", toggle=True)
         layout.label(text="Cryptomatte")
         flow = layout.grid_flow(row_major=True, columns=3, even_columns=True, align=True)
-        for label, name in (("Object", "use_pass_cryptomatte_object"), ("Material", "use_pass_cryptomatte_material"),
-                            ("Asset", "use_pass_cryptomatte_asset")):
+        for label, name in CRYPTOMATTE:
             flow.prop(vl, name, text=label, toggle=True)
 
 
@@ -1171,25 +1653,33 @@ def layer_collections(lc, depth=0):
 
 
 class PROPERTIES_PT_m3d_rn_holdout(_Passes, Panel):
-    bl_label = "Holdout and Indirect Only"
+    bl_label = "Collections in This Render Layer"
 
     def draw(self, context):
         layout = self.layout
         found = list(layer_collections(context.view_layer.layer_collection))
         if not found:
-            reason(layout, "No collections: objects in the scene collection cannot be held out")
+            reason(layout, "No collections: every object is in every render layer")
             return
         head = layout.row(align=True)
         head.label(text="Collection")
-        _cell(head, 3.2).label(text="Holdout")
-        _cell(head, 3.2).label(text="Indirect")
+        for text in ("In Layer", "Holdout", "Indirect"):
+            _cell(head, 3.2).label(text=text)
         col = layout.column(align=True)
         for lc, depth in found[:TABLE_ROWS]:
             row = col.row(align=True)
-            row.label(text="    " * depth + lc.name, icon='OUTLINER_COLLECTION')
+            sub = row.row(align=True)
+            sub.active = not lc.exclude
+            sub.label(text="    " * depth + lc.name, icon='OUTLINER_COLLECTION')
+            _cell(row, 3.2).prop(lc, "exclude", text="", invert_checkbox=True)
+            if lc.exclude:   # (left out: holdout and indirect don't apply)
+                _cell(row, 6.4).label(text="")
+                continue
             _cell(row, 3.2).prop(lc, "holdout", text="", icon='HOLDOUT_ON' if lc.holdout else 'HOLDOUT_OFF')
             _cell(row, 3.2).prop(lc, "indirect_only", text="",
                                  icon='INDIRECT_ONLY_ON' if lc.indirect_only else 'INDIRECT_ONLY_OFF')
+        if len(found) > TABLE_ROWS:
+            layout.label(text="%d more collections not shown" % (len(found) - TABLE_ROWS))
 
 
 class _ActiveObject(_Passes):
@@ -1349,8 +1839,8 @@ def draw_status_line(layout, context):
     row = layout.row(align=True)
     for key, label in QUALITY:
         row.operator("m3d.render_preset", text=label, depress=now == key).preset = key
-    if now == 'CUSTOM':
-        layout.label(text="Custom")   # (settings of no preset: the state, beside the presets)
+    if now not in PRESET_VALUES:
+        layout.label(text="Custom" if now == 'CUSTOM' else now)   # (settings of no built-in preset: the state, beside the presets)
     layout.separator()
     row = layout.row(align=True)
     row.operator("m3d.render", text="Render", icon='RENDER_STILL')
@@ -1396,6 +1886,11 @@ classes = (
     M3D_OT_render_ipr,
     M3D_OT_render_light_add,
     M3D_OT_render_light,
+    M3D_OT_render_preset_save,
+    M3D_OT_render_preset_delete,
+    M3D_MT_render_presets,
+    M3D_OT_view_lighting,
+    M3D_OT_render_layer_from_selection,
     *PAGE_GATES,
     PROPERTIES_PT_m3d_rn_camera,
     PROPERTIES_PT_m3d_rn_lens,
@@ -1446,10 +1941,18 @@ def render_path_default(*_args):
             scene.render.filepath = DEFAULT_OUTPUT
 
 
+@bpy.app.handlers.persistent
+def quality_default(*_args):
+    """A new file starts at Medium quality, not "Custom" (Cycles' own defaults match no preset)."""
+    for scene in bpy.data.scenes:
+        apply_quality(scene, 'MEDIUM')
+
+
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.m3d_render = PointerProperty(type=M3D_RenderSettings)
+    bpy.app.handlers.load_factory_startup_post.append(quality_default)
     bpy.app.handlers.load_post.append(render_path_default)
     bpy.app.handlers.load_post.append(_file_loaded)
     bpy.app.handlers.render_init.append(_render_started)
@@ -1465,6 +1968,8 @@ def unregister():
             handlers.remove(fn)
     if render_path_default in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(render_path_default)
+    if quality_default in bpy.app.handlers.load_factory_startup_post:
+        bpy.app.handlers.load_factory_startup_post.remove(quality_default)
     del bpy.types.Scene.m3d_render
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

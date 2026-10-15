@@ -7,6 +7,8 @@ classic-style tools for Maelstrom3D: Maya operators, marking menus and the right
 (Channel Box / Layer Editor and Modeling Toolkit tabs of the Attribute Editor area).
 """
 
+import re
+
 import bpy
 from bpy.types import Menu, Operator, Panel
 from mathutils import Vector
@@ -329,19 +331,117 @@ class M3D_OT_separate(Operator):
         return {'FINISHED'}
 
 
-class M3D_OT_assign_material(Operator):
-    """Assign New Material: give the selection a new shader"""
-    bl_idname = "m3d.assign_material"
-    bl_label = "Assign New Material"
+MATERIAL_TYPES = {'MESH', 'CURVE', 'SURFACE', 'FONT', 'META'}
+
+
+def is_internal_material(mat):
+    """A material Maelstrom3D makes for itself (UV checker, bake views, previews, test bakes): "m3d" and a capital letter."""
+    return re.match(r"m3d[A-Z]", mat.name) is not None
+
+
+def selected_faces(context):
+    """{mesh object in Edit Mode: its BMesh faces that are selected} (objects without selected faces left out)."""
+    import bmesh
+    found = {}
+    for ob in context.objects_in_mode_unique_data if context.mode == 'EDIT_MESH' else ():
+        faces = [f for f in bmesh.from_edit_mesh(ob.data).faces if f.select]
+        if faces:
+            found[ob] = faces
+    return found
+
+
+def assign_material(context, mat, slots='ACTIVE'):
+    """Give the selection `mat`. Edit Mode: the selected faces only (the slot that has `mat`, else a new one; the other faces
+    keep theirs). Object Mode: each selected object's active slot ('ALL': `mat` replaces all its materials)."""
+    import bmesh
+    if context.mode == 'EDIT_MESH':
+        for ob, faces in selected_faces(context).items():
+            index = next((i for i, slot in enumerate(ob.material_slots) if slot.material == mat), None)
+            if index is None:
+                if not ob.material_slots and len(faces) < len(ob.data.polygons):
+                    ob.data.materials.append(None)   # (an empty first slot: the other faces keep the default look)
+                ob.data.materials.append(mat)
+                index = len(ob.material_slots) - 1
+            for face in faces:
+                face.material_index = index
+            bmesh.update_edit_mesh(ob.data)
+        return
+    for ob in context.selected_objects:
+        if ob.type not in MATERIAL_TYPES:
+            continue
+        if slots == 'ALL' or not ob.material_slots:
+            ob.data.materials.clear()
+            ob.data.materials.append(mat)
+            if ob.type == 'MESH':
+                ob.data.polygons.foreach_set("material_index", [0] * len(ob.data.polygons))
+        else:
+            ob.material_slots[ob.active_material_index].material = mat
+
+
+class _AssignMaterial:
+    """Assign New / Existing Material: in Edit Mode to the selected faces, in Object Mode to the active slot (asked when an
+    object has several materials)."""
     bl_options = {'REGISTER', 'UNDO'}
 
+    slots: bpy.props.EnumProperty(name="Replace", options={'SKIP_SAVE'}, items=(
+        ('ACTIVE', "Active Slot", "Replace the material of each object's active slot: its other materials stay"),
+        ('ALL', "All Materials", "The material replaces all the object's materials")))
+
+    def target(self, context):
+        """The material to assign (None: nothing to do)."""
+        raise NotImplementedError
+
+    def invoke(self, context, _event):
+        several = [ob for ob in context.selected_objects if ob.type in MATERIAL_TYPES
+                   and sum(1 for slot in ob.material_slots if slot.material) > 1]
+        if context.mode == 'OBJECT' and several:
+            return context.window_manager.invoke_props_dialog(self, title=self.bl_label, confirm_text="Assign")
+        return self.execute(context)
+
+    def draw(self, context):
+        layout = self.layout
+        ob = next(ob for ob in context.selected_objects if ob.type in MATERIAL_TYPES and len(ob.material_slots) > 1)
+        layout.label(text="%s has %d materials:" % (ob.name, len(ob.material_slots)))
+        layout.prop(self, "slots", expand=True)
+
     def execute(self, context):
-        mat = bpy.data.materials.new("standardSurface1")
-        for ob in context.selected_objects:
-            if ob.type in {'MESH', 'CURVE', 'SURFACE', 'FONT', 'META'}:
-                ob.data.materials.clear()
-                ob.data.materials.append(mat)
+        if context.mode == 'EDIT_MESH' and not selected_faces(context):
+            self.report({'WARNING'}, "Select faces first: in Edit Mode the material goes on the selected faces")
+            return {'CANCELLED'}
+        mat = self.target(context)
+        if mat is None:
+            return {'CANCELLED'}
+        assign_material(context, mat, self.slots)
         return {'FINISHED'}
+
+
+class M3D_OT_assign_material(_AssignMaterial, Operator):
+    """Assign New Material: a new shader on the selected faces (Edit Mode) or the selected objects"""
+    bl_idname = "m3d.assign_material"
+    bl_label = "Assign New Material"
+
+    def target(self, _context):
+        return bpy.data.materials.new("standardSurface1")
+
+
+_material_items = []   # (kept here: Blender reads the item strings after the callback has returned)
+
+
+def _existing_materials(_self, _context):
+    _material_items[:] = [(m.name, m.name, "") for m in bpy.data.materials
+                          if not is_internal_material(m) and not m.is_grease_pencil] or [("", "(no materials)", "")]
+    return _material_items
+
+
+class M3D_OT_assign_existing_material(_AssignMaterial, Operator):
+    """Assign an existing material to the selected faces (Edit Mode) or the selected objects"""
+    bl_idname = "m3d.assign_existing_material"
+    bl_label = "Assign Existing Material"
+
+    material: bpy.props.EnumProperty(name="Material", items=_existing_materials)
+
+    def target(self, _context):
+        return bpy.data.materials.get(self.material)
 
 
 class M3D_OT_lock_transforms(Operator):
@@ -445,6 +545,10 @@ class M3D_MT_marking_menu(Menu):
             box.label(text=label)
             for label, idname, icon, props in tools:
                 tool_button(box, context, label, idname, icon, props)
+            if _component_kind(context) == 'FACE':   # (on the selected faces)
+                box.separator()
+                box.operator("m3d.assign_material", icon='MATERIAL')
+                box.operator_menu_enum("m3d.assign_existing_material", "material", text="Assign Existing Material")
         else:
             from m3d_marking import draw_object_list
             draw_object_list(pie.box().column(align=True))
@@ -1213,6 +1317,7 @@ classes = (
     M3D_OT_boolean,
     M3D_OT_separate,
     M3D_OT_assign_material,
+    M3D_OT_assign_existing_material,
     M3D_OT_lock_transforms,
     M3D_OT_dock_tab,
     M3D_OT_command_language,

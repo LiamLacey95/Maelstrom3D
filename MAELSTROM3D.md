@@ -87,11 +87,17 @@ named here only to describe compatibility.*
 
 ## Right-click marking menu
 
-- **Object mode:** Vertex, Edge, Face, Multi, Object Mode, Group, Select All, More (Blender's object menu).
+- **Object mode:** Vertex, Edge, Face, Multi, Object Mode, Group, Assign New / Existing Material, Select All, More (Blender's object menu).
 - **Component mode:** the same mode switches, plus a list underneath with every tool for what is selected:
   - Vertex: Extrude, Chamfer, Connect, Merge, Merge to Center, Target Weld, Average, Slide, Detach, Create Polygon, Delete.
   - Edge: Extrude, Bevel, Bridge, Connect, Insert Edge Loop, Offset Edge Loop, Slide, Collapse, Merge to Center, Fill Hole, Spin, Crease, Soften/Harden, Cut UVs, Detach, Delete.
-  - Face: Extrude, Extrude Offset, Bevel, Bridge, Poke, Wedge, Add Divisions, Triangulate, Quadrangulate, Merge to Center, Duplicate, Extract, Detach, Flip, Planar UV, Delete.
+  - Face: Extrude, Extrude Offset, Bevel, Bridge, Poke, Wedge, Add Divisions, Triangulate, Quadrangulate, Merge to Center, Duplicate, Extract, Detach, Flip, Planar UV, Delete; Assign New / Existing Material.
+
+**Assign New / Existing Material** (marking menu, Lighting/Shading menu, Rendering shelf). In Edit Mode it goes on the selected
+faces only: the slot that has the material is used, else one is added, and the other faces keep theirs (a mesh without any
+material gets an empty first slot, so the rest keeps its look). In Object Mode it replaces the material of each selected object's
+active slot; an object with several materials asks first: **Active Slot** or **All Materials**. The list of existing materials
+leaves out Maelstrom3D's own (UV checker, bake views).
 
 ## UV editing (F3)
 
@@ -931,21 +937,40 @@ how to render, Shift+F12). Right: the dock.
 
 | Part | Contents |
 |---|---|
-| Status Line | Engine (Cycles / EEVEE), scene camera picker, quality preset (**Draft / Medium / Final**, or Custom once you edit a value), **Render**, **Render Animation**, **IPR**, **Render View** |
+| Status Line | Engine (Cycles / EEVEE), scene camera picker, quality preset (**Draft / Medium / Final**, the name of your own preset, or Custom once you edit a value), **Render**, **Render Animation**, **IPR**, **Render View** (Modeling's Status Line has the same Render View, Render and IPR buttons) |
 | Shelves | Lights (Point, Spot, Area, Sun, HDRI Sky, Previous World), Render (Render, Animation, Render View, Camera from View, Look Through, Draft / Medium / Final), Custom |
 | Camera tab | Scene camera, **New Camera from View**, Match Camera to View, Look Through Camera; focal length (or ortho scale), clip range; depth of field (focus object or distance, f-stop, blades); resolution X / Y / %; safe areas and composition guides; render border (Set / Clear) |
 | Lighting tab | Add Light buttons, the **Light Editor** (one row per light: viewport eye, render toggle, name, color, power, shadow, shared-data button, select), **HDRI Sky** (Blender's studio HDRIs, or your own file; rotation, strength), exposure and gamma |
 | Materials tab | The active object's material slots (Assign New Material for an object without one; with a camera, a light or nothing selected, the objects that can have one) and the Principled inputs (base color, metallic, roughness, emission color / strength, normal strength when a Normal Map or Bump node feeds it); a button to the Shading workspace |
-| Render tab | Engine and quality presets, then the engine's settings: Cycles device, samples, noise threshold, time limit, denoising; EEVEE samples, ray tracing, shadows |
-| Output tab | Path (`//render/` in a new file: a render folder next to the saved file), format, color mode and depth, frame range, FPS, Render / Render Animation, color management (view transform, look, exposure, gamma) |
-| Passes & Layers tab | View layers, passes (data, light, Cryptomatte, shadow catcher), AOVs, light groups, **holdout** and **indirect only** per collection, light linking and shadow linking for the active object, shadow catcher and holdout flags |
+| Render tab | Engine and quality presets with **Your Presets** (the menu beside them), then the engine's settings: Cycles device (with "GPU found: ... **Use GPU**" while it renders on the CPU), samples, noise threshold, time limit, denoising; EEVEE samples, ray tracing, shadows |
+| Output tab | Path (`//render/` in a new file: a render folder next to the saved file), **Type**: **Image Sequence** (format, color mode and depth), **Multilayer EXR** (every pass and render layer in one file per frame; depth, compression) or **Video** (container, codec, quality), Overwrite Existing Frames, frame range, FPS, Render / Render Animation, **Open Render Folder**, color management (view transform, look, exposure, gamma) |
+| Passes & Layers tab | **Render Layers** (picker, Render This Layer, **New Render Layer from Selection**), passes (data, light, Cryptomatte, shadow catcher), AOVs, light groups, **Collections in This Render Layer** (**In Layer**, **holdout** and **indirect only** per collection), light linking and shadow linking for the active object, shadow catcher and holdout flags |
 | Advanced tab | Light paths (Cycles bounces and clamping; EEVEE fast GI), film (transparent background, filter, motion blur), performance, simplify |
 
 **Quality presets.** Each preset sets both engines at once and the size, so switching engine keeps the preset. Draft: Cycles 32
 samples, 4 bounces; EEVEE 16 samples, no ray tracing; half size. Medium: Cycles 128 samples, 8 bounces; EEVEE 64 samples, ray
 tracing at half resolution. Final: Cycles 512 samples, 12 bounces; EEVEE 256 samples, full ray tracing, 2 shadow rays. All
-use denoising and adaptive sampling in Cycles. The Status Line and the Render tab show **Custom** as soon as you change one of
-those values (or the size); the preset buttons put them back.
+use denoising and adaptive sampling in Cycles. A new file starts at Medium. The Status Line and the Render tab show **Custom** as
+soon as you change one of those values (or the size); the preset buttons put them back. A preset also makes Cycles render on the
+GPU when there is one that passes a short test bake (the same test as Bake Mesh Maps). **Your Presets** (the menu beside the
+presets, and the Render menu): **Save as Preset...** keeps the current samples, bounces, ray tracing and size of both engines
+under a name of yours (for every file, in `m3d_user.json`), a click applies one, **Delete Preset** removes one.
+
+**Render and Render Animation.** The first render from a camera you cannot see (the hidden *persp* camera of a new scene) while
+the view does not look through it asks: **Match Camera to View** (moves the camera to the view, then renders) or **Render
+Anyway**, with **Don't ask again**; it asks once per camera in a session. Render Animation in a file that was never saved (with a
+`//` path) opens Save As first: the frames go into a folder next to the file. A path that is only a folder (`//render/`) gets the
+scene's name, so the frames are `Scene_0001.png` ... When frames of the range are there already it asks: **New Version Folder**
+(the next free `v002`, `v003`... folder) or **Overwrite**. When it is done the status bar and a popup say how many frames went where,
+with **Open Folder** (the Output tab has **Open Render Folder** too).
+
+**Passes.** Passes other than Combined (and Cryptomatte, AOVs, light groups) are saved only in a Multilayer EXR: the Passes and
+Output tabs say so while the output is another type, with **Switch Output to Multilayer EXR**.
+
+**Render layers.** A render layer is Blender's view layer. **New Render Layer from Selection** makes one with the selected objects
+and the scene's lights: they go into a new collection of their own (they stay in theirs too) and every other collection is left
+out of the new layer, which the window then shows (objects in no collection are in every layer: it says so). **In Layer** in
+Collections in This Render Layer puts a collection in or out of the layer shown.
 
 **Light Editor.** Every light of the scene is a row, including lights in hidden or excluded collections (greyed). The eye shows
 or hides the light in the viewport, the camera icon in the render. A light whose settings are shared with other lights shows
@@ -954,7 +979,10 @@ for a light in an excluded collection).
 
 **HDRI Sky.** Picking an HDRI (or **HDRI Sky** on the shelf) assigns a new world called *m3dHDRI* (Texture Coordinate, Mapping,
 Environment Texture, Background). The world the scene had is kept and **Back to Previous World** puts it back. Rotation and
-strength edit the Mapping and Background nodes. The viewport shows the sky in Rendered shading.
+strength edit the Mapping and Background nodes. F7's 3D view shows the sky in Material Preview too (Back to Previous World
+returns it to the studio light) and in Rendered shading. F7's Material Preview is lit by the scene's lights as well; the Lighting
+menu of a 3D view switches: **Use Default Lighting** (studio light only), **Use Flat Lighting**, **Use All Lights** (Material
+Preview with the scene's lights).
 
 **Camera from View.** Adds a camera at the current viewport view (with the viewport's field of view) and makes it the scene
 camera; **Match Camera to View** moves the scene camera to the view instead.

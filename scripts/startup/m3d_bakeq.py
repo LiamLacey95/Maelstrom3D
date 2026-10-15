@@ -166,6 +166,15 @@ def device_note(context):
     return "GPU: %s (%s)" % (", ".join(found[1]), found[0]) if found[0] else "CPU: " + found[2]
 
 
+def known_gpu():
+    """find_gpu's answer when it was asked for the compute device type the preferences have now, else None (nothing is tried:
+    for a panel's draw)."""
+    prefs = cycles_prefs()
+    if prefs is None:
+        return None, [], "Cycles is off"
+    return _gpu["found"] if _gpu["found"] is not None and _gpu["kind"] == prefs.compute_device_type else None
+
+
 def check_gpu_soon():
     """Ask find_gpu a moment later (a test bake takes a second: not while a panel draws)."""
     if _gpu["found"] is None and not bpy.app.timers.is_registered(_check_gpu):
