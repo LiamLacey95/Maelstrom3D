@@ -101,6 +101,8 @@ def restore_window():
 @step
 def setup():
     restore_window()
+    check(bpy.context.scene.render.filepath == m3d_render.DEFAULT_OUTPUT, "a new file renders into //render/, not /tmp/ (%r)"
+          % bpy.context.scene.render.filepath)
     lb_sandbox()   # (the Library tab: temporary folders and no thumbnails for the tests of the other phases, see lb_setup)
     win, area, region = view3d()
     with bpy.context.temp_override(window=win, area=area, region=region):
@@ -8553,7 +8555,7 @@ def anim_playblast_check():
     after = (scene.render.filepath, scene.render.resolution_percentage, scene.render.image_settings.file_format, scene.frame_current,
              scene.frame_start, scene.frame_end)
     check(after == GIZMO["pb_before"], "the render output settings are put back: %s vs %s" % (after, GIZMO["pb_before"]))
-    check(scene.m3d_anim.playblast_note.startswith("Playblast: 3 frames"), "Playblast reports: %r" % scene.m3d_anim.playblast_note)
+    check(scene.m3d_anim.playblast_note == "Last playblast: 3 frames", "Playblast reports: %r" % scene.m3d_anim.playblast_note)
     check(not tracebacks(), "Python error in the Playblast")
     scene.frame_start, scene.frame_end = 1, 24
 
@@ -11963,6 +11965,129 @@ step(wait_until(lambda: window().workspace.name == "Rigging" and len(props_areas
 @step
 def pol_done():
     check(not tracebacks(), "Python error in the shared chrome checks")
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
+# --- Dock pages: an empty state is one card (why + the button that fixes it), and its button fits the situation: with a camera
+# selected, Rendering > Materials picks an object that can have a material; Skin adds the mesh to the skeleton's selection;
+# Layers without animation sets a key.
+POLB = {}
+
+
+def polb_redraw():
+    for area in window().screen.areas:
+        area.tag_redraw()
+
+
+def polb_select(ob):
+    for o in bpy.context.view_layer.objects:
+        o.select_set(o == ob)
+    bpy.context.view_layer.objects.active = ob
+
+
+@step
+def polb_setup():
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        if bpy.context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.ops.mesh.primitive_cube_add(location=(0, 9, 0))
+        box = bpy.context.object
+        box.name = "PB_Box"
+        box.data.materials.clear()
+        bpy.ops.object.camera_add(location=(6, 3, 2))
+        bpy.context.object.name = "PB_Cam"
+        bpy.ops.object.armature_add(location=(-3, 9, 0))
+        bpy.context.object.name = "PB_Arm"
+    bpy.ops.m3d.workspace(kind='RENDER')
+
+
+step(wait_until(lambda: window().workspace.name == "Rendering", "the Rendering workspace"))
+
+
+@step
+def polb_materials():
+    polb_select(bpy.data.objects["PB_Cam"])
+    press_ok("m3d.dock_page", _area=rn_dock(), tab="render_materials")
+    polb_redraw()
+
+
+@step
+def polb_materials_card():
+    check(not tracebacks(), "Python error drawing the Materials card (a camera selected)")
+    rn_press("m3d.pick_object", name="PB_Box", extend=False)
+    check(bpy.context.active_object == bpy.data.objects["PB_Box"] and not bpy.data.objects["PB_Cam"].select_get(),
+          "Materials with a camera selected: the card's button selects an object that can have a material")
+    polb_redraw()
+
+
+@step
+def polb_materials_new():
+    check(not tracebacks(), "Python error drawing the Materials card (a mesh without material)")
+    rn_press("m3d.assign_material")
+    box = bpy.data.objects["PB_Box"]
+    check(box.active_material is not None and m3d_render.principled(box.active_material) is not None,
+          "...then Assign New Material gives it one with a Principled shader")
+    polb_redraw()
+
+
+@step
+def polb_skin():
+    check(not tracebacks(), "Python error drawing the Materials page with a material")
+    bpy.ops.m3d.workspace(kind='RIG')
+
+
+step(wait_until(lambda: window().workspace.name == "Rigging", "the Rigging workspace"))
+
+
+@step
+def polb_skin_page():
+    polb_select(bpy.data.objects["PB_Arm"])
+    press_ok("m3d.dock_page", _area=rig_dock()[1], tab="rig_skin")
+    polb_redraw()
+
+
+@step
+def polb_skin_pick():
+    check(not tracebacks(), "Python error drawing the Skin card")
+    press_ok("m3d.pick_object", _area=rig_dock()[1], name="PB_Box", extend=True)
+    arm, box = bpy.data.objects["PB_Arm"], bpy.data.objects["PB_Box"]
+    check(bpy.context.active_object == arm and arm.select_get() and box.select_get() and m3d_rig.skin_mesh(bpy.context) == box,
+          "Skin: the card's button adds the mesh to the selection, the skeleton stays active (ready for Bind)")
+    polb_redraw()
+
+
+@step
+def polb_layers():
+    check(not tracebacks(), "Python error drawing the Skin page")
+    bpy.ops.m3d.workspace(kind='ANIM')
+
+
+step(wait_until(lambda: window().workspace.name == "Animation", "the Animation workspace"))
+
+
+@step
+def polb_layers_page():
+    polb_select(bpy.data.objects["PB_Box"])
+    press_ok("m3d.dock_page", _area=an_dock(), tab="anim_layers")
+    polb_redraw()
+
+
+@step
+def polb_layers_key():
+    check(not tracebacks(), "Python error drawing the Layers card")
+    an_press("anim.keyframe_insert")
+    ad = bpy.data.objects["PB_Box"].animation_data
+    check(ad is not None and ad.action is not None, "Layers without animation: the card's Set Key keys the object")
+    polb_redraw()
+
+
+@step
+def polb_done():
+    check(not tracebacks(), "Python error drawing the Layers tab after a key")
+    for name in ("PB_Box", "PB_Cam", "PB_Arm"):
+        if name in bpy.data.objects:
+            bpy.data.objects.remove(bpy.data.objects[name])
     bpy.ops.m3d.workspace(kind='MODEL')
 
 

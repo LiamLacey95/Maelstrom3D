@@ -47,7 +47,7 @@ import m3d_workspace as W
 from m3d_layers import (CHANNEL_BY_ID, CHANNEL_ITEMS, CHANNELS, active_layer, entry_of, pixels_of, principled_of,
                         set_channel_space)
 from m3d_mode import _button
-from m3d_sculpt import (active_brush_id, brush_tiles, draw_lines, fits, mesh_of, multires_of, reason, split_props,
+from m3d_sculpt import (active_brush_id, brush_tiles, draw_lines, empty_state, fits, mesh_of, multires_of, reason, split_props,
                         ui_scale_factor, viewport)
 from m3d_workspace import _PagePanel
 
@@ -221,16 +221,17 @@ def ready(context, need):
 
 
 def draw_fixes(layout, context, need):
-    col = layout.column(align=True)
-    for key in needed(context, need):
-        if key == 'BIG':   # a huge mesh stays in Object Mode here: the message says which mesh to pick instead
-            m3d_pair.draw_note(col, m3d_pair.big_note(context))
-            continue
-        text, label, icon, idname, props = FIXES[key]
-        col.label(text=text)
-        _button(col, context, label, idname, icon, props)
-        if key == 'MATERIAL':
-            _button(col, context, "New Texture Project...", "m3d.tex_project", 'FILE_NEW', {})
+    """The card of the first thing the mesh still needs (the next one shows once that is done)."""
+    keys = needed(context, need)
+    if 'BIG' in keys:   # a huge mesh stays in Object Mode here: the message says which mesh to pick instead
+        m3d_pair.draw_note(layout, m3d_pair.big_note(context))
+        keys.remove('BIG')
+    if not keys:
+        return
+    text, label, icon, idname, props = FIXES[keys[0]]
+    col = empty_state(layout, context, text, (label, idname, icon, props))
+    if keys[0] == 'MATERIAL':
+        _button(col, context, "New Texture Project...", "m3d.tex_project", 'FILE_NEW', {})
 
 
 # -----------------------------------------------------------------------------
@@ -3390,7 +3391,7 @@ class PROPERTIES_PT_m3d_tx_canvas(_Page, Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.label(text="No paint slots yet")
+        reason(layout, "No paint slots yet")
         layout.prop(context.scene.m3d_tex, "resolution")
         op = layout.operator("m3d.tex_channel", text="Add Base Color", icon='ADD')
         op.channel = 'BASE_COLOR'
@@ -3418,7 +3419,7 @@ class PROPERTIES_PT_m3d_tx_tuning(_Page, Panel):
         settings = paint_settings(context)
         brush = settings.brush
         if brush is None:
-            layout.label(text="Pick a brush above")
+            reason(layout, "Pick a brush above")
             return
         col = layout.column()
         UnifiedPaintPanel.prop_unified(col, context, brush, "size", unified_name="use_unified_size", text="Size",
@@ -3923,7 +3924,7 @@ class PROPERTIES_PT_m3d_tx_stack(_Page, Panel):
         mat = ob.active_material
         if len(ob.material_slots) > 1 and W.tabs_kind(context) == 'TEXTURE_OLD':   # (the Texture Set List lists them)
             layout.template_list("MATERIAL_UL_matslots", "layers", ob, "material_slots", ob, "active_material_index",
-                                 rows=2)
+                                 rows=2, show_handles=False)
         if principled_of(mat) is None:
             reason(layout, "Layers need a Principled BSDF in the material")
             return
@@ -4078,7 +4079,7 @@ class PROPERTIES_PT_m3d_tx_layer_props(_LayerPage, Panel):
         draw_layer(self.layout, context, fill_values=False)
 
 
-MASK_HELP = "White shows the layer, black hides it. Effects combine from the bottom up."
+MASK_HELP = "White shows the layer, black hides it; effects combine from the bottom up"
 
 
 class M3D_MT_mask_add(Menu):
@@ -4094,9 +4095,7 @@ def draw_mask_stack(layout, context, mat, layer, explain=True):
     too) and, when an effect reads maps baked from the mesh, Rebake Mesh Maps. False when it has no effects yet (the buttons to make
     one are drawn)."""
     if explain or not layer.mask_stack:
-        first, _dot, second = MASK_HELP.partition(". ")   # (two lines: the dock can be narrow)
-        reason(layout, first + ".")
-        layout.label(text=second)
+        reason(layout, MASK_HELP)   # (on more lines when the dock is narrow)
     if not layer.mask_stack:
         row = layout.row(align=True)
         row.operator("m3d.layer_mask_add", text="White (Show All)", icon='ADD').fill = 'WHITE'
@@ -4310,7 +4309,8 @@ class PROPERTIES_PT_m3d_tx_slots(_Page, Panel):
         mat = ob.active_material
         layout.prop(paint_settings(context), "mode", text="Canvas")
         row = layout.row()
-        row.template_list("TEXTURE_UL_texpaintslots", "", mat, "texture_paint_slots", mat, "paint_active_slot", rows=3)
+        row.template_list("TEXTURE_UL_texpaintslots", "", mat, "texture_paint_slots", mat, "paint_active_slot",
+                          rows=min(max(len(mat.texture_paint_slots), 1), 6), show_handles=False)
         row.operator_menu_enum("paint.add_texture_paint_slot", "type", icon='ADD', text="")
 
 
@@ -5149,7 +5149,7 @@ class M3D_PT_tex_shader(Panel):
         layout = self.layout
         mat = mesh_of(context).active_material
         if mat.node_tree is None:
-            layout.label(text="The material has no nodes")
+            reason(layout, "The material has no nodes")
             return
         layout.label(text=mat.name, icon='MATERIAL')
         panel_node_draw(layout, mat.node_tree, 'OUTPUT_MATERIAL', "Surface")
@@ -5373,7 +5373,7 @@ def draw_status_line(layout, context):
     if Q.running():   # (what is baking, Cancel and the view: the guard lets a click on this line through, so it draws nothing that edits)
         layout.label(text=Q.text(), icon='RENDER_STILL', translate=False)
         layout.operator("m3d.bake_cancel", icon='CANCEL')
-        layout.label(text="Esc stops the map that is baking")
+        reason(layout, "Esc stops the map that is baking")
         layout.separator_spacer()
         draw_layout_buttons(layout, context)
         _call(layout, "view3d.view_persportho", 'VIEW_PERSPECTIVE', "Perspective / Orthographic")

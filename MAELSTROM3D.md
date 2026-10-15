@@ -26,7 +26,7 @@ named here only to describe compatibility.*
 | Editor names | Attribute Editor, Shader Editor, Script Editor, Command Line, Command History, Time Editor | `rna_space.cc`, `node_shader_tree.cc` |
 | Marking menus | RMB, Shift+RMB, Ctrl+RMB in the viewport; RMB, Shift+RMB in the UV Editor; Space hotbox | `m3d_mode.py`, `m3d_uv.py` |
 | Status bar (bottom) | The keys of the workspace and mode, read from the keymap (so they follow your own keys): in Object and Edit Mode LMB Select, Shift Toggle, Ctrl Deselect, Alt+LMB / MMB / RMB Tumble / Track / Dolly, RMB Marking Menu, Space Hotbox; UV: the UV Editor's selection, UV Menu and UV Tools; Rigging Edit Mode: Extrude, Names, Menu; Weight Paint: Paint, Subtract, Smooth, Size, Weight, Sample; Pose Mode: Set Key, Tween, Play; Rendering: Render, Render View; Sculpt and Texture: the keys of the brush (see there). While a tool or gesture runs, the bar shows that tool's keys instead | `m3d_ui.py` (`draw_status_hints`), `bl_ui/space_statusbar.py` |
-| Docks | A dock shows its own tabs in its header; Blender's column of stock tabs beside it shows only with **All Settings** (the Attribute Editor in Modeling), in every task workspace. The Tool tab shows the active tool's settings (Blender's Workspace panel is in the 3D view's sidebar, Tool tab) | `m3d_workspace.py` (`sync_nav_bar`), `bl_ui/properties_workspace.py` |
+| Docks | A dock shows its own tabs in its header; Blender's column of stock tabs beside it shows only with **All Settings** (the Attribute Editor in Modeling), in every task workspace. The Tool tab shows the active tool's settings (Blender's Workspace panel is in the 3D view's sidebar, Tool tab). A page or panel that cannot work yet shows one card in every workspace: a hint line saying why and the button that fixes it (Pose Mode, New Camera from View, Assign New Material, the scene's objects to pick...); controls that cannot work are hidden rather than greyed, lists are as tall as their items (an empty one says how to fill it), and on a narrow dock button grids take fewer columns so no label is cut off | `m3d_workspace.py` (`sync_nav_bar`), `bl_ui/properties_workspace.py` |
 | UV editing | UV workspace (F3): dock tabs, Status Line and shelf for Cut/Sew/Unfold/Optimize/Layout, texel density, Auto Unwrap, UDIMs, checker map; sidebar UV Toolkit in other workspaces | `scripts/startup/m3d_uv.py` |
 | Texturing | Texture workspace (F4): tool strip, Assets, Texture Set List, Layers, Properties and dock strip laid out like a dedicated painting tool, painting keys, context toolbar, display modes of the 3D and 2D views, texture sets with their channels, size and mesh maps, Bake Mesh Maps, Export Textures and New Texture Project dialogs; paint layer stack, painted images are saved or packed with the file; assets: plain and smart materials, smart masks, brushes, alphas, environments and your own items | `scripts/startup/m3d_texture.py`, `scripts/startup/m3d_layers.py`, `scripts/startup/m3d_masks.py`, `scripts/startup/m3d_library.py` (data: `m3d_library_data.py`; preview pictures: `tools/m3d/library_thumbs.py`), `scripts/startup/m3d_bakegroups.py` (bake groups), `scripts/startup/m3d_bakeq.py` (the bake queue, the guard and the device), `scripts/startup/m3d_bakeview.py` (the view of Bake Mesh Maps), `scripts/startup/m3d_texset.py` (texture set settings, Export Textures dialog, New Texture Project) |
 | Rigging | Rigging workspace (F5): Outliner with the bone hierarchy and bone collections on the left, a large viewport, a dock of Skeleton, Controls & Constraints, Skin, Drive, Test and Collections tabs that follows the mode, Timeline that switches to the Drivers editor; Joint tool, Orient Joint, control shapes, IK with pole, bind with fallback, weight tools, Driven Key, naming check, Rigify on demand; Ctrl+E, Shift+N | `scripts/startup/m3d_rig.py` |
@@ -102,7 +102,7 @@ the 3D view (Solid, seams shown) on the right, and the dock with the UV tools. N
 |---|---|
 | Status Line | Object / Edit Mode, UV Sync, select mode (Vertex / Edge / Face) and Shell select, Live Unwrap, Distortion (and its type), Checker, texture size |
 | Shelf | Cut, Sew, Unfold, Optimize, Layout (large buttons), Auto Unwrap, Custom |
-| Unwrap tab | Cut and Sew (Cut, Sew, Split, Merge, Auto Seams from shells), Unfold (Angle Based or Conformal, Fill Holes), Optimize (iterations), Layout (margin, rotation: none / 90 degrees / axis aligned / any), Pin (Pin, Unpin, Invert Pins, Select Pinned) |
+| Unwrap tab | Cut and Sew (Cut, Sew, Split, Merge, Seams from Shells), Unfold (Angle Based or Conformal, Fill Holes), Optimize (iterations), Layout (margin, rotation: none / 90 degrees / axis aligned / any), Pin (Pin, Unpin, Invert Pins, Select Pinned) |
 | Arrange tab | Select (Shell, Grow, Shrink, Invert, Overlapping, Pinned), Transform (Flip U/V, Rotate 90, Align U/V, Straighten, Snap Together), Shells (Orient Shells, Match Scale) |
 | Check tab | Checker map, Distortion (angle or area), Shaded UVs, Texel Density: texture size, target, **Read**, **Set**, **Match** |
 | Create tab | Auto Unwrap (seam angle, margin), projections: Automatic, Planar, Cylindrical, Spherical, Camera-Based, Cube |
@@ -819,10 +819,10 @@ Status Line (or in the Drive tab) turns the same area into the Drivers editor an
 | Shelves | Skeleton (Joint, Extrude, Mirror, Orient, Names L/R, Parent, Disconnect), Controls (circle, square, arrow, cube and sphere shapes, a color and Apply, IK + Pole), Skin (Bind, Paint Weights, Normalize, Mirror Weights), Custom |
 | Skeleton tab | Joint tool and its options; Edit Bones (Extrude, Extrude Forked, Click Extrude, Subdivide, Duplicate, Delete, Fill Between Joints, Switch Direction, Align); Mirror (+X to -X, -X to +X, Select Mirror); Orient (Orient Joint and the roll presets); Names (Name Sides by X / Y / Z, Flip Names, the naming check); Hierarchy (Parent connected / with offset, Disconnect, Clear Parent, Select Parent / Child); Generate Rig (Rigify) |
 | Controls & Constraints tab | Add Constraint buttons (Copy Location / Rotation / Scale / Transforms, Child Of, Damped Track, Stretch To, Armature, the Limit constraints, Action, Spline IK, IK); IK (chain length, pole distance, **IK with Pole**, IK to Bone, Clear IK); the active bone's constraint stack; Control Shape and Color; Locks |
-| Skin tab | Bind (Automatic, Envelope or Empty Groups, with a fall back to envelope weights), Unbind; Weight Paint (mode button, brush weight, size and strength, Vertex / Face Select, bone selection and mirror options); Influences (every vertex group with a lock and a solo button); Weights (Flood, Weights from Bones, Smooth, Normalize All, Limit Total, Clean, Mirror Weights); Transfer Weights; Weight Table of the selected vertex |
-| Drive tab | Shape Keys (list, value, Add, From Mix, Reset Values, Mirror Shape); **Driven Key**; the drivers of the active object with a button for the Drivers editor |
+| Skin tab | Bind (Automatic, Envelope or Empty Groups, with a fall back to envelope weights), Unbind (for a bound mesh); Weight Paint (mode button, brush weight, size and strength, Vertex / Face Select, bone selection and mirror options); Influences (every vertex group with a lock and a solo button); Weights once the mesh has vertex groups (Flood and Weights from Bones in Weight Paint Mode, Smooth, Normalize All, Limit Total, Clean, Mirror Weights); Transfer Weights; Weight Table of the selected vertex |
+| Drive tab | Shape Keys (Add Basis Shape, then the list, value, Add, From Mix, Reset Values, Mirror Shape); **Driven Key**; the drivers of the active object with a button for the Drivers editor |
 | Test tab | Reset Pose, Reset Selected, Clear Location / Rotation / Scale, Copy / Paste / Paste Flipped; Rest / Pose position and Apply Pose as Rest Pose; Pose Library (Save Pose, the saved poses with Apply and Flipped, the viewport's pose shelf) |
-| Collections tab | Bone Collections (the tree with show / hide, assign, select), Selection Sets, Bone Colors, Bone Display |
+| Collections tab | Bone Collections (the tree with show / hide, assign, select; Show All / Unsolo All while a collection is hidden / soloed), Selection Sets (Pose Mode), Bone Colors, Bone Display |
 
 The dock opens the tab that fits the mode when you enter it: Edit Mode the Skeleton tab, Pose Mode Controls & Constraints,
 Weight Paint Mode Skin. A tab you pick yourself in a mode is what that mode opens on from then on, and a dock on All Settings
@@ -879,7 +879,7 @@ Sides, Flip Names, Mirror, Select Mirror, Select Problem Names) in Edit and Pose
 ## Animation (F6)
 
 F6 opens the Animation workspace (in Pose Mode when a skeleton is active). Left: a camera view (the scene camera; the view says
-so when there is none and the Channel Box tab offers Add Camera). Middle: the large viewport. Bottom: one editor that is the
+so when there is none and the Channel Box tab offers New Camera from View). Middle: the large viewport. Bottom: one editor that is the
 Dope Sheet or the Graph Editor (the **Graph / Dope Sheet** buttons in the Status Line, Ctrl+Space maximizes it) with the Timeline
 under it. Right: the dock. While the animation plays only the viewports and the animation editors redraw, so the dock does not
 slow playback (it catches up when you stop).
@@ -891,7 +891,7 @@ slow playback (it catches up when you stop).
 | Channel Box tab | The active object's channels, or in Pose Mode the **active bone's** channels (translate, the rotation of its mode, scale), with its custom properties as sliders (IK / FK switches); animated channels are coloured as usual (yellow = key on this frame, green = animated) |
 | Pick tab | Bone selection sets of the skeleton (list and one button per set), **object selection sets** (made from the selection; a click selects, Shift-click adds), bone collection picker (visibility toggle and a button that selects the collection's bones) |
 | Tween & Poses tab | Tween slider with 0 / 25 / 50 / 75 / 100 buttons, Key and Revert; Push, Relax, Breakdown, To Neighbor, To Rest (Pose Mode); Copy / Paste / Flipped, Save Pose, the saved poses with Apply and Flipped |
-| Motion tab | Motion paths (show, range, frame step, Calculate / Update / Clear, numbers, show in the viewport) of the selected bones or objects; Ghost Curves for the Graph Editor |
+| Motion tab | Motion paths (show, range, frame step, Calculate, then Update / Clear, Frame Numbers / Key Numbers, show in the viewport) of the selected bones or objects; Ghost Curves for the Graph Editor |
 | Layers tab | Layers are NLA tracks: Push Down, Add Additive Layer, the tracks (mute, name, solo, Edit, remove), the top action's blend and influence, Bake |
 | Playback tab | Range (start, end, preview range, FPS, Range from Keys, Scene from Keys), Blocking / Polish and the new key defaults, loop, pre-roll, sync, Playblast (folder, size, play when done) |
 
@@ -913,7 +913,7 @@ and starts an empty action on top that adds to the layers below, so a pass of po
 tweak mode on a layer, Done Editing leaves it. Bake flattens the selection over the playback range into one action.
 
 **Playblast.** Renders the viewport (the camera view when the workspace has one) over the playback range into PNG frames
-(the Playback tab sets the folder, default a temporary one, and the size as a percentage) and opens them in the player. Esc
+(the Playback tab sets the folder, default a temporary one, and the size as a percentage; the folder button beside the frame range opens it) and opens them in the player. Esc
 cancels. Your render output settings (path, format, size, frame range) are put back afterwards.
 
 Keys: S sets a key, Shift+W / E / R key translate / rotate / scale, Alt+V plays, `,` and `.` jump between keys, Alt+, and Alt+.
@@ -932,9 +932,9 @@ Rendered viewport and back; Rendered re-renders as you work, which is heavy on a
 | Shelves | Lights (Point, Spot, Area, Sun, HDRI Sky, Previous World), Render (Render, Animation, Render View, Camera from View, Look Through, Draft / Medium / Final), Custom |
 | Camera tab | Scene camera, **New Camera from View**, Match Camera to View, Look Through Camera; focal length (or ortho scale), clip range; depth of field (focus object or distance, f-stop, blades); resolution X / Y / %; safe areas and composition guides; render border (Set / Clear) |
 | Lighting tab | Add Light buttons, the **Light Editor** (one row per light: viewport eye, render toggle, name, color, power, shadow, shared-data button, select), **HDRI Sky** (Blender's studio HDRIs, or your own file; rotation, strength), exposure and gamma |
-| Materials tab | The active object's material slots and the Principled inputs (base color, metallic, roughness, emission color / strength, normal strength when a Normal Map or Bump node feeds it); a button to the Shading workspace |
+| Materials tab | The active object's material slots (Assign New Material for an object without one; with a camera, a light or nothing selected, the objects that can have one) and the Principled inputs (base color, metallic, roughness, emission color / strength, normal strength when a Normal Map or Bump node feeds it); a button to the Shading workspace |
 | Render tab | Engine and quality presets, then the engine's settings: Cycles device, samples, noise threshold, time limit, denoising; EEVEE samples, ray tracing, shadows |
-| Output tab | Path, format, color mode and depth, frame range, FPS, Render / Render Animation, color management (view transform, look, exposure, gamma) |
+| Output tab | Path (`//render/` in a new file: a render folder next to the saved file), format, color mode and depth, frame range, FPS, Render / Render Animation, color management (view transform, look, exposure, gamma) |
 | Passes & Layers tab | View layers, passes (data, light, Cryptomatte, shadow catcher), AOVs, light groups, **holdout** and **indirect only** per collection, light linking and shadow linking for the active object, shadow catcher and holdout flags |
 | Advanced tab | Light paths (Cycles bounces and clamping; EEVEE fast GI), film (transparent background, filter, motion blur), performance, simplify |
 
@@ -961,8 +961,8 @@ UV workspace in Modeling). Esc cancels a render.
 
 ## Customising the interface
 
-**Small screens.** On a window narrower than the layouts were made for (1366 x 768, say), the Sculpt tray and dock and the
-Texture workspace's Assets column and right column (Texture Sets, the dock, Properties) keep the width their panels need, and the
+**Small screens.** On a window narrower than the layouts were made for (1366 x 768, say), the Sculpt tray and dock, the Rigging bone collections
+page and the Texture workspace's Assets column and right column (Texture Sets, the dock, Properties) keep the width their panels need, and the
 Texture Set List the height of its start card; the views give up the room. This happens when the window gets a new size or shows
 another workspace, so a column you drag narrower afterwards stays so. Rows that still do not fit show icons (their tooltips say the
 name and key), hints go on more lines, the Assets grid takes fewer columns so the names show, and the dock tabs that do not fit

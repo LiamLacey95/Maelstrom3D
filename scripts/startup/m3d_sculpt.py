@@ -491,6 +491,73 @@ def reason(layout, text):
     draw_lines(layout, bpy.context, text)
 
 
+def empty_state(layout, context, text, action=None):
+    """The card of a page or panel that can't work yet, the same everywhere: why (a hint line), then the one button that
+    fixes it, `action` = (label, operator, icon, properties). Returns the card's column (for more ways to fix it)."""
+    col = layout.column()
+    if text:   # (none when a note above says why)
+        reason(col, text)
+    if action is not None:
+        row = col.row()
+        row.scale_y = 1.3
+        _button(row, context, *action)
+    return col
+
+
+def draw_list(layout, list_type, owner, prop, active_owner, active_prop, add, remove, hint, list_id=""):
+    """A list of our docks: no resize grip, as tall as its items (up to 6; one row when empty, with `hint` how to fill
+    it), + / - beside it (- only with an item to remove). `add` / `remove`: operator ids. Returns the column of the
+    buttons (for more of them)."""
+    items = getattr(owner, prop)
+    row = layout.row()
+    row.template_list(list_type, list_id, owner, prop, active_owner, active_prop, rows=min(max(len(items), 1), 6),
+                      show_handles=False)
+    col = row.column(align=True)
+    col.operator(add, icon='ADD', text="")
+    if len(items):
+        col.operator(remove, icon='REMOVE', text="")
+    else:
+        reason(layout, hint)
+    return col
+
+
+def draw_object_picks(layout, objects, extend=False, limit=6):
+    """A button for each of `objects` (up to `limit`) that selects it (m3d.pick_object): the fix of a card that needs
+    another selection."""
+    col = layout.column(align=True)
+    for ob in objects[:limit]:
+        o = col.operator("m3d.pick_object", text=ob.name, icon=PICK_ICONS.get(ob.type, 'OBJECT_DATA'))
+        o.name, o.extend = ob.name, extend
+
+
+PICK_ICONS = {'MESH': 'OUTLINER_OB_MESH', 'CAMERA': 'OUTLINER_OB_CAMERA', 'LIGHT': 'OUTLINER_OB_LIGHT',
+              'ARMATURE': 'OUTLINER_OB_ARMATURE', 'CURVE': 'OUTLINER_OB_CURVE', 'EMPTY': 'OUTLINER_OB_EMPTY'}
+
+
+class M3D_OT_pick_object(Operator):
+    """Select this object and make it the active one"""
+    bl_idname = "m3d.pick_object"
+    bl_label = "Select Object"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    name: bpy.props.StringProperty(options={'SKIP_SAVE'})
+    extend: bpy.props.BoolProperty(options={'SKIP_SAVE'}, description="Add it to the selection (the active object stays)")
+
+    def execute(self, context):
+        ob = context.view_layer.objects.get(self.name)
+        if ob is None:
+            return {'CANCELLED'}
+        if context.mode != 'OBJECT' and bpy.ops.object.mode_set.poll():
+            bpy.ops.object.mode_set(mode='OBJECT')
+        if not self.extend:
+            for other in context.selected_objects:
+                other.select_set(False)
+            context.view_layer.objects.active = ob
+        ob.hide_set(False)
+        ob.select_set(True)
+        return {'FINISHED'}
+
+
 def fits(context, texts, share=1.0):
     """Do buttons showing `texts` fit side by side in `share` of the region's width (less a panel's margins)? Measured with
     the UI font like the dock tabs; True without a region (a test). Where they don't, a row drops to icons (tooltips)."""
@@ -503,7 +570,17 @@ def fits(context, texts, share=1.0):
 
 
 def grid(layout, context, items, columns=2, active=None):
-    """Operator buttons: (label, idname, icon, props); `active(idname, props)` draws one pressed."""
+    """Operator buttons: (label, idname, icon, props); `active(idname, props)` draws one pressed. A narrow dock gets
+    fewer columns, so no label is cut off."""
+    from m3d_workspace import TAB_PAD, text_width
+    region = getattr(context, "region", None)
+    if columns > 1 and items and region is not None and getattr(region, "width", 0):
+        scale = context.preferences.system.ui_scale or 1.0
+        # (a button: its label, the icon and a small margin; the panel takes about 32 px of the width)
+        widest = max(text_width(label, scale) + ((24 if icon not in (None, 'NONE') else 8) - TAB_PAD) * scale
+                     for label, _idname, icon, _props in items)
+        while columns > 1 and widest * columns > region.width - 32 * scale:
+            columns -= 1
     flow = layout.grid_flow(row_major=True, columns=columns, even_columns=True, align=True)
     for label, idname, icon, props in items:
         _button(flow, context, label, idname, icon, props,
@@ -1303,9 +1380,8 @@ def _gate(page, need):
     """The panel a page shows instead of its own outside Sculpt Mode: how to get there. (Without a mesh the docks show
     the start card instead, see pages_shown.)"""
     def draw(self, context):
-        col = self.layout.column(align=True)
-        col.label(text="Enter Sculpt Mode to use these tools")
-        _button(col, context, "Sculpt Mode", "object.mode_set", 'SCULPTMODE_HLT', {"mode": 'SCULPT'})
+        empty_state(self.layout, context, "Enter Sculpt Mode to use these tools",
+                    ("Sculpt Mode", "object.mode_set", 'SCULPTMODE_HLT', {"mode": 'SCULPT'}))
     return type("PROPERTIES_PT_m3d_sc_%s_gate" % page, (_PagePanel, Panel), {
         "bl_label": "Sculpt", "bl_options": {'HIDE_HEADER'}, "page": "sculpt_" + page,
         "page_poll": classmethod(lambda cls, context: mesh_of(context) is not None and not ready(context, need)),
@@ -1379,7 +1455,7 @@ class PROPERTIES_PT_m3d_sc_tuning(_Page, Panel):
         split_props(layout)
         brush = sculpt_brush(context)
         if brush is None:
-            layout.label(text="Pick a brush above")
+            reason(layout, "Pick a brush above")
             return
         draw_brush_sliders(layout.column(), context, brush)
         row = layout.row()
@@ -1539,7 +1615,7 @@ def draw_multires(layout, context):
     for label, mode in (("Subdivide (smooth)", 'CATMULL_CLARK'), ("Subdivide (keep shape)", 'SIMPLE')):
         row.operator("m3d.multires_subdivide", text=label).mode = mode
     if mod is None:
-        layout.label(text="Adds detail levels to sculpt on and step between")
+        reason(layout, "Adds detail levels to sculpt on and step between")
     else:
         split_props(layout)
         row = layout.row(align=True)
@@ -1624,7 +1700,7 @@ def draw_dyntopo(layout, context):
     _button(layout, context, "Turn Off Dynamic Detail" if on else "Turn On Dynamic Detail",
             "sculpt.dynamic_topology_toggle", 'CHECKBOX_HLT' if on else 'CHECKBOX_DEHLT', {}, depress=on)
     if not on:
-        layout.label(text="Strokes add and remove faces as they go")
+        reason(layout, "Strokes add and remove faces as they go")
         layout.label(text="Turning it on removes UVs and Face Sets", icon='ERROR')
         return
     col = layout.column()
@@ -1719,9 +1795,9 @@ class PROPERTIES_PT_m3d_sc_mask(_Mask, Panel):
         _button(big, context, label + " Mask", idname, icon, props)
         grid(layout, context, MASK_FILL[1:], columns=2)
         col = layout.column(align=True)
-        col.label(text="Ctrl+drag: mask | Ctrl+Alt+drag: unmask")
-        col.label(text="Off the mesh: Ctrl+drag clears, Ctrl+click inverts")
-        col.label(text="Expand: Shift+A over the mesh (Shift+W: face sets)")
+        for i, text in enumerate(("Ctrl+drag: mask | Ctrl+Alt+drag: unmask", "Off the mesh: Ctrl+drag clears, Ctrl+click inverts",
+                                  "Expand: Shift+A over the mesh (Shift+W: face sets)")):
+            draw_lines(col, context, text, icon='INFO' if i == 0 else 'BLANK1')   # (one hint: the keys of the mask)
         space = viewport(context)
         if space is not None:
             # How the mask shows (the viewport's mask overlay): on / off, its color and opacity.
@@ -1755,7 +1831,7 @@ class PROPERTIES_PT_m3d_sc_mask_hide(_Mask, Panel):
 
     def draw(self, context):
         grid(self.layout, context, HIDE_MASKED, columns=3)
-        self.layout.label(text="Ctrl+Shift+drag: hide outside | +Alt: inside | click: show")
+        reason(self.layout, "Ctrl+Shift+drag: hide outside | +Alt: inside | click: show")
 
 
 # --- Face Sets
@@ -1805,7 +1881,7 @@ class PROPERTIES_PT_m3d_sc_fs_edit(_FaceSets, Panel):
 
     def draw(self, context):
         tools_grid(self.layout, context, FACE_SET_EDIT)
-        self.layout.label(text="Then click a face set in the viewport")
+        reason(self.layout, "Then click a face set in the viewport")
 
 
 class PROPERTIES_PT_m3d_sc_fs_visibility(_FaceSets, Panel):
@@ -1813,7 +1889,7 @@ class PROPERTIES_PT_m3d_sc_fs_visibility(_FaceSets, Panel):
 
     def draw(self, context):
         grid(self.layout, context, FACE_SET_VISIBILITY)
-        self.layout.label(text="Hide / show one set: H over it")
+        reason(self.layout, "Hide / show one set: H over it")
 
 
 # --- Deform
@@ -1841,7 +1917,7 @@ class PROPERTIES_PT_m3d_sc_filters(_Deform, Panel):
     def draw(self, context):
         layout = self.layout
         tools_grid(layout, context, MESH_FILTERS)
-        layout.label(text="Pick a filter, then drag in the viewport")
+        reason(layout, "Pick a filter, then drag in the viewport")
 
 
 class PROPERTIES_PT_m3d_sc_symmetrize(_Deform, Panel):
@@ -1890,7 +1966,7 @@ class PROPERTIES_PT_m3d_sc_paint(_Paint, Panel):
         layout = self.layout
         split_props(layout)
         mesh = mesh_of(context).data
-        layout.label(text="These paint vertex colors; paint textures in F4 Texture")
+        reason(layout, "These paint vertex colors; paint textures in F4 Texture")
         grid(layout, context, [(label, "brush.asset_activate", 'NONE', brush_props(name))
                                for label, name in PAINT_BRUSHES], columns=3,
              active=lambda idname, props: is_active(context, idname, props))
@@ -1902,7 +1978,7 @@ class PROPERTIES_PT_m3d_sc_paint(_Paint, Panel):
         settings = UnifiedPaintPanel.paint_settings(context)
         brush = settings.brush if settings else None
         if brush is None or not brush.sculpt_capabilities.has_color:
-            layout.label(text="Pick a color brush above")
+            reason(layout, "Pick a color brush above")
         else:
             UnifiedPaintPanel.prop_unified_color_picker(layout, context, brush, "color")
             row = layout.row(align=True)
@@ -1924,7 +2000,7 @@ class PROPERTIES_PT_m3d_sc_color_filter(_Paint, Panel):
 
     def draw(self, context):
         tools_grid(self.layout, context, COLOR_FILTERS)
-        self.layout.label(text="Pick a filter, then drag in the viewport")
+        reason(self.layout, "Pick a filter, then drag in the viewport")
 
 
 # --- Display
@@ -1934,7 +2010,7 @@ def draw_shading(layout, context, units_x=0):
     the matcap popover, which is `units_x` wide)."""
     space = viewport(context)
     if space is None:
-        layout.label(text="No 3D Viewport in this workspace")
+        reason(layout, "No 3D Viewport in this workspace")
         return
     shading = space.shading
     names = [i.name for i in shading.bl_rna.properties["type"].enum_items]
@@ -2017,7 +2093,7 @@ class PROPERTIES_PT_m3d_sc_objects(_Page, Panel):
             row.operator("m3d.sculpt_add_mesh", text=label, icon='ADD').kind = kind
         meshes = [o for o in context.view_layer.objects if o.type == 'MESH']
         if not meshes:
-            layout.label(text="No meshes in the scene")
+            reason(layout, "No meshes in the scene")
         elif mesh_of(context):
             m3d_pair.draw_sculpt_status(layout, context, context.active_object)
         col = layout.column(align=True)
@@ -2333,6 +2409,7 @@ SHELF_MASK = [
 
 
 classes = (
+    M3D_OT_pick_object,
     M3D_OT_sculpt_tool,
     M3D_OT_multires_subdivide,
     M3D_OT_sculpt_apply_scale,

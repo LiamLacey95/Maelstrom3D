@@ -291,6 +291,7 @@ def texture_role(context):
 MIN_SIZES = {
     'SCULPT': (('LEFT', 'W', 220), ('RIGHT', 'W', 300)),
     'TEXTURE': (('ASSETS', 'W', 200), ('SETS', 'W', 330), ('SETS', 'H', 165)),
+    'RIG': (('LEFT', 'W', 220),),   # (the bone collection tree under the Outliner: names, eye, solo)
 }
 _fitted = {}   # window pointer -> (width, height, screen pointer) it was fitted for
 

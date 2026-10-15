@@ -22,7 +22,7 @@ from mathutils import Vector
 
 import m3d_pair
 from m3d_mode import _button
-from m3d_sculpt import grid, reason, split_props
+from m3d_sculpt import draw_object_picks, empty_state, grid, reason, split_props
 from m3d_workspace import _PagePanel, current_kind
 
 UV_TOOLKIT = "UV Toolkit"
@@ -480,7 +480,7 @@ UVTK_CUT_SEW = (
     ("Sew", "m3d.uv_sew", 'AUTOMERGE_ON', {}),
     ("Split", "uv.select_split", 'UNLINKED', {}),
     ("Merge", "uv.remove_doubles", 'AUTOMERGE_OFF', {}),
-    ("Auto Seams (from shells)", "uv.seams_from_islands", 'UV_ISLANDSEL', {}),
+    ("Seams from Shells", "uv.seams_from_islands", 'UV_ISLANDSEL', {}),
 )
 UVTK_UNFOLD = (
     ("Unfold", "m3d.uv_unfold", 'UV', {}),
@@ -628,17 +628,20 @@ class _Page(_PagePanel):
 def _gate(page):
     """The panel a page shows instead of its own when there is nothing to work on: what to do next."""
     def draw(self, context):
-        col = self.layout.column(align=True)
+        layout = self.layout
         if mesh_object(context) is None:
-            col.label(text="Select a mesh to unwrap")
-            _button(col, context, "Add Cube", "m3d.add_primitive", 'MESH_CUBE', {"kind": 'CUBE'})
-        else:
-            note = m3d_pair.big_note(context)   # a huge mesh stays in Object Mode here
-            if note:
-                m3d_pair.draw_note(col, note)
+            meshes = [o for o in context.view_layer.objects if o.type == 'MESH' and o.visible_get()]
+            if meshes:
+                draw_object_picks(empty_state(layout, context, "Select a mesh to unwrap"), meshes)
             else:
-                col.label(text="Enter Edit Mode to use these tools")
-            _button(col, context, "Edit Mode", "object.mode_set", 'EDITMODE_HLT', {"mode": 'EDIT'})
+                empty_state(layout, context, "No mesh to unwrap yet", ("Add Cube", "m3d.add_primitive", 'MESH_CUBE',
+                                                                       {"kind": 'CUBE'}))
+            return
+        note = m3d_pair.big_note(context)   # a huge mesh stays in Object Mode here
+        if note:
+            m3d_pair.draw_note(layout, note)
+        empty_state(layout, context, "" if note else "Enter Edit Mode to use these tools",
+                    ("Edit Mode", "object.mode_set", 'EDITMODE_HLT', {"mode": 'EDIT'}))
     return type("PROPERTIES_PT_m3d_uv_%s_gate" % page, (_PagePanel, Panel), {
         "bl_label": "UV", "bl_options": {'HIDE_HEADER'}, "page": "uv_" + page,
         "page_poll": classmethod(lambda cls, context: not ready(context, 'EDIT')), "draw": draw})
@@ -654,7 +657,8 @@ class PROPERTIES_PT_m3d_uv_cut(_Unwrap, Panel):
     bl_label = "Cut and Sew"
 
     def draw(self, context):
-        grid(self.layout, context, UVTK_CUT_SEW)
+        grid(self.layout, context, UVTK_CUT_SEW[:4])
+        grid(self.layout, context, UVTK_CUT_SEW[4:], columns=1)   # (Seams from Shells: the whole width)
 
 
 class PROPERTIES_PT_m3d_uv_unfold(_Unwrap, Panel):
@@ -664,7 +668,9 @@ class PROPERTIES_PT_m3d_uv_unfold(_Unwrap, Panel):
         layout = self.layout
         split_props(layout)
         s = context.scene.m3d_uv
-        layout.row().prop(s, "method", expand=True)
+        row = layout.row()
+        row.use_property_split = False   # (no label: the two methods fit a narrow dock)
+        row.prop(s, "method", expand=True)
         layout.prop(s, "fill_holes")
         row = layout.row()
         row.scale_y = 1.4
@@ -755,9 +761,8 @@ class PROPERTIES_PT_m3d_uv_distortion(_Check, Panel):
             return
         uvedit = space.uv_editor
         layout.prop(uvedit, "show_stretch", text="Show Distortion", toggle=True)
-        sub = layout.column()
-        sub.active = uvedit.show_stretch
-        sub.row().prop(uvedit, "display_stretch_type", expand=True)
+        if uvedit.show_stretch:
+            layout.row().prop(uvedit, "display_stretch_type", expand=True)
         layout.prop(uvedit, "show_faces", text="Shaded UVs")
 
 
@@ -774,7 +779,7 @@ class PROPERTIES_PT_m3d_uv_density(_Check, Panel):
         grid(layout, context, [(label, "m3d.uv_texel_density", icon, {"mode": mode}) for label, icon, mode in (
             ("Read", 'EYEDROPPER', 'READ'), ("Set", 'CHECKMARK', 'SET'), ("Match", 'FULLSCREEN_ENTER', 'MATCH'))],
             columns=3)
-        layout.label(text="Match uses the active face's shell")
+        reason(layout, "Match uses the active face's shell")
 
 
 # --- Create
@@ -803,7 +808,7 @@ class PROPERTIES_PT_m3d_uv_projections(_Create, Panel):
 
     def draw(self, context):
         grid(self.layout, context, UVTK_CREATE)
-        self.layout.label(text="Planar and Camera-Based use the 3D view")
+        reason(self.layout, "Planar and Camera-Based use the 3D view")
 
 
 # --- UDIM
@@ -839,7 +844,8 @@ class PROPERTIES_PT_m3d_uv_tiles(_Udim, Panel):
         layout = self.layout
         space = uv_space(context)
         image = space.image
-        layout.template_list("IMAGE_UL_udim_tiles", "", image, "tiles", image.tiles, "active_index", rows=4)
+        layout.template_list("IMAGE_UL_udim_tiles", "", image, "tiles", image.tiles, "active_index",
+                             rows=min(len(image.tiles), 6), show_handles=False)
         grid(layout, context, (("Add Tile", "image.tile_add", 'ADD', {}), ("Remove Tile", "image.tile_remove", 'REMOVE', {}),
                                ("Fill Tile", "image.tile_fill", 'COLOR', {})), columns=3)
         split_props(layout)

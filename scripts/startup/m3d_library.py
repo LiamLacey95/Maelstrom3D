@@ -1059,7 +1059,7 @@ def tile_rows(layout, context, cells, min_px=84, columns=0, width=0):
 
 def item_tiles(layout, context, s, found):
     if not found:
-        layout.label(text="Nothing here")
+        reason(layout, "Nothing here")
         return
 
     def cell(entry):

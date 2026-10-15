@@ -1070,7 +1070,7 @@ class PROPERTIES_PT_m3d_mtk_soft_selection(_ToolkitPanel, Panel):
         ts = context.tool_settings
         col = self.layout.column()
         col.prop(ts, "proportional_size", text="Falloff Radius")
-        col.prop(ts, "proportional_edit_falloff", text="Falloff Curve")
+        col.prop(ts, "proportional_edit_falloff", text="Curve")   # (under Falloff Radius; a narrow dock cut "Falloff Curve")
         if context.mode == 'EDIT_MESH':
             col.prop(ts, "use_proportional_connected", text="Falloff Mode: Surface")
 

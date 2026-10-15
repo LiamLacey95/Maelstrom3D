@@ -21,7 +21,7 @@ from bpy.types import Operator, Panel, PropertyGroup
 from mathutils import Vector
 
 from m3d_mode import _button
-from m3d_sculpt import grid, reason, split_props, viewport
+from m3d_sculpt import draw_list, draw_lines, draw_object_picks, empty_state, grid, reason, split_props, viewport
 from m3d_workspace import _PagePanel, current_kind, workspace_kind
 
 ENGINES = (('CYCLES', "Cycles"), ('BLENDER_EEVEE', "EEVEE"))
@@ -547,9 +547,15 @@ def _gate(page, ok, draw_fix):
 
 
 def _material_fix(layout, context):
-    col = layout.column(align=True)
-    col.label(text="Select an object to edit its material")
-    _button(col, context, "Add Sphere", "m3d.add_primitive", 'MESH_UVSPHERE', {"kind": 'SPHERE'})
+    """No object that can have a material is active: pick one of the scene's (a camera or a light has none), else add one."""
+    ob = context.active_object
+    meshes = [o for o in context.view_layer.objects if o.type in MATERIAL_TYPES and o.visible_get()]
+    if not meshes:
+        empty_state(layout, context, "Nothing in the scene can have a material yet",
+                    ("Add Sphere", "m3d.add_primitive", 'MESH_UVSPHERE', {"kind": 'SPHERE'}))
+        return
+    text = "Select an object to edit its material" if ob is None else "%s has no material: select an object" % ob.type.title()
+    draw_object_picks(empty_state(layout, context, text), meshes)
 
 
 PAGE_GATES = (_gate("materials", lambda c: material_object(c) is not None, _material_fix),)
@@ -573,26 +579,33 @@ class _SceneCamera(_Camera):
         return cam is not None and cam.type == 'CAMERA'
 
 
+# The camera fixes (the Animation workspace's no-camera card uses NEW_CAMERA too)
+NEW_CAMERA = ("New Camera from View", "m3d.render_camera_from_view", 'ADD', {"mode": 'NEW'})
+SCENE_CAMERA = ("Selected Camera as Scene Camera", "view3d.object_as_camera", 'OUTLINER_OB_CAMERA', {})
+
+
 class PROPERTIES_PT_m3d_rn_camera(_Camera, Panel):
     bl_label = "Camera"
 
     def draw(self, context):
         layout = self.layout
         scene = context.scene
+        ob = context.active_object
+        picked = ob if ob is not None and ob.type == 'CAMERA' and ob != scene.camera else None
+        if scene.camera is None:   # (the selected camera, else a new one)
+            empty_state(layout, context, "No scene camera: the render is empty",
+                        SCENE_CAMERA if picked is not None else NEW_CAMERA)
         split_props(layout)
         layout.prop(scene, "camera")
-        ob = context.active_object
+        if scene.camera is None:
+            return
         col = layout.column(align=True)
-        o = col.operator("m3d.render_camera_from_view", text="New Camera from View", icon='ADD')
-        o.mode = 'NEW'
+        _button(col, context, *NEW_CAMERA)
         o = col.operator("m3d.render_camera_from_view", text="Match Camera to View", icon='CAMERA_DATA')
         o.mode = 'MATCH'
         _button(col, context, "Look Through Camera", "view3d.view_camera", 'VIEW_CAMERA', {})
-        sub = col.row(align=True)
-        sub.enabled = ob is not None and ob.type == 'CAMERA'
-        _button(sub, context, "Selected Camera as Scene Camera", "view3d.object_as_camera", 'OUTLINER_OB_CAMERA', {})
-        if scene.camera is None:
-            reason(layout, "No scene camera: New Camera from View adds one")
+        if picked is not None:
+            _button(col, context, *SCENE_CAMERA)
 
 
 class PROPERTIES_PT_m3d_rn_lens(_SceneCamera, Panel):
@@ -621,9 +634,8 @@ class PROPERTIES_PT_m3d_rn_dof(_SceneCamera, Panel):
         split_props(layout)
         layout.active = dof.use_dof
         layout.prop(dof, "focus_object", text="Focus Object")
-        sub = layout.row()
-        sub.active = dof.focus_object is None
-        sub.prop(dof, "focus_distance", text="Distance")
+        if dof.focus_object is None:   # (a focus object sets the distance)
+            layout.prop(dof, "focus_distance", text="Distance")
         layout.prop(dof, "aperture_fstop", text="F-Stop")
         layout.prop(dof, "aperture_blades", text="Blades")
 
@@ -668,9 +680,8 @@ class PROPERTIES_PT_m3d_rn_border(_Camera, Panel):
         r = context.scene.render
         split_props(layout)
         layout.prop(r, "use_border", text="Render Only the Border")
-        sub = layout.row()
-        sub.active = r.use_border
-        sub.prop(r, "use_crop_to_border", text="Crop to Border")
+        if r.use_border:
+            layout.prop(r, "use_crop_to_border", text="Crop to Border")
         row = layout.row(align=True)
         _button(row, context, "Set", "view3d.render_border", 'SELECT_SET', {})
         _button(row, context, "Clear", "view3d.clear_render_border", 'X', {})
@@ -812,8 +823,13 @@ class PROPERTIES_PT_m3d_rn_slots(_Materials, Panel):
     def draw(self, context):
         layout = self.layout
         ob = material_object(context)
+        if not any(slot.material for slot in ob.material_slots):
+            empty_state(layout, context, "%s has no material yet" % ob.name,
+                        ("Assign New Material", "m3d.assign_material", 'MATERIAL', {}))
+            return
         row = layout.row()
-        row.template_list("MATERIAL_UL_matslots", "", ob, "material_slots", ob, "active_material_index", rows=3)
+        row.template_list("MATERIAL_UL_matslots", "", ob, "material_slots", ob, "active_material_index",
+                          rows=min(len(ob.material_slots), 6), show_handles=False)
         col = row.column(align=True)
         col.operator("object.material_slot_add", icon='ADD', text="")
         col.operator("object.material_slot_remove", icon='REMOVE', text="")
@@ -822,6 +838,11 @@ class PROPERTIES_PT_m3d_rn_slots(_Materials, Panel):
 
 class PROPERTIES_PT_m3d_rn_surface(_Materials, Panel):
     bl_label = "Surface"
+
+    @classmethod
+    def page_poll(cls, context):   # (without a material the Material Slots card says what to do)
+        ob = material_object(context)
+        return ob is not None and any(slot.material for slot in ob.material_slots)
 
     def draw(self, context):
         layout = self.layout
@@ -902,9 +923,8 @@ class PROPERTIES_PT_m3d_rn_cycles(_CyclesPanel, Panel):
         layout.prop(cy, "samples", text="Render Samples")
         layout.prop(cy, "preview_samples", text="Viewport Samples")
         layout.prop(cy, "use_adaptive_sampling", text="Noise Threshold")
-        sub = layout.row()
-        sub.active = cy.use_adaptive_sampling
-        sub.prop(cy, "adaptive_threshold", text="Threshold")
+        if cy.use_adaptive_sampling:
+            layout.prop(cy, "adaptive_threshold", text="Threshold")
         layout.prop(cy, "time_limit", text="Time Limit")
 
 
@@ -980,6 +1000,8 @@ class PROPERTIES_PT_m3d_rn_output(_Output, Panel):
         im = r.image_settings
         split_props(layout)
         layout.prop(r, "filepath", text="Path")
+        if r.filepath.startswith("//") and not bpy.data.filepath:
+            reason(layout, "Save the file first: // is the folder of the saved file")
         layout.prop(im, "file_format", text="Format")
         layout.prop(im, "color_mode", text="Color")
         layout.prop(im, "color_depth", text="Depth")
@@ -1067,11 +1089,8 @@ class PROPERTIES_PT_m3d_rn_aov(_Passes, Panel):
     def draw(self, context):
         layout = self.layout
         vl = context.view_layer
-        row = layout.row()
-        row.template_list("VIEWLAYER_UL_aov", "aovs", vl, "aovs", vl, "active_aov_index", rows=3)
-        col = row.column(align=True)
-        col.operator("scene.view_layer_add_aov", icon='ADD', text="")
-        col.operator("scene.view_layer_remove_aov", icon='REMOVE', text="")
+        draw_list(layout, "VIEWLAYER_UL_aov", vl, "aovs", vl, "active_aov_index", "scene.view_layer_add_aov",
+                  "scene.view_layer_remove_aov", "+ adds an AOV; an AOV Output node in a material fills it", "aovs")
         if vl.active_aov and not vl.active_aov.is_valid:
             layout.label(text="Conflicts with another pass of the same name", icon='ERROR')
 
@@ -1086,11 +1105,9 @@ class PROPERTIES_PT_m3d_rn_lightgroups(_Passes, Panel):
     def draw(self, context):
         layout = self.layout
         vl = context.view_layer
-        row = layout.row()
-        row.template_list("UI_UL_list", "lightgroups", vl, "lightgroups", vl, "active_lightgroup_index", rows=3)
-        col = row.column(align=True)
-        col.operator("scene.view_layer_add_lightgroup", icon='ADD', text="")
-        col.operator("scene.view_layer_remove_lightgroup", icon='REMOVE', text="")
+        col = draw_list(layout, "UI_UL_list", vl, "lightgroups", vl, "active_lightgroup_index",
+                        "scene.view_layer_add_lightgroup", "scene.view_layer_remove_lightgroup",
+                        "+ adds a light group", "lightgroups")
         col.menu("VIEWLAYER_MT_lightgroup_sync", icon='DOWNARROW_HLT', text="")
         reason(layout, "A light joins a group in its Object properties (Shading, Light Group)")
 
@@ -1155,6 +1172,10 @@ class PROPERTIES_PT_m3d_rn_light_linking(_ActiveObject, Panel):
 class PROPERTIES_PT_m3d_rn_object_flags(_ActiveObject, Panel):
     bl_label = "Shadow Catcher and Holdout"
 
+    @classmethod
+    def page_poll(cls, context):   # (surfaces only: a light or a camera catches no shadow)
+        return material_object(context) is not None
+
     def draw(self, context):
         layout = self.layout
         ob = context.active_object
@@ -1195,12 +1216,11 @@ class PROPERTIES_PT_m3d_rn_paths(_Advanced, Panel):
         elif engine(context) == 'BLENDER_EEVEE':
             ev = scene.eevee
             layout.prop(ev, "use_fast_gi", text="Fast GI")
-            sub = layout.column()
-            sub.active = ev.use_fast_gi
-            sub.prop(ev, "fast_gi_method", text="Method")
-            sub.prop(ev, "fast_gi_ray_count", text="Rays")
-            sub.prop(ev, "fast_gi_step_count", text="Steps")
-            sub.prop(ev, "fast_gi_distance", text="Distance")
+            if ev.use_fast_gi:
+                layout.prop(ev, "fast_gi_method", text="Method")
+                layout.prop(ev, "fast_gi_ray_count", text="Rays")
+                layout.prop(ev, "fast_gi_step_count", text="Steps")
+                layout.prop(ev, "fast_gi_distance", text="Distance")
             layout.prop(ev, "gi_diffuse_bounces", text="Diffuse Bounces")
         else:
             reason(layout, "This engine has no light paths")
@@ -1218,9 +1238,8 @@ class PROPERTIES_PT_m3d_rn_film(_Advanced, Panel):
         if engine(context) == 'CYCLES':
             layout.prop(scene.cycles, "film_exposure", text="Exposure")
         layout.prop(scene.render, "use_motion_blur", text="Motion Blur")
-        sub = layout.row()
-        sub.active = scene.render.use_motion_blur
-        sub.prop(scene.render, "motion_blur_shutter", text="Shutter")
+        if scene.render.use_motion_blur:
+            layout.prop(scene.render, "motion_blur_shutter", text="Shutter")
 
 
 class PROPERTIES_PT_m3d_rn_performance(_Advanced, Panel):
@@ -1237,9 +1256,8 @@ class PROPERTIES_PT_m3d_rn_performance(_Advanced, Panel):
         if engine(context) == 'CYCLES':
             cy = context.scene.cycles
             layout.prop(cy, "use_auto_tile", text="Tiles")
-            sub = layout.row()
-            sub.active = cy.use_auto_tile
-            sub.prop(cy, "tile_size")
+            if cy.use_auto_tile:
+                layout.prop(cy, "tile_size")
 
 
 class PROPERTIES_PT_m3d_rn_simplify(_Advanced, Panel):
@@ -1362,13 +1380,30 @@ classes = (
 )
 
 
+DEFAULT_OUTPUT = "//render/"
+
+
+@bpy.app.handlers.persistent
+def render_path_default(*_args):
+    """A new file (the startup file, File > New) renders into a render folder next to the file once it is saved, not into
+    Blender's /tmp/ (a scene of a saved file keeps its path)."""
+    if bpy.data.filepath:
+        return
+    for scene in bpy.data.scenes:
+        if scene.render.filepath.replace("\\", "/") == "/tmp/":
+            scene.render.filepath = DEFAULT_OUTPUT
+
+
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.m3d_render = PointerProperty(type=M3D_RenderSettings)
+    bpy.app.handlers.load_post.append(render_path_default)
 
 
 def unregister():
+    if render_path_default in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(render_path_default)
     del bpy.types.Scene.m3d_render
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

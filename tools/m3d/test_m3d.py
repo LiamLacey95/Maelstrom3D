@@ -3630,8 +3630,8 @@ for i, e in enumerate(mtop.mask_stack):
     check(props_drawn == [p for p, _l in MK.PARAM_UI.get(e.kind, ())], "the Mask panel shows the settings of %s: %s" % (e.kind, props_drawn))
     shown_kinds.append(e.kind)
 log = draw_stub(T.PROPERTIES_PT_m3d_tx_mask, mctx)
-check(T.MASK_HELP == "White shows the layer, black hides it. Effects combine from the bottom up."
-      and {"White shows the layer, black hides it.", "Effects combine from the bottom up."} <= {r._kw.get("text") for r in log if r._kind == "label"},
+check(T.MASK_HELP == "White shows the layer, black hides it; effects combine from the bottom up"
+      and T.MASK_HELP in " ".join(r._kw.get("text") or "" for r in log if r._kind == "label"),
       "the Mask panel explains how masks work")
 check(LY.depsgraph_post in bpy.app.handlers.depsgraph_update_post and LY.load_post in bpy.app.handlers.load_post, "stroke and load handlers are registered")
 check(any(r._kind == "template_list" and r._args[0] == "M3D_UL_mask_effects" for r in log) and any(r._kind == "menu" for r in log), "...lists the effects and has the Add menu")
@@ -5025,9 +5025,11 @@ def rig_gated(page):
 
 
 for page in R.GATES:
-    check(rig_gated("rig_" + page), "rig_%s without a skeleton shows its message first: %s" % (page, rig_shown("rig_" + page)))
-check(rig_shown("rig_skeleton") == ["PROPERTIES_PT_m3d_rg_skeleton_gate", "PROPERTIES_PT_m3d_rg_create", "PROPERTIES_PT_m3d_rg_rigify"],
-      "Skeleton tab without a skeleton: message, Create, Rigify: %s" % rig_shown("rig_skeleton"))
+    if page != "skeleton":
+        check(rig_gated("rig_" + page), "rig_%s without a skeleton shows its message first: %s" % (page, rig_shown("rig_" + page)))
+# (the Skeleton tab's own Create panel makes the skeleton: no card above it)
+check(rig_shown("rig_skeleton") == ["PROPERTIES_PT_m3d_rg_create", "PROPERTIES_PT_m3d_rg_rigify"],
+      "Skeleton tab without a skeleton: Create, Rigify: %s" % rig_shown("rig_skeleton"))
 check(not any(n.endswith("_gate") for n in rig_shown("rig_drive")) and len(rig_shown("rig_drive")) >= 3, "Drive tab needs no skeleton")
 check(not R.ready(bpy.context, ('RIG',)) and R.rig_of(bpy.context) is None and R.skin_mesh(bpy.context) is None, "no skeleton, no mesh")
 
@@ -13664,7 +13666,7 @@ def p5_columns(ctx_):
 
 check(p5_columns(NS(region=NS(width=230), preferences=bpy.context.preferences)) == 2 and p5_columns(p5_wide) >= 3,
       "Assets: fewer columns where the names would be cut off")
-check(set(W.MIN_SIZES) == {'SCULPT', 'TEXTURE'} and W.fit_window(0) is None, "narrow windows: the docks keep a size (the GUI suite moves them)")
+check(set(W.MIN_SIZES) == {'SCULPT', 'TEXTURE', 'RIG'} and W.fit_window(0) is None, "narrow windows: the docks keep a size (the GUI suite moves them)")
 # the bake view: an outline around the problem areas and stripes on the high poly, Outlines and Stripes (on by default)
 p5_s = dict(face_of=np.array([0, 0, 0, 0, 1, 1, 1, 1]), vert=np.array([0, 1, 4, 3, 1, 2, 5, 4]), start=np.array([0, 4]), total=np.array([4, 4]),
             corner=np.array([(x_, y_, 0.0) for x_, y_ in ((0, 0), (1, 0), (1, 1), (0, 1), (1, 0), (2, 0), (2, 1), (1, 1))], np.float32))
@@ -13819,6 +13821,141 @@ for height, shown in ((26, False), (60, True)):
 _console_mel._scrollback = pa_scroll
 check(_console_mel.EXAMPLE in m3d_mode.M3D_OT_command_language.description(None, NS(language='mel')),
       "...and in the tooltip of Windows > Command Line: MEL")
+
+# --- Dock pages, polish: one empty-state card everywhere (a hint line, then the button that fixes it), lists as tall as their
+# items, no greyed controls, nothing cut off in a narrow dock, //render/ as a new file's render output.
+def pb_log(panel, ctx):
+    log = []
+    panel.draw(NS(layout=Rec(log)), ctx)
+    return log
+
+
+def pb_ops(log):
+    """The operators drawn (m3d.call's target for one that runs in a view)."""
+    return [r.values().get("idname") if r._args[0] == "m3d.call" else r._args[0] for r in log if r._kind == "operator"]
+
+
+def pb_texts(log):
+    return [r._kw.get("text") for r in log if r._kind in {"label", "operator"}]
+
+
+def pb_select(ob):
+    for o in bpy.context.view_layer.objects:
+        o.select_set(o == ob)
+    bpy.context.view_layer.objects.active = ob
+
+
+# (files were opened above: the workspaces the dock contexts use, again)
+sculpt_ws, uv_ws, rig_ws, anim_ws, render_ws = (bpy.data.workspaces[n] for n in ("Sculpt", "UV", "Rigging", "Animation", "Rendering"))
+log = []
+S.empty_state(Rec(log), bpy.context, "Why it can't work", ("Fix It", "object.select_all", 'NONE', {"action": 'SELECT'}))
+check([r._kw.get("text") for r in log if r._kind == "label"] == ["Why it can't work"] and pb_ops(log) == ["object.select_all"],
+      "empty state: the reason, then the button that fixes it")
+clean_scene()
+bpy.ops.mesh.primitive_cube_add()
+pb_cube = bpy.context.object
+bpy.ops.object.camera_add(location=(5, -5, 3))
+pb_cam = bpy.context.object
+check(bpy.ops.m3d.pick_object(name=pb_cube.name, extend=True) == {'FINISHED'} and pb_cube.select_get() and pb_cam.select_get()
+      and bpy.context.view_layer.objects.active == pb_cam, "Select Object (added): the active object stays active")
+bpy.ops.m3d.pick_object(name=pb_cube.name, extend=False)
+check(pb_cube.select_get() and not pb_cam.select_get() and bpy.context.view_layer.objects.active == pb_cube,
+      "Select Object: only it, and active")
+
+# Rendering: the Materials card fits what is selected; a camera in the card when there is no scene camera; no greyed rows.
+render_ws.m3d_page_right = "render_materials"
+pb_select(pb_cam)
+log = pb_log(RN.PAGE_GATES[0], RnCtx())
+check(pb_ops(log) == ["m3d.pick_object"] and "Camera has no material: select an object" in pb_texts(log)
+      and pb_texts(log)[-1] == pb_cube.name, "Materials with a camera selected: pick an object that can have one (%s)" % pb_texts(log))
+pb_select(None)
+check(pb_ops(pb_log(RN.PAGE_GATES[0], RnCtx())) == ["m3d.pick_object"], "...and with nothing selected")
+pb_select(pb_cube)
+pb_cube.data.materials.clear()
+log = pb_log(RN.PROPERTIES_PT_m3d_rn_slots, RnCtx())
+check(pb_ops(log) == ["m3d.assign_material"] and not [r for r in log if r._kind == "template_list"]
+      and not RN.PROPERTIES_PT_m3d_rn_surface.page_poll(RnCtx()), "a mesh without material: Assign New Material, no empty list")
+pb_cube.data.materials.append(bpy.data.materials.new("PB"))
+log = pb_log(RN.PROPERTIES_PT_m3d_rn_slots, RnCtx())
+pb_list = next((r for r in log if r._kind == "template_list"), None)
+check(pb_list is not None and pb_list._kw.get("show_handles") is False and pb_list._kw.get("rows") == 1,
+      "...with one: the slot list, one row, no grip")
+bpy.context.scene.camera = None
+render_ws.m3d_page_right = "render_camera"
+pb_select(pb_cam)
+check(pb_ops(pb_log(RN.PROPERTIES_PT_m3d_rn_camera, RnCtx())) == ["view3d.object_as_camera"],
+      "no scene camera, a camera selected: the card makes it the scene camera")
+pb_select(pb_cube)
+check(pb_ops(pb_log(RN.PROPERTIES_PT_m3d_rn_camera, RnCtx())) == ["m3d.render_camera_from_view"],
+      "...else New Camera from View")
+bpy.context.scene.camera = pb_cam
+log = pb_log(RN.PROPERTIES_PT_m3d_rn_camera, RnCtx())
+check("view3d.object_as_camera" not in pb_ops(log) and "Match Camera to View" in pb_texts(log),
+      "a scene camera: no greyed Selected Camera as Scene Camera")
+bpy.context.scene.render.use_border = False
+check(not [r for r in pb_log(RN.PROPERTIES_PT_m3d_rn_border, RnCtx()) if r._kind == "prop" and r._args[1] == "use_crop_to_border"],
+      "Crop to Border shows only with Render Only the Border")
+log = pb_log(RN.PROPERTIES_PT_m3d_rn_aov, RnCtx())
+pb_list = next(r for r in log if r._kind == "template_list")
+pb_aovs = len(bpy.context.view_layer.aovs)
+check(pb_list._kw.get("show_handles") is False and pb_list._kw.get("rows") == min(max(pb_aovs, 1), 6)
+      and ("scene.view_layer_remove_aov" in pb_ops(log)) == bool(pb_aovs), "AOVs: as tall as the list, - only with one to remove")
+pb_scene = bpy.data.scenes.new("PB render path")
+pb_scene.render.filepath = "/tmp\\"
+RN.render_path_default()
+check(RN.render_path_default in bpy.app.handlers.load_post and pb_scene.render.filepath == ("/tmp\\" if bpy.data.filepath else "//render/"),
+      "a new file renders into //render/, not /tmp/ (%r)" % pb_scene.render.filepath)
+bpy.data.scenes.remove(pb_scene)
+
+# Animation: Update / Clear once there are motion paths; a card for no animation / no skeleton / no camera; sets without a grip.
+pb_select(pb_cube)
+pb_cube.animation_data_clear()
+log = pb_log(A.PROPERTIES_PT_m3d_an_paths, ACtx())
+check([r.values().get("action") for r in log if r._kind == "operator" and r._args[0] == "m3d.anim_paths"] == ['CALCULATE'],
+      "Motion Paths before Calculate: no greyed Update / Clear")
+check(pb_ops(pb_log(A.PROPERTIES_PT_m3d_an_layers, ACtx())) == ["anim.keyframe_insert"], "Layers without animation: Set Key")
+log = pb_log(A.PROPERTIES_PT_m3d_an_inbetween, ACtx())
+check(pb_ops(log) == ["m3d.workspace"] and not A.PROPERTIES_PT_m3d_an_poses.page_poll(ACtx()),
+      "no skeleton: Push / Relax says to make one in F5 Rigging, no Poses panel")
+pb_sets = bpy.context.scene.m3d_anim.sets
+pb_sets.clear()
+log = pb_log(A.PROPERTIES_PT_m3d_an_object_sets, ACtx())
+check(pb_ops(log) == ["m3d.anim_set"] and next(r for r in log if r._kind == "template_list")._kw.get("show_handles") is False,
+      "no object selection sets: + and how to fill it, no Assign / Remove / Select row")
+bpy.context.scene.camera = None
+check(pb_ops(pb_log(A.PROPERTIES_PT_m3d_an_camera, ACtx())) == ["m3d.render_camera_from_view"],
+      "no camera: the Animation card adds one like Rendering's (New Camera from View)")
+bpy.context.scene.camera = pb_cam
+
+# Rigging: the Skin card picks the mesh (added: the skeleton stays selected); nothing greyed under the lists.
+bpy.ops.object.armature_add(location=(3, 0, 0))
+pb_arm = bpy.context.object
+pb_select(pb_arm)
+log = []
+R.draw_fixes(Rec(log), RCtx(), ('RIG', 'MESH'))
+pb_picks = [r.values() for r in log if r._kind == "operator" and r._args[0] == "m3d.pick_object"]
+check(pb_picks and all(p.get("extend") for p in pb_picks) and {p.get("name") for p in pb_picks} == {pb_cube.name},
+      "Skin without a mesh selected: the scene's meshes to add to the selection (%s)" % pb_picks)
+log = []
+R.draw_bone_collections(Rec(log), RCtx(), pb_arm.data)
+check(not {"armature.collection_show_all", "armature.collection_unsolo_all"} & set(pb_ops(log)),
+      "Bone Collections: no Show All / Unsolo All while nothing is hidden or soloed")
+log = []
+R.draw_selection_sets(Rec(log), RCtx(), pb_arm)
+check(pb_ops(log) == ["m3d.rig_mode"], "bone selection sets outside Pose Mode: the Pose Mode card, no greyed list")
+pb_cube.select_set(True)
+check("m3d.rig_unbind" not in pb_ops(pb_log(R.PROPERTIES_PT_m3d_rg_bind, RCtx())), "an unbound mesh: no Unbind Skin")
+
+# A narrow dock: grids lose columns before a label is cut off; Seams from Shells has the whole width.
+for pb_width, pb_cols in ((240, 1), (600, 2)):
+    pb_ctx = UCtx()
+    pb_ctx.region = NS(type='WINDOW', width=pb_width)
+    log = []
+    S.grid(Rec(log), pb_ctx, U.UV_SHELVES)
+    check(next(r for r in log if r._kind == "grid_flow")._kw.get("columns") == pb_cols,
+          "Orient Shells / Match Texel Scale in a %d px dock: %d column(s)" % (pb_width, pb_cols))
+check(U.UVTK_CUT_SEW[-1][0] == "Seams from Shells", "Seams from Shells (was Auto Seams (from shells), cut off)")
+clean_scene()
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

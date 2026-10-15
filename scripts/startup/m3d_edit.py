@@ -865,8 +865,8 @@ class PROPERTIES_PT_m3d_user_tab_hint(Panel):
                 and page not in _dock(current_kind(context))["moves"].values())
 
     def draw(self, context):
-        self.layout.label(text="Use the arrows in a panel header")
-        self.layout.label(text="to move the panel into this tab.")
+        self.layout.label(text="Use the arrows in a panel header", icon='INFO')
+        self.layout.label(text="to move the panel into this tab", icon='BLANK1')
 
 
 def draw_tab_controls(layout, context, tab_id, user):

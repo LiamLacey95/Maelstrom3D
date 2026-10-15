@@ -23,7 +23,7 @@ from bpy.types import Menu, Operator, Panel, PropertyGroup, UIList
 from mathutils import Matrix, Vector
 
 from m3d_mode import _button
-from m3d_sculpt import grid, reason, split_props, viewport
+from m3d_sculpt import draw_list, draw_lines, draw_object_picks, empty_state, grid, reason, split_props, viewport
 from m3d_workspace import _PagePanel
 
 # -----------------------------------------------------------------------------
@@ -80,15 +80,14 @@ def selected_pose_bones(rig):
     return bones
 
 
-# What a page needs. need -> (message, button label, icon, operator, properties)
+# What a page needs. need -> (message, (button label, operator, icon, properties))
 FIXES = {
-    'RIG': ("No skeleton in the scene", "Joint Tool", 'BONE_DATA', "m3d.rig_joint", {}),
-    'EDIT': ("Enter Edit Mode to edit the skeleton", "Edit Mode", 'EDITMODE_HLT', "m3d.rig_mode", {"mode": 'EDIT'}),
-    'POSE': ("Enter Pose Mode to add controls and constraints", "Pose Mode", 'POSE_HLT', "m3d.rig_mode",
-             {"mode": 'POSE'}),
-    'MESH': ("Select the mesh to skin", None, None, None, None),
-    'WEIGHT': ("Enter Weight Paint Mode to paint", "Weight Paint Mode", 'WPAINT_HLT', "m3d.rig_mode",
-               {"mode": 'WEIGHT_PAINT'}),
+    'RIG': ("No skeleton yet: draw one with the Joint Tool", ("Joint Tool", "m3d.rig_joint", 'BONE_DATA', {})),
+    'EDIT': ("Enter Edit Mode to edit the skeleton", ("Edit Mode", "m3d.rig_mode", 'EDITMODE_HLT', {"mode": 'EDIT'})),
+    'POSE': ("Enter Pose Mode to work on the bones", ("Pose Mode", "m3d.rig_mode", 'POSE_HLT', {"mode": 'POSE'})),
+    'MESH': ("Select the mesh to skin", None),   # (draw_fixes: the scene's meshes, or F1 Modeling)
+    'WEIGHT': ("Enter Weight Paint Mode to paint", ("Weight Paint Mode", "m3d.rig_mode", 'WPAINT_HLT',
+                                                    {"mode": 'WEIGHT_PAINT'})),
 }
 
 
@@ -110,14 +109,19 @@ def ready(context, needs):
 
 
 def draw_fixes(layout, context, needs):
-    col = layout.column(align=True)
-    for key in missing(context, needs):
-        text, label, icon, idname, props = FIXES[key]
-        col.label(text=text)
-        if idname:
-            _button(col, context, label, idname, icon, props)
-        if key == 'RIG':
-            break   # Without a skeleton the modes can wait.
+    """The card of the first need that is missing (a skeleton comes before a mode)."""
+    need = missing(context, needs)[0]
+    text, action = FIXES[need]
+    if need != 'MESH':
+        empty_state(layout, context, text, action)
+        return
+    meshes = [o for o in context.view_layer.objects if o.type == 'MESH' and o.visible_get()]
+    if not meshes:
+        empty_state(layout, context, "No mesh to skin yet: model one in F1 Modeling",
+                    ("F1 Modeling", "m3d.workspace", 'EDITMODE_HLT', {"kind": 'MODEL'}))
+        return
+    # (added to the selection: the skeleton stays selected, as Bind wants it)
+    draw_object_picks(empty_state(layout, context, text), sorted(meshes, key=is_bound), extend=True)
 
 
 # -----------------------------------------------------------------------------
@@ -1758,13 +1762,18 @@ class _Page(_PagePanel):
         return ready(context, cls.needs)
 
 
-def _gate(page, needs):
-    """The panel a page shows first when something is missing: what to do next."""
+def _gate(page, needs, unless=()):
+    """The panel a page shows first when something is missing: what to do next. `unless`: needs the page's own panels
+    already fix (the Skeleton page's Create panel makes a skeleton)."""
     def draw(self, context):
         draw_fixes(self.layout, context, needs)
+
+    def page_poll(cls, context):
+        first = missing(context, needs)[:1]
+        return bool(first) and first[0] not in unless
     return type("PROPERTIES_PT_m3d_rg_%s_gate" % page, (_PagePanel, Panel), {
         "bl_label": "Rigging", "bl_options": {'HIDE_HEADER'}, "page": "rig_" + page,
-        "page_poll": classmethod(lambda cls, context: not ready(context, needs)), "draw": draw})
+        "page_poll": classmethod(page_poll), "draw": draw})
 
 
 def _rig_data(context):
@@ -1774,7 +1783,8 @@ def _rig_data(context):
 
 
 def _small(layout, text):
-    layout.label(text=text)
+    """A hint line (see reason)."""
+    reason(layout, text)
 
 
 def _buttons(layout, context, items, columns=2):
@@ -1811,7 +1821,9 @@ class PROPERTIES_PT_m3d_rg_create(_Skeleton, Panel):
             layout.prop(s, "joint_inset")
         layout.prop(s, "joint_snap")
         if arm is not None:
-            layout.prop(arm, "use_mirror_x", text="X-Mirror (names a one-sided chain .L / .R and mirrors it)")
+            layout.prop(arm, "use_mirror_x", text="X-Mirror")
+            if arm.use_mirror_x:
+                reason(layout, "The Joint Tool names a one-sided chain .L / .R and mirrors it")
 
 
 class PROPERTIES_PT_m3d_rg_edit(_Skeleton, Panel):
@@ -1869,7 +1881,7 @@ class PROPERTIES_PT_m3d_rg_orient(_Skeleton, Panel):
         col.scale_y = 1.3
         _button(col, context, "Orient Joint", "m3d.rig_orient", 'ORIENTATION_GIMBAL', {})
         layout.separator()
-        _small(layout, "Roll to")
+        layout.label(text="Roll to")
         _buttons(layout, context, [(label, "armature.calculate_roll", 'NONE', {"type": kind}) for label, kind in ROLL_PRESETS],
                  columns=3)
         _buttons(layout, context, (("Clear Roll", "armature.roll_clear", 'X', {}),
@@ -1886,7 +1898,7 @@ class PROPERTIES_PT_m3d_rg_names(_Skeleton, Panel):
         active = arm.edit_bones.active
         if active is not None:
             layout.prop(active, "name", text="Bone")
-        _small(layout, "Add .L / .R by position")
+        layout.label(text="Add .L / .R by position")
         _buttons(layout, context, (
             ("By X", "armature.autoside_names", 'NONE', {"type": 'XAXIS'}),
             ("By Y", "armature.autoside_names", 'NONE', {"type": 'YAXIS'}),
@@ -1937,15 +1949,14 @@ class PROPERTIES_PT_m3d_rg_rigify(_Page, Panel):
         layout = self.layout
         s = context.scene.m3d_rig
         if not rigify_enabled():
-            _small(layout, "Rigify builds a full control rig from a meta-rig.")
-            _small(layout, "It is off until you turn it on:")
+            _small(layout, "Rigify builds a full control rig from a meta-rig; it is off until you turn it on")
             layout.operator("m3d.rig_rigify", text="Enable Rigify", icon='PLUGIN').action = 'ENABLE'
         else:
             layout.operator("m3d.rig_rigify", text="Human Meta-Rig", icon='ARMATURE_DATA').action = 'META'
             layout.operator("m3d.rig_rigify", text="Generate Rig", icon='ARMATURE_DATA').action = 'GENERATE'
             _small(layout, "Fit the meta-rig to the character in Edit Mode first")
         if s.rigify_note:
-            layout.label(text="Rigify: " + s.rigify_note[:60], icon='ERROR')
+            draw_lines(layout, context, "Rigify: " + s.rigify_note, icon='ERROR')
 
 
 # --- Controls & Constraints
@@ -2117,13 +2128,16 @@ class PROPERTIES_PT_m3d_rg_bind(_Skin, Panel):
         rig = armature_of(mesh)
         layout.label(text="%s: %s" % (mesh.name, ("bound to " + rig.name) if is_bound(mesh) else "not bound"),
                      icon='LINKED' if is_bound(mesh) else 'UNLINKED')
-        layout.prop(s, "skin_method", expand=True)
+        row = layout.row()
+        row.use_property_split = False   # (no label: the three methods fit a narrow dock)
+        row.prop(s, "skin_method", expand=True)
         if s.skin_method == 'AUTO':
             layout.prop(s, "skin_fallback")
         row = layout.row(align=True)
         row.scale_y = 1.3
         row.operator("m3d.rig_bind", icon='ARMATURE_DATA')
-        row.operator("m3d.rig_unbind", icon='UNLINKED')
+        if is_bound(mesh):
+            row.operator("m3d.rig_unbind", icon='UNLINKED')
         _small(layout, "Select the mesh, then the skeleton")
 
 
@@ -2186,7 +2200,8 @@ class PROPERTIES_PT_m3d_rg_influences(_Skin, Panel):
         if not mesh.vertex_groups:
             _small(layout, "No vertex groups: bind the mesh first")
             return
-        layout.template_list("M3D_UL_rig_influences", "", mesh, "vertex_groups", mesh.vertex_groups, "active_index", rows=6)
+        layout.template_list("M3D_UL_rig_influences", "", mesh, "vertex_groups", mesh.vertex_groups, "active_index",
+                             rows=min(len(mesh.vertex_groups), 6), show_handles=False)
         row = layout.row(align=True)
         row.operator("object.vertex_group_lock", text="Lock All", icon='LOCKED').action = 'LOCK'
         row.operator("object.vertex_group_lock", text="Unlock All", icon='UNLOCKED').action = 'UNLOCK'
@@ -2195,19 +2210,23 @@ class PROPERTIES_PT_m3d_rg_influences(_Skin, Panel):
 class PROPERTIES_PT_m3d_rg_weights(_Skin, Panel):
     bl_label = "Weights"
 
+    @classmethod
+    def page_poll(cls, context):   # (without vertex groups Influences says to bind first)
+        return ready(context, cls.needs) and bool(skin_mesh(context).vertex_groups)
+
     def draw(self, context):
         layout = self.layout
         split_props(layout)
         s = context.scene.m3d_rig
         mesh = skin_mesh(context)
         painting = context.mode == 'PAINT_WEIGHT'
-        col = layout.column(align=True)
-        col.enabled = painting
-        _button(col, context, "Flood Weight (brush value)", "paint.weight_set", 'BRUSH_DATA', {})
-        _buttons(col, context, (("Weights from Bones", "paint.weight_from_bones", 'BONE_DATA', {"type": 'AUTOMATIC'}),
-                                ("From Envelopes", "paint.weight_from_bones", 'BONE_DATA', {"type": 'ENVELOPES'})))
-        if not painting:
-            _small(layout, "Flood needs Weight Paint Mode")
+        if painting:
+            col = layout.column(align=True)
+            _button(col, context, "Flood Weight (brush value)", "paint.weight_set", 'BRUSH_DATA', {})
+            _buttons(col, context, (("Weights from Bones", "paint.weight_from_bones", 'BONE_DATA', {"type": 'AUTOMATIC'}),
+                                    ("From Envelopes", "paint.weight_from_bones", 'BONE_DATA', {"type": 'ENVELOPES'})))
+        else:
+            _small(layout, "Flood and Weights from Bones: in Weight Paint Mode (Paint Weights)")
         layout.separator()
         row = layout.row(align=True)
         row.prop(s, "skin_smooth")
@@ -2292,19 +2311,24 @@ class PROPERTIES_PT_m3d_rg_shapekeys(_Drive, Panel):
         layout = self.layout
         mesh = skin_mesh(context)
         if mesh is None:
-            reason(layout, "Select a mesh for shape keys")
+            meshes = [o for o in context.view_layer.objects if o.type == 'MESH' and o.visible_get()]
+            if meshes:
+                draw_object_picks(empty_state(layout, context, "Select a mesh for shape keys"), meshes)
+            else:
+                reason(layout, "Shape keys need a mesh")
             return
         key = mesh.data.shape_keys
+        if key is None:
+            empty_state(layout, context, "%s has no shape keys yet" % mesh.name,
+                        ("Add Basis Shape", "object.shape_key_add", 'SHAPEKEY_DATA', {"from_mix": False}))
+            return
         row = layout.row()
-        if key is not None:
-            row.template_list("MESH_UL_shape_keys", "", key, "key_blocks", mesh, "active_shape_key_index", rows=4)
+        row.template_list("MESH_UL_shape_keys", "", key, "key_blocks", mesh, "active_shape_key_index",
+                          rows=min(len(key.key_blocks), 6), show_handles=False)
         col = row.column(align=True)
         o = col.operator("object.shape_key_add", icon='ADD', text="")
         o.from_mix = False
         col.operator("object.shape_key_remove", icon='REMOVE', text="").all = False
-        if key is None:
-            layout.operator("object.shape_key_add", text="Add Basis", icon='SHAPEKEY_DATA').from_mix = False
-            return
         block = mesh.active_shape_key
         if block is not None and mesh.active_shape_key_index > 0:
             layout.prop(block, "value", slider=True)
@@ -2351,7 +2375,7 @@ class PROPERTIES_PT_m3d_rg_driven_key(_Drive, Panel):
         row = box.row()
         row.label(text="Driven", icon='CON_TRANSLIKE')
         row.operator("m3d.rig_driven_key", text="Use Active").action = 'USE_DRIVEN'
-        box.prop(s, "dk_kind", expand=True)
+        box.row().prop(s, "dk_kind", expand=True)
         if s.dk_kind == 'SHAPE_KEY':
             box.prop(s, "dk_driven_object", text="Mesh")
             ob = s.dk_driven_object
@@ -2423,7 +2447,7 @@ class PROPERTIES_PT_m3d_rg_pose(_Test, Panel):
             ("Clear Rotation", "pose.rot_clear", 'NONE', {}),
             ("Clear Scale", "pose.scale_clear", 'NONE', {}),
         ), columns=3)
-        _small(layout, "Copy and paste")
+        layout.label(text="Copy and paste")
         _buttons(layout, context, (
             ("Copy Pose", "pose.copy", 'COPYDOWN', {}),
             ("Paste", "pose.paste", 'PASTEDOWN', {}),
@@ -2499,10 +2523,12 @@ def draw_bone_collections(layout, context, arm, compact=False):
         sub = row.row(align=True)
         sub.operator("armature.collection_select", text="Select")
         sub.operator("armature.collection_deselect", text="Deselect")
-    if not compact:
+    if not compact:   # (only what can work: a hidden collection to show, a soloed one to unsolo)
         row = layout.row(align=True)
-        row.operator("armature.collection_show_all", text="Show All")
-        row.operator("armature.collection_unsolo_all", text="Unsolo All")
+        if any(not c.is_visible for c in arm.collections_all):
+            row.operator("armature.collection_show_all", text="Show All")
+        if any(c.is_solo for c in arm.collections_all):
+            row.operator("armature.collection_unsolo_all", text="Unsolo All")
 
 
 class PROPERTIES_PT_m3d_rg_bcolls(_Collections, Panel):
@@ -2513,20 +2539,19 @@ class PROPERTIES_PT_m3d_rg_bcolls(_Collections, Panel):
 
 
 def draw_selection_sets(layout, context, rig):
-    """The skeleton's selection sets: list, add / remove, assign / select (also used by the Animation workspace)."""
-    row = layout.row()
-    row.enabled = context.mode == 'POSE'
-    row.template_list("POSE_UL_selection_set", "", rig, "selection_sets", rig, "active_selection_set",
-                      rows=4 if len(rig.selection_sets) else 1)
-    col = row.column(align=True)
-    col.operator("pose.selection_set_add", icon='ADD', text="")
-    col.operator("pose.selection_set_remove", icon='REMOVE', text="")
-    row = layout.row(align=True)
-    row.enabled = context.mode == 'POSE'
-    row.operator("pose.selection_set_assign", text="Assign")
-    row.operator("pose.selection_set_unassign", text="Remove")
-    row.operator("pose.selection_set_select", text="Select").selection_set_index = -1
-    row.operator("pose.selection_set_deselect", text="Deselect")
+    """The skeleton's selection sets: list, add / remove, assign / select (also used by the Animation workspace). They work
+    on bones: outside Pose Mode the card that enters it."""
+    if context.mode != 'POSE':
+        empty_state(layout, context, "Enter Pose Mode to use bone selection sets", FIXES['POSE'][1])
+        return
+    draw_list(layout, "POSE_UL_selection_set", rig, "selection_sets", rig, "active_selection_set", "pose.selection_set_add",
+              "pose.selection_set_remove", "Select bones, then add a set with +")
+    if len(rig.selection_sets):
+        row = layout.row(align=True)
+        row.operator("pose.selection_set_assign", text="Assign")
+        row.operator("pose.selection_set_unassign", text="Remove")
+        row.operator("pose.selection_set_select", text="Select").selection_set_index = -1
+        row.operator("pose.selection_set_deselect", text="Deselect")
 
 
 class PROPERTIES_PT_m3d_rg_selsets(_Collections, Panel):
@@ -2603,13 +2628,13 @@ class PROPERTIES_PT_m3d_rg_left_bone(_Page, Panel):
         layout.prop(bone, "name")
         layout.prop(bone, "use_deform")
         if bone.collections:
-            layout.label(text="In: " + ", ".join(c.name for c in bone.collections)[:48], icon='GROUP_BONE')
+            draw_lines(layout, context, "In: " + ", ".join(c.name for c in bone.collections), icon='GROUP_BONE')
 
 
 GATES = {"skeleton": ('RIG', 'EDIT'), "controls": ('RIG', 'POSE'), "skin": ('RIG', 'MESH'), "test": ('RIG', 'POSE'),
          "collections": ('RIG',), "bones": ('RIG',)}
 # Registered first so a page's message comes before its panels (they are never shown together).
-PAGE_GATES = tuple(_gate(page, needs) for page, needs in GATES.items())
+PAGE_GATES = tuple(_gate(page, needs, unless=('RIG',) if page == "skeleton" else ()) for page, needs in GATES.items())
 
 
 # -----------------------------------------------------------------------------

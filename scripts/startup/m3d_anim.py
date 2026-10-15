@@ -26,7 +26,7 @@ from bpy_extras.anim_utils import animdata_get_channelbag_for_assigned_slot
 
 from m3d_mode import _button
 from m3d_rig import (draw_pose_library, draw_selection_sets, pose_assets, rig_of, selected_pose_bones)
-from m3d_sculpt import grid, reason, split_props, viewport
+from m3d_sculpt import draw_lines, draw_object_picks, empty_state, grid, reason, split_props, viewport
 from m3d_workspace import _PagePanel, current_kind, workspace_kind
 
 # -----------------------------------------------------------------------------
@@ -915,7 +915,8 @@ it. The render output settings are put back afterwards. Esc cancels"""
                 pass   # The player is not essential: the frames are in the folder.
         restore_render(scene, self.snap)
         playblast_state["running"] = False
-        scene.m3d_anim.playblast_note = message
+        # (the dock's note leaves the folder out: its button opens it)
+        scene.m3d_anim.playblast_note = message if cancelled else "Last playblast: %d frames" % len(files)
         self.report({'WARNING'} if cancelled else {'INFO'}, message)
         return {'CANCELLED'} if cancelled else {'FINISHED'}
 
@@ -923,11 +924,12 @@ it. The render output settings are put back afterwards. Esc cancels"""
 # -----------------------------------------------------------------------------
 # Dock pages: panels of the MODELING_TOOLKIT context, shown by page id (see m3d_workspace.DOCK_TABS)
 
-# What a page needs. need -> (message, button label, icon, operator, properties)
+# What a page needs. need -> (message, (button label, operator, icon, properties)); 'OBJ' picks one of the scene's objects
 FIXES = {
-    'OBJ': ("Select an object to animate", "Select All", 'SELECT_EXTEND', "object.select_all", {"action": 'SELECT'}),
-    'POSE': ("Enter Pose Mode to work on bones", "Pose Mode", 'POSE_HLT', "m3d.rig_mode", {"mode": 'POSE'}),
+    'OBJ': ("Select an object to animate", None),
+    'POSE': ("Enter Pose Mode to work on the bones", ("Pose Mode", "m3d.rig_mode", 'POSE_HLT', {"mode": 'POSE'})),
 }
+NO_RIG = ("Needs a skeleton: make one in F5 Rigging", ("F5 Rigging", "m3d.workspace", 'ARMATURE_DATA', {"kind": 'RIG'}))
 
 
 def has(context, need):
@@ -944,13 +946,15 @@ def ready(context, needs):
 
 
 def draw_fixes(layout, context, needs):
-    col = layout.column(align=True)
-    for key in missing(context, needs):
-        text, label, icon, idname, props = FIXES[key]
-        col.label(text=text)
-        _button(col, context, label, idname, icon, props)
-        if key == 'OBJ':
-            break
+    """The card of the first need that is missing (an object comes before Pose Mode; Pose Mode needs a skeleton)."""
+    need = missing(context, needs)[0]
+    if need == 'POSE' and rig_of(context) is None:
+        empty_state(layout, context, *NO_RIG)
+    elif need == 'OBJ':
+        found = [o for o in context.view_layer.objects if o.visible_get() and o.type not in {'CAMERA', 'LIGHT'}]
+        draw_object_picks(empty_state(layout, context, FIXES['OBJ'][0]), found)
+    else:
+        empty_state(layout, context, *FIXES[need])
 
 
 class _Page(_PagePanel):
@@ -996,9 +1000,8 @@ class PROPERTIES_PT_m3d_an_bone_sets(_Pick, Panel):
         layout = self.layout
         rig = _rig(context)
         draw_selection_sets(layout, context, rig)
-        if len(rig.selection_sets):
+        if len(rig.selection_sets) and context.mode == 'POSE':
             flow = layout.grid_flow(row_major=True, columns=3, even_columns=True, align=True)
-            flow.enabled = context.mode == 'POSE'
             for i, sel in enumerate(rig.selection_sets):
                 _button(flow, context, sel.name, "pose.selection_set_select", 'NONE', {"selection_set_index": i})
 
@@ -1010,21 +1013,22 @@ class PROPERTIES_PT_m3d_an_object_sets(_Pick, Panel):
         layout = self.layout
         s = context.scene.m3d_anim
         row = layout.row()
-        row.template_list("M3D_UL_anim_sets", "", s, "sets", s, "set_index", rows=4 if len(s.sets) else 1)
+        row.template_list("M3D_UL_anim_sets", "", s, "sets", s, "set_index", rows=min(max(len(s.sets), 1), 6),
+                          show_handles=False)
         col = row.column(align=True)
         col.operator("m3d.anim_set", icon='ADD', text="").action = 'ADD'
+        if not len(s.sets):
+            reason(layout, "Select objects, then add a set with +")
+            return
         col.operator("m3d.anim_set", icon='REMOVE', text="").action = 'REMOVE'
         row = layout.row(align=True)
         for action, label in (('ASSIGN', "Assign"), ('UNASSIGN', "Remove"), ('SELECT', "Select"), ('DESELECT', "Deselect")):
             row.operator("m3d.anim_set", text=label).action = action
-        if len(s.sets):
-            flow = layout.grid_flow(row_major=True, columns=3, even_columns=True, align=True)
-            for i, sel in enumerate(s.sets):
-                o = flow.operator("m3d.anim_set", text=sel.name)
-                o.action, o.index = 'SELECT', i
-            layout.label(text="Shift-click adds to the selection")
-        else:
-            reason(layout, "Select objects, then add a set")
+        flow = layout.grid_flow(row_major=True, columns=3, even_columns=True, align=True)
+        for i, sel in enumerate(s.sets):
+            o = flow.operator("m3d.anim_set", text=sel.name)
+            o.action, o.index = 'SELECT', i
+        reason(layout, "Shift-click adds to the selection")
 
 
 class PROPERTIES_PT_m3d_an_collections(_Pick, Panel):
@@ -1042,13 +1046,14 @@ class PROPERTIES_PT_m3d_an_collections(_Pick, Panel):
         for coll in list(rig.data.collections_all)[:40]:
             row = col.row(align=True)
             row.prop(coll, "is_visible", text="", icon='HIDE_OFF' if coll.is_visible else 'HIDE_ON')
-            sub = row.row(align=True)
-            sub.enabled = context.mode == 'POSE'
-            sub.operator("m3d.anim_pick_bones", text=coll.name).collection = coll.name
+            if context.mode == 'POSE':
+                row.operator("m3d.anim_pick_bones", text=coll.name).collection = coll.name
+            else:   # (the name: picking works in Pose Mode)
+                row.label(text=coll.name)
         if context.mode != 'POSE':
             reason(layout, "Enter Pose Mode to pick bones")
         else:
-            layout.label(text="Shift-click adds to the selection")
+            reason(layout, "Shift-click adds to the selection")
 
 
 # --- Tween & Poses
@@ -1078,7 +1083,7 @@ class PROPERTIES_PT_m3d_an_tween(_Tween, Panel):
         if not collect_tween(context):
             reason(layout, "Needs keys before and after this frame (S sets a key)")
         else:
-            layout.label(text="0 = previous key, 1 = next key; the key is a breakdown")
+            reason(layout, "0 = previous key, 1 = next key; the key is a breakdown")
 
 
 class PROPERTIES_PT_m3d_an_inbetween(_Tween, Panel):
@@ -1096,18 +1101,19 @@ class PROPERTIES_PT_m3d_an_inbetween(_Tween, Panel):
             ("To Neighbor", "pose.blend_to_neighbor", 'NEXT_KEYFRAME', {}),
             ("To Rest", "pose.blend_with_rest", 'LOOP_BACK', {}),
         ), columns=2)
-        layout.label(text="Drag in the viewport, click to keep (Alt+Shift+P / R / B)")
+        reason(layout, "Drag in the viewport, click to keep (Alt+Shift+P / R / B)")
 
 
 class PROPERTIES_PT_m3d_an_poses(_Tween, Panel):
     bl_label = "Poses"
 
+    @classmethod
+    def page_poll(cls, context):   # (without a skeleton the Push, Relax, Breakdown card says where to make one)
+        return ready(context, cls.needs) and _rig(context) is not None
+
     def draw(self, context):
         layout = self.layout
         rig = _rig(context)
-        if rig is None:
-            reason(layout, "Poses need a skeleton")
-            return
         if not has(context, 'POSE'):
             draw_fixes(layout, context, ('POSE',))
         grid(layout, context, (
@@ -1152,19 +1158,19 @@ class PROPERTIES_PT_m3d_an_paths(_Motion, Panel):
             layout.prop(mp, "frame_step")
         row = layout.row(align=True)
         row.scale_y = 1.2
+        shown = mp is not None and mp.has_motion_paths   # (Update and Clear once there are paths)
         for action, label, icon in (('CALCULATE', "Calculate", 'ANIM_DATA'), ('UPDATE', "Update", 'FILE_REFRESH'),
                                     ('CLEAR', "Clear", 'X')):
-            sub = row.row(align=True)
-            sub.enabled = action == 'CALCULATE' or (mp is not None and mp.has_motion_paths)
-            sub.operator("m3d.anim_paths", text=label, icon=icon).action = action
+            if action == 'CALCULATE' or shown:
+                row.operator("m3d.anim_paths", text=label, icon=icon).action = action
         if mp is not None:
             row = layout.row(align=True)
-            row.prop(mp, "show_frame_numbers", toggle=True)
-            row.prop(mp, "show_keyframe_numbers", toggle=True)
+            row.prop(mp, "show_frame_numbers", text="Frame Numbers", toggle=True)
+            row.prop(mp, "show_keyframe_numbers", text="Key Numbers", toggle=True)
         space = viewport(context)
         if space is not None:
             layout.prop(space.overlay, "show_motion_paths", text="Show Paths in the Viewport", toggle=True)
-        layout.label(text=("Bones" if posed_rig(context) is not None else "Objects") + ": the selected ones")
+        reason(layout, "Paths of the selected " + ("bones" if posed_rig(context) is not None else "objects"))
 
 
 class PROPERTIES_PT_m3d_an_ghost(_Motion, Panel):
@@ -1175,7 +1181,7 @@ class PROPERTIES_PT_m3d_an_ghost(_Motion, Panel):
         row = layout.row(align=True)
         row.operator("m3d.anim_graph", text="Create", icon='GHOST_ENABLED').action = 'GHOST_CREATE'
         row.operator("m3d.anim_graph", text="Clear", icon='GHOST_DISABLED').action = 'GHOST_CLEAR'
-        layout.label(text="A copy of the curves to compare in the Graph Editor")
+        reason(layout, "A copy of the curves to compare in the Graph Editor")
 
 
 # --- Layers
@@ -1192,19 +1198,18 @@ class PROPERTIES_PT_m3d_an_layers(_Layers, Panel):
         layout = self.layout
         ob = layer_owner(context)
         ad = ob.animation_data
-        layout.label(text="Layers are NLA tracks: each pushed action is one layer", icon='NLA')
-        tweak = ad is not None and ad.use_tweak_mode
-        col = layout.column(align=True)
-        col.scale_y = 1.2
-        sub = col.row(align=True)
-        sub.enabled = not tweak and ad is not None and ad.action is not None
-        sub.operator("m3d.anim_layer", text="Push Down", icon='NLA_PUSHDOWN').action = 'PUSH_DOWN'
-        sub = col.row(align=True)
-        sub.enabled = not tweak
-        sub.operator("m3d.anim_layer", text="Add Additive Layer", icon='ADD').action = 'ADD_ADDITIVE'
-        if ad is None:
-            reason(layout, "%s has no animation yet" % ob.name)
+        if ad is None or (ad.action is None and not ad.nla_tracks):
+            empty_state(layout, context, "%s has no animation yet" % ob.name,
+                        ("Set Key", "anim.keyframe_insert", 'KEY_HLT', {}))
             return
+        reason(layout, "Layers are NLA tracks: each pushed action is one layer")
+        tweak = ad.use_tweak_mode
+        if not tweak:   # (while a layer is edited: Done Editing below)
+            col = layout.column(align=True)
+            col.scale_y = 1.2
+            if ad.action is not None:
+                col.operator("m3d.anim_layer", text="Push Down", icon='NLA_PUSHDOWN').action = 'PUSH_DOWN'
+            col.operator("m3d.anim_layer", text="Add Additive Layer", icon='ADD').action = 'ADD_ADDITIVE'
         if ad.action is not None and not tweak:
             box = layout.box()
             box.label(text="Top: " + ad.action.name, icon='ACTION')
@@ -1239,7 +1244,7 @@ class PROPERTIES_PT_m3d_an_bake(_Layers, Panel):
         mode = {"bake_types": {'POSE'} if posed_rig(context) is not None else {'OBJECT'}}
         _button(layout, context, "Bake Layers to One Action", "nla.bake", 'NLA',
                 {"frame_start": first, "frame_end": last, "visual_keying": True, **mode})
-        layout.label(text="Bakes the selection over the playback range")
+        reason(layout, "Bakes the selection over the playback range")
 
 
 # --- Playback
@@ -1277,14 +1282,14 @@ class PROPERTIES_PT_m3d_an_blocking(_Playback, Panel):
         kind = new_key_kind(context)
         row.operator("m3d.anim_preset", text="Blocking", depress=kind == 'STEPPED').preset = 'BLOCKING'
         row.operator("m3d.anim_preset", text="Polish", depress=kind == 'CLAMPED').preset = 'POLISH'
-        layout.label(text="New keys:")
+        layout.label(text="New keys")
         row = layout.row(align=True)
         for k, label in INTERP_LABELS.items():
             row.operator("m3d.anim_interp", text=label, depress=kind == k).kind = k
         if _prefs_before:
             layout.operator("m3d.anim_preset", text="Restore My Defaults", icon='LOOP_BACK').preset = 'RESTORE'
-        layout.label(text="Blocking / Polish also convert the selection's keys")
-        layout.label(text="New keys copy the key before them; the default is a Preference")
+        reason(layout, "Blocking / Polish also convert the selection's keys")
+        reason(layout, "New keys copy the key before them; the default is a Preference")
 
 
 class PROPERTIES_PT_m3d_an_playback(_Playback, Panel):
@@ -1314,9 +1319,13 @@ class PROPERTIES_PT_m3d_an_playblast(_Playback, Panel):
         sub = layout.row()
         sub.scale_y = 1.3
         sub.operator("m3d.playblast", icon='RENDER_ANIMATION').play = s.playblast_play
-        layout.label(text="Frames %d - %d, PNG, %s" % (first, last, playblast_folder(context.scene)))
+        row = layout.row()
+        row.label(text="Frames %d - %d, PNG, %s" % (first, last, "in the folder" if s.playblast_dir else "in a temp folder"))
+        folder = playblast_folder(context.scene)
+        if os.path.isdir(folder):   # (the folder in the file browser of the system: its full path)
+            row.operator("wm.path_open", text="", icon='FILEBROWSER', emboss=False).filepath = folder
         if s.playblast_note:
-            layout.label(text=s.playblast_note)
+            draw_lines(layout, context, s.playblast_note, icon='NONE')
 
 
 # --- Channel Box hint: no camera for the camera view
@@ -1334,8 +1343,8 @@ class PROPERTIES_PT_m3d_an_camera(Panel):
         return current_kind(context) == 'ANIM' and context.scene.camera is None
 
     def draw(self, context):
-        reason(self.layout, "No camera: the camera view is empty")
-        _button(self.layout, context, "Add Camera", "object.camera_add", 'CAMERA_DATA', {})
+        from m3d_render import NEW_CAMERA
+        empty_state(self.layout, context, "No camera: the camera view is empty", NEW_CAMERA)
 
 
 # -----------------------------------------------------------------------------
