@@ -8771,6 +8771,7 @@ def rn_quality_presets():
             an_status("m3d.render_preset", preset=key)
             check((scene.cycles.samples, scene.eevee.taa_render_samples) == samples and m3d_render.current_quality(scene) == key,
                   "Status Line %s button with %s: %s" % (key, engine, (scene.cycles.samples, scene.eevee.taa_render_samples)))
+    scene.cycles.device = 'CPU'   # (a preset picks the GPU when one passes the test bake: the small renders below stay on the CPU)
     scene.eevee.taa_render_samples += 1
     check(m3d_render.current_quality(scene) == 'CUSTOM', "an edit reads Custom")
     for a in window().screen.areas:
@@ -8781,6 +8782,8 @@ def rn_quality_presets():
 def rn_quality_drawn():
     check(not tracebacks(), "Python error drawing the quality presets / Custom")
     bpy.context.scene.render.engine = 'BLENDER_EEVEE'
+    check(rn_space().shading.use_scene_lights and window().workspace.m3d_layout == m3d_render.RENDER_LAYOUT,
+          "F7's Material Preview shows the scene's lights")
 
 
 # --- Camera from view
@@ -8935,6 +8938,7 @@ def rn_hdri_check():
     nodes = m3d_render.hdri_nodes(scene.world)
     check(scene.world.name == "m3dHDRI" and nodes is not None and nodes["env"].image is not None, "the HDRI world is assigned")
     check(scene.m3d_render.previous_world == GIZMO["rn_world"], "the old world is kept")
+    check(rn_space().shading.use_scene_world, "...and F7's Material Preview shows the sky")
     scene.m3d_render.hdri_rotation = 1.2
     scene.m3d_render.hdri_strength = 1.5
     for a in window().screen.areas:
@@ -9034,6 +9038,13 @@ def rn_render_anim_keyup():
 
 
 step(wait_until(lambda: RN_DONE["renders"] >= 1 and not bpy.app.is_job_running('RENDER'), "Ctrl+Shift+F12 to render", tries=80))
+step(wait_until(lambda: m3d_render._animation["scene"] is None, "the report after the animation render"))
+
+
+@step
+def rn_render_anim_report():
+    event('ESC', 'PRESS', an_xy())   # (closes the "Rendered 2 frames ... Open Folder" popup)
+    event('ESC', 'RELEASE', an_xy())
 
 
 @step
@@ -9063,6 +9074,79 @@ def rn_render_view_check():
     check(len(bpy.context.window_manager.windows) == GIZMO["rn_windows"], "...in the same window")
     an_status("m3d.render_view")
     check(not tracebacks(), "Python error with Render View")
+
+
+# --- Before a render: frames that are there already, a hidden camera (each opens the question; Escape renders nothing)
+@step
+def rn_ask_frames():
+    scene = bpy.context.scene
+    scene.render.filepath = os.path.join(GIZMO["rn_dir"], "rn_")
+    RN_DONE["renders"] = 0
+    event('MOUSEMOVE', xy=an_xy())
+    check(an_status("m3d.render", animation=True) == {'RUNNING_MODAL'}, "Render Animation over frames that are there asks first")
+
+
+@step
+def rn_ask_frames_close():
+    event('ESC', 'PRESS', an_xy())
+    event('ESC', 'RELEASE', an_xy())
+
+
+@step
+def rn_ask_camera():
+    check(RN_DONE["renders"] == 0 and not bpy.app.is_job_running('RENDER'), "...Escape renders nothing")
+    scene = bpy.context.scene
+    scene.render.filepath = GIZMO["rn_start"]["path"]
+    scene.camera.hide_set(True)
+    check(an_status("m3d.render") == {'RUNNING_MODAL'}, "a render from a hidden camera asks first")
+
+
+@step
+def rn_ask_camera_close():
+    event('ESC', 'PRESS', an_xy())
+    event('ESC', 'RELEASE', an_xy())
+
+
+@step
+def rn_ask_done():
+    check(RN_DONE["renders"] == 0 and not bpy.app.is_job_running('RENDER'), "...Escape renders nothing")
+    bpy.context.scene.camera.hide_set(False)
+    check(not tracebacks(), "Python error in the render questions")
+
+
+# --- New Render Layer from Selection from the Passes & Layers tab
+@step
+def rn_layer_from_selection():
+    scene = bpy.context.scene
+    props = bpy.data.collections.new("RnProps")   # (the sphere in a collection: objects in none are in every layer)
+    scene.collection.children.link(props)
+    sphere = next(o for o in scene.collection.objects if o.name.startswith("Sphere"))
+    props.objects.link(sphere)
+    scene.collection.objects.unlink(sphere)
+    GIZMO["rn_sphere"] = sphere.name
+    bpy.ops.object.select_all(action='DESELECT')
+    box = bpy.data.objects["Box"]
+    box.select_set(True)
+    bpy.context.view_layer.objects.active = box
+    rn_press("m3d.dock_page", tab="render_passes")
+    rn_press("m3d.render_layer_from_selection")
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def rn_layer_from_selection_check():
+    layer = window().view_layer
+    sphere = bpy.data.objects[GIZMO["rn_sphere"]]
+    check(layer.name == "Box Layer" and layer.objects.get("Box") and not layer.objects.get(sphere.name),
+          "New Render Layer from Selection: the window shows a layer with the Box, not the sphere (%s)" % layer.name)
+    check(not tracebacks(), "Python error drawing the new render layer")
+    scene = bpy.context.scene
+    window().view_layer = scene.view_layers[0]
+    scene.view_layers.remove(layer)
+    scene.collection.objects.link(sphere)
+    for name in ("Box Layer", "RnProps"):
+        bpy.data.collections.remove(bpy.data.collections[name])
 
 
 # --- Restore what the tests changed in the scene, then every tab with a few kinds of selection

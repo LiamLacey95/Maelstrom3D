@@ -6276,7 +6276,8 @@ def rn_cancelled(fn, **kw):
 
 
 # --- Quality presets
-check(RN.current_quality(scn) == 'CUSTOM' and scn.m3d_render.preset == 'CUSTOM', "a new scene has no preset")
+check(scn.m3d_render.preset == 'MEDIUM' and RN.quality_default in bpy.app.handlers.load_factory_startup_post,
+      "a new file started at Medium quality, not Custom (the tests above edited values since)")
 want = {'DRAFT': (50, 32, 16, False, '4'), 'MEDIUM': (100, 128, 64, True, '2'), 'FINAL': (100, 512, 256, True, '1')}
 saved_engine = rn.engine
 for engine_ in ('BLENDER_EEVEE', 'CYCLES'):
@@ -14158,6 +14159,278 @@ check(tuple(p1_img.size) == (64, 64), "...Undo does not scale the images back up
 clean_scene()
 p1_tx = p4_tx = bpy.context.scene.m3d_tex   # (Undo made the scene anew)
 (p1_tx.export_preset, p1_tx.export_folder, p1_tx.export_padding, p1_tx.export_size, p1_tx.export_names, p1_tx.resolution) = p1_saved
+
+# --- Rendering basics: Assign Material per face / active slot, output type, animation render safety, GPU, render layers,
+# lights in F7's Material Preview, the hidden-camera question, F1's render buttons, presets of your own.
+import bmesh
+import m3d_bakeq as RQ
+import m3d_mode as RM
+
+clean_scene()
+for coll_ in list(bpy.data.collections):
+    bpy.data.collections.remove(coll_)
+scn = bpy.context.scene
+rb_mats = {n: bpy.data.materials.new(n) for n in ("RbA", "RbB", "RbC")}
+bpy.ops.mesh.primitive_cube_add()
+rb_cube = bpy.context.active_object
+rb_cube.data.materials.clear()
+# Object Mode: the first material fills the empty object; then the active slot is replaced, the other slot stays.
+check(bpy.ops.m3d.assign_existing_material(material="RbA") == {'FINISHED'} and [s.material for s in rb_cube.material_slots] == [rb_mats["RbA"]],
+      "Assign Existing Material gives an object without material its first")
+rb_cube.data.materials.append(rb_mats["RbB"])
+rb_cube.active_material_index = 1
+bpy.ops.m3d.assign_existing_material(material="RbC")
+check([s.material for s in rb_cube.material_slots] == [rb_mats["RbA"], rb_mats["RbC"]], "Object Mode: the active slot is replaced, the others stay")
+rb_cube.data.polygons[0].material_index = 1
+bpy.ops.m3d.assign_existing_material(material="RbB", slots='ALL')
+check([s.material for s in rb_cube.material_slots] == [rb_mats["RbB"]] and all(p.material_index == 0 for p in rb_cube.data.polygons),
+      "...All Materials: one material on every face")
+# Edit Mode: only the selected faces change; a slot is reused when the material has one.
+bpy.ops.object.mode_set(mode='EDIT')
+bpy.ops.mesh.select_all(action='DESELECT')
+rb_mats_before = len(bpy.data.materials)
+check(rn_cancelled(bpy.ops.m3d.assign_material) and len(bpy.data.materials) == rb_mats_before,
+      "Edit Mode without selected faces: nothing assigned, no material made")
+rb_bm = bmesh.from_edit_mesh(rb_cube.data)
+rb_bm.faces.ensure_lookup_table()
+rb_bm.faces[0].select = rb_bm.faces[1].select = True
+check(bpy.ops.m3d.assign_material() == {'FINISHED'}, "Assign New Material on two faces")
+bpy.ops.object.mode_set(mode='OBJECT')
+rb_idx = [p.material_index for p in rb_cube.data.polygons]
+check(len(rb_cube.material_slots) == 2 and rb_cube.material_slots[0].material == rb_mats["RbB"] and rb_idx[:2] == [1, 1] and set(rb_idx[2:]) == {0},
+      "Edit Mode: the selected faces get the new material, the others keep theirs (%s)" % rb_idx)
+bpy.ops.object.mode_set(mode='EDIT')
+bpy.ops.mesh.select_all(action='DESELECT')
+rb_bm = bmesh.from_edit_mesh(rb_cube.data)
+rb_bm.faces.ensure_lookup_table()
+rb_bm.faces[0].select = True
+bpy.ops.m3d.assign_existing_material(material="RbB")
+bpy.ops.object.mode_set(mode='OBJECT')
+check(len(rb_cube.material_slots) == 2 and [p.material_index for p in rb_cube.data.polygons][:2] == [0, 1],
+      "...an existing material's slot is reused")
+bpy.ops.mesh.primitive_cube_add(location=(3, 0, 0))
+rb_bare = bpy.context.active_object
+rb_bare.data.materials.clear()
+bpy.ops.object.mode_set(mode='EDIT')
+bpy.ops.mesh.select_all(action='DESELECT')
+rb_bm = bmesh.from_edit_mesh(rb_bare.data)
+rb_bm.faces.ensure_lookup_table()
+rb_bm.faces[2].select = True
+bpy.ops.m3d.assign_existing_material(material="RbC")
+bpy.ops.object.mode_set(mode='OBJECT')
+check([s.material for s in rb_bare.material_slots] == [None, rb_mats["RbC"]] and [p.material_index for p in rb_bare.data.polygons].count(1) == 1,
+      "a mesh without material: an empty first slot keeps the other faces as they were")
+bpy.data.materials.new("m3dUVChecker")
+rb_items = RM._existing_materials(None, bpy.context)
+check({i[0] for i in rb_items} >= {"RbA", "RbB", "RbC"} and not any(i[0].startswith("m3dUV") for i in rb_items)
+      and RM._existing_materials(None, bpy.context) is rb_items, "Assign Existing Material hides internal materials; its items stay alive")
+check(any(e.get("idname") == "m3d.assign_existing_material" for e in m3d_ui.MENUS["M3D_MT_lighting_shading"][1]),
+      "Lighting/Shading menu: Assign Existing Material")
+
+# Output type: Image Sequence / Multilayer EXR / Video, each with its own settings; passes warn without Multilayer EXR.
+render_ws.m3d_page_right = "render_output"
+im_ = scn.render.image_settings
+for type_, want_ in (('IMAGE', "file_format"), ('MULTI_LAYER_IMAGE', "exr_codec"), ('VIDEO', "codec")):
+    im_.media_type = type_
+    log_ = draw_stub(RN.PROPERTIES_PT_m3d_rn_output, RnCtx())
+    check_calls_ext("Output " + type_, log_)
+    check([r._args[2] for r in log_ if r._kind == "prop_enum"] == ['IMAGE', 'MULTI_LAYER_IMAGE', 'VIDEO']
+          and [r._kw.get("text") for r in log_ if r._kind == "prop_enum"] == ["Image Sequence", "Multilayer EXR", "Video"]
+          and any(r._kind == "prop" and r._args[1] == want_ for r in log_), "Output type %s shows %s" % (type_, want_))
+im_.media_type = 'IMAGE'
+for vl_ in scn.view_layers:
+    vl_.use_pass_z = False
+check(not RN.extra_passes(scn), "Combined only: no passes to warn about")
+scn.view_layers[0].use_pass_z = True
+check(RN.extra_passes(scn), "a Depth pass is an extra pass")
+log_ = draw_stub(RN.PROPERTIES_PT_m3d_rn_passes, RnCtx())
+rb_switch = [r for r in log_ if r._kind == "operator" and r.values().get("value") == 'MULTI_LAYER_IMAGE']
+check(rb_switch and rb_switch[0].values().get("data_path") == "scene.render.image_settings.media_type", "Passes warn without Multilayer EXR, with the switch")
+bpy.ops.wm.context_set_enum(data_path="scene.render.image_settings.media_type", value='MULTI_LAYER_IMAGE')
+check(im_.file_format == 'OPEN_EXR_MULTILAYER', "...which makes the output a Multilayer EXR")
+check(not [r for r in draw_stub(RN.PROPERTIES_PT_m3d_rn_passes, RnCtx()) if r._kind == "operator" and r.values().get("value") == 'MULTI_LAYER_IMAGE'],
+      "...and the warning goes")
+scn.view_layers[0].use_pass_z = False
+im_.media_type = 'IMAGE'
+im_.file_format = 'PNG'
+
+# Animation render: frames named after the scene, a new version folder, overwrite, the report.
+check(RN.next_version("//render/Scene_") == "//render/v002/Scene_" and RN.next_version("//render/v002/Scene_") == "//render/v003/Scene_"
+      and RN.next_version("//Scene_") == "//v002/Scene_" and RN.next_version("C:\\out\\v009\\a_") == "C:/out/v010/a_",
+      "next version folders: %s" % [RN.next_version(p) for p in ("//render/Scene_", "//render/v002/Scene_", "//Scene_", "C:\\out\\v009\\a_")])
+rb_dir = tempfile.mkdtemp(prefix="m3d_render_versions_")
+rb_snap = (scn.render.engine, scn.render.resolution_x, scn.render.resolution_y, scn.render.resolution_percentage, scn.frame_start,
+           scn.frame_end, scn.render.filepath, scn.camera)
+bpy.ops.object.camera_add(location=(0, -6, 1), rotation=(math.radians(80), 0, 0))
+scn.camera = bpy.context.active_object
+scn.render.engine = 'BLENDER_WORKBENCH'
+scn.render.resolution_x = scn.render.resolution_y = 16
+scn.render.resolution_percentage, scn.frame_start, scn.frame_end = 100, 1, 2
+scn.render.filepath = rb_dir + os.sep
+check(bpy.ops.m3d.render(animation=True) == {'FINISHED'}, "Render Animation (Workbench, 16 px, two frames)")
+rb_name = bpy.path.clean_name(scn.name) + "_"
+check(scn.render.filepath == rb_dir + os.sep + rb_name and sorted(os.listdir(rb_dir)) == [rb_name + "0001.png", rb_name + "0002.png"],
+      "a folder as output: the frames are named after the scene (%s)" % sorted(os.listdir(rb_dir)))
+check(RN.existing_frames(scn) == [1, 2] and RN.render_report(scn, 2) == "Rendered 2 frames to " + rb_dir, "the frames are found: %s" % RN.render_report(scn, 2))
+check(bpy.ops.m3d.render(animation=True, existing='VERSION') == {'FINISHED'}
+      and sorted(os.listdir(os.path.join(rb_dir, "v002"))) == [rb_name + "0001.png", rb_name + "0002.png"], "New Version Folder renders into v002")
+bpy.ops.m3d.render(animation=True, existing='VERSION')
+check(scn.render.filepath.replace("\\", "/").endswith("/v003/" + rb_name) and len(os.listdir(os.path.join(rb_dir, "v003"))) == 2, "...then v003")
+scn.render.use_overwrite = False
+check(bpy.ops.m3d.render(animation=True, existing='OVERWRITE') == {'FINISHED'} and scn.render.use_overwrite, "Overwrite renders over them")
+shutil.rmtree(rb_dir, ignore_errors=True)
+
+# The hidden-camera question: asked for a hidden camera only, once per camera, never after "Don't ask again".
+rb_cam = scn.camera
+check(RN.hidden_camera(bpy.context) is None, "a camera you can see: no question")
+rb_cam.hide_set(True)
+check(RN.hidden_camera(bpy.context) == rb_cam, "a hidden camera (the persp of a new scene): the first render asks")
+scn.render.engine = 'BLENDER_WORKBENCH'
+bpy.ops.m3d.render(camera='ANYWAY')
+check(RN.hidden_camera(bpy.context) is None and rb_cam.name in RN._camera_ok, "...once per camera in a session")
+RN._camera_ok.clear()
+bpy.ops.m3d.render(camera='ANYWAY', dont_ask=True)
+RN._camera_ok.clear()
+check(m3d_user.data().get("render_camera_ask") is False and RN.hidden_camera(bpy.context) is None, "Don't ask again sticks")
+del m3d_user.data()["render_camera_ask"]
+m3d_user.save()
+RN._camera_ok.clear()
+(scn.render.engine, scn.render.resolution_x, scn.render.resolution_y, scn.render.resolution_percentage, scn.frame_start, scn.frame_end,
+ scn.render.filepath, scn.camera) = rb_snap
+bpy.data.objects.remove(rb_cam)
+
+# GPU: presets pick it when find_gpu passes; the Render tab offers it.
+rb_find, rb_known = RQ.find_gpu, RQ.known_gpu
+try:
+    RQ.find_gpu = lambda _context: ('OPTIX', ["Test GPU"], "")
+    RQ.known_gpu = lambda: ('OPTIX', ["Test GPU"], "")
+    scn.cycles.device = 'CPU'
+    rn.engine = 'CYCLES'
+    render_ws.m3d_page_right = "render_render"
+    log_ = draw_stub(RN.PROPERTIES_PT_m3d_rn_cycles, RnCtx())
+    check(any(r._kind == "operator" and r.values().get("value") == 'GPU' for r in log_)
+          and any("Test GPU" in str(r._kw.get("text")) for r in log_), "Render tab: GPU found, Use GPU")
+    bpy.ops.m3d.render_preset(preset='DRAFT')
+    check(scn.cycles.device == 'GPU', "a preset renders Cycles on the GPU that passed the test")
+    RQ.find_gpu = lambda _context: (None, [], "No GPU")
+    scn.cycles.device = 'CPU'
+    bpy.ops.m3d.render_preset(preset='MEDIUM')
+    check(scn.cycles.device == 'CPU', "...and stays on the CPU without one")
+finally:
+    RQ.find_gpu, RQ.known_gpu = rb_find, rb_known
+check_calls_ext("Sampling (real GPU state)", draw_stub(RN.PROPERTIES_PT_m3d_rn_cycles, RnCtx()))
+scn.cycles.device = 'CPU'
+rn.engine = 'BLENDER_EEVEE'
+
+# Render layers: New Render Layer from Selection, the In Layer column.
+rb_props, rb_chars = bpy.data.collections.new("RbProps"), bpy.data.collections.new("RbChars")
+for coll_ in (rb_props, rb_chars):
+    scn.collection.children.link(coll_)
+for ob_ in (rb_cube, rb_bare):
+    for c_ in list(ob_.users_collection):
+        c_.objects.unlink(ob_)
+rb_props.objects.link(rb_cube)
+rb_chars.objects.link(rb_bare)
+rb_lamp = bpy.data.objects.new("RbLamp", bpy.data.lights.new("RbLamp", 'POINT'))
+rb_props.objects.link(rb_lamp)
+bpy.ops.object.select_all(action='DESELECT')
+rb_bare.select_set(True)
+bpy.context.view_layer.objects.active = rb_bare
+rb_layers = len(scn.view_layers)
+check(bpy.ops.m3d.render_layer_from_selection() == {'FINISHED'} and len(scn.view_layers) == rb_layers + 1, "New Render Layer from Selection")
+rb_vl = scn.view_layers[-1]
+check(rb_vl.objects.get(rb_bare.name) and rb_vl.objects.get(rb_lamp.name) and not rb_vl.objects.get(rb_cube.name),
+      "...has the selection and the lights, not the rest: %s" % [o.name for o in rb_vl.objects])
+check([lc.exclude for lc in rb_vl.layer_collection.children] == [lc.collection.name != rb_vl.name for lc in rb_vl.layer_collection.children]
+      and scn.view_layers[0].objects.get(rb_cube.name), "...by its own collection; the first layer keeps everything")
+check(bpy.context.view_layer == rb_vl, "...and the window shows the new layer")
+render_ws.m3d_page_right = "render_passes"
+log_ = draw_stub(RN.PROPERTIES_PT_m3d_rn_holdout, RnCtx())
+check_calls_ext("Collections in This Render Layer", log_)
+check(RN.PROPERTIES_PT_m3d_rn_holdout.bl_label == "Collections in This Render Layer" and RN.PROPERTIES_PT_m3d_rn_view_layers.bl_label == "Render Layers"
+      and [r._kw.get("invert_checkbox") for r in log_ if r._kind == "prop" and r._args[1] == "exclude"] == [True] * 3,
+      "the collection table has an In Layer column")
+check("m3d.render_layer_from_selection" in [r._args[0] for r in draw_stub(RN.PROPERTIES_PT_m3d_rn_view_layers, RnCtx()) if r._kind == "operator"],
+      "Render Layers: New Render Layer from Selection")
+rb_coll = bpy.data.collections[rb_vl.name]
+bpy.context.window.view_layer = scn.view_layers[0]
+scn.view_layers.remove(rb_vl)
+bpy.data.collections.remove(rb_coll)
+
+# Lights in F7's Material Preview: once for the workspace, Use All Lights / Default Lighting, the HDRI's world.
+rb_views = RN.render_views()
+check(rb_views, "the Rendering workspace has a 3D view")
+render_ws.m3d_layout = 0
+for sp_ in rb_views:
+    sp_.shading.use_scene_lights = False
+RN.show_scene_lights(render_ws)
+check(all(sp_.shading.use_scene_lights for sp_ in rb_views) and render_ws.m3d_layout == RN.RENDER_LAYOUT, "F7's Material Preview shows the scene's lights")
+rb_views[0].shading.use_scene_lights = False
+RN.show_scene_lights(render_ws)
+check(not rb_views[0].shading.use_scene_lights, "...once: then it is the user's choice")
+rb_space = RN.viewport(bpy.context)
+rb_space.shading.type = 'SOLID'
+bpy.ops.m3d.view_lighting(lighting='ALL')
+check(rb_space.shading.type == 'MATERIAL' and rb_space.shading.use_scene_lights, "Use All Lights: Material Preview with the scene's lights")
+bpy.ops.m3d.view_lighting(lighting='DEFAULT')
+check(not rb_space.shading.use_scene_lights and not rb_space.shading.use_scene_world, "Use Default Lighting: the studio light")
+bpy.ops.m3d.view_lighting(lighting='FLAT')
+check((rb_space.shading.type, rb_space.shading.light) == ('SOLID', 'FLAT'), "Use Flat Lighting")
+rb_space.shading.light = 'STUDIO'
+rb_world = scn.world
+bpy.ops.m3d.hdri_setup()
+check(all(sp_.shading.use_scene_world for sp_ in rb_views), "HDRI Sky lights F7's Material Preview with the sky")
+bpy.ops.m3d.hdri_clear()
+check(scn.world == rb_world and not any(sp_.shading.use_scene_world for sp_ in rb_views), "Back to Previous World: the studio light again")
+
+# F1's render buttons are F7's.
+rb_log = []
+m3d_ui.draw_status_line_model(Rec(rb_log), RnCtx())
+rb_ops = [r._args[0] for r in rb_log if r._kind == "operator"]
+check({"m3d.render", "m3d.render_view", "m3d.render_ipr"} <= set(rb_ops) and not {"render.render", "render.view_show"} & set(rb_ops),
+      "Modeling Status Line: Render, Render View and IPR like F7's")
+check([it[0] for it in m3d_ui.SHELVES['RENDERING'][1] if it and it[0].startswith(("render.", "m3d.render"))] == ["m3d.render", "m3d.render"],
+      "the Rendering shelf renders with m3d.render")
+
+# Presets: a new scene, your own presets (save, apply, Custom after an edit, delete).
+rb_fresh = bpy.data.scenes.new("RbFresh")
+check(RN.current_quality(rb_fresh) == 'CUSTOM' and RN.quality_note(rb_fresh) == "Custom: no preset applied yet", "a scene no preset was applied to says so")
+RN.quality_default()
+check(RN.current_quality(rb_fresh) == 'MEDIUM', "a new file's scene gets Medium")
+bpy.data.scenes.remove(rb_fresh)
+bpy.ops.m3d.render_preset(preset='MEDIUM')
+scn.cycles.samples, scn.eevee.taa_render_samples = 77, 33
+check(rn_cancelled(bpy.ops.m3d.render_preset_save, name=" draft") and "draft" not in RN.user_presets(), "a built-in name is refused")
+check(bpy.ops.m3d.render_preset_save(name="Rb Look") == {'FINISHED'} and "Rb Look" in RN.user_presets()
+      and m3d_user.data()["render_presets"]["Rb Look"]["cycles.samples"] == 77, "Save as Preset keeps the settings in the user's file")
+check(RN.current_quality(scn) == "Rb Look" and RN.quality_note(scn) == "Your preset \"Rb Look\"", "...and it is the active preset")
+rb_log = []
+RN.draw_status_line(Rec(rb_log), RnCtx())
+check(any(r._kind == "label" and r._kw.get("text") == "Rb Look" for r in rb_log), "the Status Line names it")
+log_ = []
+RN.M3D_MT_render_presets.draw(NS(layout=Rec(log_)), RnCtx())
+check_calls_ext("Your Presets menu", log_)
+check([r.values().get("user_preset") for r in log_ if r._kind == "operator" and r._args[0] == "m3d.render_preset"] == ["Rb Look"]
+      and "m3d.render_preset_save" in [r._args[0] for r in log_ if r._kind == "operator"], "the presets menu: yours, Save as Preset")
+scn.eevee.taa_render_samples = 5
+check(RN.current_quality(scn) == 'CUSTOM' and RN.quality_note(scn) == "Custom: a value was edited since the preset", "an edit: Custom")
+check(bpy.ops.m3d.render_preset(user_preset="Rb Look") == {'FINISHED'} and scn.eevee.taa_render_samples == 33 and RN.current_quality(scn) == "Rb Look", "applying yours")
+rn.engine = 'CYCLES'
+check(RN.current_quality(scn) == "Rb Look", "...for both engines")
+rn.engine = 'BLENDER_EEVEE'
+m3d_user.data()["render_presets"]["Broken"] = {"cycles.samples": "x", "scene.name": "no"}
+check(RN.current_quality(scn) == "Rb Look" and set(RN.user_presets()["Broken"]['CYCLES']) == {"cycles.samples"}, "a damaged preset is read safely")
+RN.apply_quality(scn, "Broken")
+check(scn.cycles.samples != "x" and scn.m3d_render.user_preset == "Broken", "...and applied without an error")
+bpy.ops.m3d.render_preset(user_preset="Rb Look")
+del m3d_user.data()["render_presets"]["Broken"]
+check(bpy.ops.m3d.render_preset_delete(preset="Rb Look") == {'FINISHED'} and "Rb Look" not in RN.user_presets() and scn.m3d_render.user_preset == "",
+      "Delete Preset")
+bpy.ops.m3d.render_preset(preset='MEDIUM')
+for ob_ in (rb_cube, rb_bare, rb_lamp):
+    bpy.data.objects.remove(ob_)
+for coll_ in (rb_props, rb_chars):
+    bpy.data.collections.remove(coll_)
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

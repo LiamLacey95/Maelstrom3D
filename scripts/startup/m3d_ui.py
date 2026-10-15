@@ -630,6 +630,7 @@ MENUS = {
     # Rendering menu set.
     "M3D_MT_lighting_shading": ("Lighting/Shading", [
         op("Assign New Material", "m3d.assign_material", 'MATERIAL'),
+        enum("Assign Existing Material", "m3d.assign_existing_material", "material", 'MATERIAL'),
         editor("Shader Editor", 'ShaderNodeTree', 'NODE_MATERIAL'),
         sub("Lights", "VIEW3D_MT_light_add", 'LIGHT'),
         op("HDRI Sky", "m3d.hdri_setup", 'WORLD'),
@@ -649,6 +650,7 @@ MENUS = {
         op("Draft Quality", "m3d.render_preset", preset='DRAFT'),
         op("Medium Quality", "m3d.render_preset", preset='MEDIUM'),
         op("Final Quality", "m3d.render_preset", preset='FINAL'),
+        sub("Your Presets", "M3D_MT_render_presets", 'PRESET'),
         SEP,
         prop("Render Engine", "scene.render.engine"),
     ]),
@@ -756,9 +758,9 @@ MENUS = {
         prop("Backface Culling", "space_data.shading.show_backface_culling"),
     ]),
     "M3D_MT_panel_lighting": ("Lighting", [
-        op("Use Default Lighting", "wm.context_set_enum", data_path="space_data.shading.light", value='STUDIO'),
-        op("Use Flat Lighting", "wm.context_set_enum", data_path="space_data.shading.light", value='FLAT'),
-        op("Use All Lights", "wm.context_set_enum", data_path="space_data.shading.type", value='MATERIAL'),
+        op("Use Default Lighting", "m3d.view_lighting", lighting='DEFAULT'),
+        op("Use Flat Lighting", "m3d.view_lighting", lighting='FLAT'),
+        op("Use All Lights", "m3d.view_lighting", lighting='ALL'),
         SEP,
         prop("Shadows", "space_data.shading.show_shadows"),
         prop("Ambient Occlusion (Cavity)", "space_data.shading.show_cavity"),
@@ -908,10 +910,9 @@ def draw_status_line_model(layout, context):
     # Render: render view, render current frame, IPR, render settings; shader editor.
     layout.separator()
     row = layout.row(align=True)
-    row.operator("render.view_show", text="", icon='IMAGE')
-    row.operator("render.render", text="", icon='RENDER_STILL')
-    _call(row, "wm.context_set_enum", 'SHADING_RENDERED', "IPR Render",
-          data_path="space_data.shading.type", value='RENDERED')
+    row.operator("m3d.render_view", text="", icon='IMAGE')
+    row.operator("m3d.render", text="", icon='RENDER_STILL')
+    row.operator("m3d.render_ipr", text="", icon='SHADING_RENDERED', depress=space is not None and space.shading.type == 'RENDERED')
     row.operator("m3d.dock_tab", text="", icon='SCENE').tab = 'RENDER'
     row.operator("m3d.open_editor", text="", icon='NODE_MATERIAL').ui_type = 'ShaderNodeTree'
 
@@ -1316,8 +1317,8 @@ SHELVES = {
         ("m3d.assign_material", 'MATERIAL', {}),
         ("m3d.open_editor", 'NODE_MATERIAL', {"ui_type": 'ShaderNodeTree'}),
         None,
-        ("render.render", 'RENDER_STILL', {}),
-        ("render.render", 'RENDER_ANIMATION', {"animation": True}),
+        ("m3d.render", 'RENDER_STILL', {}),
+        ("m3d.render", 'RENDER_ANIMATION', {"animation": True}),
     ], _MODEL),
     'FX': ("FX", [
         ("object.particle_system_add", 'PARTICLES', {}),
