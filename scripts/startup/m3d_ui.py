@@ -57,8 +57,9 @@ def modifier(label, type, icon='MODIFIER'):
     return op(label, "object.modifier_add", icon, type=type)
 
 
-def constraint(label, type, icon='CONSTRAINT'):
-    return op(label, "object.constraint_add_with_targets", icon, type=type)
+def constraint(label, type, icon='CONSTRAINT', modes=None):
+    """A constraint on the active bone in Pose Mode, else on the active object (m3d.rig_constrain: Keep Offset too)."""
+    return op(label, "m3d.rig_constrain", icon, modes=modes, type=type)
 
 
 def editor(label, ui_type, icon='NONE'):
@@ -523,7 +524,7 @@ MENUS = {
         op("Create Joints", "object.armature_add", 'BONE_DATA'),
         op("Insert Joint", "armature.bone_primitive_add", modes=EDIT_ARM),
         op("Extrude Joint", "armature.extrude_move", 'EXPORT', modes=EDIT_ARM),
-        op("Mirror Joints", "armature.symmetrize", 'MOD_MIRROR', modes=EDIT_ARM, direction='POSITIVE_X'),
+        op("Mirror Joints", "m3d.rig_mirror", 'MOD_MIRROR', modes=EDIT_ARM, direction='POSITIVE_X'),
         op("Orient Joint", "m3d.rig_orient", 'ORIENTATION_GIMBAL', modes=EDIT_ARM),
         enum("Roll Joint To", "armature.calculate_roll", "type", modes=EDIT_ARM),
         SEP,
@@ -554,10 +555,13 @@ MENUS = {
         constraint("Aim", 'DAMPED_TRACK'),
         constraint("Geometry (Shrinkwrap)", 'SHRINKWRAP'),
         constraint("Motion Path (Follow Path)", 'FOLLOW_PATH'),
-        constraint("Pole Vector (IK)", 'IK'),
-        op("IK with Pole Target", "m3d.rig_ik_pole", 'CON_KINEMATIC', modes=POSE),
         SEP,
-        op("Remove Constraints", "object.constraints_clear"),
+        constraint("IK Handle (to Selected Bone)", 'IK', 'CON_KINEMATIC', modes=POSE),
+        op("IK with Pole Target", "m3d.rig_ik_pole", 'CON_KINEMATIC', modes=POSE),
+        op("Pole Vector (IK)", "m3d.rig_pole_vector", modes=POSE),
+        SEP,
+        prop("Keep Offset", "scene.m3d_rig.keep_offset"),
+        op("Remove Constraints", "m3d.rig_constraints_clear", 'X'),
     ]),
     "M3D_MT_control": ("Control", [
         op("Locator", "object.empty_add", 'EMPTY_AXIS', type='PLAIN_AXES'),
@@ -1288,10 +1292,10 @@ SHELVES = {
         ("object.mode_set", 'WPAINT_HLT', {"mode": 'WEIGHT_PAINT'}),
         ("object.posemode_toggle", 'POSE_HLT', {}),
         None,
-        ("object.constraint_add_with_targets", 'CON_CHILDOF', {"type": 'CHILD_OF'}),
-        ("object.constraint_add_with_targets", 'CON_LOCLIKE', {"type": 'COPY_LOCATION'}),
-        ("object.constraint_add_with_targets", 'CON_ROTLIKE', {"type": 'COPY_ROTATION'}),
-        ("object.constraint_add_with_targets", 'CON_TRACKTO', {"type": 'DAMPED_TRACK'}),
+        ("m3d.rig_constrain", 'CON_CHILDOF', {"type": 'CHILD_OF'}),
+        ("m3d.rig_constrain", 'CON_LOCLIKE', {"type": 'COPY_LOCATION'}),
+        ("m3d.rig_constrain", 'CON_ROTLIKE', {"type": 'COPY_ROTATION'}),
+        ("m3d.rig_constrain", 'CON_TRACKTO', {"type": 'DAMPED_TRACK'}),
         None,
         ("object.empty_add", 'EMPTY_AXIS', {"type": 'PLAIN_AXES'}),
     ], _MODEL),

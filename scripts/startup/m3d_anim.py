@@ -287,9 +287,15 @@ class M3D_OT_anim_euler_filter(Operator):
         return context.mode in {'OBJECT', 'POSE'} and context.active_object is not None
 
     def execute(self, context):
-        moved = sum(unwrap_euler(fc) for _id, fc in target_curves(context) if fc.data_path.endswith(".rotation_euler")
+        curves = target_curves(context)
+        moved = sum(unwrap_euler(fc) for _id, fc in curves if fc.data_path.endswith(".rotation_euler")
                     or fc.data_path == "rotation_euler")
-        self.report({'INFO'}, "Euler filter: %d keys moved" % moved)
+        quats = {fc.data_path for _id, fc in curves if fc.data_path.endswith("rotation_quaternion")}
+        if quats:   # (quaternion keys have no Euler flips: the filter does not apply to them)
+            self.report({'WARNING'}, "Euler filter: %d keys moved; %d channel(s) rotate in quaternions and were left: set "
+                        "their Rotate Order to XYZ (Channel Box) to filter them" % (moved, len(quats)))
+        else:
+            self.report({'INFO'}, "Euler filter: %d keys moved" % moved)
         return {'FINISHED'}
 
 

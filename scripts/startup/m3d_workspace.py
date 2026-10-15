@@ -212,11 +212,13 @@ DOCK_TABS['TEXTURE_OLD'] = {
         ("display", "Display"))),
     'LEFT': (_TEX("brushes", "Brushes"),),
 }
-# Rigging: task tabs on the right, bone collections under the Outliner on the left (pages: m3d_rig.py).
+# Rigging: Channel Box first (the same tab as in Animation), the task tabs, bone collections under the Outliner on the left
+# (pages: m3d_rig.py).
 DOCK_TABS['RIG'] = {
-    'RIGHT': tuple(Tab("rig_" + page, label, 'MODELING_TOOLKIT', "rig_" + page, *short) for page, label, *short in (
-        ("skeleton", "Skeleton"), ("controls", "Controls & Constraints", "Controls"), ("skin", "Skin"), ("drive", "Drive"),
-        ("test", "Test"), ("collections", "Collections"))),
+    'RIGHT': (Tab("channel_box", "Channel Box", 'CHANNEL_BOX', None),
+              *(Tab("rig_" + page, label, 'MODELING_TOOLKIT', "rig_" + page, *short) for page, label, *short in (
+                  ("skeleton", "Skeleton"), ("controls", "Controls & Constraints", "Controls"), ("skin", "Skin"),
+                  ("drive", "Drive"), ("test", "Test"), ("collections", "Collections")))),
     'LEFT': (Tab("rig_bones", "Bones", 'MODELING_TOOLKIT', "rig_bones"),),
 }
 # Animation: Channel Box first, then the task tabs (pages: m3d_anim.py).
