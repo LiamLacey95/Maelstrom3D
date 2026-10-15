@@ -4937,12 +4937,13 @@ from mathutils import Matrix, Vector
 
 rig_ws = bpy.data.workspaces["Rigging"]
 rig_tabs = W.DOCK_TABS['RIG']
-check([t.label for t in rig_tabs['RIGHT']] == ["Skeleton", "Controls & Constraints", "Skin", "Drive", "Test", "Collections"],
-      "Rigging dock tabs")
+check([t.label for t in rig_tabs['RIGHT']] == ["Channel Box", "Skeleton", "Controls & Constraints", "Skin", "Drive", "Test",
+                                                "Collections"], "Rigging dock tabs")
+check(rig_tabs['RIGHT'][0] == W.DOCK_TABS['ANIM']['RIGHT'][0], "the first Rigging tab is the Channel Box, the same tab as Animation's")
 check([t.label for t in rig_tabs['LEFT']] == ["Bones"], "Rigging left tab")
-for tab in (*rig_tabs['RIGHT'], *rig_tabs['LEFT']):
+for tab in (*rig_tabs['RIGHT'][1:], *rig_tabs['LEFT']):
     check(tab.context == 'MODELING_TOOLKIT' and tab.page == tab.id and tab.id.startswith("rig_"), "Rigging page tab " + tab.id)
-rig_pages = {t.page for side in rig_tabs.values() for t in side}
+rig_pages = {t.page for side in rig_tabs.values() for t in side if t.page}
 check({c.page for c in R.classes if hasattr(c, "page")} == rig_pages, "every Rigging page has panels and the other way round")
 check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in R.classes if not issubclass(c, bpy.types.PropertyGroup)),
       "Rigging classes registered")
@@ -14008,6 +14009,308 @@ PCG.draw_bone_collections(Rec(pc_log), RCtx(), pc_arm)
 check("armature.collection_remove" in pb_ops(pc_log), "...with one: Remove")
 bpy.data.armatures.remove(pc_arm)
 check(PCG.drivers_area(NS(areas=[NS(ui_type='VIEW_3D')])) is None, "no Drivers editor in a screen without one")
+
+# --- UX pass 2, rigging: Constrain in Pose Mode (bone constraints, IK Handle, Pole Vector, Remove), Keep Offset, weights that
+# add up to 1, XYZ Euler bones, Rotate Order (Channel Box, keys kept), Euler Filter on quaternions, Check Rig, the Channel Box tab,
+# joint names (lists, numbers, Rename Chain, Mirror naming sides first, numbered duplicates), range-of-motion test, select weighted.
+import m3d_rig as R
+import m3d_anim as A
+clean_scene()
+u3s = bpy.context.scene.m3d_rig
+u3s.keep_offset = u3s.weight_normalize = u3s.euler_bones = True
+u3_rig = R.new_armature(bpy.context, "U3Rig")
+R._select_only(bpy.context, u3_rig)
+bpy.ops.object.mode_set(mode='EDIT')
+u3_arm = u3_rig.data
+# Joint names: a list names the chain in order, a name ending in a number counts up (before a side too), others as before.
+u3c = R.JointChain(u3_rig.name, "Shoulder, Elbow, Wrist")
+for p_ in ((0.2, 0, 1.5), (0.6, 0, 1.5), (1.0, 0, 1.4), (1.3, 0, 1.4)):
+    u3c.add(Vector(p_))
+check(u3c.bones == ["Shoulder", "Elbow", "Wrist"], "Joint tool: a name list names the bones in order: %s" % u3c.bones)
+check([R.chain_name("Arm_01.L", i) for i in range(3)] == ["Arm_01.L", "Arm_02.L", "Arm_03.L"] and R.chain_name("Spine9", 2) == "Spine11"
+      and R.chain_name("Bone", 4) == "Bone" and R.chain_name("A, B", 3) == "B" and R.chain_name(" , ", 0) == "Bone", "chain_name numbering")
+# Mirror names the sides first (the chain on +X has no side yet), then mirrors.
+for eb_ in u3_arm.edit_bones:
+    eb_.select = True
+check(bpy.ops.m3d.rig_mirror(direction='POSITIVE_X') == {'FINISHED'}, "Mirror Joints")
+check({b.name for b in u3_arm.edit_bones} == {"Shoulder.L", "Elbow.L", "Wrist.L", "Shoulder.R", "Elbow.R", "Wrist.R"},
+      "Mirror named the bones .L first and made .R copies: %s" % sorted(b.name for b in u3_arm.edit_bones))
+check(u3_arm.edit_bones["Wrist.R"].head.x < 0 and m3d_ui.MENUS["M3D_MT_skeleton"][1][4]["idname"] == "m3d.rig_mirror"
+      and m3d_ui.SHELVES['RIG_SKELETON'][1][2][0] == "m3d.rig_mirror", "...the copies on -X; the menu and the shelf use it")
+# Rename Chain: root to tip, the side from where the chain is.
+u3s.rename_chain = "Shoulder, Elbow, Wrist"
+for eb_ in u3_arm.edit_bones:
+    eb_.select = eb_.name.endswith(".R")
+    eb_.name = {"Shoulder.R": "j1", "Elbow.R": "j2", "Wrist.R": "j3"}.get(eb_.name, eb_.name)
+check(bpy.ops.m3d.rig_rename_chain() == {'FINISHED'} and {"Shoulder.R", "Elbow.R", "Wrist.R"} <= {b.name for b in u3_arm.edit_bones}
+      and u3_arm.edit_bones["Elbow.R"].parent.name == "Shoulder.R", "Rename Chain names the chain root to tip with its side: %s" %
+      sorted(b.name for b in u3_arm.edit_bones))
+for eb_ in u3_arm.edit_bones:
+    eb_.select = eb_.name.endswith(".L")
+u3s.rename_chain = "Arm_01"
+bpy.ops.m3d.rig_rename_chain()
+check({"Arm_01.L", "Arm_02.L", "Arm_03.L"} <= {b.name for b in u3_arm.edit_bones}, "Rename Chain counts up a numbered name")
+u3s.rename_chain = "Shoulder, Elbow, Wrist"
+bpy.ops.m3d.rig_rename_chain()
+check({"Shoulder.L", "Elbow.L", "Wrist.L"} <= {b.name for b in u3_arm.edit_bones}, "Rename Chain gives Shoulder / Elbow / Wrist .L")
+# A numbered duplicate before the side is found (Bone.001.L next to Bone.L).
+for name_ in ("Toe.L", "Toe.001.L"):
+    eb_ = u3_arm.edit_bones.new(name_)
+    eb_.head, eb_.tail = (0.3, 0, 0), (0.3, 0.2, 0)
+check(any(n == "Toe.001.L" and "Numbered duplicate of \"Toe.L\"" in m for n, m in R.name_issues(u3_rig)), "Bone.001.L next to Bone.L is a numbered duplicate")
+for name_ in ("Toe.L", "Toe.001.L"):
+    u3_arm.edit_bones.remove(u3_arm.edit_bones[name_])
+# A control bone (not deforming) and the pole for later.
+for name_, head_, tail_ in (("Ctrl", (2.0, 0, 1.5), (2.0, 0, 1.8)), ("PoleBone", (0.6, -1.0, 1.5), (0.6, -1.0, 1.7))):
+    eb_ = u3_arm.edit_bones.new(name_)
+    eb_.head, eb_.tail, eb_.use_deform = head_, tail_, False
+bpy.ops.object.mode_set(mode='POSE')
+# New bones: the handler notices the bones a skeleton got, the timer makes them XYZ Euler; bones already seen are left.
+bpy.context.view_layer.update()
+check({"Shoulder.L", "Ctrl"} <= R._bones_pending.get(u3_rig.name, set()), "the handler noticed the new bones: %s" % R._bones_pending)
+u3_rig.pose.bones["Ctrl"].rotation_mode = 'QUATERNION'
+R.euler_new_bones()
+check(all(pb.rotation_mode == 'XYZ' for pb in u3_rig.pose.bones), "new bones rotate in XYZ Euler")
+u3_rig.pose.bones["Ctrl"].rotation_mode = 'QUATERNION'
+bpy.context.view_layer.update()
+R.euler_new_bones()
+check(u3_rig.pose.bones["Ctrl"].rotation_mode == 'QUATERNION' and not R._bones_pending, "a bone set to quaternions later is left alone")
+u3_pbs = u3_rig.pose.bones
+# Constrain in Pose Mode: a bone constraint on the active bone (not an object constraint on the skeleton), keeping its offset.
+for pb_ in u3_pbs:
+    pb_.select = pb_.name in {"Ctrl", "Shoulder.L"}
+u3_arm.bones.active = u3_arm.bones["Shoulder.L"]
+u3_before = (u3_rig.matrix_world @ u3_pbs["Shoulder.L"].matrix).copy()
+for kind_ in ('CHILD_OF', 'COPY_LOCATION', 'COPY_ROTATION', 'COPY_SCALE', 'COPY_TRANSFORMS'):
+    u3_pbs["Ctrl"].location = (0.0, 0.1, 0.0)   # (a target that is not at rest: the rest of the jump goes into the channels)
+    bpy.context.view_layer.update()
+    check(bpy.ops.m3d.rig_constrain(type=kind_) == {'FINISHED'} and not u3_rig.constraints, "Constrain %s in Pose Mode" % kind_)
+    con_ = u3_pbs["Shoulder.L"].constraints[-1]
+    bpy.context.view_layer.update()
+    ev_ = u3_rig.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    now_ = ev_.matrix_world @ ev_.pose.bones["Shoulder.L"].matrix
+    check(con_.type == kind_ and con_.target == u3_rig and con_.subtarget == "Ctrl", "...a bone constraint targeting the other bone")
+    check(max(abs(a - b) for ra, rb in zip(now_, u3_before) for a, b in zip(ra, rb)) < 1e-4, "...that keeps the bone where it was (%s)" % kind_)
+    if kind_ in {'COPY_LOCATION', 'CHILD_OF', 'COPY_TRANSFORMS'}:
+        u3_pbs["Ctrl"].location = (0.0, 0.4, 0.0)   # the control moves 0.3 along its bone (+Z): the shoulder follows
+        bpy.context.view_layer.update()
+        ev_ = u3_rig.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        moved_ = (ev_.matrix_world @ ev_.pose.bones["Shoulder.L"].matrix).translation - now_.translation
+        check((moved_ - Vector((0, 0, 0.3))).length < 1e-4, "...and follows the target's moves (%s: %s)" % (kind_, moved_))
+    check(bpy.ops.m3d.rig_constraints_clear() == {'FINISHED'} and not u3_pbs["Shoulder.L"].constraints, "Remove Constraints clears the bone's")
+    R.reset_bones(u3_pbs)
+    bpy.context.view_layer.update()
+u3s.keep_offset = False
+u3_pbs["Ctrl"].location = (0.0, 0.0, 0.0)
+bpy.ops.m3d.rig_constrain(type='COPY_LOCATION')
+check(not u3_pbs["Shoulder.L"].constraints[-1].use_offset, "Keep Offset off: a plain Copy Location")
+bpy.ops.m3d.rig_constraints_clear()
+u3s.keep_offset = True
+# IK Handle (to the selected bone) and Pole Vector work on bones; the object-only path refuses IK.
+for pb_ in u3_pbs:
+    pb_.select = pb_.name in {"Ctrl", "Elbow.L"}
+u3_arm.bones.active = u3_arm.bones["Elbow.L"]
+check(bpy.ops.m3d.rig_constrain(type='IK') == {'FINISHED'} and u3_pbs["Elbow.L"].constraints[-1].type == 'IK'
+      and u3_pbs["Elbow.L"].constraints[-1].subtarget == "Ctrl", "IK Handle: an IK constraint to the selected bone")
+for pb_ in u3_pbs:
+    pb_.select = pb_.name in {"PoleBone", "Elbow.L"}
+check(bpy.ops.m3d.rig_pole_vector() == {'FINISHED'} and u3_pbs["Elbow.L"].constraints[-1].pole_subtarget == "PoleBone", "Pole Vector sets the IK's pole")
+u3_arm.bones.active = u3_arm.bones["Wrist.L"]
+check(bpy.ops.m3d.rig_pole_vector() == {'CANCELLED'}, "Pole Vector on a bone without IK cancels")
+u3_arm.bones.active = u3_arm.bones["Elbow.L"]
+bpy.ops.m3d.rig_constraints_clear()
+# The Constrain menu draws in every mode; IK entries only in Pose Mode; no object-only commands left.
+u3_entries = m3d_ui.MENUS["M3D_MT_constrain"][1]
+check(not any(e.get("idname", "").startswith(("object.constraint", "pose.constraint")) for e in u3_entries)
+      and any(e.get("idname") == "m3d.rig_constraints_clear" for e in u3_entries), "Constrain menu: m3d.rig_constrain and Remove Constraints")
+for mode_ in ('POSE', 'EDIT', 'OBJECT'):
+    bpy.ops.object.mode_set(mode=mode_)
+    for menu_ in ("M3D_MT_constrain", "M3D_MT_edit", "M3D_MT_skeleton"):
+        log = []
+        m3d_ui.draw_entries(Rec(log), bpy.context, m3d_ui.MENUS[menu_][1])
+        check_calls("%s in %s" % (menu_, mode_), log)
+        if menu_ == "M3D_MT_constrain":
+            texts_ = [r._kw.get("text") for r in log if r._kind == "operator"]
+            check(("Pole Vector (IK)" in texts_) == (mode_ == 'POSE') and "Point" in texts_, "Constrain menu in %s: %s" % (mode_, texts_))
+bpy.ops.object.mode_set(mode='OBJECT')
+check(bpy.ops.m3d.rig_constrain(type='IK') == {'CANCELLED'}, "IK on an object cancels with a message")
+u3_a, u3_b = bpy.data.objects.new("U3A", None), bpy.data.objects.new("U3B", None)
+for o_ in (u3_a, u3_b):
+    bpy.context.collection.objects.link(o_)
+u3_a.location, u3_a.rotation_euler = (2, 3, 1), (0.3, 0.2, 0.5)
+u3_b.location, u3_b.rotation_euler, u3_b.scale = (-1, 0, 2), (0.1, 0.0, 1.0), (2, 2, 2)
+for kind_ in ('COPY_LOCATION', 'COPY_ROTATION', 'COPY_TRANSFORMS', 'COPY_SCALE', 'CHILD_OF'):
+    R._select_only(bpy.context, u3_a)
+    u3_b.select_set(True)
+    bpy.context.view_layer.objects.active = u3_b
+    bpy.context.view_layer.update()
+    before_ = u3_b.matrix_world.copy()
+    check(bpy.ops.m3d.rig_constrain(type=kind_) == {'FINISHED'} and u3_b.constraints[-1].target == u3_a, "object %s" % kind_)
+    bpy.context.view_layer.update()
+    check(max(abs(a - b) for ra, rb in zip(u3_b.matrix_world, before_) for a, b in zip(ra, rb)) < 1e-4, "...keeps the object where it was")
+    bpy.ops.m3d.rig_constraints_clear()
+    check(not u3_b.constraints, "Remove Constraints on the object")
+    u3_b.location, u3_b.rotation_euler, u3_b.scale = (-1, 0, 2), (0.1, 0.0, 1.0), (2, 2, 2)
+check(all(it[0] == "m3d.rig_constrain" for it in m3d_ui.SHELVES['RIGGING'][1] if it and "constrain" in it[0]), "Rigging shelf constraints go through Constrain")
+# Rotate order: keys are kept on their frames, the pose too; the Channel Box has the row.
+u3_b.rotation_mode = 'XYZ'
+for frame_, z_ in ((1, 0.0), (11, 1.0), (21, 3.0)):
+    u3_b.rotation_euler = (0.2, 0.1, z_)
+    u3_b.keyframe_insert("rotation_euler", frame=frame_)
+R._select_only(bpy.context, u3_b)
+u3_mats = {}
+for frame_ in (1, 11, 21):
+    bpy.context.scene.frame_set(frame_)
+    u3_mats[frame_] = u3_b.matrix_world.copy()
+for order_ in ('QUATERNION', 'ZYX', 'XYZ'):
+    check(bpy.ops.m3d.rig_rotate_order(order=order_) == {'FINISHED'} and u3_b.rotation_mode == order_, "Set Rotate Order %s" % order_)
+    paths_ = {fc.data_path for fc in A.channel_fcurves(u3_b)}
+    check(paths_ == {R.rotation_attr(order_)}, "...the keys are on the new channels: %s" % paths_)
+    for frame_ in (1, 11, 21):
+        bpy.context.scene.frame_set(frame_)
+        check(max(abs(a - b) for ra, rb in zip(u3_b.matrix_world, u3_mats[frame_]) for a, b in zip(ra, rb)) < 1e-4,
+              "...the rotation at frame %d is the same (%s)" % (frame_, order_))
+check(abs(u3_b.rotation_euler[2] - 3.0) < 1e-3, "...without flips (XYZ again: %s)" % (tuple(u3_b.rotation_euler),))
+log = []
+m3d_mode.PROPERTIES_PT_m3d_channel_box.draw(type("Inst", (), {"layout": Rec(log)})(), bpy.context)
+check(any(r._kind == "operator_menu_enum" and r._args[0] == "m3d.rig_rotate_order" and r._kw.get("text") == "XYZ" for r in log),
+      "Channel Box: a Rotate Order row with the object's order")
+# Euler Filter warns about quaternion channels it cannot filter.
+bpy.ops.m3d.rig_rotate_order(order='QUATERNION')
+u3_reports = []
+check(A.M3D_OT_anim_euler_filter.execute(NS(report=lambda kind, text: u3_reports.append((kind, text))), bpy.context) == {'FINISHED'}
+      and u3_reports and u3_reports[-1][0] == {'WARNING'} and "quaternion" in u3_reports[-1][1], "Euler Filter warns on quaternions: %s" % u3_reports)
+u3_b.animation_data_clear()
+bpy.data.objects.remove(u3_a)
+bpy.data.objects.remove(u3_b)
+# Channel Box tab in Rigging: the dock follows a Channel Box pick for a mode like any tab.
+rig_ws.m3d_page_right = ""
+check(W.DOCK_TABS['RIG']['RIGHT'][0].context == 'CHANNEL_BOX' and W.active_page(RCtx()) == "rig_skeleton",
+      "the Channel Box is a tab; the pages still start on Skeleton")
+# Weights: the table keeps the bone weights adding up to 1 (locked ones stay), Auto Normalize is on when painting a bound mesh.
+bpy.ops.mesh.primitive_cylinder_add(vertices=8, radius=0.2, depth=1.2, location=(0.7, 0, 1.45), rotation=(0, math.pi / 2, 0))
+u3_mesh = bpy.context.active_object
+u3_rig.select_set(True)
+u3s.skin_method = 'AUTO'
+bpy.ops.m3d.rig_bind()
+check(R.is_bound(u3_mesh) and R._checked["rig"] == u3_rig.name, "Bind runs Check Rig")
+check(not {'NORMALIZE', 'UNWEIGHTED'} & {p.kind for p in R._checked["problems"]} and u3_rig.select_get() and u3_mesh.select_get(),
+      "...automatic weights add up to 1 after Bind; mesh and skeleton stay selected: %s" % [p.text for p in R._checked["problems"]])
+bpy.context.tool_settings.use_auto_normalize = False
+bpy.ops.m3d.rig_mode(mode='WEIGHT_PAINT')
+check(bpy.context.mode == 'PAINT_WEIGHT' and bpy.context.tool_settings.use_auto_normalize, "Paint Weights on a bound mesh: Auto Normalize on")
+log = []
+R.PROPERTIES_PT_m3d_rg_paint.draw(type("Inst", (), {"layout": Rec(log)})(), RCtx())
+check({"use_auto_normalize", "use_multipaint", "use_lock_relative"} <= {r._args[1] for r in log if r._kind == "prop"}, "Weight Paint panel: Auto Normalize, Multi-Paint, Lock-Relative")
+bpy.ops.m3d.rig_mode(mode='OBJECT')
+R._select_only(bpy.context, u3_mesh)
+u3_vg = u3_mesh.vertex_groups
+u3_v = u3_mesh.data.vertices[0]
+for v_ in u3_mesh.data.vertices:
+    v_.select = v_.index == 0
+for g_ in u3_vg:
+    g_.remove([0])
+u3_vg["Shoulder.L"].add([0], 0.5, 'REPLACE')
+u3_vg["Elbow.L"].add([0], 0.3, 'REPLACE')
+u3_vg["Wrist.L"].add([0], 0.2, 'REPLACE')
+u3_vg["Wrist.L"].lock_weight = True
+
+
+def u3_weights():
+    return {u3_vg[g.group].name: round(g.weight, 4) for g in u3_mesh.data.vertices[0].groups}
+
+
+check(bpy.ops.m3d.rig_vertex_weight(group="Shoulder.L", weight=0.6) == {'FINISHED'}
+      and u3_weights() == {"Shoulder.L": 0.6, "Elbow.L": 0.2, "Wrist.L": 0.2}, "weight table Set: the other unlocked weight takes the rest: %s" % u3_weights())
+check(bpy.ops.m3d.rig_vertex_weight(group="Shoulder.L", weight=0.95) == {'FINISHED'} and u3_weights()["Shoulder.L"] == 0.8
+      and u3_weights()["Wrist.L"] == 0.2 and u3_weights()["Elbow.L"] == 0.0, "...a locked weight keeps its share: %s" % u3_weights())
+check(bpy.ops.m3d.rig_vertex_weight(group="Shoulder.L", remove=True) == {'FINISHED'}, "remove from the table")
+check("Shoulder.L" not in u3_weights() and abs(sum(u3_weights().values()) - 1.0) < 1e-4, "...the others add up to 1: %s" % u3_weights())
+u3_vg["Wrist.L"].lock_weight = False
+u3s.weight_normalize = False
+bpy.ops.m3d.rig_vertex_weight(group="Elbow.L", weight=0.1)
+check(u3_weights()["Elbow.L"] == 0.1 and u3_weights()["Wrist.L"] == 0.2, "Normalize off: only the one weight changes: %s" % u3_weights())
+u3s.weight_normalize = True
+check(R.normalized({0: 0.4}, 0, 0.5, set(), {0}) == {0: 1.0} and R.normalized({0: 0.4, 1: 0.5}, 1, 0.5, set(), {0}) == {0: 0.4, 1: 0.5},
+      "normalized: a lone weight takes it all; groups that are no bone are left alone")
+# Select Weighted Vertices: the active influence above the threshold (Weight Paint with Vertex Select).
+u3_vg.active_index = u3_vg["Wrist.L"].index
+u3s.select_threshold = 0.5
+check(bpy.ops.m3d.rig_select_weighted() == {'FINISHED'} and u3_mesh.mode == 'WEIGHT_PAINT' and u3_mesh.data.use_paint_mask_vertex,
+      "Select Weighted Vertices paints with Vertex Select")
+u3_want = {v.index for v in u3_mesh.data.vertices if any(g.group == u3_vg["Wrist.L"].index and g.weight > 0.5 for g in v.groups)}
+check(u3_want and {v.index for v in u3_mesh.data.vertices if v.select} == u3_want, "...the vertices weighted to the bone are selected")
+bpy.ops.m3d.rig_mode(mode='OBJECT')
+# Check Rig: unapplied scale found and fixed, quaternions, a control that deforms, influences, normalizing, names.
+R._select_only(bpy.context, u3_rig)
+u3_rig.scale = (2.0, 2.0, 2.0)
+u3_arm.bones["Ctrl"].use_deform = True
+u3_pbs["Ctrl"].custom_shape = R.widget_object(bpy.context, 'CIRCLE')
+u3s.skin_limit = 1
+check(bpy.ops.m3d.rig_check() == {'FINISHED'}, "Check Rig")
+u3_kinds = [p.kind for p in R._checked["problems"]]
+check({'TRANSFORMS', 'QUATERNION', 'CONTROLS', 'INFLUENCES'} <= set(u3_kinds), "Check Rig finds scale, quaternions, a control that deforms, influences: %s" % u3_kinds)
+log = []
+R.PROPERTIES_PT_m3d_rg_check.draw(type("Inst", (), {"layout": Rec(log)})(), RCtx())
+check_calls("check rig panel", log)
+check({r.values().get("fix") for r in log if r._kind == "operator"} >= {'NONE', 'TRANSFORMS', 'QUATERNION'}, "the panel lists the problems with their fixes")
+bpy.context.view_layer.update()
+u3_where = [u3_mesh.matrix_world @ v.co for v in u3_mesh.data.vertices[:20]]
+for fix_ in ('TRANSFORMS', 'QUATERNION', 'CONTROLS'):
+    R._select_only(bpy.context, u3_rig)
+    check(bpy.ops.m3d.rig_check(fix=fix_) == {'FINISHED'} and fix_ not in [p.kind for p in R._checked["problems"]], "Check Rig fixes %s" % fix_)
+bpy.context.view_layer.update()
+check(tuple(u3_rig.scale) == (1, 1, 1) and not R.unapplied(u3_mesh)
+      and max((u3_mesh.matrix_world @ v.co - w).length for v, w in zip(u3_mesh.data.vertices[:20], u3_where)) < 1e-4,
+      "...rotation and scale are applied, the mesh stays where it was")
+check(u3_pbs["Ctrl"].rotation_mode == 'XYZ' and not u3_arm.bones["Ctrl"].use_deform, "...the quaternion bone is XYZ, the control does not deform")
+check(bpy.ops.m3d.rig_check(fix='INFLUENCES', mesh=u3_mesh.name) == {'FINISHED'} and 'INFLUENCES' not in [p.kind for p in R._checked["problems"]],
+      "Check Rig limits the influences (with Vertex Select left on from painting: every vertex)")
+check(u3_mesh.data.use_paint_mask_vertex, "...and Vertex Select stays on")
+check(bpy.ops.m3d.rig_check(fix='NORMALIZE', mesh=u3_mesh.name) == {'FINISHED'} and 'NORMALIZE' not in [p.kind for p in R._checked["problems"]],
+      "Check Rig normalizes the weights")
+u3s.skin_limit = 4
+u3_rig.pose.bones["Elbow.L"].rotation_euler = (0.3, 0, 0)
+R.check_rig(bpy.context, u3_rig)
+check('POSED' in [p.kind for p in R._checked["problems"]], "a posed skeleton is found")
+bpy.ops.m3d.rig_check(fix='POSED')
+check('POSED' not in [p.kind for p in R._checked["problems"]] and tuple(u3_rig.pose.bones["Elbow.L"].rotation_euler) == (0, 0, 0), "Reset Pose fixes it")
+# Range-of-motion test: an NLA layer of its own, the bones turn, Remove takes it away.
+R._select_only(bpy.context, u3_rig)
+bpy.ops.object.mode_set(mode='POSE')
+for pb_ in u3_pbs:
+    pb_.select = pb_.name in {"Shoulder.L", "Elbow.L"}
+u3s.rom_angle = math.radians(60)
+bpy.context.scene.frame_start = 1
+check(bpy.ops.m3d.rig_rom() == {'FINISHED'} and [t.name for t in u3_rig.animation_data.nla_tracks] == [R.ROM], "ROM test adds its layer")
+bpy.context.scene.frame_set(1 + R.ROM_STEP)
+check(abs(u3_pbs["Elbow.L"].rotation_euler[0] - math.radians(60)) < 1e-3 and u3_pbs["Wrist.L"].rotation_euler[0] == 0.0,
+      "...the selected bones turn around X at the second pose: %s" % (tuple(u3_pbs["Elbow.L"].rotation_euler),))
+bpy.context.scene.frame_set(1 + 5 * R.ROM_STEP)
+check(abs(u3_pbs["Elbow.L"].rotation_euler[1] + math.radians(60)) < 1e-3, "...then the other way around Y")
+log = []
+R.PROPERTIES_PT_m3d_rg_rom.draw(type("Inst", (), {"layout": Rec(log)})(), RCtx())
+check_calls("rom panel", log)
+check([r.values().get("remove") for r in log if r._kind == "operator"] == [False, True], "ROM panel: Make Test and Remove")
+check(bpy.ops.m3d.rig_rom(remove=True) == {'FINISHED'} and not u3_rig.animation_data.nla_tracks and R.ROM not in bpy.data.actions
+      and tuple(u3_pbs["Elbow.L"].rotation_euler) == (0, 0, 0), "ROM test removes its layer and its action; the bones are back")
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.context.scene.frame_set(1)
+# The new pages draw in each mode (the Rigging page loop above covers the rest).
+for mode_ in ('OBJECT', 'POSE', 'EDIT'):
+    bpy.ops.m3d.rig_mode(mode=mode_)
+    for cls_ in (R.PROPERTIES_PT_m3d_rg_check, R.PROPERTIES_PT_m3d_rg_names, R.PROPERTIES_PT_m3d_rg_locks, R.PROPERTIES_PT_m3d_rg_constraints,
+                 R.PROPERTIES_PT_m3d_rg_ik, R.PROPERTIES_PT_m3d_rg_influences):
+        if mode_ == 'EDIT' and cls_ not in {R.PROPERTIES_PT_m3d_rg_check, R.PROPERTIES_PT_m3d_rg_names}:
+            continue
+        if mode_ != 'EDIT' and cls_ is R.PROPERTIES_PT_m3d_rg_names:
+            continue
+        try:
+            check_calls_ext("%s in %s" % (cls_.__name__, mode_), draw_stub(cls_, RCtx()))
+        except Exception as err_:
+            check(False, "%s in %s: %r" % (cls_.__name__, mode_, err_))
+bpy.ops.m3d.rig_mode(mode='OBJECT')
+clean_scene()
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

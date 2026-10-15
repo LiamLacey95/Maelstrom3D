@@ -8052,6 +8052,135 @@ def rig_names_menu_check():
     event('ESC', 'RELEASE', rig_xy())
 
 
+# --- UX pass 2: Mirror names the sides first, new bones rotate in XYZ Euler, Constrain in Pose Mode makes a bone constraint
+# that keeps its offset, the Constrain menu draws in Pose Mode, the Channel Box tab comes back in the mode it was picked in,
+# Check Rig and the range-of-motion test from the Test tab.
+@step
+def rig_u3_mirror():
+    arm = rig_obj().data
+    for eb in arm.edit_bones:
+        eb.select = eb.select_head = eb.select_tail = False
+    eb = arm.edit_bones.new("Fin")
+    eb.head, eb.tail = (0.5, 0, 1.0), (0.9, 0, 1.0)
+    eb.select = eb.select_head = eb.select_tail = True
+    press_ok("m3d.dock_page", tab="rig_skeleton")
+    press_ok("m3d.rig_mirror", direction='POSITIVE_X')
+
+
+@step
+def rig_u3_mirror_check():
+    names = {b.name for b in rig_obj().data.edit_bones}
+    check({"Fin.L", "Fin.R"} <= names, "Mirror from the Skeleton tab names the side first: %s" % sorted(names))
+    check(not tracebacks(), "Python error while mirroring")
+    rig_status("m3d.rig_mode", mode='POSE')
+
+
+step(wait_until(lambda: bpy.context.mode == 'POSE' and all(rig_obj().pose.bones[n].rotation_mode == 'XYZ' for n in ("Fin.L", "Fin.R")),
+                "Pose Mode, the new bones in XYZ Euler"))
+
+
+@step
+def rig_u3_constrain():
+    ob = rig_obj()
+    for pb in ob.pose.bones:
+        pb.select = pb.name in {"Fin.L", "Fin.R"}
+    ob.data.bones.active = ob.data.bones["Fin.L"]
+    bpy.context.view_layer.update()
+    GIZMO["fin"] = (ob.matrix_world @ ob.pose.bones["Fin.L"].matrix).translation.copy()
+    bpy.context.scene.m3d_rig.keep_offset = True
+    rig_status("m3d.rig_constrain", type='COPY_LOCATION')   # (Constrain > Point runs it from the top bar)
+
+
+@step
+def rig_u3_constrain_check():
+    ob = rig_obj()
+    cons = ob.pose.bones["Fin.L"].constraints
+    check(not ob.constraints and len(cons) == 1 and cons[0].type == 'COPY_LOCATION' and cons[0].subtarget == "Fin.R",
+          "Constrain > Point in Pose Mode: a bone constraint to the other bone (%s)" % [(c.type, c.subtarget) for c in cons])
+    ev = ob.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    now = (ev.matrix_world @ ev.pose.bones["Fin.L"].matrix).translation
+    check((now - GIZMO["fin"]).length < 1e-4, "...that keeps the bone where it was (%s vs %s)" % (tuple(now), tuple(GIZMO["fin"])))
+    rig_status("m3d.rig_constraints_clear")
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.wm.call_menu(name="M3D_MT_constrain")
+
+
+@step
+def rig_u3_menu_close():
+    check(not rig_obj().pose.bones["Fin.L"].constraints, "Remove Constraints clears the bone's")
+    check(not tracebacks(), "Python error drawing the Constrain menu in Pose Mode")
+    event('ESC', 'PRESS', rig_xy())
+    event('ESC', 'RELEASE', rig_xy())
+    _left, dock = rig_dock()
+    dock.spaces.active.context = 'MODELING_TOOLKIT'
+    press_ok("m3d.dock_page", _area=dock, tab="channel_box")
+
+
+@step
+def rig_u3_channel_box():
+    _left, dock = rig_dock()
+    check(dock.spaces.active.context == 'CHANNEL_BOX', "the Rigging dock's Channel Box tab")
+    with bpy.context.temp_override(window=window(), area=dock):
+        check(m3d_workspace.split_dock_tabs(bpy.context)[2] == "channel_box", "...is drawn as the active tab")
+    press_ok("m3d.rig_rotate_order", order='XYZ')   # (the Rotate Order row of the Channel Box)
+    rig_status("m3d.rig_mode", mode='OBJECT')
+
+
+step(wait_until(lambda: bpy.context.mode == 'OBJECT', "Object Mode"))
+
+
+@step
+def rig_u3_channel_box_back():
+    _left, dock = rig_dock()
+    dock.spaces.active.context = 'MODELING_TOOLKIT'
+    press_ok("m3d.dock_page", _area=dock, tab="rig_test")
+    rig_status("m3d.rig_mode", mode='POSE')
+
+
+step(wait_until(lambda: bpy.context.mode == 'POSE' and rig_dock()[1].spaces.active.context == 'CHANNEL_BOX',
+                "Pose Mode to bring back the Channel Box picked there"))
+
+
+@step
+def rig_u3_check_rig():
+    check(not tracebacks(), "Python error drawing the Rigging Channel Box")
+    _left, dock = rig_dock()
+    dock.spaces.active.context = 'MODELING_TOOLKIT'
+    press_ok("m3d.dock_page", _area=dock, tab="rig_test")
+    press_ok("m3d.rig_check")
+    for pb in rig_obj().pose.bones:
+        pb.select = pb.name in {"Fin.L", "Fin.R"}
+    press_ok("m3d.rig_rom")
+
+
+@step
+def rig_u3_rom_check():
+    ob = rig_obj()
+    check(m3d_rig._checked["rig"] == ob.name and m3d_rig._checked["problems"] is not None, "Check Rig from the Test tab")
+    check([t.name for t in ob.animation_data.nla_tracks] == [m3d_rig.ROM], "the range-of-motion test layer")
+    check(not tracebacks(), "Python error on the Test tab")
+    press_ok("m3d.rig_rom", remove=True)
+
+
+@step
+def rig_u3_rom_removed():
+    ob = rig_obj()
+    check(not ob.animation_data.nla_tracks and all(abs(v) < 1e-6 for v in ob.pose.bones["Fin.L"].rotation_euler), "...removed again")
+    m3d_rig._state["picked"].pop('POSE', None)
+    rig_status("m3d.rig_mode", mode='EDIT')
+
+
+step(wait_until(lambda: bpy.context.mode == 'EDIT_ARMATURE', "Edit Mode"))
+
+
+@step
+def rig_u3_cleanup():
+    arm = rig_obj().data
+    for name in ("Fin.L", "Fin.R"):
+        arm.edit_bones.remove(arm.edit_bones[name])
+
+
 # --- Every tab draws, in Object, Edit, Pose and Weight Paint Mode
 def _rig_tab_steps():
     for mode in ('OBJECT', 'EDIT', 'POSE', 'WEIGHT_PAINT'):
@@ -8067,9 +8196,12 @@ def _rig_tab_steps():
 
             def check_draw(tab=tab, mode=mode):
                 side = "left" if tab.page == "rig_bones" else "right"
-                check(getattr(window().workspace, "m3d_page_" + side) == tab.page, "dock tab %s did not open its page" % tab.id)
-                check(not tracebacks(), "Python error while drawing the Rigging page %s in %s" % (tab.page, mode))
-            show.__name__, check_draw.__name__ = "rig_show_%s_%s" % (tab.page, mode), "rig_drawn_%s_%s" % (tab.page, mode)
+                if tab.page:
+                    check(getattr(window().workspace, "m3d_page_" + side) == tab.page, "dock tab %s did not open its page" % tab.id)
+                else:   # (the Channel Box)
+                    check(rig_dock()[1].spaces.active.context == tab.context, "dock tab %s did not open" % tab.id)
+                check(not tracebacks(), "Python error while drawing the Rigging page %s in %s" % (tab.page or tab.id, mode))
+            show.__name__, check_draw.__name__ = "rig_show_%s_%s" % (tab.id, mode), "rig_drawn_%s_%s" % (tab.id, mode)
             yield show
             yield check_draw
 

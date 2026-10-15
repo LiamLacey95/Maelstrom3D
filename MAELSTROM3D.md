@@ -29,7 +29,7 @@ named here only to describe compatibility.*
 | Docks | A dock shows its own tabs in its header; Blender's column of stock tabs beside it shows only with **All Settings** (the Attribute Editor in Modeling), in every task workspace. The Tool tab shows the active tool's settings (Blender's Workspace panel is in the 3D view's sidebar, Tool tab). A page or panel that cannot work yet shows one card in every workspace: a hint line saying why and the button that fixes it (Pose Mode, New Camera from View, Assign New Material, the scene's objects to pick...); controls that cannot work are hidden rather than greyed, lists are as tall as their items (an empty one says how to fill it), and on a narrow dock button grids take fewer columns so no label is cut off | `m3d_workspace.py` (`sync_nav_bar`), `bl_ui/properties_workspace.py` |
 | UV editing | UV workspace (F3): dock tabs, Status Line and shelf for Cut/Sew/Unfold/Optimize/Layout, texel density, Auto Unwrap, UDIMs, checker map; sidebar UV Toolkit in other workspaces | `scripts/startup/m3d_uv.py` |
 | Texturing | Texture workspace (F4): tool strip, Assets, Texture Set List, Layers, Properties and dock strip laid out like a dedicated painting tool, painting keys, context toolbar, display modes of the 3D and 2D views, texture sets with their channels, size and mesh maps, Bake Mesh Maps, Export Textures and New Texture Project dialogs; paint layer stack, painted images are saved or packed with the file; assets: plain and smart materials, smart masks, brushes, alphas, environments and your own items | `scripts/startup/m3d_texture.py`, `scripts/startup/m3d_layers.py`, `scripts/startup/m3d_masks.py`, `scripts/startup/m3d_library.py` (data: `m3d_library_data.py`; preview pictures: `tools/m3d/library_thumbs.py`), `scripts/startup/m3d_bakegroups.py` (bake groups), `scripts/startup/m3d_bakeq.py` (the bake queue, the guard and the device), `scripts/startup/m3d_bakeview.py` (the view of Bake Mesh Maps), `scripts/startup/m3d_texset.py` (texture set settings, Export Textures dialog, New Texture Project) |
-| Rigging | Rigging workspace (F5): Outliner with the bone hierarchy and bone collections on the left, a large viewport, a dock of Skeleton, Controls & Constraints, Skin, Drive, Test and Collections tabs that follows the mode, a Time Slider (the Drivers editor opens over it); Joint tool, Orient Joint, control shapes, IK with pole, bind with fallback, weight tools, Driven Key, naming check, Rigify on demand; Ctrl+E, Shift+N | `scripts/startup/m3d_rig.py` |
+| Rigging | Rigging workspace (F5): Outliner with the bone hierarchy and bone collections on the left, a large viewport, a dock of Channel Box, Skeleton, Controls & Constraints, Skin, Drive, Test and Collections tabs that follows the mode, a Time Slider (the Drivers editor opens over it); Joint tool (name lists, numbered names), Orient Joint, Mirror and Rename Chain, control shapes, constraints that keep their offset, IK with pole, Pole Vector, Rotate Order, bind with fallback, weight tools that keep weights adding up to 1, Driven Key, Check Rig, range-of-motion test, naming check, Rigify on demand; Ctrl+E, Shift+N | `scripts/startup/m3d_rig.py` |
 | Animation | Animation workspace (F6): a large viewport and a camera view, one bottom editor that switches between the Graph Editor and the Dope Sheet, a short Timeline, a dock of Channel Box, Pick, Tween & Poses, Motion, Layers and Playback tabs; Status Line with Auto Key, key type, new key interpolation, keying set, range, FPS, loop mode, Blocking / Polish, Playblast; Tween (Alt+Q), Push / Relax / Breakdown, object selection sets, motion paths, ghost curves, NLA layers, Playblast | `scripts/startup/m3d_anim.py` |
 | Rendering | Rendering workspace (F7): a 3D view and a Render View, a dock of Camera, Lighting, Materials, Render, Output, Passes & Layers and Advanced tabs; Status Line with engine, camera, Draft / Medium / Final presets, Render, IPR; light table, HDRI sky, camera from view; Shift+F12 | `scripts/startup/m3d_render.py` |
 | Title | Window title says Maelstrom3D | `wm_window.cc` |
@@ -818,16 +818,18 @@ where a driver is edited) and closes it again.
 |---|---|
 | Status Line | **Object / Edit / Pose / Weight Paint** mode buttons, X-Mirror (of the bones in Edit Mode, of the pose in Pose Mode, of the mesh in Weight Paint Mode), bone display (Octahedral, Stick, B-Bone, Envelope, Wire), Names, Axes, In Front, Rest / Pose position, Drivers |
 | Shelves | Skeleton (Joint, Extrude, Mirror, Orient, Names L/R, Parent, Disconnect), Controls (circle, square, arrow, cube and sphere shapes, a color and Apply, IK + Pole), Skin (Bind, Paint Weights, Normalize, Mirror Weights), Custom |
-| Skeleton tab | Joint tool and its options; Edit Bones (Extrude, Extrude Forked, Click Extrude, Subdivide, Duplicate, Delete, Fill Between Joints, Switch Direction, Align); Mirror (+X to -X, -X to +X, Select Mirror); Orient (Orient Joint and the roll presets); Names (Name Sides by X / Y / Z, Flip Names, the naming check); Hierarchy (Parent connected / with offset, Disconnect, Clear Parent, Select Parent / Child); Generate Rig (Rigify) |
-| Controls & Constraints tab | Add Constraint buttons (Copy Location / Rotation / Scale / Transforms, Child Of, Damped Track, Stretch To, Armature, the Limit constraints, Action, Spline IK, IK); IK (chain length, pole distance, **IK with Pole**, IK to Bone, Clear IK); the active bone's constraint stack; Control Shape and Color; Locks |
-| Skin tab | Bind (Automatic, Envelope or Empty Groups, with a fall back to envelope weights), Unbind (for a bound mesh); Weight Paint (mode button, brush weight, size and strength, Vertex / Face Select, bone selection and mirror options); Influences (every vertex group with a lock and a solo button); Weights once the mesh has vertex groups (Flood and Weights from Bones in Weight Paint Mode, Smooth, Normalize All, Limit Total, Clean, Mirror Weights); Transfer Weights; Weight Table of the selected vertex |
+| Channel Box tab | The same Channel Box as everywhere (Ctrl+A): the active object's channels, or in Pose Mode the active bone's, with its **Rotate Order** |
+| Skeleton tab | Joint tool and its options; Edit Bones (Extrude, Extrude Forked, Click Extrude, Subdivide, Duplicate, Delete, Fill Between Joints, Switch Direction, Align); Mirror (+X to -X, -X to +X, Select Mirror); Orient (Orient Joint and the roll presets); Names (Name Sides by X / Y / Z, Flip Names, **Rename Chain**, Prefix, Find / Replace, the naming check); Hierarchy (Parent connected / with offset, Disconnect, Clear Parent, Select Parent / Child); Generate Rig (Rigify) |
+| Controls & Constraints tab | Add Constraint buttons (Copy Location / Rotation / Scale / Transforms, Child Of, Damped Track, Stretch To, Armature, the Limit constraints, Action, Spline IK, IK) with **Keep Offset**, Remove Constraints; IK (chain length, pole distance, **IK with Pole**, IK to Bone, **Pole Vector**, Clear IK); the active bone's constraint stack; Control Shape and Color; Locks with **Rotate Order** and "New Bones in XYZ Euler" |
+| Skin tab | Bind (Automatic, Envelope or Empty Groups, with a fall back to envelope weights), Unbind (for a bound mesh); Weight Paint (mode button, brush weight, size and strength, **Auto Normalize**, Multi-Paint, Lock-Relative, Vertex / Face Select, bone selection and mirror options); Influences (every vertex group with a lock and a solo button, **Select Weighted Vertices**); Weights once the mesh has vertex groups (Flood and Weights from Bones in Weight Paint Mode, Smooth, Normalize All, Limit Total, Clean, Mirror Weights); Transfer Weights; Weight Table of the selected vertex (Normalize) |
 | Drive tab | Shape Keys (Add Basis Shape, then the list, value, Add, From Mix, Reset Values, Mirror Shape); **Driven Key**; the drivers of the active object with a button for the Drivers editor |
-| Test tab | Reset Pose, Reset Selected, Clear Location / Rotation / Scale, Copy / Paste / Paste Flipped; Rest / Pose position and Apply Pose as Rest Pose; Pose Library (Save Pose, the saved poses with Apply and Flipped, the viewport's pose shelf) |
+| Test tab | Reset Pose, Reset Selected, Clear Location / Rotation / Scale, Copy / Paste / Paste Flipped; Rest / Pose position and Apply Pose as Rest Pose; **Range of Motion** (Make Test, Remove); Pose Library (Save Pose, the saved poses with Apply and Flipped, the viewport's pose shelf); **Check Rig** (also in Object Mode) |
 | Collections tab | Bone Collections (the tree with show / hide, assign, select; Show All / Unsolo All while a collection is hidden / soloed), Selection Sets (Pose Mode), Bone Colors, Bone Display |
 
 The dock opens the tab that fits the mode when you enter it: Edit Mode the Skeleton tab, Pose Mode Controls & Constraints,
-Weight Paint Mode Skin. A tab you pick yourself in a mode is what that mode opens on from then on, and a dock on All Settings
-is left alone. Every tab says what it needs (a skeleton, a mode, a mesh) with a button that fixes it.
+Weight Paint Mode Skin. A tab you pick yourself in a mode is what that mode opens on from then on (the Channel Box too), and a
+dock on All Settings or the Channel Box is left alone. Every tab says what it needs (a skeleton, a mode, a mesh) with a button
+that fixes it.
 
 **Modes.** Edit and Pose act on the skeleton, so the buttons make it the active object (the mesh you were working on
 stays selectable afterwards). **Weight Paint** acts on the mesh: the button makes the mesh active, keeps its skeleton selected
@@ -840,7 +842,15 @@ clicks make a two-bone chain. Joints go on the view plane through the previous j
 on the surface of a mesh with Place: Surface (Inset pushes them into the mesh). A click close to an existing joint uses it:
 on the tip of a bone the chain continues that bone, on the start of a bone it branches from the bone's parent. Enter or a
 right click finishes, Backspace takes the last joint back, Esc takes the whole run back. With X-Mirror on, a chain placed
-on one side is named .L (or .R) and gets a mirrored copy. The first use creates the skeleton.
+on one side is named .L (or .R) and gets a mirrored copy. The first use creates the skeleton. **Name** names the bones: a
+list (`Shoulder, Elbow, Wrist`) names them in order, a name ending in a number counts up (`Arm_01.L`, `Arm_02.L` ...), any
+other name is numbered by Blender (`Bone`, `Bone.001`). New bones rotate in XYZ Euler, not in quaternions (the "New Bones in
+XYZ Euler" option in Controls > Locks; bones of opened files, keyed bones and Rigify rigs are left as they are).
+
+**Names.** **Rename Chain** (Skeleton > Names) gives the selected bones the names of the Names field from the root of the
+chain to its tip, with .L or .R when the chain is on one side; **Prefix, Find / Replace...** opens the batch rename for
+bones. **Mirror** (+X to -X, the shelf, Skeleton > Mirror Joints, Shift+N) first names bones without a side by where they
+are (`Arm` on +X becomes `Arm.L`), so the copies get the matching names, and says so.
 
 **Orient Joint.** A bone's Y axis always runs from its start to its tip; Orient Joint chooses the roll. Pick which side axis
 (Z or X) should point along a world direction (+Z by default), and every selected bone (all bones if none) rolls so that axis is
@@ -854,12 +864,44 @@ color (selected and active bones are drawn lighter). No Shape removes it.
 **IK with Pole.** With the end bone of a limb active in Pose Mode, **IK with Pole** adds an IK constraint over the chosen
 number of bones, a target bone at the tip (IK_name) and a pole target bone out from the middle joint (Pole_name), and searches
 the pole angle so the limb bends toward the pole. Move the target to pose the limb and the pole to turn the bend.
+**Pole Vector** (Constrain menu or the IK panel) makes another bone, or an object, the pole of an IK you already have:
+select the pole, then the bone with the IK.
+
+**Constraints.** The **Constrain** menu (Rigging menu set), the Add Constraint buttons and the Rigging shelf constrain the
+active bone in Pose Mode (select the target bone first) and the active object otherwise (select the target object first).
+With **Keep Offset** (on; Controls tab and the Constrain menu) Parent (Child Of), Point (Copy Location), Orient (Copy
+Rotation), Scale and Copy Transforms keep the bone or object where it is and add the target's moves from there; off, it
+jumps onto the target. Between two bones in the rest pose the bone's own channels stay at rest. IK Handle, IK with Pole
+Target and Pole Vector are in the menu in Pose Mode; **Remove Constraints** clears the selected bones (Pose Mode) or objects.
+
+**Rotate Order.** The Channel Box and Controls > Locks have a **Rotate Order** row (XYZ ... ZYX, Quaternion, Axis Angle) for
+the selected bones or objects. It keeps the pose and turns the rotation keys into keys of the new order on the same frames
+(between keys the curves may take a slightly different path). The Euler filter says when channels are in quaternions (it
+cannot filter those).
 
 **Bind.** Select the mesh (and the skeleton if the scene has more than one) and press Bind. Automatic weights that leave
 vertices without any weight, usually a mesh with holes or overlapping parts, are replaced by envelope weights and the tab
 says so; close the holes and merge doubles for better weights. Empty Groups makes a group per bone with no weights for
 hand painting. Mirror Weights copies the weights of one side of a symmetric mesh to the other (the .L groups fill the .R groups).
-Smooth works on selected vertices (Edit Mode, or Vertex Select in Weight Paint Mode).
+Smooth works on selected vertices (Edit Mode, or Vertex Select in Weight Paint Mode). Bind runs Check Rig and says what it
+found.
+
+**Weights add up to 1.** Paint Weights on a bound mesh turns **Auto Normalize** on (the Weight Paint panel has it with
+Multi-Paint and Lock-Relative): painting one bone takes the weight from the others. The Weight Table's **Set** and remove do
+the same with Normalize on: the vertex's other unlocked bone weights are scaled so they add up to 1 (locked ones keep theirs).
+**Select Weighted Vertices** (Influences) selects the vertices of the active influence (the bone picked with Ctrl+click while
+painting) above the threshold, in Weight Paint Mode with Vertex Select or in Edit Mode.
+
+**Check Rig** (Test tab; Bind runs it too) looks for what goes wrong at bind or export, each with a fix: rotation or scale not
+applied on the skeleton or its meshes (Apply Rotation and Scale; they stay where they are), a skeleton out of its rest pose
+(Reset Pose), bones in quaternions (Make Them XYZ Euler, keys kept), controls that deform (Deform Off), vertices without bone
+weights (Select Them, in Edit Mode), vertices with more influences than Max Influences (Limit), weights that do not add up to
+1 (Normalize) and naming problems (Select Them). Run it before exporting a rig.
+
+**Range of Motion** (Test tab): **Make Test** turns the selected bones (every deforming bone when none) by the Angle each way
+around X, then Y, then Z (10 frames a pose), on an NLA layer of its own ("ROM Test"); play it to watch the skin deform.
+**Remove** takes the layer and its action away and puts those bones back. The skeleton's own animation is left alone (an
+active action on the same bones plays over the test).
 
 **Driven Key.** Pick the driver channel (an object or bone transform, or a custom property) and the driven channel (a
 transform, a custom property, or a shape key). Pose the driver, type the Driven Value the other channel should have there and
@@ -868,8 +910,8 @@ or Stepped), so the Drivers editor shows and edits it; the driven channel holds 
 bone in Quaternion mode switches to XYZ Euler when it is used as a rotation channel.
 
 **Naming check.** The Names panel lists bones with a side name but no partner (`Arm.L` without `Arm.R`), a name on the wrong
-side, a bone that mirrors a sided bone by position but has no side, and numbered duplicates (`Bone.001`), with a button
-that selects them.
+side, a bone that mirrors a sided bone by position but has no side, and numbered duplicates (`Bone.001`, `Bone.001.L` next
+to `Bone.L`), with a button that selects them.
 
 **Rigify** ships with Blender and stays off until the Generate Rig panel is opened and **Enable Rigify** is pressed; then it
 offers a human meta-rig and Generate Rig. If it cannot be turned on the panel says why.

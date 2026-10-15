@@ -919,6 +919,11 @@ class PROPERTIES_PT_m3d_channel_box(_DockPanel, Panel):
                     row.prop(owner, lock, index=j, text="", emboss=False, icon='DECORATE_UNLOCKED')
                 else:
                     row.label(text="", icon='BLANK1')
+        if context.mode in {'OBJECT', 'POSE'}:   # (Set Rotate Order keeps the pose and the keys; it acts on the selection)
+            from m3d_rig import ROTATE_LABELS
+            row = col.row(align=True)
+            row.label(text="Rotate Order")
+            row.operator_menu_enum("m3d.rig_rotate_order", "order", text=ROTATE_LABELS[owner.rotation_mode])
         if owner is ob:
             col.prop(ob, "hide_viewport", text="Visibility", invert_checkbox=True, toggle=True)
 
@@ -1277,7 +1282,10 @@ def m3d_startup_layout(*_args, screens=None):
                 # Blender's startup defaults put every dock on the Channel Box: open on the kind's first tab.
                 width = max(a.x + a.width for a in screen.areas)
                 side = side_of_area(area.x, area.width, width)
-                space.context = dock_tabs(kind_of.get(screen.name, 'MODEL'), side)[0].context
+                kind = kind_of.get(screen.name, 'MODEL')
+                # (Rigging opens on its pages, which follow the mode; its Channel Box tab comes first but is picked)
+                tabs = [t for t in dock_tabs(kind, side) if t.page or kind != 'RIG']
+                space.context = tabs[0].context
             elif area.type == 'OUTLINER':
                 # Flat object list, like Maya's Outliner; Rigging keeps the object contents: the bone hierarchy.
                 space.use_filter_object_content = kind_of.get(screen.name) == 'RIG'

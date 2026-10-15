@@ -13,14 +13,17 @@ shape keys, selection sets) are re-used on the pages.
 """
 
 import math
+import re
 from collections import namedtuple
 
 import bmesh
 import bpy
+from bpy.app.handlers import persistent
 from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty, PointerProperty,
                        StringProperty)
 from bpy.types import Menu, Operator, Panel, PropertyGroup, UIList
-from mathutils import Matrix, Vector
+from bpy_extras.anim_utils import action_ensure_channelbag_for_slot, animdata_get_channelbag_for_assigned_slot
+from mathutils import Euler, Matrix, Quaternion, Vector
 
 from m3d_mode import _button
 from m3d_sculpt import draw_list, draw_lines, draw_object_picks, empty_state, grid, reason, split_props, viewport
@@ -143,7 +146,8 @@ def _pointer(label, desc, poll=None):
 
 class M3D_RigSettings(PropertyGroup):
     """Rigging workspace options (Scene.m3d_rig)."""
-    joint_name: StringProperty(name="Name", default="Bone", description="Name of the bones the Joint tool makes")
+    joint_name: StringProperty(name="Name", default="Bone", description="Name of the bones the Joint tool makes: a list "
+                               "(Shoulder, Elbow, Wrist) names them in order, a name ending in a number (Arm_01) counts up")
     joint_place: EnumProperty(name="Place", default='PLANE', items=(
         ('PLANE', "View Plane", "Joints go on the plane through the last joint (or the 3D cursor) facing the view"),
         ('SURFACE', "Surface", "Joints go where the mouse is over a mesh (the view plane where it is not)")),
@@ -178,6 +182,22 @@ class M3D_RigSettings(PropertyGroup):
     skin_repeat: IntProperty(name="Passes", default=1, min=1, max=100, description="Smoothing passes")
     weight_value: FloatProperty(name="Weight", default=1.0, min=0.0, max=1.0,
                                 description="Value the weight table sets on the selected vertices")
+    weight_normalize: BoolProperty(name="Normalize", default=True,
+                                   description="Setting or removing a weight in the table scales the vertex's other "
+                                   "unlocked bone weights so they all add up to 1")
+    select_threshold: FloatProperty(name="Above", default=0.1, min=0.0, max=1.0,
+                                    description="Select Weighted Vertices: vertices with more weight than this")
+    keep_offset: BoolProperty(name="Keep Offset", default=True,
+                              description="A new Copy Location / Rotation / Scale / Transforms or Child Of constraint keeps "
+                              "the bone or object where it is and adds the target's moves (off: it jumps onto the target)")
+    euler_bones: BoolProperty(name="New Bones in XYZ Euler", default=True,
+                              description="Bones made from now on rotate in XYZ Euler (rotate order XYZ) instead of "
+                              "quaternions")
+    rename_chain: StringProperty(name="Names", default="Shoulder, Elbow, Wrist",
+                                 description="Rename Chain: the names from the root of the selected chain to its tip (a "
+                                 "name ending in a number counts up: Spine_01); a chain on one side gets .L or .R")
+    rom_angle: FloatProperty(name="Angle", default=math.radians(60.0), min=0.0, max=math.pi, subtype='ANGLE',
+                             description="How far the range-of-motion test turns each bone, both ways, around each axis")
     transfer_source: _pointer("Source", "Mesh the weights are copied from",
                               lambda self, ob: ob.type == 'MESH')
     pose_name: StringProperty(name="Pose", default="Pose", description="Name of the pose asset")
@@ -250,6 +270,8 @@ def enter_mode(context, mode):
                 mesh.hide_set(False, view_layer=context.view_layer)
             mesh.select_set(True, view_layer=context.view_layer)
             context.view_layer.objects.active = mesh
+            # A bound mesh paints with Auto Normalize: its bone weights keep adding up to 1 (the Skin tab has the switch).
+            context.tool_settings.use_auto_normalize = True
         bpy.ops.object.mode_set(mode='WEIGHT_PAINT')
         return None
     target = rig if rig is not None else context.active_object
@@ -333,7 +355,10 @@ def follow_mode(wm):
     dock = docks[0]
     if dock.spaces.active.context != 'MODELING_TOOLKIT':
         return   # All Settings or the Channel Box: the user is looking at something else on purpose.
-    win.workspace.m3d_page_right = tab.page
+    if tab.page:
+        win.workspace.m3d_page_right = tab.page
+    else:   # (the Channel Box tab, picked in this mode)
+        dock.spaces.active.context = tab.context
     dock.tag_redraw()
 
 
@@ -363,6 +388,21 @@ def new_armature(context, name="Armature"):
     rig.show_in_front = True
     context.collection.objects.link(rig)
     return rig
+
+
+def chain_name(names, i):
+    """Name of the i-th bone (from 0) of a chain named by `names`: a list ("Shoulder, Elbow, Wrist") names the bones in
+    order (Blender numbers the last name when the chain is longer), a name ending in a number counts up from it (Arm_01,
+    Arm_02; before a side: Arm_01.L, Arm_02.L), any other name is numbered by Blender (Bone, Bone.001)."""
+    parts = [n.strip() for n in names.split(",") if n.strip()] or ["Bone"]
+    if len(parts) > 1:
+        return parts[min(i, len(parts) - 1)]
+    side = SIDE_SUFFIX.search(parts[0])
+    stem, suffix = (parts[0][:side.start()], side.group(0)) if side else (parts[0], "")
+    number = re.search(r"\d+$", stem)
+    if number is None:
+        return parts[0]
+    return "%s%0*d%s" % (stem[:number.start()], len(number.group(0)), int(number.group(0)) + i, suffix)
 
 
 class JointChain:
@@ -395,7 +435,7 @@ class JointChain:
         if (pos - prev).length < 1e-6:
             return None
         inv = self.rig.matrix_world.inverted()
-        eb = arm.edit_bones.new(self.base)
+        eb = arm.edit_bones.new(chain_name(self.base, len(self.bones)))
         eb.head, eb.tail = inv @ prev, inv @ pos
         if self.parent is not None and self.parent in arm.edit_bones:
             eb.parent = arm.edit_bones[self.parent]
@@ -432,16 +472,13 @@ class JointChain:
         bones = [arm.edit_bones[n] for n in self.bones]
         if not bones:
             return None
-        xs = [v for b in bones for v in (b.head.x, b.tail.x)]
-        eps = 1e-4
-        if min(xs) >= -eps and max(xs) > eps:
-            side, direction = ".L", 'POSITIVE_X'
-        elif max(xs) <= eps and min(xs) < -eps:
-            side, direction = ".R", 'NEGATIVE_X'
-        else:
+        side = side_by_position(bones, True)
+        if not side:
             return "X-Mirror: the chain crosses the center, so it was not mirrored"
+        direction = 'POSITIVE_X' if side == ".L" else 'NEGATIVE_X'
         for b in bones:
-            b.name = b.name + side
+            if not side_of_name(b.name):
+                b.name = b.name + side
         self.bones = [b.name for b in bones]
         for b in arm.edit_bones:
             b.select = b.select_head = b.select_tail = False
@@ -847,6 +884,152 @@ class M3D_OT_rig_lock(Operator):
 
 
 # -----------------------------------------------------------------------------
+# Rotate order: XYZ ... ZYX Euler, Quaternion or Axis Angle, keeping the pose and the keys
+
+ROTATE_ORDERS = [(m, m.replace("_", " ").title() if len(m) > 3 else m, "") for m in
+                 ('XYZ', 'XZY', 'YXZ', 'YZX', 'ZXY', 'ZYX', 'QUATERNION', 'AXIS_ANGLE')]
+ROTATE_LABELS = {m: label for m, label, _d in ROTATE_ORDERS}
+
+
+def rotation_attr(mode):
+    """The property that holds a rotation in `mode`."""
+    return {'QUATERNION': "rotation_quaternion", 'AXIS_ANGLE': "rotation_axis_angle"}.get(mode, "rotation_euler")
+
+
+def to_quaternion(mode, values):
+    if mode == 'QUATERNION':
+        return Quaternion(values).normalized()
+    if mode == 'AXIS_ANGLE':
+        return Quaternion(Vector(values[1:]), values[0])
+    return Euler(values, mode).to_quaternion()
+
+
+def from_quaternion(mode, q, prev=None):
+    """The values of rotation `q` in `mode`, the closest ones to `prev` (the values of the key before: no flips)."""
+    if mode == 'QUATERNION':
+        if prev is not None:
+            q.make_compatible(Quaternion(prev))
+        return tuple(q)
+    if mode == 'AXIS_ANGLE':
+        axis, angle = q.to_axis_angle()
+        return (angle, *axis)
+    return tuple(q.to_euler(mode, Euler(prev, mode)) if prev is not None else q.to_euler(mode))
+
+
+def set_rotate_order(owner, mode):
+    """Switch an object's or pose bone's rotation mode keeping its pose and its rotation keys: each key is converted on
+    its frame (in between, the new curves can take a slightly different path). Returns the number of frames keyed."""
+    old = owner.rotation_mode
+    if old == mode:
+        return 0
+    ob = owner.id_data
+    prefix = 'pose.bones["%s"].' % bpy.utils.escape_identifier(owner.name) if isinstance(owner, bpy.types.PoseBone) else ""
+    ad = ob.animation_data
+    bag = animdata_get_channelbag_for_assigned_slot(ad) if ad is not None and ad.action is not None else None
+    curves = [fc for fc in bag.fcurves if fc.data_path == prefix + rotation_attr(old)] if bag is not None else []
+    rest = list(getattr(owner, rotation_attr(old)))
+    samples = []
+    for frame in sorted({kp.co.x for fc in curves for kp in fc.keyframe_points}):
+        values = list(rest)
+        for fc in curves:
+            values[fc.array_index] = fc.evaluate(frame)
+        samples.append((frame, to_quaternion(old, values)))
+    for fc in curves:
+        bag.fcurves.remove(fc)
+    owner.rotation_mode = mode   # (Blender converts the rotation it has now)
+    attr, prev = rotation_attr(mode), None
+    for frame, q in samples:
+        prev = from_quaternion(mode, q, prev)
+        setattr(owner, attr, prev)
+        owner.keyframe_insert(attr, frame=frame)
+    if samples:
+        bpy.context.scene.frame_set(bpy.context.scene.frame_current)
+    return len(samples)
+
+
+class M3D_OT_rig_rotate_order(Operator):
+    """Set Rotate Order: the rotation mode of the selected bones (Pose Mode) or objects, keeping their pose and turning
+their rotation keys into keys of the new mode"""
+    bl_idname = "m3d.rig_rotate_order"
+    bl_label = "Set Rotate Order"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    order: EnumProperty(name="Rotate Order", items=ROTATE_ORDERS)
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None and context.mode in {'OBJECT', 'POSE'}
+
+    def execute(self, context):
+        ob = context.active_object
+        owners = selected_pose_bones(ob) if ob.type == 'ARMATURE' and ob.mode == 'POSE' else (context.selected_objects or [ob])
+        keys = sum(set_rotate_order(o, self.order) for o in owners)
+        self.report({'INFO'}, "Rotate order %s for %d %s%s" % (ROTATE_LABELS[self.order], len(owners),
+                                                              "bone(s)" if ob.mode == 'POSE' else "object(s)",
+                                                              " (%d keyed frames converted)" % keys if keys else ""))
+        return {'FINISHED'}
+
+
+# New bones rotate in XYZ Euler (Scene.m3d_rig.euler_bones): Blender makes them in quaternions. The depsgraph handler
+# notices bones it has not seen (a skeleton that leaves Edit Mode, a new skeleton); a timer switches them, outside of the
+# evaluation. Bones of a file that is opened are seen, not new; linked skeletons, Rigify rigs and keyed rotations are left.
+_bones_seen = {}       # armature object name -> names of its bones
+_bones_pending = {}    # armature object name -> names of new bones to switch
+
+
+def remember_bones():
+    _bones_seen.clear()
+    _bones_pending.clear()
+    for ob in bpy.data.objects:
+        if ob.type == 'ARMATURE' and ob.pose is not None:
+            _bones_seen[ob.name] = set(ob.pose.bones.keys())
+
+
+@persistent
+def _bones_load(*_args):
+    remember_bones()
+
+
+@persistent
+def _bones_update(_scene, depsgraph):
+    for update in depsgraph.updates:
+        ob = update.id
+        if not isinstance(ob, bpy.types.Object) or ob.type != 'ARMATURE':
+            continue
+        ob = ob.original
+        seen = _bones_seen.get(ob.name)
+        if ob.pose is None or ob.mode == 'EDIT' or (seen is not None and len(seen) == len(ob.pose.bones)):
+            continue
+        names = set(ob.pose.bones.keys())
+        _bones_seen[ob.name] = names
+        new = names - (seen or set())
+        if new:
+            _bones_pending.setdefault(ob.name, set()).update(new)
+            if not bpy.app.timers.is_registered(euler_new_bones):
+                bpy.app.timers.register(euler_new_bones, first_interval=0.0)
+
+
+def euler_new_bones():
+    """Switch the new bones the handler found to XYZ Euler (when the setting is on). A timer: returns None."""
+    pending = dict(_bones_pending)
+    _bones_pending.clear()
+    if not bpy.context.scene.m3d_rig.euler_bones:
+        return None
+    for name, bones in pending.items():
+        ob = bpy.data.objects.get(name)
+        if ob is None or ob.pose is None or ob.library is not None or ob.override_library is not None or "rig_id" in ob.data:
+            continue
+        ad = ob.animation_data
+        bag = animdata_get_channelbag_for_assigned_slot(ad) if ad is not None and ad.action is not None else None
+        keyed = {fc.data_path.split('"')[1] for fc in (bag.fcurves if bag is not None else ())
+                 if fc.data_path.startswith("pose.bones[")}
+        for pb in (ob.pose.bones.get(n) for n in bones if n not in keyed):
+            if pb is not None and pb.rotation_mode == 'QUATERNION':
+                pb.rotation_mode = 'XYZ'
+    return None
+
+
+# -----------------------------------------------------------------------------
 # IK with a pole target
 
 def ik_chain(arm, end_name, length):
@@ -875,10 +1058,9 @@ def ik_with_pole(context, rig, end_name, chain, factor):
     bone. The pole angle is searched so the chain bends toward the pole. Returns (target name, pole name or None)."""
     arm = rig.data
     bones = ik_chain(arm, end_name, chain)
-    root, tip = bones[0].head_local.copy(), bones[-1].tail_local.copy()
+    tip = bones[-1].tail_local.copy()
     total = sum(b.length for b in bones)
     pole_pos = pole_position(bones, factor) if len(bones) > 1 else None
-    mid_name = bones[len(bones) // 2].name
     small = max(total * 0.1, 1e-3)
     mode = rig.mode
     if mode != 'EDIT':
@@ -900,26 +1082,37 @@ def ik_with_pole(context, rig, end_name, chain, factor):
     con.target, con.subtarget, con.chain_count = rig, target_name, len(bones)
     if pole_name:
         con.pole_target, con.pole_subtarget = rig, pole_name
-        # Pull the target toward the root so the chain has to bend, and try pole angles until the middle joint
-        # lands closest to the pole.
-        target_pb = rig.pose.bones[target_name]
-        pull = (root - tip).normalized() * total * 0.25
-        target_pb.location = target_pb.bone.matrix_local.to_3x3().inverted() @ pull
-        best = None
-        for step in range(24):
-            angle = math.radians(-180 + step * 15)
-            con.pole_angle = angle
-            context.view_layer.update()
-            evaluated = rig.evaluated_get(context.evaluated_depsgraph_get())
-            dist = (evaluated.pose.bones[mid_name].head - pole_pos).length
-            if best is None or dist < best[0] - 1e-9:
-                best = (dist, angle)
-        con.pole_angle = best[1]
-        target_pb.location = (0.0, 0.0, 0.0)
-        context.view_layer.update()
+        fit_pole_angle(context, rig, con, end_name, pole_pos)
     if mode != 'POSE':
         bpy.ops.object.mode_set(mode=mode)
     return target_name, pole_name
+
+
+def fit_pole_angle(context, rig, con, end_name, pole_pos):
+    """Search the pole angle of the IK constraint `con` of bone `end_name` so the chain's middle joint lands closest to
+    `pole_pos` (armature space). A target bone of the skeleton is pulled toward the chain's root meanwhile, so the chain
+    has to bend."""
+    bones = ik_chain(rig.data, end_name, con.chain_count or len(rig.data.bones))
+    root, tip = bones[0].head_local, bones[-1].tail_local
+    total = sum(b.length for b in bones)
+    mid_name = bones[len(bones) // 2].name
+    target_pb = rig.pose.bones.get(con.subtarget) if con.target == rig and con.subtarget else None
+    if target_pb is not None:
+        rest = target_pb.location.copy()
+        target_pb.location = rest + target_pb.bone.matrix_local.to_3x3().inverted() @ ((root - tip).normalized() * total * 0.25)
+    best = None
+    for step in range(24):
+        angle = math.radians(-180 + step * 15)
+        con.pole_angle = angle
+        context.view_layer.update()
+        evaluated = rig.evaluated_get(context.evaluated_depsgraph_get())
+        dist = (evaluated.pose.bones[mid_name].head - pole_pos).length
+        if best is None or dist < best[0] - 1e-9:
+            best = (dist, angle)
+    con.pole_angle = best[1]
+    if target_pb is not None:
+        target_pb.location = rest
+    context.view_layer.update()
 
 
 class M3D_OT_rig_ik_pole(Operator):
@@ -946,20 +1139,173 @@ the bend"""
         return {'FINISHED'}
 
 
+class M3D_OT_rig_pole_vector(Operator):
+    """Pole Vector: the other selected bone (or a selected object) becomes the pole of the active bone's IK, so moving
+it turns the bend. Select the pole, then the bone with the IK"""
+    bl_idname = "m3d.rig_pole_vector"
+    bl_label = "Pole Vector"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.active_object
+        return ob is not None and ob.type == 'ARMATURE' and ob.mode == 'POSE' and ob.data.bones.active is not None
+
+    def execute(self, context):
+        rig = context.active_object
+        pb = rig.pose.bones[rig.data.bones.active.name]
+        con = next((c for c in pb.constraints if c.type == 'IK'), None)
+        if con is None:
+            self.report({'WARNING'}, "%s has no IK: add one first (IK Handle, or IK with Pole Target)" % pb.name)
+            return {'CANCELLED'}
+        pole = next((p for p in rig.pose.bones if p.select and p != pb and p.name != con.subtarget), None)
+        other = next((o for o in context.selected_objects if o != rig), None)
+        if pole is not None:
+            con.pole_target, con.pole_subtarget = rig, pole.name
+            pole_pos = pole.head.copy()
+        elif other is not None:
+            con.pole_target = other
+            pole_pos = rig.matrix_world.inverted() @ other.matrix_world.translation
+        else:
+            self.report({'WARNING'}, "Select the pole (a bone or an object), then the bone with the IK")
+            return {'CANCELLED'}
+        fit_pole_angle(context, rig, con, pb.name, pole_pos)
+        self.report({'INFO'}, "%s is the pole of the IK on %s" % (pole.name if pole else other.name, pb.name))
+        return {'FINISHED'}
+
+
+# -----------------------------------------------------------------------------
+# Constraints (the Constrain menu and the Controls tab): on the active bone in Pose Mode, else on the active object
+
+# constraint type -> (property, value) that adds the target's moves to the owner's own transform (Keep Offset)
+OFFSET_MIX = {'COPY_LOCATION': ("use_offset", True), 'COPY_SCALE': ("use_offset", True),
+              'COPY_ROTATION': ("mix_mode", 'BEFORE'), 'COPY_TRANSFORMS': ("mix_mode", 'BEFORE_FULL')}
+BONE_ONLY = {'IK', 'SPLINE_IK'}
+CONSTRAINT_TYPES = [(i.identifier, i.name, "") for i in bpy.types.Constraint.bl_rna.properties["type"].enum_items]
+CONSTRAINT_LABELS = {kind: name for kind, name, _d in CONSTRAINT_TYPES}
+
+
+def world_matrix(owner):
+    """World matrix of an object or a pose bone, constraints included (as evaluated)."""
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    if isinstance(owner, bpy.types.PoseBone):
+        ev = owner.id_data.evaluated_get(depsgraph)
+        return ev.matrix_world @ ev.pose.bones[owner.name].matrix
+    return owner.evaluated_get(depsgraph).matrix_world.copy()
+
+
+def keep_offset(context, owner, con, before):
+    """Make the new constraint `con` keep its owner (object or pose bone) at `before`, its world matrix: Child Of sets its
+    inverse; the Copy constraints add the target's moves to the owner's own transform (between two bones in their rest
+    spaces, so a bone in the rest pose keeps its channels at rest). What is left of a jump (a target that is not at
+    rest) moves the owner's own channels back."""
+    if getattr(con, "target", None) is None:
+        return
+    if con.type == 'CHILD_OF':
+        con.set_inverse_pending = True
+    elif con.type in OFFSET_MIX:
+        setattr(con, *OFFSET_MIX[con.type])
+        if isinstance(owner, bpy.types.PoseBone) and con.target.type == 'ARMATURE' and con.subtarget:
+            con.target_space, con.owner_space = 'LOCAL_OWNER_ORIENT', 'LOCAL'
+    else:
+        return
+    context.view_layer.update()
+    after = world_matrix(owner)
+    if len(owner.constraints) == 1 and any(abs(a - b) > 1e-5 for ra, rb in zip(after, before) for a, b in zip(ra, rb)):
+        # These constraints move their owner by a matrix of their own (after = A @ before): A's inverse undoes it.
+        fixed = (after @ before.inverted()).inverted() @ before
+        if isinstance(owner, bpy.types.PoseBone):
+            owner.matrix = owner.id_data.matrix_world.inverted() @ fixed
+        else:
+            owner.matrix_world = fixed
+        context.view_layer.update()
+
+
+class M3D_OT_rig_constrain(Operator):
+    """Constrain the active bone (Pose Mode) or the active object to the other selected bone or object. Keep Offset
+(Controls tab, on) keeps it where it is"""
+    bl_idname = "m3d.rig_constrain"
+    bl_label = "Constrain"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    type: EnumProperty(items=CONSTRAINT_TYPES)
+
+    @classmethod
+    def description(cls, _context, props):
+        return "%s: the active bone (Pose Mode) or object follows the other selected one (select the target first)" % \
+            CONSTRAINT_LABELS[props.type]
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None
+
+    def execute(self, context):
+        ob = context.active_object
+        posing = ob.type == 'ARMATURE' and ob.mode == 'POSE'
+        if posing and ob.data.bones.active is None:
+            self.report({'WARNING'}, "Select the bone to constrain last (it is the active one)")
+            return {'CANCELLED'}
+        if not posing and self.type in BONE_ONLY:
+            self.report({'WARNING'}, "%s works on bones: in Pose Mode" % CONSTRAINT_LABELS[self.type])
+            return {'CANCELLED'}
+        owner = ob.pose.bones[ob.data.bones.active.name] if posing else ob
+        before = world_matrix(owner)
+        add = bpy.ops.pose.constraint_add_with_targets if posing else bpy.ops.object.constraint_add_with_targets
+        try:
+            add(type=self.type)
+        except RuntimeError as err:
+            self.report({'WARNING'}, str(err).strip())
+            return {'CANCELLED'}
+        con = owner.constraints[-1]
+        if context.scene.m3d_rig.keep_offset:
+            keep_offset(context, owner, con, before)
+        target = getattr(con, "target", None)
+        self.report({'INFO'}, "%s on %s%s" % (con.name, owner.name, " to " + (con.subtarget or target.name) if target else
+                                              ": no other bone or object was selected, pick the target in the constraint"))
+        return {'FINISHED'}
+
+
+class M3D_OT_rig_constraints_clear(Operator):
+    """Remove the constraints of the selected bones (Pose Mode) or of the selected objects"""
+    bl_idname = "m3d.rig_constraints_clear"
+    bl_label = "Remove Constraints"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None
+
+    def execute(self, context):
+        ob = context.active_object
+        if ob.type == 'ARMATURE' and ob.mode == 'POSE':
+            owners = selected_pose_bones(ob)
+        else:
+            owners = context.selected_objects or [ob]
+        count = sum(len(o.constraints) for o in owners)
+        for o in owners:
+            for con in list(o.constraints):
+                o.constraints.remove(con)
+        context.view_layer.update()
+        self.report({'INFO'}, "Removed %d constraint(s)" % count)
+        return {'FINISHED'}
+
+
 # -----------------------------------------------------------------------------
 # Naming check
 
+SIDE_SUFFIX = re.compile(r"[._\- ](L|R|l|r|left|right|Left|Right)$")
+
+
 def side_of_name(name):
     """'L' or 'R' for a name that ends in a side marker (.L .R _L _R -L -R, with or without lower case), else ''."""
-    import re
-    m = re.search(r"[._\- ](L|R|l|r|left|right|Left|Right)$", name)
+    m = SIDE_SUFFIX.search(name)
     return "" if not m else ("L" if m.group(1).lower() in {"l", "left"} else "R")
 
 
 def name_issues(rig):
     """[(bone name, message)] naming problems of a skeleton: a side name without its mirror partner, a name on the wrong
-    side, a bone that mirrors another one by position but has no side name, and numbered duplicates (Bone.001)."""
-    import re
+    side, a bone that mirrors another one by position but has no side name, and numbered duplicates (Bone.001, and
+    Bone.001.L next to Bone.L)."""
     arm = rig.data
     editing = arm.is_editmode
     bones = {b.name: ((b.head.copy(), b.tail.copy()) if editing else (b.head_local.copy(), b.tail_local.copy()))
@@ -981,9 +1327,11 @@ def name_issues(rig):
                         and (Vector((-tail.x, tail.y, tail.z)) - ot).length < span * 0.05 and abs(head.x) > eps:
                     issues.append((name, "Mirrors \"%s\" but has no side in its name" % other))
                     break
-        base = re.match(r"^(.*)\.\d{3}$", name)
-        if base and base.group(1) in bones:
-            issues.append((name, "Numbered duplicate of \"%s\"" % base.group(1)))
+        sided = SIDE_SUFFIX.search(name)   # (the number sits before the side: Bone.001.L)
+        stem, suffix = (name[:sided.start()], sided.group(0)) if sided else (name, "")
+        base = re.match(r"^(.*)\.\d{3}$", stem)
+        if base and base.group(1) + suffix in bones:
+            issues.append((name, "Numbered duplicate of \"%s\"" % (base.group(1) + suffix)))
     return issues
 
 
@@ -1008,6 +1356,93 @@ class M3D_OT_rig_name_check(Operator):
             for pb in rig.pose.bones:
                 pb.select = pb.name in bad
         self.report({'INFO'}, "%d bone(s) with naming problems" % len(bad))
+        return {'FINISHED'}
+
+
+def side_by_position(bones, editing):
+    """'.L' for bones (edit bones when `editing`) all on the +X side of the skeleton, '.R' for all on -X, '' for bones in
+    the middle or on both sides."""
+    xs = [v for b in bones for v in ((b.head.x, b.tail.x) if editing else (b.head_local.x, b.tail_local.x))]
+    eps = 1e-4
+    if xs and min(xs) >= -eps and max(xs) > eps:
+        return ".L"
+    if xs and max(xs) <= eps and min(xs) < -eps:
+        return ".R"
+    return ""
+
+
+def chain_order(bones):
+    """`bones` from the root of their chain to the tip (fewer parents first)."""
+    def depth(b):
+        n = 0
+        while b.parent is not None:
+            b, n = b.parent, n + 1
+        return n
+    return sorted(bones, key=depth)
+
+
+class M3D_OT_rig_rename_chain(Operator):
+    """Rename Chain: the selected bones get the names of the Names field from the root of the chain to its tip (a list
+such as Shoulder, Elbow, Wrist, or a name with a number that counts up). A chain on one side gets .L or .R"""
+    bl_idname = "m3d.rig_rename_chain"
+    bl_label = "Rename Chain"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.active_object
+        return ob is not None and ob.type == 'ARMATURE' and ob.mode in {'EDIT', 'POSE'}
+
+    def execute(self, context):
+        rig = context.active_object
+        editing = rig.data.is_editmode
+        bones = [b for b in rig.data.edit_bones if b.select] if editing else [pb.bone for pb in selected_pose_bones(rig)]
+        if not bones:
+            self.report({'WARNING'}, "Select the bones of the chain")
+            return {'CANCELLED'}
+        bones = chain_order(bones)
+        side = side_by_position(bones, editing)
+        names = [chain_name(context.scene.m3d_rig.rename_chain, i) for i in range(len(bones))]
+        names = [n if side_of_name(n) else n + side for n in names]
+        for b in bones:   # (out of the way first: a new name may be one the chain has now)
+            b.name = "_m3d_rename_" + b.name
+        for b, name in zip(bones, names):
+            b.name = name
+        self.report({'INFO'}, "Renamed %d bones: %s" % (len(bones), ", ".join(b.name for b in bones)))
+        return {'FINISHED'}
+
+
+class M3D_OT_rig_mirror(Operator):
+    """Mirror the selected bones (all when none) to the other side of X. Bones without a side in their name are named
+.L (or .R) by where they are first, so the copies get the matching names"""
+    bl_idname = "m3d.rig_mirror"
+    bl_label = "Mirror Joints"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    direction: EnumProperty(items=(('POSITIVE_X', "+X to -X", ""), ('NEGATIVE_X', "-X to +X", "")))
+
+    @classmethod
+    def description(cls, _context, props):
+        return "Mirror the selected bones (all when none) from %s; bones without a side in their name get one first" % \
+            ("+X to -X" if props.direction == 'POSITIVE_X' else "-X to +X")
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'EDIT_ARMATURE'
+
+    def execute(self, context):
+        arm = context.active_object.data
+        side = ".L" if self.direction == 'POSITIVE_X' else ".R"
+        named = 0
+        for eb in selected_edit_bones(arm):
+            if not side_of_name(eb.name) and side_by_position([eb], True) == side:
+                eb.name += side
+                named += 1
+            eb.select = eb.select_head = eb.select_tail = True
+        before = len(arm.edit_bones)
+        bpy.ops.armature.symmetrize(direction=self.direction)
+        made = len(arm.edit_bones) - before
+        self.report({'INFO'}, "Named %d bones %s and mirrored them" % (named, side) if named else "Mirrored %d bones" % made)
         return {'FINISHED'}
 
 
@@ -1074,8 +1509,27 @@ def bind(context, rig, meshes, method, fallback=True):
                        "Close holes and merge overlapping parts, then bind again for better weights." % (count, mesh.name))
     elif bad:
         message += ": automatic weights left some vertices without weight"
+    if method != 'EMPTY':   # (automatic and envelope weights come out a little under 1: they add up to 1, as painted ones do)
+        for mesh in meshes:
+            on_all_vertices(context, mesh, bpy.ops.object.vertex_group_normalize_all, group_select_mode='BONE_DEFORM',
+                            lock_active=False)
+        for ob in (rig, *meshes):
+            ob.select_set(True)
     context.view_layer.objects.active = meshes[0]
     return message
+
+
+def on_all_vertices(context, mesh, op, **props):
+    """Run a vertex group operator on every vertex of `mesh` (made the only selected and active object): with Vertex or
+    Face Select of Weight Paint on, Blender would only do the selected ones."""
+    _select_only(context, mesh)
+    me = mesh.data
+    masks = me.use_paint_mask_vertex, me.use_paint_mask
+    me.use_paint_mask_vertex = me.use_paint_mask = False
+    try:
+        op(**props)
+    finally:
+        me.use_paint_mask_vertex, me.use_paint_mask = masks
 
 
 class M3D_OT_rig_bind(Operator):
@@ -1096,7 +1550,10 @@ only one). Automatic weights fall back to envelope weights when they fail"""
         except RuntimeError as err:
             self.report({'ERROR'}, str(err).strip())
             return {'CANCELLED'}
-        self.report({'WARNING'} if "instead" in message else {'INFO'}, message)
+        problems = check_rig(context, rig)   # (the Test tab's Check Rig panel lists them, with their fixes)
+        if problems:
+            message += ". Check Rig (Test tab): " + "; ".join(p.text for p in problems[:2]) + (" ..." if len(problems) > 2 else "")
+        self.report({'WARNING'} if "instead" in message or problems else {'INFO'}, message)
         return {'FINISHED'}
 
 
@@ -1284,8 +1741,35 @@ def active_vertex(ob):
     return vert.index, [(names[g.group], g.weight) for g in vert.groups if g.group in names]
 
 
+def deform_groups(ob):
+    """Indices of the mesh's groups that are bone weights: the deforming bones of its skeleton (every group when it has
+    none)."""
+    rig = armature_of(ob)
+    names = {b.name for b in rig.data.bones if b.use_deform} if rig is not None else None
+    return {g.index for g in ob.vertex_groups if names is None or g.name in names}
+
+
+def normalized(weights, index, value, locked, deform):
+    """The weights {group index: weight} of a vertex with group `index` set to `value` and its other unlocked bone weights
+    scaled so the bone weights add up to 1 (locked ones stay; the set weight is lowered when they leave less room; other
+    weights at 0 share the rest evenly). With no other unlocked bone group on the vertex, the set weight takes the rest."""
+    out = dict(weights)
+    if index not in deform:
+        out[index] = value
+        return out
+    fixed = sum(w for g, w in out.items() if g in deform and g in locked and g != index)
+    free = [g for g in out if g in deform and g not in locked and g != index]
+    value = min(value, max(0.0, 1.0 - fixed))
+    rest, total = 1.0 - fixed - value, sum(out[g] for g in free)
+    for g in free:
+        out[g] = out[g] * rest / total if total > 1e-9 else rest / len(free)
+    out[index] = value if free else max(0.0, 1.0 - fixed)
+    return out
+
+
 class M3D_OT_rig_vertex_weight(Operator):
-    """Set the weight of one group on the selected vertices (the weight table), or take them out of the group"""
+    """Set the weight of one group on the selected vertices (the weight table), or take them out of the group. With
+Normalize on, the vertex's other unlocked bone weights are scaled so they all add up to 1"""
     bl_idname = "m3d.rig_vertex_weight"
     bl_label = "Set Vertex Weight"
     bl_options = {'REGISTER', 'UNDO'}
@@ -1299,6 +1783,18 @@ class M3D_OT_rig_vertex_weight(Operator):
         ob = context.active_object
         return ob is not None and ob.type == 'MESH' and ob.mode in {'EDIT', 'WEIGHT_PAINT', 'OBJECT'}
 
+    def new_weights(self, context, ob, weights, index):
+        """{group index: weight} of a vertex after the change (a removed group is left out)."""
+        if not context.scene.m3d_rig.weight_normalize:
+            out = dict(weights)
+            out[index] = 0.0 if self.remove else self.weight
+        else:
+            locked = {g.index for g in ob.vertex_groups if g.lock_weight}
+            out = normalized(weights, index, 0.0 if self.remove else self.weight, locked, deform_groups(ob))
+        if self.remove:
+            out.pop(index, None)
+        return out
+
     def execute(self, context):
         ob = context.active_object
         group = ob.vertex_groups.get(self.group)
@@ -1309,20 +1805,24 @@ class M3D_OT_rig_vertex_weight(Operator):
             layer = bm.verts.layers.deform.verify()
             for v in bm.verts:
                 if v.select:
-                    if self.remove:
-                        v[layer].pop(group.index, None)
-                    else:
-                        v[layer][group.index] = self.weight
+                    new = self.new_weights(context, ob, dict(v[layer].items()), group.index)
+                    v[layer].clear()
+                    for g, w in new.items():
+                        v[layer][g] = w
             bmesh.update_edit_mesh(ob.data)
             return {'FINISHED'}
-        picked = [v.index for v in ob.data.vertices if v.select]
+        picked = [v for v in ob.data.vertices if v.select]
         if not picked:
             self.report({'WARNING'}, "Select vertices first")
             return {'CANCELLED'}
-        if self.remove:
-            group.remove(picked)
-        else:
-            group.add(picked, self.weight, 'REPLACE')
+        groups = ob.vertex_groups
+        for v in picked:
+            old = {g.group: g.weight for g in v.groups}
+            new = self.new_weights(context, ob, old, group.index)
+            for g in set(old) - set(new):
+                groups[g].remove([v.index])
+            for g, w in new.items():
+                groups[g].add([v.index], w, 'REPLACE')
         ob.data.update()
         return {'FINISHED'}
 
@@ -1593,15 +2093,308 @@ class M3D_OT_rig_reset_pose(Operator):
 
     def execute(self, context):
         rig = rig_of(context)
-        bones = selected_pose_bones(rig) if self.selected_only else list(rig.pose.bones)
-        for pb in bones:
-            pb.location = (0.0, 0.0, 0.0)
-            pb.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
-            pb.rotation_euler = (0.0, 0.0, 0.0)
-            pb.rotation_axis_angle = (0.0, 0.0, 1.0, 0.0)
-            pb.scale = (1.0, 1.0, 1.0)
+        reset_bones(selected_pose_bones(rig) if self.selected_only else list(rig.pose.bones))
         context.view_layer.update()
         return {'FINISHED'}
+
+
+def reset_bones(bones, rotation_only=False):
+    for pb in bones:
+        pb.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+        pb.rotation_euler = (0.0, 0.0, 0.0)
+        pb.rotation_axis_angle = (0.0, 0.0, 1.0, 0.0)
+        if not rotation_only:
+            pb.location = (0.0, 0.0, 0.0)
+            pb.scale = (1.0, 1.0, 1.0)
+
+
+# --- Range-of-motion test: an NLA layer of its own that turns the bones each way around each axis
+
+ROM = "ROM Test"
+ROM_STEP = 10   # frames from one pose of the test to the next
+
+
+def make_rom(rig, bones, angle, start):
+    """Key the range-of-motion test of `bones` (pose bones) in an action of its own on the NLA layer "ROM Test" (made
+    again when there is one): from the rest pose each bone turns +angle, -angle and back around its X, then Y, then Z axis,
+    ROM_STEP frames a pose. The skeleton's own animation is left alone. Returns the last frame."""
+    remove_rom(rig)
+    action = bpy.data.actions.new(ROM)
+    slot = action.slots.new(id_type='OBJECT', name=rig.name)
+    bag = action_ensure_channelbag_for_slot(action, slot)
+    poses = [None] + [(axis, sign) for axis in range(3) for sign in (1.0, -1.0, 0.0)]
+    for pb in bones:
+        mode = pb.rotation_mode
+        path = 'pose.bones["%s"].%s' % (bpy.utils.escape_identifier(pb.name), rotation_attr(mode))
+        size = 4 if mode in {'QUATERNION', 'AXIS_ANGLE'} else 3
+        curves = [bag.fcurves.new(path, index=i) for i in range(size)]
+        for k, pose in enumerate(poses):
+            turn = Euler((0.0, 0.0, 0.0))
+            if pose is not None:
+                turn[pose[0]] = pose[1] * angle
+            for fc, value in zip(curves, from_quaternion(mode, turn.to_quaternion())):
+                fc.keyframe_points.insert(start + k * ROM_STEP, value, options={'FAST'})
+        for fc in curves:
+            fc.update()
+    ad = rig.animation_data or rig.animation_data_create()
+    track = ad.nla_tracks.new()
+    track.name = ROM
+    strip = track.strips.new(ROM, int(start), action)
+    strip.action_slot = slot
+    return start + (len(poses) - 1) * ROM_STEP
+
+
+def remove_rom(rig):
+    """Take the range-of-motion layer and its action away; the bones it turned go back to no rotation. True when there
+    was one."""
+    ad = rig.animation_data
+    tracks = [t for t in ad.nla_tracks if t.name == ROM] if ad is not None else []
+    actions = {s.action for t in tracks for s in t.strips if s.action is not None}
+    names = {fc.data_path.split('"')[1] for a in actions for fc in action_fcurves(a) if fc.data_path.startswith("pose.bones[")}
+    for t in tracks:
+        ad.nla_tracks.remove(t)
+    for a in actions:
+        if a.users == 0:
+            bpy.data.actions.remove(a)
+    reset_bones([rig.pose.bones[n] for n in names if n in rig.pose.bones], rotation_only=True)
+    return bool(tracks)
+
+
+class M3D_OT_rig_rom(Operator):
+    """Range-of-motion test: the selected bones (every deforming bone when none) turn each way around each axis on an
+NLA layer of their own; play it to see how the skin deforms. Remove takes the layer away again"""
+    bl_idname = "m3d.rig_rom"
+    bl_label = "Range-of-Motion Test"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    remove: BoolProperty(default=False, options={'SKIP_SAVE'})
+
+    @classmethod
+    def description(cls, _context, props):
+        return "Remove the range-of-motion test layer" if props.remove else cls.__doc__
+
+    @classmethod
+    def poll(cls, context):
+        return rig_of(context) is not None
+
+    def execute(self, context):
+        rig = rig_of(context)
+        if self.remove:
+            found = remove_rom(rig)
+            context.view_layer.update()
+            self.report({'INFO'}, "Range-of-motion test removed" if found else "No range-of-motion test to remove")
+            return {'FINISHED'}
+        bones = [pb for pb in rig.pose.bones if pb.select and not pb.hide] if rig.mode == 'POSE' else []
+        bones = bones or [pb for pb in rig.pose.bones if pb.bone.use_deform]
+        if not bones:
+            self.report({'WARNING'}, "No deforming bones to test")
+            return {'CANCELLED'}
+        scene = context.scene
+        end = make_rom(rig, bones, scene.m3d_rig.rom_angle, scene.frame_start)
+        scene.frame_set(scene.frame_start + ROM_STEP)
+        self.report({'INFO'}, "Range-of-motion test of %d bones on frames %d-%d: play it (Remove takes it away)" %
+                    (len(bones), scene.frame_start, end))
+        return {'FINISHED'}
+
+
+class M3D_OT_rig_select_weighted(Operator):
+    """Select the vertices of the active influence (the bone picked while painting) that have more weight than the
+threshold (in Weight Paint Mode with Vertex Select, or in Edit Mode)"""
+    bl_idname = "m3d.rig_select_weighted"
+    bl_label = "Select Weighted Vertices"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = skin_mesh(context)
+        return ob is not None and ob.vertex_groups.active is not None
+
+    def execute(self, context):
+        ob = skin_mesh(context)
+        group, limit = ob.vertex_groups.active, context.scene.m3d_rig.select_threshold
+        if ob.mode == 'EDIT':
+            bm = bmesh.from_edit_mesh(ob.data)
+            layer = bm.verts.layers.deform.verify()
+            for v in bm.verts:
+                v.select = v[layer].get(group.index, 0.0) > limit
+            bm.select_flush_mode()
+            bmesh.update_edit_mesh(ob.data)
+            count = sum(v.select for v in bm.verts)
+        else:
+            if ob.mode != 'WEIGHT_PAINT':
+                enter_mode(context, 'WEIGHT_PAINT')
+            mesh = ob.data
+            picked = [any(g.group == group.index and g.weight > limit for g in v.groups) for v in mesh.vertices]
+            mesh.vertices.foreach_set("select", picked)
+            mesh.use_paint_mask_vertex = True
+            mesh.update()
+            count = sum(picked)
+        self.report({'INFO'}, "%d vertices weighted to %s (more than %.2f)" % (count, group.name, limit))
+        return {'FINISHED'}
+
+
+# --- Check Rig: what goes wrong at bind or export, each with its fix
+
+Problem = namedtuple("Problem", "kind text fix mesh", defaults=("",))   # fix: the button's label ("" for none)
+_checked = {"rig": None, "problems": None}   # the last check: the skeleton's name and its problems
+
+
+def is_identity(m):
+    return all(abs(m[i][j] - (i == j)) < 1e-4 for i in range(len(m)) for j in range(len(m)))
+
+
+def unapplied(ob):
+    """True for an object with a rotation or a scale that is not applied."""
+    return not is_identity(ob.matrix_basis.to_3x3())
+
+
+def rig_meshes(context, rig):
+    """The meshes bound to the skeleton, then the selected meshes (the ones about to be bound)."""
+    bound = [o for o in context.view_layer.objects if o.type == 'MESH' and armature_of(o) is rig]
+    return bound + [o for o in context.selected_objects if o.type == 'MESH' and o not in bound]
+
+
+def weight_counts(ob, rig, limit):
+    """(vertices without bone weight, with more than `limit` bone weights, whose bone weights do not add up to 1)."""
+    names = {b.name for b in rig.data.bones if b.use_deform}
+    deform = {g.index for g in ob.vertex_groups if g.name in names}
+    empty = over = off = 0
+    for v in ob.data.vertices:
+        weights = [g.weight for g in v.groups if g.group in deform and g.weight > 0.0]
+        if not weights:
+            empty += 1
+        else:
+            over += len(weights) > limit
+            off += abs(sum(weights) - 1.0) > 1e-3
+    return empty, over, off
+
+
+def _few(names, n=3):
+    return ", ".join(names[:n]) + (" ..." if len(names) > n else "")
+
+
+def rig_problems(context, rig):
+    """[Problem] of the skeleton and its meshes, in the order to fix them."""
+    s = context.scene.m3d_rig
+    meshes = rig_meshes(context, rig)
+    out = []
+    loose = [o.name for o in (rig, *meshes) if unapplied(o)]
+    if loose:
+        out.append(Problem('TRANSFORMS', "Rotation or scale not applied: %s" % _few(loose), "Apply Rotation and Scale"))
+    animated = rig.animation_data is not None and rig.animation_data.action is not None
+    if not animated and any(not is_identity(pb.matrix_basis) for pb in rig.pose.bones):
+        out.append(Problem('POSED', "The skeleton is not in its rest pose", "Reset Pose"))
+    quats = [pb.name for pb in rig.pose.bones if pb.rotation_mode in {'QUATERNION', 'AXIS_ANGLE'}]
+    if quats:
+        out.append(Problem('QUATERNION', "%d bone(s) rotate in quaternions: %s" % (len(quats), _few(quats)), "Make Them XYZ Euler"))
+    controls = [pb.name for pb in rig.pose.bones if pb.custom_shape is not None and pb.bone.use_deform]
+    if controls:
+        out.append(Problem('CONTROLS', "%d control(s) deform the mesh: %s" % (len(controls), _few(controls)), "Deform Off"))
+    for mesh in (m for m in meshes if armature_of(m) is rig):
+        empty, over, off = weight_counts(mesh, rig, s.skin_limit)
+        if empty:
+            out.append(Problem('UNWEIGHTED', "%s: %d vertices without bone weights" % (mesh.name, empty), "Select Them", mesh.name))
+        if over:
+            out.append(Problem('INFLUENCES', "%s: %d vertices with more than %d influences" % (mesh.name, over, s.skin_limit),
+                               "Limit to %d" % s.skin_limit, mesh.name))
+        if off:
+            out.append(Problem('NORMALIZE', "%s: %d vertices whose weights do not add up to 1" % (mesh.name, off), "Normalize",
+                               mesh.name))
+    issues = name_issues(rig)
+    if issues:
+        out.append(Problem('NAMES', "%d naming problem(s): %s" % (len(issues), _few([n for n, _m in issues])), "Select Them"))
+    return out
+
+
+def check_rig(context, rig):
+    """Run the check and keep its result for the Check Rig panel."""
+    _checked["rig"], _checked["problems"] = rig.name, rig_problems(context, rig)
+    return _checked["problems"]
+
+
+class M3D_OT_rig_check(Operator):
+    """Check Rig: look for what goes wrong at bind or export (rotation or scale not applied, a posed skeleton, quaternion
+bones, controls that deform, vertices without weights or with too many, weights that do not add up to 1, names)"""
+    bl_idname = "m3d.rig_check"
+    bl_label = "Check Rig"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    fix: EnumProperty(items=[(k, k.title(), "") for k in ('NONE', 'TRANSFORMS', 'POSED', 'QUATERNION', 'CONTROLS',
+                                                           'UNWEIGHTED', 'INFLUENCES', 'NORMALIZE', 'NAMES')],
+                      options={'SKIP_SAVE'})
+    mesh: StringProperty(options={'SKIP_SAVE'})
+
+    @classmethod
+    def description(cls, _context, props):
+        return {'NONE': cls.__doc__,
+                'TRANSFORMS': "Apply the rotation and scale of the skeleton and its meshes (they stay where they are)",
+                'POSED': "Put every bone back to the rest pose",
+                'QUATERNION': "Make the quaternion bones rotate in XYZ Euler (their pose and keys are kept)",
+                'CONTROLS': "Bones with a control shape stop deforming the mesh",
+                'UNWEIGHTED': "Select the vertices without bone weights (Edit Mode)",
+                'INFLUENCES': "Keep the strongest influences of each vertex, up to Max Influences (Skin tab)",
+                'NORMALIZE': "Scale each vertex's bone weights so they add up to 1",
+                'NAMES': "Select the bones with a naming problem"}[props.fix]
+
+    @classmethod
+    def poll(cls, context):
+        return rig_of(context) is not None
+
+    def execute(self, context):
+        rig = rig_of(context)
+        if self.fix != 'NONE':
+            try:
+                self.repair(context, rig, bpy.data.objects.get(self.mesh))
+            except RuntimeError as err:
+                self.report({'WARNING'}, str(err).strip())
+                return {'CANCELLED'}
+        problems = check_rig(context, rig)
+        self.report({'WARNING'} if problems else {'INFO'}, "Check Rig: %d problem(s)" % len(problems) if problems else
+                    "Check Rig: no problems")
+        return {'FINISHED'}
+
+    def repair(self, context, rig, mesh):
+        s = context.scene.m3d_rig
+        if self.fix == 'TRANSFORMS':
+            loose = [o for o in (rig, *rig_meshes(context, rig)) if unapplied(o)]
+            leave_modes(context)
+            _select_only(context, loose[0])
+            for o in loose:
+                o.select_set(True)
+            bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
+        elif self.fix == 'POSED':
+            reset_bones(rig.pose.bones)
+        elif self.fix == 'QUATERNION':
+            for pb in rig.pose.bones:
+                if pb.rotation_mode in {'QUATERNION', 'AXIS_ANGLE'}:
+                    set_rotate_order(pb, 'XYZ')
+        elif self.fix == 'CONTROLS':
+            for pb in rig.pose.bones:
+                if pb.custom_shape is not None:
+                    pb.bone.use_deform = False
+        elif self.fix == 'NAMES':
+            bpy.ops.m3d.rig_name_check()
+        elif mesh is not None:
+            leave_modes(context)
+            _select_only(context, mesh)
+            if self.fix == 'INFLUENCES':
+                on_all_vertices(context, mesh, bpy.ops.object.vertex_group_limit_total, group_select_mode='BONE_DEFORM',
+                                limit=s.skin_limit)
+            elif self.fix == 'NORMALIZE':
+                on_all_vertices(context, mesh, bpy.ops.object.vertex_group_normalize_all, group_select_mode='BONE_DEFORM',
+                                lock_active=False)
+            else:   # UNWEIGHTED: Edit Mode with them selected
+                names = {b.name for b in rig.data.bones if b.use_deform}
+                deform = {g.index for g in mesh.vertex_groups if g.name in names}
+                bpy.ops.object.mode_set(mode='EDIT')
+                context.tool_settings.mesh_select_mode = (True, False, False)
+                bm = bmesh.from_edit_mesh(mesh.data)
+                layer = bm.verts.layers.deform.verify()
+                for v in bm.verts:
+                    v.select = not any(g in deform and w > 0.0 for g, w in v[layer].items())
+                bm.select_flush_mode()
+                bmesh.update_edit_mesh(mesh.data)
+        context.view_layer.update()
 
 
 def pose_assets():
@@ -1767,7 +2560,7 @@ class M3D_MT_rig_names(Menu):
             setattr(o, key, axis)
         pie.operator("armature.flip_names" if edit else "pose.flip_names", text="Flip Names (.L <-> .R)")
         if edit:
-            pie.operator("armature.symmetrize", text="Mirror Bones", icon='MOD_MIRROR').direction = 'POSITIVE_X'
+            pie.operator("m3d.rig_mirror", text="Mirror Bones", icon='MOD_MIRROR').direction = 'POSITIVE_X'
             pie.operator("armature.select_mirror", text="Select Mirror")
         else:
             pie.operator("pose.select_mirror", text="Select Mirror")
@@ -1875,11 +2668,12 @@ class PROPERTIES_PT_m3d_rg_mirror(_Skeleton, Panel):
         rig, arm = _rig_data(context)
         layout.prop(arm, "use_mirror_x", text="X-Mirror")
         _buttons(layout, context, (
-            ("Mirror +X to -X", "armature.symmetrize", 'MOD_MIRROR', {"direction": 'POSITIVE_X'}),
-            ("Mirror -X to +X", "armature.symmetrize", 'MOD_MIRROR', {"direction": 'NEGATIVE_X'}),
+            ("Mirror +X to -X", "m3d.rig_mirror", 'MOD_MIRROR', {"direction": 'POSITIVE_X'}),
+            ("Mirror -X to +X", "m3d.rig_mirror", 'MOD_MIRROR', {"direction": 'NEGATIVE_X'}),
             ("Select Mirror", "armature.select_mirror", 'RESTRICT_SELECT_OFF', {}),
             ("Add Mirror to Selection", "armature.select_mirror", 'SELECT_EXTEND', {"extend": True}),
         ))
+        _small(layout, "Bones without .L / .R get the side they are on first")
 
 
 # (label, calculate_roll type): roll presets
@@ -1929,6 +2723,12 @@ class PROPERTIES_PT_m3d_rg_names(_Skeleton, Panel):
             ("By Z", "armature.autoside_names", 'NONE', {"type": 'ZAXIS'}),
         ), columns=3)
         _button(layout, context, "Flip Names (.L <-> .R)", "armature.flip_names", 'ARROW_LEFTRIGHT', {})
+        layout.separator()
+        split_props(layout)
+        layout.prop(context.scene.m3d_rig, "rename_chain")
+        _buttons(layout, context, (("Rename Chain", "m3d.rig_rename_chain", 'SORTALPHA', {}),
+                                   ("Prefix, Find / Replace...", "wm.batch_rename", 'SORTALPHA', {})))
+        layout.use_property_split = False
         issues = name_issues(rig)
         col = layout.column(align=True)
         if not issues:
@@ -2007,8 +2807,10 @@ class PROPERTIES_PT_m3d_rg_constraints(_Controls, Panel):
 
     def draw(self, context):
         _small(self.layout, "Select the target bone, then the bone to constrain (active)")
-        _buttons(self.layout, context, [(label, "pose.constraint_add_with_targets", icon, {"type": kind})
+        self.layout.prop(context.scene.m3d_rig, "keep_offset")
+        _buttons(self.layout, context, [(label, "m3d.rig_constrain", icon, {"type": kind})
                                         for label, kind, icon in CONSTRAINTS])
+        _button(self.layout, context, "Remove Constraints (Selected Bones)", "m3d.rig_constraints_clear", 'X', {})
 
 
 class PROPERTIES_PT_m3d_rg_ik(_Controls, Panel):
@@ -2025,6 +2827,7 @@ class PROPERTIES_PT_m3d_rg_ik(_Controls, Panel):
         col.scale_y = 1.3
         col.operator("m3d.rig_ik_pole", icon='CON_KINEMATIC')
         _buttons(layout, context, (("IK to Bone", "pose.ik_add", 'CON_KINEMATIC', {"with_targets": False}),
+                                   ("Pole Vector", "m3d.rig_pole_vector", 'EMPTY_SINGLE_ARROW', {}),
                                    ("Clear IK", "pose.ik_clear", 'X', {})))
         active = rig.data.bones.active
         if active is not None:
@@ -2132,6 +2935,13 @@ class PROPERTIES_PT_m3d_rg_locks(_Controls, Panel):
         o.channels, o.lock = 'ALL', True
         o = row.operator("m3d.rig_lock", text="Unlock All", icon='UNLOCKED')
         o.channels, o.lock = 'ALL', False
+        layout.separator()
+        row = layout.row(align=True)
+        row.label(text="Rotate Order")
+        mode = rig.pose.bones[active.name].rotation_mode if active is not None else 'XYZ'
+        row.operator_menu_enum("m3d.rig_rotate_order", "order", text=ROTATE_LABELS[mode])
+        _small(layout, "Sets the selected bones; their pose and keys are kept")
+        layout.prop(context.scene.m3d_rig, "euler_bones")
 
 
 # --- Skin
@@ -2190,6 +3000,10 @@ class PROPERTIES_PT_m3d_rg_paint(_Skin, Panel):
                     row.prop(ups if getattr(ups, flag) else brush, prop, slider=True)
                     row.prop(ups, flag, text="", icon='BRUSHES_ALL')
             layout.use_property_split = False
+            row = layout.row(align=True)   # (Auto Normalize: on when Paint Weights starts on a bound mesh)
+            row.prop(ts, "use_auto_normalize", text="Auto Normalize", toggle=True)
+            row.prop(ts, "use_multipaint", text="Multi-Paint", toggle=True)
+            row.prop(ts, "use_lock_relative", text="Lock-Relative", toggle=True)
             row = layout.row(align=True)
             row.prop(mesh.data, "use_paint_mask_vertex", text="Vertex Select", toggle=True)
             row.prop(mesh.data, "use_paint_mask", text="Face Select", toggle=True)
@@ -2229,6 +3043,11 @@ class PROPERTIES_PT_m3d_rg_influences(_Skin, Panel):
         row = layout.row(align=True)
         row.operator("object.vertex_group_lock", text="Lock All", icon='LOCKED').action = 'LOCK'
         row.operator("object.vertex_group_lock", text="Unlock All", icon='UNLOCKED').action = 'UNLOCK'
+        row = layout.row(align=True)
+        row.operator("m3d.rig_select_weighted", text="Select Weighted Vertices", icon='RESTRICT_SELECT_OFF')
+        sub = row.row(align=True)
+        sub.scale_x = 0.7
+        sub.prop(context.scene.m3d_rig, "select_threshold")
 
 
 class PROPERTIES_PT_m3d_rg_weights(_Skin, Panel):
@@ -2304,7 +3123,9 @@ class PROPERTIES_PT_m3d_rg_table(_Skin, Panel):
             _small(layout, "Select a vertex (Edit Mode, or Weight Paint with Vertex Select)")
             return
         index, weights = found
-        layout.label(text="Vertex %d" % index, icon='VERTEXSEL')
+        row = layout.row()
+        row.label(text="Vertex %d" % index, icon='VERTEXSEL')
+        row.prop(s, "weight_normalize")
         layout.prop(s, "weight_value")
         col = layout.column(align=True)
         for name, weight in sorted(weights, key=lambda item: -item[1]):
@@ -2490,6 +3311,46 @@ class PROPERTIES_PT_m3d_rg_position(_Test, Panel):
         row.prop_enum(rig.data, "pose_position", 'POSE', text="Pose Position")
         _button(layout, context, "Apply Pose as Rest Pose", "pose.armature_apply", 'ARMATURE_DATA',
                 {"selected": False})
+
+
+class PROPERTIES_PT_m3d_rg_rom(_Test, Panel):
+    bl_label = "Range of Motion"
+
+    def draw(self, context):
+        layout = self.layout
+        split_props(layout)
+        layout.prop(context.scene.m3d_rig, "rom_angle")
+        row = layout.row(align=True)
+        row.scale_y = 1.3
+        row.operator("m3d.rig_rom", text="Make Test", icon='ANIM').remove = False
+        ad = rig_of(context).animation_data
+        if ad is not None and any(t.name == ROM for t in ad.nla_tracks):
+            row.operator("m3d.rig_rom", text="Remove", icon='X').remove = True
+        _small(layout, "The selected bones (all deforming bones when none) turn each way around X, Y and Z; "
+                       "play it to watch the skin")
+
+
+class PROPERTIES_PT_m3d_rg_check(_Page, Panel):
+    page = "rig_test"
+    bl_label = "Check Rig"
+
+    def draw(self, context):
+        layout = self.layout
+        rig = rig_of(context)
+        row = layout.row()
+        row.scale_y = 1.3
+        row.operator("m3d.rig_check", icon='CHECKMARK').fix = 'NONE'
+        problems = _checked["problems"] if _checked["rig"] == rig.name else None
+        if problems is None:
+            _small(layout, "Run it before Bind and before export (Bind runs it too)")
+            return
+        if not problems:
+            layout.label(text="No problems found", icon='CHECKMARK')
+        for p in problems:
+            draw_lines(layout, context, p.text, icon='ERROR')
+            if p.fix:
+                o = layout.operator("m3d.rig_check", text=p.fix)
+                o.fix, o.mesh = p.kind, p.mesh
 
 
 def draw_pose_library(layout, context, limit=20):
@@ -2721,7 +3582,7 @@ def _color_swatch(row, context):
 SHELF_SKELETON = [
     ("m3d.rig_joint", 'BONE_DATA', {}, "Joint"),
     ("armature.extrude_move", 'EXPORT', {}, "Extrude"),
-    ("armature.symmetrize", 'MOD_MIRROR', {"direction": 'POSITIVE_X'}, "Mirror"),
+    ("m3d.rig_mirror", 'MOD_MIRROR', {"direction": 'POSITIVE_X'}, "Mirror"),
     ("m3d.rig_orient", 'ORIENTATION_GIMBAL', {}, "Orient"),
     ("armature.autoside_names", 'SORTALPHA', {"type": 'XAXIS'}, "Names L/R"),
     None,
@@ -2754,8 +3615,14 @@ classes = (
     M3D_OT_rig_control,
     M3D_OT_rig_control_color,
     M3D_OT_rig_lock,
+    M3D_OT_rig_rotate_order,
     M3D_OT_rig_ik_pole,
+    M3D_OT_rig_pole_vector,
+    M3D_OT_rig_constrain,
+    M3D_OT_rig_constraints_clear,
     M3D_OT_rig_name_check,
+    M3D_OT_rig_rename_chain,
+    M3D_OT_rig_mirror,
     M3D_OT_rig_bind,
     M3D_OT_rig_unbind,
     M3D_OT_rig_solo,
@@ -2766,6 +3633,9 @@ classes = (
     M3D_OT_rig_driver_remove,
     M3D_OT_rig_drivers_editor,
     M3D_OT_rig_reset_pose,
+    M3D_OT_rig_rom,
+    M3D_OT_rig_select_weighted,
+    M3D_OT_rig_check,
     M3D_OT_rig_pose_apply,
     M3D_OT_rig_pose_save,
     M3D_OT_rig_rigify,
@@ -2795,7 +3665,9 @@ classes = (
     PROPERTIES_PT_m3d_rg_drivers,
     PROPERTIES_PT_m3d_rg_pose,
     PROPERTIES_PT_m3d_rg_position,
+    PROPERTIES_PT_m3d_rg_rom,
     PROPERTIES_PT_m3d_rg_library,
+    PROPERTIES_PT_m3d_rg_check,
     PROPERTIES_PT_m3d_rg_bcolls,
     PROPERTIES_PT_m3d_rg_selsets,
     PROPERTIES_PT_m3d_rg_colors,
@@ -2809,9 +3681,13 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.m3d_rig = PointerProperty(type=M3D_RigSettings)
+    bpy.app.handlers.load_post.append(_bones_load)
+    bpy.app.handlers.depsgraph_update_post.append(_bones_update)
 
 
 def unregister():
+    bpy.app.handlers.depsgraph_update_post.remove(_bones_update)
+    bpy.app.handlers.load_post.remove(_bones_load)
     del bpy.types.Scene.m3d_rig
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
