@@ -1400,7 +1400,7 @@ for page in sorted(uv_pages):
 log = []
 m3d_ui.draw_status_line(Rec(log), ctx)
 check_calls("UV status line", log)
-props_drawn = {r._args[1] for r in log if r._kind == "prop"}
+props_drawn = {r._args[1] for r in log if r._kind in {"prop", "prop_menu_enum"}}
 check({"use_uv_select_sync", "use_uv_select_island", "texture_size"} <= props_drawn
       and any(r._kind == "operator" and r._args[0] == "m3d.uv_checker" for r in log), "UV status line controls")
 for key in m3d_ui.shelves_for('UV'):
@@ -11574,7 +11574,8 @@ check(T.bake_text(2, 3) == "Bake 2 maps for 3 texture sets" and T.bake_text(1, 1
 log = bg_draw(T.PROPERTIES_PT_m3d_tx_bake_settings, TCtx())
 bake_buttons_ = [r for r in log if r._kind == "operator" and r._args[0] == "m3d.tex_bake_sets"]
 check(len(bake_buttons_) == 1 and bake_buttons_[0]._kw["text"] == "Bake 2 maps for 3 texture sets" and log[0]._kind == "row" and log[0].values().get("scale_y") == 1.6
-      and "resolution" in [r._args[1] for r in log if r._kind == "prop"], "Size and Bake: the Size and one big Bake button with what it bakes, on one line")
+      and "resolution" in [r._args[1] for r in log if r._kind == "prop_menu_enum"], "Size and Bake: the Size and one big Bake button with what it bakes, on one line")
+check([r._kw["text"] for r in log if r._kind == "prop_menu_enum"] == ["64 px"], "...the Size says what it is: %s" % [r._kw.get("text") for r in log if r._kind == "prop_menu_enum"])
 ux4_tip = T.M3D_OT_tex_bake_sets.description(bpy.context, None)
 check("GPU" in ux4_tip or "CPU" in ux4_tip, "...its tooltip says the device: %s" % ux4_tip)
 check(T.bake_units(T.bake_checked(bpy.context)) == [('MESH', p4_a), ('MESH', p4_b)], "a mesh is baked once, however many of its sets are ticked")
@@ -11829,7 +11830,7 @@ p4_b_mat.m3d_set_export = True
 res, out, files = p4_export('UNREAL')
 check("T_P4B_BC.png" in files and len(files) == 9, "the sets of the other meshes are exported too: %s" % files)
 res, out, files = p4_export('GLTF')
-check(files == ["P4A.glb", "P4B.glb"], "glTF: one file for each mesh: %s" % files)
+check(files == ["P4A.glb", "P4B.glb"], "glTF: one file for each texture set, the sets of one mesh in one, named after the mesh: %s" % files)
 p4_b_mat.m3d_set_export = False
 for mat_ in (p4_skin, p4_metal):
     mat_.m3d_set_export = False
@@ -14008,6 +14009,155 @@ PCG.draw_bone_collections(Rec(pc_log), RCtx(), pc_arm)
 check("armature.collection_remove" in pb_ops(pc_log), "...with one: Remove")
 bpy.data.armatures.remove(pc_arm)
 check(PCG.drivers_area(NS(areas=[NS(ui_type='VIEW_3D')])) is None, "no Drivers editor in a screen without one")
+
+from contextlib import nullcontext
+# --- UX pass 2, texturing correctness: padding of a shared texture set, glTF of every mesh of a set with its modifiers, Smooth
+# Preview off for the bake and the export, one texture size, file names from the set, maps older than the mesh, New Texture
+# Project leaves high polys out, smart materials ask before baking from the mesh itself, a smaller set size asks first
+clean_scene()
+p1_tx = p4_tx = bpy.context.scene.m3d_tex   # (files were opened since p4_tx was taken: the scene is another one)
+p1_saved = (p1_tx.export_preset, p1_tx.export_folder, p1_tx.export_padding, p1_tx.export_size, p1_tx.export_names, p1_tx.resolution)
+p1_a = bg_plate("P1Crate_low", uv=(0.0, 0.0, 0.45, 1.0))
+p1_b = bg_plate("P1Crate_low_lid", x=3.0, uv=(0.55, 0.0, 1.0, 1.0))
+p1_mat = bpy.data.materials.new("P1Crate")
+p1_mat.use_nodes = True
+for o_ in (p1_a, p1_b):
+    o_.data.materials.append(p1_mat)
+p4_select(p1_a, p1_b)
+bpy.ops.m3d.tex_project('EXEC_DEFAULT', resolution='64', template='MINIMAL', unwrap=False, bake_after=False)
+check(p1_mat.m3d_layers and p1_a.m3d_bake.resolution == 'SET' and bpy.context.scene.m3d_uv.texture_size == 'SET',
+      "New Texture Project: the bake size and the UV texture size follow the set")
+check(T.map_size(p1_a.m3d_bake) == 64 and U.texel_size(bpy.context) == 64, "...64 px, the set's size (%d, %d)" % (T.map_size(p1_a.m3d_bake), U.texel_size(bpy.context)))
+bpy.context.scene.m3d_uv.margin = 0.0625
+check(bpy.context.scene.m3d_uv.margin_px == 4, "the UV margin in pixels at that size: %d" % bpy.context.scene.m3d_uv.margin_px)
+bpy.context.scene.m3d_uv.margin_px = 8
+check(abs(bpy.context.scene.m3d_uv.margin - 0.125) < 1e-6, "...and typed in pixels")
+bpy.context.scene.m3d_uv.margin = 0.01
+p1_px = np.ones((64, 64, 4), np.float32)
+p1_px[:, :32, :3], p1_px[:, 32:, :3] = (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)   # (red where the crate's islands are, blue on the lid's)
+p1_img = p4_stack_image(p1_mat, 'BASE_COLOR')
+p1_img.pixels.foreach_set(p1_px.ravel())
+p1_img.update()
+for mat_ in bpy.data.materials:
+    mat_.m3d_set_export = mat_ == p1_mat
+res, out, files = p4_export('BLENDER', export_padding='INFINITE')
+check(res == {'FINISHED'} and "P1Crate_BaseColor.png" in files, "a set two meshes share is named after its material: %s" % files)
+p1_raw, _img = p4_load(out, "P1Crate_BaseColor.png")
+check(np.abs(p1_raw[32, 50, :3] - (0.0, 0.0, 1.0)).max() < 0.01 and np.abs(p1_raw[32, 10, :3] - (1.0, 0.0, 0.0)).max() < 0.01,
+      "padding of a shared set: each mesh keeps its own colours (lid %s, crate %s)" % (p1_raw[32, 50, :3], p1_raw[32, 10, :3]))
+check(np.abs(p1_raw[32, 30, :3] - (1.0, 0.0, 0.0)).max() < 0.01 and np.abs(p1_raw[32, 34, :3] - (0.0, 0.0, 1.0)).max() < 0.01,
+      "...the gap between them takes the nearest island's colour")
+# file names: the template's pattern, remembered for each template
+p1_tx.export_preset = 'UNREAL'
+p1_tx.export_pattern = "Props_$set"
+check(T.export_name(bpy.context, p1_a, p1_mat) == "Props_P1Crate", "a name pattern: %s" % T.export_name(bpy.context, p1_a, p1_mat))
+p1_tx.export_preset = 'BLENDER'
+check(p1_tx.export_pattern == "$set" and T.export_name(bpy.context, p1_a, p1_mat) == "P1Crate", "...for its template only")
+p1_tx.export_preset = 'UNREAL'
+check(p1_tx.export_pattern == "Props_$set", "...and kept for it")
+p1_tx.export_pattern = "$mesh_$material"
+check(T.export_name(bpy.context, p1_a, p1_mat) == "P1Crate_P1Crate", "...$mesh is the mesh without _low, $material the material")
+p1_tx.export_pattern = ""
+check(p1_tx.export_pattern == "$set" and "UNREAL" not in p1_tx.export_names, "...empty: back to $set")
+p1_c = bg_plate("P1Barrel_low", x=6.0)
+p1_c.data.materials.append(bpy.data.materials.new("P1BarrelMat"))
+check(T.export_name(bpy.context, p1_c, p1_c.active_material) == "P1Barrel", "a mesh of its own: its name without _low")
+# glTF: every mesh of the set in one file, modifiers applied, Smooth Preview left out
+p1_arr = p1_a.modifiers.new("Array", 'ARRAY')
+p1_arr.count = 3
+p1_sp = p1_b.modifiers.new(_mm.SMOOTH_MOD, 'SUBSURF')
+p1_sp.levels = p1_sp.render_levels = 2
+p1_before = set(bpy.data.objects)
+res, out, files = p4_export('GLTF')
+check(res == {'FINISHED'} and files == ["P1Crate.glb"], "glTF: one file for the set, named after it: %s" % files)
+bpy.ops.import_scene.gltf(filepath=os.path.join(out, "P1Crate.glb"))
+p1_new = [o_ for o_ in bpy.data.objects if o_ not in p1_before and o_.type == 'MESH']
+p1_dims = sorted(round(o_.dimensions.x, 2) for o_ in p1_new)
+check(len(p1_new) == 2 and p1_dims[-1] > 5.9, "...with both meshes, the Array applied (%d meshes, widths %s)" % (len(p1_new), p1_dims))
+check(len(p1_new) == 2 and min(len(o_.data.vertices) for o_ in p1_new) <= 4,
+      "...and the lid without its Smooth Preview (%s vertices)" % [len(o_.data.vertices) for o_ in p1_new])
+check(p1_sp.show_viewport and p1_sp.show_render, "...which is back on after")
+for o_ in p1_new:
+    bpy.data.objects.remove(o_)
+p1_a.modifiers.remove(p1_arr)
+# Smooth Preview off for the bake of a low poly: the same maps as without it
+p1_low = bg_plate("P1Box_low", x=20.0, height=1.0, size=1.0)
+p1_high = bg_plate("P1Box_high", x=20.0, height=1.2, size=1.2, bump=0.1, res=4)
+p1_low.data.materials.append(bpy.data.materials.new("P1BoxMat"))
+s_ = p1_low.m3d_bake
+s_.high, s_.resolution, s_.margin, s_.samples = p1_high, '64', 2, 1
+s_.use_normal, s_.use_ao = True, False
+s_.use_curvature = s_.use_position = s_.use_thickness = s_.use_id = s_.use_worldnormal = False
+p4_select(p1_low)
+check(BG.mesh_state(p1_low) == 'NONE', "a picker pair that was never baked: not baked")
+T.bake_mesh(bpy.context, p1_low)
+p1_plain = read_image(bpy.data.images["P1Box_low_Normal"]).copy()
+check(BG.mesh_state(p1_low) == 'BAKED' and BG.set_state(bpy.context, p1_low) == 'BAKED', "...baked: tracked like a bake group")
+p1_sp2 = p1_low.modifiers.new(_mm.SMOOTH_MOD, 'SUBSURF')
+p1_sp2.levels = p1_sp2.render_levels = 2
+bpy.context.view_layer.update()
+check(BG.mesh_state(p1_low) == 'STALE', "...a new modifier on the low poly: older than the mesh")
+p1_log = []
+T.PROPERTIES_PT_m3d_tx_bake_high.draw(NS(layout=Rec(p1_log)), bpy.context)
+check(any("Smooth Preview on" in str(r._kw.get("text")) for r in p1_log), "the Bake page says the bake uses the plain mesh")
+check(any("Maps older than the mesh" in str(r._kw.get("text")) for r in p1_log), "...and that the maps are older than the mesh")
+T.bake_mesh(bpy.context, p1_low)
+p1_smooth = read_image(bpy.data.images["P1Box_low_Normal"]).copy()
+check(np.abs(p1_smooth - p1_plain).max() < 1e-4, "a bake with Smooth Preview on equals the bake without it (%.4f)" % np.abs(p1_smooth - p1_plain).max())
+check(p1_sp2.show_viewport and p1_sp2.show_render and BG.mesh_state(p1_low) == 'BAKED', "...it is back on after, the maps up to date")
+p1_plain_lows = T.plain_lows
+T.plain_lows = lambda obs: nullcontext()
+T.bake_mesh(bpy.context, p1_low)
+T.plain_lows = p1_plain_lows
+check(np.abs(read_image(bpy.data.images["P1Box_low_Normal"]) - p1_plain).max() > 0.05, "(without turning it off the maps would differ)")
+T.bake_mesh(bpy.context, p1_low)
+p1_high.location.x += 0.05
+bpy.context.view_layer.update()
+check(BG.mesh_state(p1_low) == 'STALE', "moving the picked high poly makes the maps older than the mesh")
+check(T.stale_sets(bpy.context, [(p1_low.active_material, p1_low)]), "...the texture set is listed as stale")
+BG._save_pre()
+check(p1_low.m3d_bake.state == 'STALE', "...the save handler writes it into the file")
+p1_log = []
+T.draw_stale(Rec(p1_log), bpy.context, [(p1_low.active_material, p1_low)])
+check(any(r._kind == "operator" and r._args[0] == "m3d.tex_rebake" for r in p1_log), "the line has Rebake")
+check(bpy.ops.m3d.tex_rebake('EXEC_DEFAULT', materials=p1_low.active_material.name) == {'FINISHED'} and BG.mesh_state(p1_low) == 'BAKED',
+      "Rebake bakes it again: up to date")
+p1_low.m3d_bake.high = None
+check(BG.mesh_state(p1_low) == 'STALE', "...another High Poly: older again")
+# New Texture Project leaves the high poly and the meshes over the face limit out
+p1_ws = TS.texture_workspace(bpy.context)
+p1_limit = p1_ws.m3d_face_limit
+p1_high.m3d_pair.role = 'HIGH'
+p4_select(p1_c, p1_high)
+check(TS.project_meshes(bpy.context) == [p1_c] and [(o_.name, why_) for o_, why_ in TS.skipped_meshes(bpy.context)] == [("P1Box_high", "high poly")],
+      "New Texture Project leaves the high poly out")
+p1_high.m3d_pair.role = 'NONE'
+check(TS.project_meshes(bpy.context) == [p1_c], "...also without a role, by its name")
+p1_high.name = "P1Hull"
+p1_ws.m3d_face_limit = 3
+check(TS.project_meshes(bpy.context) == [p1_c] and "over the face limit" in TS.skipped_meshes(bpy.context)[0][1], "...and a mesh over the face limit")
+p4_select(p1_high)
+check(bpy.ops.m3d.tex_project('EXEC_DEFAULT', resolution='64') == {'CANCELLED'}, "...nothing left: it says so and does nothing")
+p1_ws.m3d_face_limit = p1_limit
+# A smart material on a mesh without a high poly: the mesh named like its high poly is found and paired
+p1_high.name = "P1Barrel_high"
+check(LB.high_candidate(bpy.context, p1_c) == p1_high and LB.high_candidate(bpy.context, p1_high) is None, "Barrel_high is found for Barrel_low")
+LB.pair_with(bpy.context, p1_c, p1_high)
+check(p1_c.m3d_pair.role == 'LOW' and p1_high.m3d_pair.role == 'HIGH' and p1_c.m3d_pair.group == p1_high.m3d_pair.group,
+      "...Pair and Bake makes them a bake group")
+# A smaller set size scales painted images down: they lose detail, and Undo does not bring it back (the dialog says so)
+p4_select(p1_a)
+check(p4_stack_image(p1_mat, 'BASE_COLOR') in TS.painted_images(p1_mat), "the painted images of a set")
+check(bpy.ops.m3d.tex_set_size('EXEC_DEFAULT', size='128') == {'FINISHED'} and LY.stack_size(p1_mat) == 128, "a bigger set size")
+bpy.ops.ed.undo_push(message="P1 before resize")
+check(bpy.ops.m3d.tex_set_size('EXEC_DEFAULT', size='64') == {'FINISHED'} and LY.stack_size(p1_mat) == 64, "a smaller set size")
+bpy.ops.ed.undo_push(message="P1 after resize")
+bpy.ops.ed.undo()
+p1_img = p4_stack_image(bpy.data.materials["P1Crate"], 'BASE_COLOR')
+check(tuple(p1_img.size) == (64, 64), "...Undo does not scale the images back up: %s" % (tuple(p1_img.size),))
+clean_scene()
+p1_tx = p4_tx = bpy.context.scene.m3d_tex   # (Undo made the scene anew)
+(p1_tx.export_preset, p1_tx.export_folder, p1_tx.export_padding, p1_tx.export_size, p1_tx.export_names, p1_tx.resolution) = p1_saved
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

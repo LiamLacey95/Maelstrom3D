@@ -1912,12 +1912,13 @@ def flatten_channel(mat, ch_id, size):
 
 
 @contextmanager
-def flattened_material(ob, mat, size):
-    """For exporters that read the material: the slots using `mat` hold a copy where the layer chains are replaced by
-    one flattened image per channel. The layers and their nodes are not touched; everything temporary goes after."""
+def flattened_material(obs, mat, size):
+    """For exporters that read the material: the slots using `mat` (of the mesh `obs`, or of each in a list) hold a copy where
+    the layer chains are replaced by one flattened image per channel. The layers and their nodes are not touched; everything
+    temporary goes after."""
     temp = mat.copy()
     images = []
-    slots = [s for s in ob.material_slots if s.material == mat]
+    slots = [s for o in ([obs] if isinstance(obs, bpy.types.Object) else obs) for s in o.material_slots if s.material == mat]
     try:
         nt = temp.node_tree
         maskview_off(temp)   # Show Mask replaced the shader's link: the exporter needs it back.

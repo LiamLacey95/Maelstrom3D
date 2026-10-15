@@ -102,10 +102,10 @@ the 3D view (Solid, seams shown) on the right, and the dock with the UV tools. N
 |---|---|
 | Status Line | Object / Edit Mode, UV Sync, select mode (Vertex / Edge / Face) and Shell select, Live Unwrap, Distortion (and its type), Checker, texture size |
 | Shelf | Cut, Sew, Unfold, Optimize, Layout (large buttons), Auto Unwrap, Custom |
-| Unwrap tab | Cut and Sew (Cut, Sew, Split, Merge, Seams from Shells), Unfold (Angle Based or Conformal, Fill Holes), Optimize (iterations), Layout (margin, rotation: none / 90 degrees / axis aligned / any), Pin (Pin, Unpin, Invert Pins, Select Pinned) |
+| Unwrap tab | Cut and Sew (Cut, Sew, Split, Merge, Seams from Shells), Unfold (Angle Based or Conformal, Fill Holes), Optimize (iterations), Layout (margin in pixels of the texture size, rotation: none / 90 degrees / axis aligned / any), Pin (Pin, Unpin, Invert Pins, Select Pinned) |
 | Arrange tab | Select (Shell, Grow, Shrink, Invert, Overlapping, Pinned), Transform (Flip U/V, Rotate 90, Align U/V, Straighten, Snap Together), Shells (Orient Shells, Match Scale) |
 | Check tab | Checker map, Distortion (angle or area), Shaded UVs, Texel Density: texture size, target, **Read**, **Set**, **Match** |
-| Create tab | Auto Unwrap (seam angle, margin), projections: Automatic, Planar, Cylindrical, Spherical, Camera-Based, Cube |
+| Create tab | Auto Unwrap (seam angle, margin in pixels), projections: Automatic, Planar, Cylindrical, Spherical, Camera-Based, Cube |
 | UDIM tab | The UV Editor's image (New / New UDIM Image), tile list with Add, Remove, Fill, tile grid, Pack to Active / Closest Tile, Select Tile |
 
 Typical flow: **Cut** the edges you want as seams, **Unfold**, **Optimize** if shells stretch (it is slow on dense
@@ -113,7 +113,8 @@ meshes, so it has its own button), **Layout**, then check Distortion and the Che
 **Auto Unwrap** does cut (at edges sharper than the seam angle), unfold and layout in one go; a smooth shape with no
 sharp edge is projected instead. Buttons in the dock and shelf run in the UV Editor, so they work on the UV selection.
 UV Sync (Alt+S) makes the UV Editor follow the 3D view's selection; with it off, only what is selected in the UV Editor
-is used. Texel density is pixels per unit at the texture size in the Status Line: Read measures the selected shells
+is used. Texel density is pixels per unit at the texture size in the Status Line (**Same as Set** by default: the size of the active mesh's
+texture set, shown as "1024 px (Set)"; 2048 while it has none), and the Layout and Auto Unwrap margin is in pixels of that size: Read measures the selected shells
 (nothing selected: the whole mesh), Set scales every selected shell about its centre to the target, Match scales
 them to the shell of the active face.
 
@@ -465,7 +466,9 @@ stroke in the 2D view changes the same channels as one in the 3D view. Not done 
 UDIM paints its own image only).
 
 **Texture set settings.** **General** has the **Name** of the set (its material), its **Size** and the **Normal Map Format**. The size is one square size for the whole set: picking another
-scales every image of it (the layers' images, the masks' paint images, the images of frozen folders), and a layer, mask or folder made later starts at that size. It is square only, because masks,
+scales every image of it (the layers' images, the masks' paint images, the images of frozen folders), and a layer, mask or folder made later starts at that size. A smaller size asks first ("Scale Down"):
+the detail the painted images lose is gone for good, Undo does not bring it back. The set's size is the one size of the project: the Bake page's Size, the texture size of the UV tools and the export's
+**Based on the Set** follow it unless you pick another. It is square only, because masks,
 Merge Down, Flatten and Export work on square images. The normal map format (**OpenGL (Unity, Blender)** or **DirectX (Unreal)**) is a setting of the project: the Normal bake writes its green channel up or down by it, and the export
 templates that follow the project (Document Channels) flip the Normal channel for DirectX; the painted Normal channel itself is always kept the way Blender reads it (OpenGL).
 **Channels** lists the channels of the set, each with its format and an x. The x removes a channel: its layers keep their images, but nothing is built, painted, shown or exported for it until **Add Channel**
@@ -476,10 +479,10 @@ joins them once baked): a thumbnail, the name of the image (`<set>_<map>`), a fo
 mask effects); the next bake into the slot replaces it. Not done: non-square sizes, other ways to combine the normals (the layers' normal always goes on top of the baked one as a whiteout combine), channels beyond the six.
 
 **New Texture Project.** **File > New Texture Project...** (in the Texturing menu set) and the button of the start card in the Texture Set List (while no material has layers; it also says
-when the mesh has no material: the project makes one) open a dialog for the selected meshes: the **Document Resolution** (1024 by default), the **Normal Map Format**, the **Channels** (Base Color, Roughness, Metallic, Normal and Height; the same with
+when the mesh has no material: the project makes one) open a dialog for the selected meshes (a high poly, and a mesh over the face limit of the Texture workspace, is left out: the dialog says which and why; with nothing left it does nothing): the **Document Resolution** (1024 by default, then the last one used), the **Normal Map Format**, the **Channels** (Base Color, Roughness, Metallic, Normal and Height; the same with
 Emission; or the minimal Base Color, Roughness and Metallic), **Auto Unwrap Missing UVs** and **Bake Mesh Maps Next** (off at first). OK gives every material of the meshes a Base layer, which is its texture set, with an image of
 that size for each channel of the template (a channel that is not in the template is removed from the set, and can be added later), makes a material for a mesh that has none, unwraps a mesh without UVs and keeps the resolution
-and the format as the project's. The first set is the one painted and the dock shows the **Layers** (with Bake Mesh Maps Next the Bake page opens instead, to pick the high poly and bake; Back to Painting brings the Layers). A material that has layers already is left alone.
+and the format as the project's. The bake size of the meshes and the texture size of the UV tools are set to **Same as Set**. The first set is the one painted and the dock shows the **Layers** (with Bake Mesh Maps Next the Bake page opens instead, to pick the high poly and bake; Back to Painting brings the Layers). A material that has layers already is left alone.
 
 **Bake.** **Bake Mesh Maps** (in Texture Set Settings, in the toolbar, the Bake menu or Ctrl+Shift+B) is a mode of the Texture workspace: the dock shows the Bake page (its
 header says **Bake Mesh Maps** and has **Back to Painting**), the Assets column shows **Baked Maps** and Properties shows **Bake Settings**: the brushes, the library and the
@@ -487,8 +490,8 @@ layer settings are no use while baking. Back to Painting puts all three back as 
 
 | Part | What it is |
 |---|---|
-| Size and Bake | On top, so it is always in sight: the **Size** of the maps and one big **Bake** button that says what it bakes: **Bake 2 maps**, or **Bake 2 maps for 3 texture sets** (the ticked maps of the active set, for every texture set that has its Bake checkbox ticked in the Texture Set List; a mesh with several sets is baked once, a bake group as a group). Its tooltip says where it bakes ("GPU: NVIDIA GeForce RTX 4070 SUPER (OPTIX)" or "CPU: ..." with the reason). While a bake runs the page shows its progress instead (see Baking while you work) |
-| High Poly | One line: the picker of the high poly (for a mesh without a group; the eyedropper takes the other selected mesh) or, for a mesh of a bake group, the group with its number of low and high polys. **Auto-Pair** is on the same line: it pairs meshes called Sword_low and Sword_high into bake groups. Under it the result of the cage check (see The view of Bake Mesh Maps), with a button that checks again, then the **Cage Distance** (how far in front of the low poly the rays start; a group has its own) and **Auto-fit Cage** |
+| Size and Bake | On top, so it is always in sight: the **Size** of the maps (**Same as Set** by default, shown as "1024 = Set": the size of the texture set; 1024 for a mesh without one) and one big **Bake** button that says what it bakes: **Bake 2 maps**, or **Bake 2 maps for 3 texture sets** (**Rebake 2 maps** when the maps of the active set are older than its mesh) (the ticked maps of the active set, for every texture set that has its Bake checkbox ticked in the Texture Set List; a mesh with several sets is baked once, a bake group as a group). Its tooltip says where it bakes ("GPU: NVIDIA GeForce RTX 4070 SUPER (OPTIX)" or "CPU: ..." with the reason). While a bake runs the page shows its progress instead (see Baking while you work) |
+| High Poly | One line: the picker of the high poly (for a mesh without a group; the eyedropper takes the other selected mesh) or, for a mesh of a bake group, the group with its number of low and high polys. **Auto-Pair** is on the same line: it pairs meshes called Sword_low and Sword_high into bake groups. Under it, when it applies, "Maps older than the mesh" (see Out-of-date maps) and "Crate_low has Smooth Preview on: the bake uses the plain mesh" (Smooth Preview, key 3, is turned off on the low polys for a bake and for an export, and back on after; a high poly keeps it), then the result of the cage check (see The view of Bake Mesh Maps), with a button that checks again, then the **Cage Distance** (how far in front of the low poly the rays start; a group has its own) and **Auto-fit Cage** |
 | Maps | A checkbox for each map with what it is for beside it (Normal: surface bumps, Ambient Occlusion: dark in crevices, Curvature: edges and cavities, Position: height and sides, Thickness: thin parts, ID: parts by colour, World Normal: which way it faces; the tooltip says more), and a line that says which maps the smart materials and masks of the library use (made from the items, also your own). When a mask of the layers reads a map that the bake leaves out, a line says so ("Rust uses Curvature") with **Tick**; it is a warning when the map is missing ("Rust needs Curvature") |
 
 **Bake Settings** (Properties): **Visualization** (what the 3D view shows while this page is open: **Show High Poly**, **High Poly Opacity**, **Show Cage**, **Problem Color**, **Outlines and Stripes**) and **Advanced**: **Dilation**, **Antialiasing** (the samples of each pixel of the Normal, World Normal and Curvature maps), **Bake on GPU** with the device it found, **Max Ray Distance** and a custom **Cage** mesh (a group has these in its Group Settings), **All Maps**, **No Maps**, Invert and **Apply to Checked Texture Sets** (it gives the other ticked sets the maps, size, dilation and antialiasing of this one). Under them, closed at first: **Map Settings** (the settings of the map the dropdown picks: Normal: the format and the antialiasing; AO: the distance of the world's ambient occlusion and its **Quality**; Curvature: the contrast and the antialiasing; Thickness: the distance and its **Quality**; Position, World Normal and ID: what they are), **Bake Groups**, **Group Settings** (for a mesh of a group) and **Multires** (a mesh with levels and no high poly). The old layout shows all of it in its Bake tab.
@@ -533,6 +536,8 @@ of a timer, so the window stays usable; a high poly bigger than 8 million faces 
 
 A mesh without a role bakes as before: the images are named `<mesh>_<Map>`, with the **High Poly** mesh when one is picked (selected to active), else
 from the mesh itself. **Make Pair** (below the picker) turns the picked mesh into the high poly of a new group and the mesh into its low poly.
+
+**Out-of-date maps.** Maps are older than the mesh when a mesh they were baked from or onto was moved or edited after the bake (the same rules as a Stale bake group, below), or another High Poly was picked. This is tracked for bake groups and for meshes baked with the High Poly picker (or from themselves) alike, and kept in the file. It shows as a warning icon on the row of the texture set in the Texture Set List, a "Maps older than the mesh" line with **Rebake** in the Layers panel, on the Export page and in the Export Textures dialog, and on the Bake page, whose Bake button then says **Rebake**. Rebake bakes those texture sets again with the maps ticked on the Bake page.
 
 **Bake groups.** A group (see High poly and low poly) is one or more low polys, which get the maps, and one or more high polys, which the detail is
 baked from; several high polys in one group (a panel and its bolts) are baked together. The **Bake Groups** section of Advanced (Bake Settings) lists the
@@ -591,13 +596,13 @@ again before anything is drawn. A mesh without a bake group is refused; a group 
 **Export Textures** (the dock strip, the toolbar, the Export menu or Ctrl+Shift+E) opens a dialog. On the left are the **Texture Sets** to export (a checkbox for each) and the **Output Maps** of the template, each with a
 checkbox that skips it and the file name it will have. On the right: the **Template** (the engine the files are for), the **Output Directory** (it may start with `//`, next to the saved file), the **File Type** (PNG, TGA, TIFF
 or EXR) with its **Bit Depth** (PNG and TIFF 8 or 16 bit, EXR 16 or 32 bit float, TGA 8 bit), the **Size** (the size of each set, or 64 to 8192 px: the layers are resampled) and the **Padding**, and the Bake meshes option. **Export**
-writes the files, and a summary lists them. A file is named after the mesh (and after the material too when the mesh has more than one material: `T_Hero_Body_BC.png`); a channel without a paint image uses the shader's value, and
+writes the files, and a summary lists them. A file is named after the texture set: its material when several meshes share it (`T_Crate_BC.png` for Crate_low and Crate_low_lid), else the mesh without its _low / _high suffix (`T_Crate_BC.png` for Crate_low), with the material too when the mesh has more than one (`T_Hero_Body_BC.png`). **File Name** (below the Output Directory) is the pattern, kept for each template: `$set` (that name), `$mesh` (the mesh without its suffix), `$material`, and any prefix or suffix around them (`Props_$set`). The padding around the UV islands takes the islands of every mesh of the set, so each mesh keeps its own colours. A channel without a paint image uses the shader's value, and
 the colors are written in linear light in EXR files. The Normal is the combined one (the layers' normal on top of the baked normal map, as the 3D view shows it); the baked AO is
 never in the exported Base Color.
 
 | Template | Files |
 |---|---|
-| glTF PBR Metal Roughness | One `.glb` for each mesh, with its materials and textures |
+| glTF PBR Metal Roughness | One `.glb` for each texture set, named after it, with every mesh of the set (their modifiers applied, Smooth Preview left out), materials and textures; sets that share a mesh (a mesh with two materials) go into one file, named after the mesh |
 | Unreal Engine Packed (ORM) | `T_Name_BC`, `_N` (DirectX: green channel flipped), `_ORM` (red occlusion from the baked AO map, green roughness, blue metallic), `_E` |
 | Unity URP | `Name_Albedo`, `_Normal`, `_MetallicSmoothness` (metallic in red, smoothness in alpha), `_Occlusion`, `_Emission` |
 | Unity HDRP | `Name_BaseMap`, `_Normal`, `_MaskMap` (red metallic, green occlusion, blue detail mask, alpha smoothness), `_Emission` |
@@ -716,7 +721,9 @@ shows); switching it off puts the material back exactly as it was. **Invert Mask
 takes it off again); **Remove Mask** (mask menu) removes the whole mask. **Rebake Mesh Maps**, shown when an effect of the mask reads baked
 maps, makes the maps again after the mesh or the Bake page's settings changed.
 
-The generators read maps baked from the mesh (Curvature, AO, Position, Thickness, ID, plus the world normal). The first time
+The generators read maps baked from the mesh (Curvature, AO, Position, Thickness, ID, plus the world normal). A smart material or mask applied
+from the Library to a mesh with no high poly asks first: when a mesh named like its high poly is in the scene ("Crate_high found") it offers **Pair and Bake**
+(the two become a bake group and the maps come from the high poly) or **Bake from the Mesh Itself**; else it says the maps come from the mesh itself. The first time
 an effect needs one, it is baked with Cycles at the Bake page's resolution, like the Bake page does (named
 `<mesh>_<Map>`, with the high-poly mesh when one is set; for a low poly of a group: from its group, together with the other low polys of its texture set, named after the material) and kept with the file; every layer and effect then reuses it,
 and only a new resolution, Rebake Mesh Maps or the Bake page bake it again. Nothing in the mesh's materials changes while
@@ -804,7 +811,7 @@ Previews** (Mine, Your Items) makes them all again.
 
 Painted images never get lost: before a file is saved, images with changes are written to their files, or packed into
 the .blend when they have none. **File > Save All Images** (Texturing menu set) does the same on demand. Large images use a lot of memory: new slots
-default to 2048 px.
+take the size of their texture set (1024 px by default).
 
 ## Rigging (F5)
 

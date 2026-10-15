@@ -22,7 +22,9 @@ from bpy.types import Menu, Operator, Panel
 
 import m3d_layers as L
 import m3d_masks as MK
+import m3d_pair
 import m3d_texture as T
+import m3d_workspace as W
 from m3d_sculpt import mesh_of, reason, split_props
 from m3d_workspace import _PagePanel
 
@@ -113,6 +115,40 @@ class M3D_MT_tex_channel_add(Menu):
             self.layout.label(text="Every channel is in the set")
 
 
+def painted_images(mat):
+    """The images of the texture set that hold pixels (a generated image that was never painted only has a size)."""
+    return [img for img in dict.fromkeys(img for layer in mat.m3d_layers for img in L.layer_images(layer))
+            if not (img.source == 'GENERATED' and not img.has_data)]
+
+
+class M3D_OT_tex_set_size(Operator):
+    """Another size for the texture set: every image of it is scaled. A smaller size asks first: the painted detail it loses
+    does not come back"""
+    bl_idname = "m3d.tex_set_size"
+    bl_label = "Texture Set Size"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    size: EnumProperty(name="Size", items=T.SIZES)
+
+    @classmethod
+    def poll(cls, context):
+        return active_material(context) is not None
+
+    def invoke(self, context, event):
+        mat = active_material(context)
+        count = len(painted_images(mat))
+        if int(self.size) < L.set_size(context, mat) and count:
+            return context.window_manager.invoke_confirm(
+                self, event, title="Scale Down %s" % mat.name, confirm_text="Scale Down",
+                message="Its %d images go down to %s px: the detail they lose is gone for good, Undo does not bring it back"
+                        % (count, self.size))
+        return self.execute(context)
+
+    def execute(self, context):
+        L.resize_set(context, active_material(context), int(self.size))
+        return {'FINISHED'}
+
+
 class PROPERTIES_PT_m3d_tx_set_general(_Settings, Panel):
     bl_label = "General"
     bl_order = 10
@@ -124,7 +160,12 @@ class PROPERTIES_PT_m3d_tx_set_general(_Settings, Panel):
         split_props(layout)
         layout.prop(mat, "name", text="Name")
         row = layout.row(align=True)
-        row.prop(tex, "set_size", text="Size")
+        row.use_property_split = False
+        split = row.split(factor=0.4, align=True)
+        sub = split.row()
+        sub.alignment = 'RIGHT'
+        sub.label(text="Size")
+        split.operator_menu_enum("m3d.tex_set_size", "size", text="%d px" % L.set_size(context, mat))
         row.label(text="", icon='LOCKED')
         layout.prop(tex, "normal_format")
         reason(layout, "Square sizes: masks and export need them")
@@ -191,7 +232,7 @@ class M3D_OT_tex_map_load(Operator):
         image.name = name
         image.colorspace_settings.name = 'Non-Color'
         image.use_fake_user = True
-        image["m3d_bake"], image["m3d_map"], image["m3d_stamp"] = self.label, int(s.resolution), MK.new_uid()
+        image["m3d_bake"], image["m3d_map"], image["m3d_stamp"] = self.label, T.map_size(s), MK.new_uid()
         if self.label == "Normal":   # (a file is taken to follow the project's normal map format: the shader reads the green channel so)
             image["m3d_nfmt"] = context.scene.m3d_tex.normal_format
         if self.label == "Position":   # (a file of positions is taken to be scaled to the bounds of the mesh, as the bake does)
@@ -317,11 +358,14 @@ class M3D_OT_tex_export_dialog(Operator):
         template = T.TEMPLATES[tex.export_preset]
         left.label(text="Output Maps")
         box = left.box().column(align=True)
+        example = T.export_name(context, sets[0][1], sets[0][0]) if sets else "Name"   # (the files of the first set)
         if not template[2]:
-            box.label(text="One .glb file for each mesh")
+            box.label(text="One .glb file for each texture set, with its meshes")
+            sub = box.row()
+            sub.active = False
+            sub.label(text=example + ".glb", translate=False)
         prefix = tex.export_preset + "."
         keys = {m.key: m for m in tex.export_maps}
-        example = T.export_name(sets[0][1], sets[0][0]) if sets else "Name"   # (the files of the first set)
         for om in template[2]:
             item = keys.get(prefix + om.key)
             if item is not None:
@@ -332,9 +376,11 @@ class M3D_OT_tex_export_dialog(Operator):
                 sub.label(text=om.name % example + T.EXPORT_EXT[tex.export_format], translate=False)
         right = split.column()
         right.label(text="Settings")
-        T.draw_export_options(right.box().column(), context)
+        T.draw_export_options(right.box().column(), context, width=640 * 0.54 * (context.preferences.system.ui_scale or 1.0))
         ticked = export_sets_of(context)
-        layout.label(text="%d texture sets, %d maps each" % (len(ticked), len([1 for om in template[2] if om.key not in T.export_skipped(tex)])))
+        T.draw_stale(layout, context, ticked)
+        maps = len([1 for om in template[2] if om.key not in T.export_skipped(tex)])
+        layout.label(text="%d texture sets, %d maps each" % (len(ticked), maps) if template[2] else "%d texture sets" % len(ticked))
 
     def execute(self, context):
         sets, tex = export_sets_of(context), context.scene.m3d_tex
@@ -400,11 +446,36 @@ PROJECT_CHANNELS = {
 }
 
 
-def project_meshes(context):
-    """The meshes of a new project: the selected ones (the active mesh when none is selected)."""
+def project_candidates(context):
+    """The selected meshes (the active mesh when none is selected)."""
     found = [o for o in context.selected_objects if o.type == 'MESH']
     ob = mesh_of(context)
     return found or ([ob] if ob is not None else [])
+
+
+def texture_workspace(context):
+    """The Texture workspace (its face limit is the one a project goes by), else the current one."""
+    return next((w for w in bpy.data.workspaces if W.workspace_kind(w) == 'TEXTURE'), context.workspace)
+
+
+def skipped_meshes(context):
+    """[(mesh, why)] of the selected meshes a new project leaves out: the high polys (their detail is baked, not painted; a mesh
+    without a role named Crate_high is one too) and the meshes over the face limit of the Texture workspace (painting, and
+    unwrapping, them would take long)."""
+    ws, out = texture_workspace(context), []
+    for ob in project_candidates(context):
+        role = ob.m3d_pair.role
+        if role == 'HIGH' or role == 'NONE' and m3d_pair.split_role(ob.name)[1] == 'HIGH':
+            out.append((ob, "high poly"))
+        elif ws is not None and m3d_pair.too_big(ws, ob):
+            out.append((ob, "%s faces, over the face limit" % m3d_pair.format_count(m3d_pair.face_count(ob))))
+    return out
+
+
+def project_meshes(context):
+    """The meshes of a new project: the selected ones (the active mesh when none is selected), without the `skipped_meshes`."""
+    skipped = {ob for ob, _why in skipped_meshes(context)}
+    return [ob for ob in project_candidates(context) if ob not in skipped]
 
 
 def new_set(context, mat, size, channels):
@@ -436,7 +507,8 @@ class M3D_OT_tex_project(Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     resolution: EnumProperty(name="Document Resolution", default='1024', items=T.SIZES,
-                             description="Size of the images of every texture set (square)")
+                             description="Size of the images of every texture set (square): the baked maps and the texel size of "
+                                         "the UV tools follow it")
     normal_format: EnumProperty(name="Normal Map Format", default='OPENGL', items=(
         ('OPENGL', "OpenGL (Unity, Blender)", "Green up"), ('DIRECTX', "DirectX (Unreal)", "Green down")),
         description="How the green channel of the normal map points: used by the Normal bake and by the export templates that "
@@ -451,15 +523,16 @@ class M3D_OT_tex_project(Operator):
 
     @classmethod
     def poll(cls, context):
-        return bool(project_meshes(context))
+        return bool(project_candidates(context))
 
     def invoke(self, context, _event):
-        self.normal_format = context.scene.m3d_tex.normal_format
+        tex = context.scene.m3d_tex
+        self.normal_format, self.resolution = tex.normal_format, tex.resolution
         return context.window_manager.invoke_props_dialog(self, width=420, title="New Texture Project", confirm_text="OK")
 
     def draw(self, context):
         layout = self.layout
-        meshes = project_meshes(context)
+        meshes, skipped = project_meshes(context), skipped_meshes(context)
         layout.label(text="Mesh")
         box = layout.box().column(align=True)
         for ob in meshes[:6]:
@@ -467,6 +540,12 @@ class M3D_OT_tex_project(Operator):
             box.label(text="%s: %s" % (ob.name, plural_sets(len(sets) or 1)), icon='MESH_DATA', translate=False)
         if len(meshes) > 6:
             box.label(text="and %d more" % (len(meshes) - 6))
+        if not meshes:
+            box.label(text="No mesh to paint: select the low poly", icon='ERROR')
+        for ob, why in skipped[:3]:
+            box.label(text="Left out: %s (%s)" % (ob.name, why), icon='CANCEL', translate=False)
+        if len(skipped) > 3:
+            box.label(text="and %d more left out" % (len(skipped) - 3))
         split_props(layout)
         layout.prop(self, "resolution")
         layout.prop(self, "normal_format")
@@ -476,12 +555,19 @@ class M3D_OT_tex_project(Operator):
 
     def execute(self, context):
         meshes = project_meshes(context)
+        if not meshes:
+            self.report({'WARNING'}, "No mesh to paint: %s" % ", ".join("%s is a %s" % (ob.name, why) if why == "high poly" else
+                                                                        "%s has %s" % (ob.name, why) for ob, why in skipped_meshes(context)))
+            return {'CANCELLED'}
         size, channels = int(self.resolution), PROJECT_CHANNELS[self.template][1]
         mode = context.mode
         if mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
         tex = context.scene.m3d_tex
         tex.resolution, tex.normal_format = self.resolution, self.normal_format
+        context.scene.m3d_uv.texture_size = 'SET'   # (one size: the bake and the UV tools follow the sets)
+        for ob in meshes:
+            T.bake_owner(ob).m3d_bake.resolution = 'SET'
         layer, active, selected = context.view_layer, context.view_layer.objects.active, list(context.selected_objects)
         made, first = [], None
         for ob in meshes:
@@ -523,7 +609,6 @@ class M3D_OT_tex_project(Operator):
     def open_texture(self, context):
         """The Texture workspace (when this is another one) shows the new sets, with the Layers in its dock; Bake Mesh Maps opens when
         asked for."""
-        import m3d_workspace as W
         ws = next((w for w in bpy.data.workspaces if W.workspace_kind(w) == 'TEXTURE'), None)
         if ws is None:
             return
@@ -545,6 +630,7 @@ classes = (
     M3D_OT_tex_channel_add,
     M3D_OT_tex_channel_remove,
     M3D_OT_tex_channel_format,
+    M3D_OT_tex_set_size,
     M3D_MT_tex_channel_add,
     M3D_OT_tex_map_load,
     M3D_OT_tex_map_clear,

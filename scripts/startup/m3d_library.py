@@ -56,6 +56,7 @@ from bl_ui.properties_paint_common import BrushAssetShelf
 import m3d_layers as L
 import m3d_library_data as DATA
 import m3d_masks as MK
+import m3d_pair
 import m3d_sculpt as S
 import m3d_texture as T
 import m3d_workspace as W
@@ -365,7 +366,26 @@ def build_material(mat, item, directory):
 def map_ready(ob, key):
     """Does the mesh have this baked map at the Bake tab's resolution (ensure_maps reuses it)?"""
     image = T.map_image(ob, MK.MAP_LABELS[key])
-    return image is not None and image.get("m3d_map") == int(T.bake_owner(ob).m3d_bake.resolution)
+    return image is not None and image.get("m3d_map") == T.map_size(T.bake_owner(ob).m3d_bake)
+
+
+def high_candidate(context, ob):
+    """A mesh named like the high poly of `ob` (Crate_high for Crate_low or Crate) that is not a low poly itself, else None."""
+    base = m3d_pair.split_role(ob.name)[0].lower()
+    for o in context.view_layer.objects:
+        if o.type == 'MESH' and o != ob and o.m3d_pair.role != 'LOW':
+            name, role = m3d_pair.split_role(o.name)
+            if role == 'HIGH' and name.lower() == base:
+                return o
+    return None
+
+
+def pair_with(context, ob, high):
+    """`ob` becomes the low poly of `high` (its group, or a new one named after `ob`): the maps are baked from it."""
+    group = high.m3d_pair.group if m3d_pair.grouped(high) and high.m3d_pair.role == 'HIGH' else \
+        m3d_pair.unique_group(context, m3d_pair.split_role(ob.name)[0])
+    m3d_pair.set_role(ob, 'LOW', group)
+    m3d_pair.set_role(high, 'HIGH', group)
 
 
 def bake_missing(context, ob, layers):
@@ -834,6 +854,10 @@ class M3D_OT_library_apply(Operator):
     mode: EnumProperty(name="Mask", default='REPLACE', items=(
         ('REPLACE', "Replace", "Use the preset instead of the layer's mask"),
         ('ADD', "Add on Top", "Add the preset's effects above the layer's mask: they combine with it")))
+    high: StringProperty(options={'SKIP_SAVE', 'HIDDEN'}, description="A mesh named like the high poly, which the dialog offers")
+    source: EnumProperty(name="Bake From", default='PAIR', options={'SKIP_SAVE'}, items=(
+        ('PAIR', "Pair and Bake", "Make it the high poly of this mesh and bake the maps from it"),
+        ('SELF', "Bake from the Mesh Itself", "Bake the maps from this mesh: no high-poly detail in them")))
 
     @classmethod
     def description(cls, _context, props):
@@ -849,12 +873,44 @@ class M3D_OT_library_apply(Operator):
     def poll(cls, context):
         return mesh_of(context) is not None
 
+    def missing(self, context):
+        """The maps the item reads that the mesh does not have yet, in the Bake page's order."""
+        entry, ob = find_entry(self.item), mesh_of(context)
+        keys = maps_of(entry.item) if entry is not None else set()
+        return [k for k, _l, _f in T.BAKE_MAPS if k in keys and not map_ready(ob, k)]
+
+    def invoke(self, context, _event):
+        """A mesh without a high poly would bake the maps the item needs from itself: ask first, and offer the mesh named like
+        its high poly when there is one."""
+        ob = mesh_of(context)
+        if not self.missing(context) or m3d_pair.grouped(ob) or ob.m3d_bake.high is not None:
+            return self.execute(context)
+        found = high_candidate(context, ob)
+        self.high, self.source = (found.name, 'PAIR') if found is not None else ("", 'SELF')
+        return context.window_manager.invoke_props_dialog(self, width=380, title=find_entry(self.item).item["name"],
+                                                          confirm_text="Bake" if found is not None else "Bake from the Mesh")
+
+    def draw(self, context):
+        layout, ob = self.layout, mesh_of(context)
+        maps = ", ".join(T.BAKE_TEXT[label] for key, label, _f in T.BAKE_MAPS if key in self.missing(context))
+        col = layout.column(align=True)
+        col.label(text="It needs %s, baked first" % maps, translate=False)
+        if self.high:
+            col.label(text="%s found: pair it with %s and bake from it?" % (self.high, ob.name), icon='LINKED', translate=False)
+            layout.prop(self, "source", expand=True)
+        else:
+            col.label(text="%s has no high poly: the maps come from the mesh itself" % ob.name, icon='INFO', translate=False)
+            reason(layout, "To bake from a sculpt, pair it on the Bake page first")
+
     def execute(self, context):
         entry = find_entry(self.item)
         if entry is None:
             self.report({'WARNING'}, "That item is not in the library any more")
             return {'CANCELLED'}
         ob, old = mesh_of(context), []
+        high = bpy.data.objects.get(self.high) if self.high and self.source == 'PAIR' else None
+        if high is not None:
+            pair_with(context, ob, high)
         try:
             if entry.item["type"] == 'MATERIAL':
                 mat = usable_material(ob)

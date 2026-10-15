@@ -467,12 +467,13 @@ def tool_is_active(context, tool, op, props):
     return all(getattr(cur_props, k, None) == v for k, v in props.items())
 
 
-def draw_lines(layout, context, text, icon='INFO'):
-    """`text` on as many lines as the width of the region needs (the first with `icon`), in the normal text colour."""
+def draw_lines(layout, context, text, icon='INFO', width=None):
+    """`text` on as many lines as the width of the region (or `width` pixels: a dialog, which is not its region) needs (the first
+    with `icon`), in the normal text colour."""
     from m3d_workspace import text_width
     scale = context.preferences.system.ui_scale or 1.0
     region = getattr(context, "region", None)
-    room = (region.width if region is not None else 400 * scale) - 50 * scale
+    room = (width or (region.width if region is not None else 400 * scale)) - 50 * scale
     lines, line = [], ""
     for word in text.split():
         if line and text_width(line + " " + word, scale) > room:

@@ -46,7 +46,7 @@ import m3d_uv
 import m3d_workspace as W
 from m3d_layers import (CHANNEL_BY_ID, CHANNEL_ITEMS, CHANNELS, active_layer, entry_of, pixels_of, principled_of,
                         set_channel_space)
-from m3d_mode import _button
+from m3d_mode import SMOOTH_MOD, _button
 from m3d_sculpt import (active_brush_id, brush_tiles, draw_lines, empty_state, fits, mesh_of, multires_of, reason, split_props,
                         ui_scale_factor, viewport)
 from m3d_workspace import _PagePanel
@@ -79,6 +79,8 @@ def brush_item(label, name):
 # Channels: paint slots of the active material (or, with layers, channels of the stack: m3d_layers.py)
 
 SIZES = [(str(n), "%d px" % n, "") for n in L.SIZES]
+BAKE_SIZES = [('SET', "Same as Set", "The size of the texture set (Texture Set Settings > Size)", 'NONE', 100),
+              *((key, name, text, 'NONE', i) for i, (key, name, text) in enumerate(SIZES))]   # (numbered: files keep the sizes they had)
 
 
 def channel_of(mat, image):
@@ -154,7 +156,7 @@ def ensure_channel(context, ob, ch):
     if ch.id in found:
         mat.paint_active_slot = found[ch.id][0]
         return found[ch.id][1]
-    size = int(context.scene.m3d_tex.resolution)
+    size = L.new_size(context, mat)
     name = "%s_%s" % (ob.name, ch.label.replace(" ", ""))
     before = set(mat.texture_paint_images)
     if ch.slot_type:
@@ -318,7 +320,7 @@ OutMap = namedtuple("OutMap", "key label name sources srgb need alpha", defaults
 _BASE = OutMap("base", "Base Color", "%s_BaseColor", ('BASE_COLOR',), True, 'BASE_COLOR', True)
 _PBR = tuple(OutMap(ch.id.lower(), ch.label, "%%s_%s" % ch.label.replace(" ", ""), (ch.id,), ch.srgb, ch.id) for ch in L.CHANNELS)
 TEMPLATES = {   # id -> (name, what it writes, its output maps)
-    'GLTF': ("glTF PBR Metal Roughness", "One .glb file with the mesh, the material and its textures", ()),
+    'GLTF': ("glTF PBR Metal Roughness", "One .glb file for each texture set: its meshes (modifiers applied), materials and textures", ()),
     'UNREAL': ("Unreal Engine Packed (ORM)", "T_Name_BC, _N (DirectX), _ORM (R occlusion, G roughness, B metallic), _E", (
         OutMap("base", "Base Color", "T_%s_BC", ('BASE_COLOR',), True, 'BASE_COLOR', True),
         OutMap("normal", "Normal (DirectX)", "T_%s_N", ('NORMAL_DX',), False, 'NORMAL'),
@@ -367,6 +369,24 @@ def export_skipped(tex):
     """Keys of the output maps of the chosen template that are turned off."""
     prefix = tex.export_preset + "."
     return {m.key[len(prefix):] for m in tex.export_maps if not m.use and m.key.startswith(prefix)}
+
+
+PATTERN = "$set"   # the name pattern of a template nobody changed
+
+
+def patterns(tex):
+    """{template: name pattern} of the templates whose pattern was changed (Scene.m3d_tex.export_names: TEMPLATE=pattern|...)."""
+    return dict(item.split("=", 1) for item in tex.export_names.split("|") if "=" in item)
+
+
+def _pattern_get(self):
+    return patterns(self).get(self.export_preset, PATTERN)
+
+
+def _pattern_set(self, value):
+    found = patterns(self)
+    found[self.export_preset] = value.replace("|", "").replace("=", "") or PATTERN
+    self.export_names = "|".join("%s=%s" % item for item in found.items() if item[1] != PATTERN)
 
 
 def _export_template_changed(self, _context):
@@ -418,6 +438,9 @@ def set_size_set(_self, value):
         L.resize_set(bpy.context, ob.active_material, L.SIZES[value])
 
 
+BAKE_STATES = (('NONE', "Not baked", ""), ('BAKED', "Baked", ""), ('STALE', "Stale", ""))   # of a bake group or a mesh's own bake
+
+
 class M3D_SetRow(PropertyGroup):
     """A row of the Texture Set List (Scene.m3d_tex.sets): the names of the material of a texture set and of its mesh. The list
     is made of these and not of the materials themselves because a list of materials asks for a preview picture of each of
@@ -435,8 +458,9 @@ class M3D_ExportMap(PropertyGroup):
 
 class M3D_TexSettings(PropertyGroup):
     """Texture workspace options (Scene.m3d_tex): new slot size, the normal map format, the brush material and the Export tab."""
-    resolution: EnumProperty(name="Resolution", default='2048', items=SIZES,
-                             description="Size of new paint slots (bigger images use more memory)")
+    resolution: EnumProperty(name="Resolution", default='1024', items=SIZES,
+                             description="Size of new paint slots of a material that is no texture set yet, and of a New Texture "
+                                         "Project (bigger images use more memory)")
     normal_format: EnumProperty(name="Normal Map Format", default='OPENGL', items=(
         ('OPENGL', "OpenGL (Unity, Blender)", "Green up: the normal map as Blender reads it"),
         ('DIRECTX', "DirectX (Unreal)", "Green down: the baked normal map has its green channel flipped, and so has the Normal "
@@ -470,6 +494,11 @@ class M3D_TexSettings(PropertyGroup):
         description="Also write the low polys and the high polys of the groups of this texture set as two FBX files "
                     "(<name>_low.fbx, <name>_high.fbx) with the meshes named Part_low and Part_high, for tools that match by name")
     export_files: StringProperty(description="Files of the last export, separated by |")
+    export_names: StringProperty(description="The file name patterns of the templates that have their own, TEMPLATE=pattern separated by |")
+    export_pattern: StringProperty(name="File Name", get=_pattern_get, set=_pattern_set,
+                                   description="What the files of a texture set are named, kept for each template: $set is the texture "
+                                               "set (its material when meshes share it, else the mesh without _low / _high), $mesh the "
+                                               "mesh, $material the material. Add a prefix or suffix around them (Props_$set)")
     view_ao: BoolProperty(name="AO in Viewport", default=True, update=_view_ao_changed,
                           description="Darken the Base Color with the baked AO map in the 3D view (it is only for what you see: the "
                                       "exported Base Color never has the AO in it)")
@@ -532,8 +561,9 @@ class M3D_BakeSettings(PropertyGroup):
     use_worldnormal: BoolProperty(name="World Normal", default=False,
                                   description="World Normal: the direction the surface faces in the scene (n * 0.5 + 0.5). For masks "
                                               "of surfaces that face up, like dust and snow")
-    resolution: EnumProperty(name="Size", default='1024', items=SIZES,
-                             description="Size of the baked maps in pixels (they are square): bigger is sharper and slower")
+    resolution: EnumProperty(name="Size", default='SET', items=BAKE_SIZES,
+                             description="Size of the baked maps in pixels (they are square): bigger is sharper and slower. Same as "
+                                         "Set: the size of the texture set")
     margin: IntProperty(name="Dilation", default=16, min=0, max=64, subtype='PIXEL',
                         description="Pixels the baked detail is spread past the edges of the UV islands, so that seams do not show")
     cage: PointerProperty(
@@ -566,6 +596,9 @@ class M3D_BakeSettings(PropertyGroup):
     use_multires_displacement: BoolProperty(
         name="Displacement", default=False, description="How far the Multires detail is from the low level (grey is no distance)")
     baked: StringProperty(description="Maps of the last bake, separated by |")
+    state: EnumProperty(items=BAKE_STATES, default='NONE', options={'HIDDEN'},
+                        description="A mesh outside the bake groups: baked, or changed since (m3d_bakegroups.mesh_state)")
+    members: StringProperty(options={'HIDDEN'}, description="The mesh and its High Poly at the last bake")
 
 
 # -----------------------------------------------------------------------------
@@ -1394,8 +1427,37 @@ def normalise_position(image, obs, owner):
 RENDERED = {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT', 'CURVES', 'POINTCLOUD', 'VOLUME', 'GREASEPENCIL'}   # object types that cast shadows
 
 
+def smooth_preview(ob):
+    """The Smooth Preview of a mesh (key 3: a Subdivision modifier for the view) when it is on, else None."""
+    mod = ob.modifiers.get(SMOOTH_MOD) if ob is not None else None
+    return mod if mod is not None and mod.type == 'SUBSURF' and (mod.show_viewport or mod.show_render) else None
+
+
+@contextmanager
+def plain_lows(obs):
+    """Smooth Preview is off meanwhile on the meshes `obs` that are not high polys: a bake reads the low poly, an export writes
+    it, as it is and not smoothed (a high poly keeps it: Create High Poly gives it one on purpose). It comes back after."""
+    saved = [(mod, mod.show_viewport, mod.show_render) for o in obs if o.m3d_pair.role != 'HIGH' for mod in [smooth_preview(o)] if mod]
+    try:
+        for mod, _v, _r in saved:
+            mod.show_viewport = mod.show_render = False
+        yield
+    finally:
+        for mod, viewport, render in saved:
+            mod.show_viewport, mod.show_render = viewport, render
+
+
 @contextmanager
 def bake_scene(context, ob, highs=None, hide=(), cycles=True):
+    """`_bake_scene` with the Smooth Preview of the low polys off (`plain_lows`: `ob`, and the other low polys a list of
+    them passes as `highs`), all of it no edit of the meshes (m3d_pair.quiet: the bake does not make itself out of date)."""
+    lows = [ob, *(o for o in meshes_of(highs) if o.m3d_pair.role == 'LOW')]
+    with m3d_pair.quiet(context), plain_lows(lows), _bake_scene(context, ob, highs, hide, cycles):
+        yield
+
+
+@contextmanager
+def _bake_scene(context, ob, highs=None, hide=(), cycles=True):
     """Cycles on (the bake needs it; `cycles` False: the engine stays) on the GPU when there is one that bakes right (Bake on GPU), the
     low-poly mesh active and the high-poly meshes `highs` (one, a list or None) selected with it, Object Mode; `hide`: meshes that are
     not rendered meanwhile (Cycles bakes ambient occlusion against everything it renders, except the low poly itself). Everything is
@@ -1486,7 +1548,7 @@ def bake_maps_steps(context, ob, high, s, maps, name=None, extrusion=None, ray_d
     rest. `others`: names of the other low polys that share the images: their islands stay, the image is cleared only
     when it holds none of them. `normalise`: Position is scaled to 0-1 (not when more low polys follow). A generator (see
     m3d_bakeq): it yields the arguments of each bake and returns the images."""
-    size, images, highs = int(s.resolution), [], meshes_of(high)
+    size, images, highs = map_size(s), [], meshes_of(high)
     name = name or ob.name
     if Q.running():
         keep_2d(context)   # (before the first bake: Blender puts the image it bakes into the 2D view)
@@ -1540,13 +1602,22 @@ def bake_maps(context, ob, high, s, maps, **kwargs):
     return Q.drive(bake_maps_steps(context, ob, high, s, maps, **kwargs))
 
 
+def map_size(s):
+    """Side of the maps the Bake settings `s` bake: their Size, or with Same as Set the size of the texture set of the mesh they
+    belong to (1024 while it has none)."""
+    if s.resolution != 'SET':
+        return int(s.resolution)
+    mat = s.id_data.active_material
+    return (L.stack_size(mat) or mat.m3d_size if mat is not None else 0) or 1024
+
+
 def ensure_maps(context, ob, keys, force=False):
     """The baked maps (MK.MAP_LABELS keys) mask effects read, as {key: image}: the ones the mesh has at the Bake tab's
     resolution are reused, the others are baked (together, in one go; `force`: all of them again). The low poly of a bake
     group bakes from its group, together with the other low polys of its texture set."""
     in_group = m3d_pair.grouped(ob) and ob.m3d_pair.role == 'LOW'
     s = bake_owner(ob).m3d_bake
-    size = int(s.resolution)
+    size = map_size(s)
     todo = []
     for key in keys:
         image = map_image(ob, MK.MAP_LABELS[key])
@@ -1604,7 +1675,7 @@ def bake_multires(context, ob, s, kinds, name, others=()):
     levels above the Low Level (`ob.m3d_bake`) add to it. The images are named `name`_<Map> like the other maps; `s` has
     the size and the margin, `others` is as in `bake_maps`. The render settings and the level of the modifier are put back,
     also after an error. Returns the images."""
-    mod, size, images = multires_of(ob), int(s.resolution), []
+    mod, size, images = multires_of(ob), map_size(s), []
     level = mod.levels
     try:
         with bake_scene(context, ob, cycles=False), multires_settings(
@@ -1664,7 +1735,7 @@ class M3D_OT_tex_bake_multires(Operator):
             m3d_bakegroups.bake_groups_done(context, m3d_pair.all_groups(context), [ob.m3d_pair.group])
         L.use_baked_maps(context, every)
         after_bake(context)
-        self.report({'INFO'}, "Baked %s from Multires at %s px" % (", ".join(m[1] for m in kinds), owner.resolution))
+        self.report({'INFO'}, "Baked %s from Multires at %s px" % (", ".join(m[1] for m in kinds), map_size(owner)))
         return {'FINISHED'}
 
 
@@ -1719,8 +1790,10 @@ def bake_mesh_steps(context, ob):
     with bake_scene(context, ob, s.high):
         images = yield from bake_maps_steps(context, ob, s.high, s, maps, cage=s.cage)
     s.baked = "|".join(img.name for img in images)
+    import m3d_bakegroups
+    m3d_bakegroups.mesh_baked(ob)
     L.use_baked_maps(context, [ob])   # (the texture sets of the mesh show the Normal and AO maps)
-    return maps, s.resolution
+    return maps, map_size(s)
 
 
 def bake_mesh(context, ob):
@@ -1823,10 +1896,11 @@ def bake_sets_steps(context, units):
     return baked, errors, time.perf_counter() - t0
 
 
-def sets_job(context):
-    """The Job (m3d_bakeq) that bakes the texture sets that are ticked (what the Bake button does)."""
+def sets_job(context, units=None):
+    """The Job (m3d_bakeq) that bakes the `bake_units` `units`, by default the texture sets that are ticked (what the Bake button
+    does)."""
     import m3d_bakegroups
-    units = bake_units(bake_checked(context))
+    units = bake_units(bake_checked(context)) if units is None else units
 
     def finish(context, report, result, error):
         if error is Q.CANCELLED:
@@ -1874,6 +1948,59 @@ class M3D_OT_tex_bake_sets(Operator):
 
     def invoke(self, context, _event):
         return {'FINISHED'} if Q.run_queued(context, sets_job(context)) else {'CANCELLED'}
+
+
+def stale_sets(context, sets=None):
+    """The texture sets [(material, mesh)] (default: the Texture Set List) whose maps are older than their meshes."""
+    import m3d_bakegroups
+    return [(mat, ob) for mat, ob in (texture_sets(context) if sets is None else sets) if m3d_bakegroups.set_state(context, ob) == 'STALE']
+
+
+def draw_stale(layout, context, sets, button=True):
+    """"Maps older than the mesh" and Rebake (`button`), when the maps of one of the texture sets `sets` are out of date."""
+    found = stale_sets(context, sets)
+    if found:
+        row = layout.row(align=True)
+        row.alert = True
+        names = ", ".join(mat.name for mat, _ob in found) if len(sets) > 1 else ""
+        row.label(text="Maps older than the mesh" + (": " + names if names else ""), icon='ERROR', translate=False)
+        if not button:
+            return
+        sub = row.row(align=True)
+        sub.alert = False
+        sub.ui_units_x = 4.5   # (the line gets the room)
+        sub.operator("m3d.tex_rebake", text="Rebake", icon='FILE_REFRESH').materials = "|".join(mat.name for mat, _ob in found)
+
+
+class M3D_OT_tex_rebake(Operator):
+    """Bake the maps of these texture sets again: their meshes changed after the bake (the maps ticked on the Bake page). The
+    window keeps working meanwhile (Esc cancels)"""
+    bl_idname = "m3d.tex_rebake"
+    bl_label = "Rebake"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    materials: StringProperty(description="The texture sets (materials) to bake again, separated by |; empty: every one whose maps "
+                                          "are older than its meshes")
+
+    @classmethod
+    def poll(cls, context):
+        return not Q.running()
+
+    def job(self, context):
+        names = set(filter(None, self.materials.split("|")))
+        units = bake_units([(mat, ob) for mat, ob in stale_sets(context) if not names or mat.name in names])
+        if not units:
+            self.report({'INFO'}, "The maps are up to date")
+            return None
+        return sets_job(context, units)
+
+    def execute(self, context):
+        job = self.job(context)
+        return {'FINISHED'} if job is not None and Q.run_blocking(context, job, lambda level, text: self.report({level}, text)) else {'CANCELLED'}
+
+    def invoke(self, context, _event):
+        job = self.job(context)
+        return {'FINISHED'} if job is not None and Q.run_queued(context, job) else {'CANCELLED'}
 
 
 class M3D_OT_tex_bake_maps(Operator):
@@ -2080,6 +2207,18 @@ def uv_coverage(ob, mat, size):
     return mask
 
 
+def meshes_with(context, mat):
+    """The meshes of the view layer that have the material `mat` in a slot (the meshes of its texture set), by name."""
+    return sorted((o for o in context.view_layer.objects if o.type == 'MESH' and any(s.material == mat for s in o.material_slots)),
+                  key=lambda o: o.name)
+
+
+def set_coverage(context, ob, mat, size):
+    """`uv_coverage` of every mesh that uses `mat` (a texture set two meshes share: the islands of both are its own; `ob` when it
+    is not in the view layer)."""
+    return np.logical_or.reduce([uv_coverage(o, mat, size) for o in meshes_with(context, mat) or [ob]])
+
+
 def nearest_covered(covered, limit=None):
     """For each pixel the flat index of the nearest covered pixel (jump flooding; the pixel itself when it is covered, -1 when there
     is none or, with `limit`, when it is further away than that many pixels)."""
@@ -2117,10 +2256,22 @@ def export_folder(context):
     return folder
 
 
-def export_name(ob, mat):
-    """The name the files of a texture set start with: the mesh's, and the material's too when the mesh has more than one."""
-    return bpy.path.clean_name(ob.name if sum(slot.material is not None for slot in ob.material_slots) <= 1
-                               else "%s_%s" % (ob.name, mat.name))
+def set_name(context, ob, mat):
+    """The name of a texture set in file names: the material's when other meshes use it too (Crate_low and Crate_low_lid share
+    Crate), else the mesh's without its role suffix (Crate_low: Crate), with the material's when the mesh has more than one."""
+    if len(meshes_with(context, mat)) > 1:
+        return mat.name
+    base = m3d_pair.split_role(ob.name)[0]
+    return base if sum(slot.material is not None for slot in ob.material_slots) <= 1 else "%s_%s" % (base, mat.name)
+
+
+def export_name(context, ob, mat, label=None):
+    """The name the files of a texture set start with: the template's name pattern with $set (`set_name`, or `label`), $mesh (the
+    mesh without its role suffix) and $material filled in."""
+    pattern = _pattern_get(context.scene.m3d_tex)
+    name = (pattern.replace("$set", label or set_name(context, ob, mat)).replace("$mesh", m3d_pair.split_role(ob.name)[0])
+            .replace("$material", mat.name))
+    return bpy.path.clean_name(name)
 
 
 def export_set(context, ob, mat, folder):
@@ -2128,7 +2279,7 @@ def export_set(context, ob, mat, folder):
     in the file type, bit depth, size and padding of the Texture settings, without the maps that are turned off. With layers each
     channel is the flattened visible stack (the layers are not touched). Returns the files written."""
     s = context.scene.m3d_tex
-    name, fmt = export_name(ob, mat), s.export_format
+    name, fmt = export_name(context, ob, mat), s.export_format
     stacked = bool(mat.m3d_layers)
     if stacked:
         L.prepare(context, mat)
@@ -2188,7 +2339,7 @@ def export_set(context, ob, mat, folder):
     maps = [om for om in TEMPLATES[s.export_preset][2] if om.key not in skipped and wanted(om)]
     nearest = None
     if maps and s.export_padding != 'NONE' and not all(om.sources[0].startswith("MAP:") for om in maps):
-        covered = uv_coverage(ob, mat, size)   # (the baked maps have their own margin: they are written as they are)
+        covered = set_coverage(context, ob, mat, size)   # (the baked maps have their own margin: they are written as they are)
         if covered.any() and not covered.all():
             nearest = nearest_covered(covered, s.export_padding_px if s.export_padding == 'DILATION' else None)
     paths = []
@@ -2216,41 +2367,53 @@ def export_textures(context, ob):
     return export_sets(context, [(ob.active_material, ob)])
 
 
+def gltf_files(context, sets):
+    """[(name, meshes)] of a glTF export of the texture sets [(material, mesh)]: one file for each set with every mesh
+    that uses it, named after the set; sets that share a mesh (a mesh with two materials) are one file, named after that mesh."""
+    files = []   # [[set name, meshes, (mesh, material) of the first set]]
+    for mat, ob in sets:
+        obs = meshes_with(context, mat) or [ob]
+        found = next((f for f in files if not set(f[1]).isdisjoint(obs)), None)
+        if found is None:
+            files.append([export_name(context, ob, mat), list(obs), (ob, mat)])
+        else:
+            found[0] = export_name(context, *found[2], label=m3d_pair.split_role(found[2][0].name)[0])
+            found[1].extend(o for o in obs if o not in found[1])
+    return [(name, obs) for name, obs, _first in files]
+
+
 def export_sets(context, sets):
     """Write the texture sets [(material, mesh)] with the Export template into the Output Directory: the maps of each set, or
-    for glTF one .glb for each mesh with the materials of its sets. Returns the files written."""
+    for glTF one .glb for each set with its meshes (`gltf_files`). Returns the files written."""
     s = context.scene.m3d_tex
     folder = export_folder(context)
     if s.export_preset == 'GLTF':
-        paths = []
-        for ob in dict.fromkeys(o for _m, o in sets):
-            mats = [m for m, o in sets if o == ob]
-            size = max((L.stack_size(m) if m.m3d_layers else max((max(img.size) for img in m.texture_paint_images), default=0)
-                        for m in mats), default=0)
-            paths.append(export_gltf(context, ob, os.path.join(folder, bpy.path.clean_name(ob.name) + ".glb"), size or 1024, mats))
-        return paths
+        return [export_gltf(context, obs, os.path.join(folder, name + ".glb")) for name, obs in gltf_files(context, sets)]
     return [path for mat, ob in sets for path in export_set(context, ob, mat, folder)]
 
 
-def export_gltf(context, ob, path, size, mats=None):
-    """The mesh with its materials `mats` (default: the active one) as a .glb (the glTF exporter reads the paint images from the
-    material; a layer stack is exported as a temporary copy of the material with one flattened image per channel)."""
+def export_gltf(context, obs, path):
+    """The meshes `obs` with their materials as one .glb, with their modifiers applied (Smooth Preview off: `plain_lows`). The glTF
+    exporter reads the paint images from the materials; a layer stack is exported as a temporary copy of the material with one
+    flattened image per channel, at the set's size."""
     if not hasattr(bpy.ops.export_scene, "gltf"):
         raise RuntimeError("The glTF exporter is not enabled")
     layer = context.view_layer
     state = [o for o in layer.objects if o.select_get()], layer.objects.active
     for o in state[0]:
         o.select_set(False)
-    ob.select_set(True)
-    layer.objects.active = ob
+    for o in obs:
+        o.select_set(True)
+    layer.objects.active = obs[0]
     try:
-        with m3d_pair.quiet(context), ExitStack() as stack:
-            for mat in mats or [ob.active_material]:
+        with m3d_pair.quiet(context), plain_lows(obs), ExitStack() as stack:
+            for mat in dict.fromkeys(s.material for o in obs for s in o.material_slots if s.material is not None):
                 if mat.m3d_layers:
-                    stack.enter_context(L.flattened_material(ob, mat, size))
-            bpy.ops.export_scene.gltf(filepath=path, export_format='GLB', use_selection=True)
+                    stack.enter_context(L.flattened_material(obs, mat, L.stack_size(mat) or 1024))
+            bpy.ops.export_scene.gltf(filepath=path, export_format='GLB', use_selection=True, export_apply=True)
     finally:
-        ob.select_set(False)
+        for o in obs:
+            o.select_set(False)
         for o in state[0]:
             o.select_set(True)
         layer.objects.active = state[1]
@@ -3951,6 +4114,7 @@ class PROPERTIES_PT_m3d_tx_stack(_Page, Panel):
             row.alert = True
             row.label(text="Masks need %s" % ", ".join(BAKE_TEXT[MK.MAP_LABELS[k]] for k in need), icon='ERROR')
             row.operator("m3d.tex_bake_mode", text="Bake Mesh Maps", icon='RENDER_STILL').on = True
+        draw_stale(layout, context, [(mat, ob)])
         if layer.kind == 'FILL' and not layer.mask_stack and context.mode == 'PAINT_TEXTURE':
             layout.operator("m3d.layer_convert", icon='IMAGE_DATA')   # (the other way to paint a fill)
         equivalent = L.memory_equivalent(mat)
@@ -4469,6 +4633,10 @@ class PROPERTIES_PT_m3d_tx_bake_high(_Bake, Panel):
             row.prop(ob.m3d_bake, "high", text="")
             row.operator("m3d.tex_bake_pick", text="", icon='RESTRICT_SELECT_OFF')
         row.operator("m3d.hp_auto_pair", text="Auto-Pair", icon='LINKED')
+        draw_stale(layout, context, [(ob.active_material, ob)], button=False)   # (the Bake button says Rebake)
+        for low in texture_set(bake_owner(ob))[1] if ob.m3d_pair.role != 'HIGH' else ():
+            if smooth_preview(low) is not None:   # (key 3: the bake turns it off for the time, see plain_lows)
+                reason(layout, "%s has Smooth Preview on: the bake uses the plain mesh" % low.name)
         if (highs if grouped else ob.m3d_bake.high) in (None, []):
             reason(layout, "No high poly: the mesh bakes its own detail")
             if not grouped:
@@ -4505,7 +4673,7 @@ def stack_maps(owner):
                         flag = next(f for k, _l, f in BAKE_MAPS if k == key)
                         if key not in found and not getattr(s, flag):
                             image = map_image(owner, MK.MAP_LABELS[key])
-                            found[key] = (layer, image is None or image.get("m3d_map") != int(s.resolution))
+                            found[key] = (layer, image is None or image.get("m3d_map") != map_size(s))
     return [(key, *found[key]) for key, _l, _f in BAKE_MAPS if key in found]
 
 
@@ -4553,8 +4721,13 @@ class PROPERTIES_PT_m3d_tx_bake_settings(_Bake, Panel):
         row.scale_y = 1.6
         sub = row.row(align=True)
         sub.ui_units_x = 4.5
-        sub.prop(bake_owner(mesh_of(context)).m3d_bake, "resolution", text="")
-        row.operator("m3d.tex_bake_sets", text=bake_text(*bake_count(context)), icon='RENDER_STILL')
+        s = bake_owner(mesh_of(context)).m3d_bake
+        sub.prop_menu_enum(s, "resolution", text=("%d = Set" if s.resolution == 'SET' else "%d px") % map_size(s))
+        text = bake_text(*bake_count(context))
+        ob = mesh_of(context)
+        if stale_sets(context, [(ob.active_material, ob)]):
+            text = "Rebake" + text[len("Bake"):]   # (the maps are older than the mesh: baking again is what to do)
+        row.operator("m3d.tex_bake_sets", text=text, icon='RENDER_STILL')
         Q.check_gpu_soon()   # (its tooltip says the device; Bake Settings too)
 
 
@@ -4707,13 +4880,15 @@ class _Export(_Page):
     need = 'EXPORT'
 
 
-def draw_export_options(layout, context):
-    """The Export Textures settings: template, output directory, file type and bit depth, size, padding, Bake meshes."""
+def draw_export_options(layout, context, width=None):
+    """The Export Textures settings: template, output directory, file name, file type and bit depth, size, padding, Bake meshes
+    (`width`: of the column in a dialog, for the line that says what the template writes)."""
     s = context.scene.m3d_tex
     split_props(layout)
     layout.prop(s, "export_preset")
-    reason(layout, TEMPLATES[s.export_preset][1])
+    draw_lines(layout, context, TEMPLATES[s.export_preset][1], width=width)
     layout.prop(s, "export_folder")
+    layout.prop(s, "export_pattern")
     if s.export_preset != 'GLTF':
         layout.prop(s, "export_format")
         if s.export_format != 'TARGA':
@@ -4729,6 +4904,7 @@ def draw_export_options(layout, context):
 
 def draw_export_run(layout, context):
     s = context.scene.m3d_tex
+    draw_stale(layout, context, texture_sets(context))
     row = layout.row()
     row.scale_y = 1.6
     row.operator("m3d.tex_export_dialog", icon='EXPORT')
@@ -4946,6 +5122,7 @@ class M3D_UL_tex_sets(UIList):
     def draw_item(self, context, layout, _data, item, _icon, _active_data, _active_propname, _index):
         """eye, name (a double-click renames it), the mesh it is on when that is not the active one, the size of its images and in
         Bake Mesh Maps its Bake checkbox."""
+        import m3d_bakegroups
         mat, owner, ob = bpy.data.materials.get(item.name), bpy.data.objects.get(item.mesh), mesh_of(context)
         if mat is None or owner is None:   # (the set is gone: the list is made again in a moment)
             layout.label(text=item.name, translate=False)
@@ -4963,6 +5140,9 @@ class M3D_UL_tex_sets(UIList):
             sub.label(text=owner.name, translate=False)
         sub = row.row(align=True)
         sub.alignment = 'RIGHT'
+        if m3d_bakegroups.set_state(context, owner) == 'STALE':
+            sub.label(text="", icon='ERROR')   # (its maps are older than its mesh: Rebake in Layers and on the Bake page)
+        sub = sub.row(align=True)
         sub.active = False
         sub.label(text=set_size_text(context, mat), translate=False)
         if context.workspace is not None and context.workspace.m3d_page_right == "tex_bake":
@@ -5487,6 +5667,7 @@ classes = (
     M3D_OT_tex_bake,
     M3D_OT_tex_bake_sets,
     M3D_OT_tex_bake_maps,
+    M3D_OT_tex_rebake,
     M3D_OT_tex_bake_tick,
     M3D_OT_tex_show_image,
     M3D_OT_tex_export,

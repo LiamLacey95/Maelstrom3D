@@ -14,7 +14,9 @@ the picture, for contact shadows between the groups). Cycles never counts the lo
 Low polys that share a material are one texture set: they bake into the same images, each adding its own UV islands
 (m3d_texture.texture_set names the images). The settings of a group live on the scene (Scene.m3d_bake_groups), made on the
 first use from the Bake tab values of the group's low poly. A group is stale when one of its meshes changed after the bake:
-the depsgraph handler notes it in memory (it may not write ID data) and the save handler writes it into the file.
+the depsgraph handler notes it in memory (it may not write ID data) and the save handler writes it into the file. A mesh outside
+the groups (baked from the High Poly picker, or from itself) is tracked the same way, with its state on its Bake settings: one
+model, `set_state`, says for any texture set whether its maps are older than its meshes.
 
 Two aids for checking the groups: Explode moves the groups apart along one axis (each mesh remembers where it was, so Collapse puts
 it back exactly), and the cage preview draws the low poly pushed out by the group's Extrusion as a wire, on temporary objects that
@@ -41,7 +43,7 @@ SCOPES = (
     ('GROUP', "This Group", "Only the high polys of this group cast shadows into its ambient occlusion"),
     ('MODEL', "Whole Model", "The high polys of every group cast shadows: contact shadows between the groups"),
 )
-STATES = (('NONE', "Not baked", ""), ('BAKED', "Baked", ""), ('STALE', "Stale", ""))
+STATES = T.BAKE_STATES
 STATE_ICONS = {'NONE': 'DOT', 'BAKED': 'CHECKMARK', 'STALE': 'ERROR'}
 STATE_TEXT = {key: label for key, label, _text in STATES}
 
@@ -128,7 +130,8 @@ def request_settings(context, group):
 # -----------------------------------------------------------------------------
 # Stale groups
 
-_stale = set()   # groups with a mesh that changed since it was seen last (a mark is only read for a group that was baked)
+_stale = set()   # groups with a mesh that changed since it was seen last, and ("MESH", name) of meshes outside the groups whose
+# mesh or High Poly changed (a mark is only read for what was baked)
 _modes = {}      # mesh name -> the mode it was in at the last update seen (Blender reports a change of mode as a change of geometry)
 
 
@@ -150,10 +153,11 @@ def _depsgraph_update(_scene, depsgraph):
             mode, before = ob.mode, _modes.get(ob.name, 'OBJECT')
             _modes[ob.name] = mode
             no_edit = mode != before and before not in {'EDIT', 'SCULPT'}
-            if (update.is_updated_geometry or update.is_updated_transform) and not no_edit:
+            if (update.is_updated_geometry or update.is_updated_transform) and not no_edit and ob.type == 'MESH':
                 p = ob.m3d_pair
-                if p.role != 'NONE' and p.group:
-                    _stale.add(p.group)
+                _stale.add(p.group if p.role != 'NONE' and p.group else ("MESH", ob.name))
+                # ponytail: a scan of the view layer for each edited mesh; a map of high -> lows if scenes get huge
+                _stale.update(("MESH", o.name) for o in bpy.context.view_layer.objects if o.type == 'MESH' and o.m3d_bake.high == ob)
 
 
 @bpy.app.handlers.persistent
@@ -164,6 +168,9 @@ def _save_pre(*_args):
         for entry in scene.m3d_bake_groups:
             if entry.state == 'BAKED' and entry.name in _stale:
                 entry.state = 'STALE'
+    for ob in bpy.data.objects:
+        if ob.type == 'MESH' and ob.library is None and ob.m3d_bake.state == 'BAKED' and ("MESH", ob.name) in _stale:
+            ob.m3d_bake.state = 'STALE'
 
 
 @bpy.app.handlers.persistent
@@ -180,6 +187,33 @@ def state_of(entry, group, lows, highs):
         return 'NONE'
     stale = entry.state == 'STALE' or group in _stale or entry.members != signature(lows, highs)
     return 'STALE' if stale else 'BAKED'
+
+
+def mesh_state(ob):
+    """`state_of` for a mesh outside the bake groups: its own mesh or its High Poly changed, or another High Poly was picked."""
+    s = ob.m3d_bake
+    if s.state == 'NONE':
+        return 'NONE'
+    stale = s.state == 'STALE' or ("MESH", ob.name) in _stale or s.members != signature([ob], T.meshes_of(s.high))
+    return 'STALE' if stale else 'BAKED'
+
+
+def mesh_baked(ob):
+    """A mesh outside the groups is baked now: its maps show it and its High Poly as they are."""
+    s = ob.m3d_bake
+    s.state, s.members = 'BAKED', signature([ob], T.meshes_of(s.high))
+    _stale.discard(("MESH", ob.name))
+
+
+def set_state(context, ob):
+    """The state of the maps of the texture set the mesh `ob` is listed with: for a low poly of a group the groups of the low
+    polys of its set ('STALE' when one of them is out of date), for any other mesh its own bake (`mesh_state`)."""
+    if not (m3d_pair.grouped(ob) and ob.m3d_pair.role == 'LOW'):
+        return mesh_state(ob)
+    groups = m3d_pair.all_groups(context)
+    states = [state_of(context.scene.m3d_bake_groups.get(g), g, *groups.get(g, ([], [])))
+              for g in dict.fromkeys(low.m3d_pair.group for low in T.texture_set(ob)[1])]
+    return 'STALE' if 'STALE' in states else 'BAKED' if 'BAKED' in states else 'NONE'
 
 
 # -----------------------------------------------------------------------------
@@ -535,7 +569,7 @@ def bake_group_steps(context, group, progress=None):
         shown = maps
     bake_groups_done(context, groups, [group])
     L.use_baked_maps(context, lows)   # (their texture sets show the Normal and AO maps)
-    return shown, T.bake_owner(lows[0]).m3d_bake.resolution
+    return shown, T.map_size(T.bake_owner(lows[0]).m3d_bake)
 
 
 def bake_group(context, group):

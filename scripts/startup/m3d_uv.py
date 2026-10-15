@@ -20,6 +20,7 @@ from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, Po
 from bpy.types import Menu, Operator, Panel, PropertyGroup
 from mathutils import Vector
 
+import m3d_layers as L
 import m3d_pair
 from m3d_mode import _button
 from m3d_sculpt import draw_object_picks, empty_state, grid, reason, split_props
@@ -81,7 +82,11 @@ class M3D_UVSettings(PropertyGroup):
     iterations: IntProperty(name="Iterations", default=50, min=1, soft_max=500,
                             description="Relaxing passes of Optimize (slow on dense meshes)")
     margin: FloatProperty(name="Margin", default=0.01, min=0.0, max=1.0, precision=3,
-                          description="Space between shells in Layout")
+                          description="Space between shells in Layout, as a share of the UV square")
+    margin_px: IntProperty(name="Margin", min=0, soft_max=64, subtype='PIXEL', get=lambda self: round(self.margin * texel_size(bpy.context)),
+                           set=lambda self, value: setattr(self, "margin", min(value / texel_size(bpy.context), 1.0)),
+                           description="Space between shells in Layout and Auto Unwrap, in pixels of the texture (Texture Size in "
+                                       "Texel Density)")
     rotate: EnumProperty(name="Rotation", default='CARDINAL', items=(
         ('OFF', "None", "Keep the shells as they are"),
         ('CARDINAL', "90 Degrees", "Turn shells in steps of 90 degrees"),
@@ -89,11 +94,30 @@ class M3D_UVSettings(PropertyGroup):
         ('ANY', "Any", "Turn shells to any angle for the tightest fit")))
     angle: FloatProperty(name="Seam Angle", subtype='ANGLE', default=math.radians(66.0), min=0.0, max=math.pi,
                          description="Auto Unwrap cuts at edges sharper than this")
-    texture_size: EnumProperty(name="Texture Size", default='2048', description="Texture size for texel density",
-                               items=[(str(n), "%d px" % n, "") for n in (256, 512, 1024, 2048, 4096, 8192)])
+    texture_size: EnumProperty(name="Texture Size", default='SET', description="Texture size for texel density and the margin in pixels",
+                               items=[('SET', "Same as Set", "The size of the active mesh's texture set", 'NONE', 100),
+                                      *((str(n), "%d px" % n, "", 'NONE', i) for i, n in enumerate((256, 512, 1024, 2048, 4096, 8192)))])
     density: FloatProperty(name="Target", default=512.0, min=0.001, soft_max=8192.0, precision=1,
                            description="Texel density to set, in pixels per unit")
     density_read: FloatProperty(name="Current", default=0.0, description="Texel density of the last Read")
+
+
+def texel_size(context):
+    """The Texture Size of the UV tools: the one picked, or with Same as Set the size of the active mesh's texture set (2048
+    while it has none)."""
+    s = context.scene.m3d_uv
+    if s.texture_size != 'SET':
+        return int(s.texture_size)
+    ob = context.active_object
+    mat = ob.active_material if ob is not None and ob.type == 'MESH' else None
+    return (L.stack_size(mat) or mat.m3d_size if mat is not None else 0) or 2048
+
+
+def draw_texture_size(layout, context, text=None):
+    """The Texture Size dropdown, which says the size Same as Set stands for."""
+    size = texel_size(context)
+    label = "%d px (Set)" % size if context.scene.m3d_uv.texture_size == 'SET' else "%d px" % size
+    layout.prop_menu_enum(context.scene.m3d_uv, "texture_size", text=label if text is None else "%s: %s" % (text, label))
 
 
 def pack_options(s):
@@ -281,7 +305,7 @@ class M3D_OT_uv_texel_density(Operator):
 
     def execute(self, context):
         s = context.scene.m3d_uv
-        size, sync = int(s.texture_size), context.tool_settings.use_uv_select_sync
+        size, sync = texel_size(context), context.tool_settings.use_uv_select_sync
         found = []   # (object, UV layer, shell, density, UV area, world area)
         bms = {}
         for ob in context.objects_in_mode_unique_data:
@@ -695,7 +719,7 @@ class PROPERTIES_PT_m3d_uv_layout(_Unwrap, Panel):
         layout = self.layout
         split_props(layout)
         s = context.scene.m3d_uv
-        layout.prop(s, "margin")
+        layout.prop(s, "margin_px")
         layout.prop(s, "rotate")
         row = layout.row()
         row.scale_y = 1.4
@@ -773,7 +797,7 @@ class PROPERTIES_PT_m3d_uv_density(_Check, Panel):
         layout = self.layout
         split_props(layout)
         s = context.scene.m3d_uv
-        layout.prop(s, "texture_size")
+        draw_texture_size(layout, context, "Texture Size")
         layout.prop(s, "density")
         layout.label(text="Current: %.1f px/unit" % s.density_read if s.density_read else "Current: Read to measure")
         grid(layout, context, [(label, "m3d.uv_texel_density", icon, {"mode": mode}) for label, icon, mode in (
@@ -796,7 +820,7 @@ class PROPERTIES_PT_m3d_uv_auto(_Create, Panel):
         split_props(layout)
         s = context.scene.m3d_uv
         layout.prop(s, "angle")
-        layout.prop(s, "margin")
+        layout.prop(s, "margin_px")
         row = layout.row()
         row.scale_y = 1.4
         _button(row, context, "Auto Unwrap", "m3d.uv_auto", 'MOD_UVPROJECT', {})
@@ -898,7 +922,7 @@ def draw_status_line(layout, context):
             row.prop(space.uv_editor, "display_stretch_type", text="")
     layout.separator()
     layout.operator("m3d.uv_checker", text="Checker", icon='TEXTURE', depress=checker_on(context))
-    layout.prop(context.scene.m3d_uv, "texture_size", text="")
+    draw_texture_size(layout, context)
     draw_workspace_picker(layout, context)
 
 

@@ -5386,7 +5386,14 @@ def lb_apply_material():
     m = lb_mat()
     GIZMO["lb_before"], GIZMO["lb_layers"] = lb_look(), len(m.m3d_layers)
     res = press_ok("m3d.library_apply", _area=lb_dock(), item="starter:painted_metal")
-    check(res == {'FINISHED'}, "the Painted Metal tile applies")
+    check(res == {'RUNNING_MODAL'} and len(lb_mat().m3d_layers) == GIZMO["lb_layers"],
+          "the Painted Metal tile asks first: the mesh has no high poly, its maps would come from the mesh itself (%s)" % res)
+
+
+@step
+def lb_apply_confirm():
+    ws_event('RET', 'PRESS')   # (Bake from the Mesh)
+    ws_event('RET', 'RELEASE')
 
 
 @step
@@ -5606,7 +5613,7 @@ def lb_monkey():
     ob.m3d_bake.resolution, ob.m3d_bake.samples, ob.m3d_bake.margin = '512', 16, 8
     bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
     lb_show('MATERIALS')
-    check(press_ok("m3d.library_apply", _area=lb_dock(), item="starter:painted_metal") == {'FINISHED'}, "Painted Metal on Suzanne")
+    check(press_ok("m3d.library_apply", _area=lb_dock(), item="starter:painted_metal") == {'RUNNING_MODAL'}, "Painted Metal on Suzanne asks first")
     from mathutils import Euler
     tex_view()[0].spaces.active.region_3d.view_rotation = Euler((math.radians(78), 0.0, math.radians(32))).to_quaternion()   # (from the front, a little from the side and above)
     with bpy.context.temp_override(window=win, area=tex_view()[0], region=tex_view()[1]):
@@ -5616,7 +5623,14 @@ def lb_monkey():
 
 
 @step
+def lb_monkey_confirm():
+    ws_event('RET', 'PRESS')   # (Bake from the Mesh)
+    ws_event('RET', 'RELEASE')
+
+
+@step
 def lb_monkey_look():
+    check(lb_mat().m3d_layers and lb_mat().m3d_layers[-1].name == "Painted Metal", "...and applies when asked")
     check(not tracebacks(), "Python error applying a material to Suzanne")
     for a in window().screen.areas:
         a.tag_redraw()
@@ -10840,6 +10854,7 @@ def t4_no_project():
 @step
 def t4_project_open():
     check(not tracebacks(), "Python error drawing the Texture workspace without a project")
+    bpy.context.scene.m3d_tex.resolution = '1024'   # (the dialog starts at the scene's last project size: the Library steps set a small one)
     GIZMO["t4_defaults"] = (bpy.context.scene.m3d_tex.resolution, bpy.context.scene.m3d_tex.normal_format)
     roles = tex_roles()
     with bpy.context.temp_override(window=window(), screen=window().screen, area=roles["sets"], region=next(r for r in roles["sets"].regions if r.type == 'WINDOW')):
@@ -10978,6 +10993,32 @@ def t4_back_2d():
           "...and the 2D view shows what it showed before the bake: %s %s, before %s" % (space.image, space.use_image_pin, T4["2d"]))
 
 
+# --- Maps older than the mesh: a mesh baked on its own is tracked like a bake group; Rebake in the Layers
+@step
+def t4_stale():
+    ob = bpy.context.active_object
+    check(BGR.set_state(bpy.context, ob) == 'BAKED', "a mesh baked on its own is tracked: baked")
+    ob.location.x += 0.1
+    bpy.context.view_layer.update()
+    check(BGR.set_state(bpy.context, ob) == 'STALE' and m3d_texture.stale_sets(bpy.context), "moving it makes its maps older than the mesh")
+    t4_redraw()
+
+
+@step
+def t4_stale_drawn():
+    check(not tracebacks(), "Python error drawing the out-of-date maps (the icon of the Texture Set List, the line of the Layers)")
+    check(press_ok("m3d.tex_rebake", _area=tex_roles()["dock"], materials=bpy.context.active_object.active_material.name) == {'FINISHED'},
+          "Rebake starts")
+
+
+step(wait_until(lambda: not QB.running(), "Rebake to finish", 400))
+
+
+@step
+def t4_stale_rebaked():
+    check(BGR.set_state(bpy.context, bpy.context.active_object) == 'BAKED' and not tracebacks(), "Rebake bakes it again: up to date")
+
+
 # --- The Texture Set List and Texture Set Settings
 @step
 def t4_sets():
@@ -11034,6 +11075,17 @@ def t4_size_check():
     check(LY.stack_size(mat) == 256 and all(tuple(i.size) == (256, 256) for i in LY.stack_images(mat)) and bpy.context.scene.m3d_tex.set_size == '256',
           "the Size dropdown scales every image of the set")
     check(not tracebacks(), "Python error after the channel and size changes")
+    check(press_ok("m3d.tex_set_size", _area=tex_roles()["dock"], size='128') == {'RUNNING_MODAL'}, "a smaller size asks first (painted images lose detail)")
+
+
+@step
+def t4_size_down_cancel():
+    t4_key('ESC')
+
+
+@step
+def t4_size_down_check():
+    check(LY.stack_size(bpy.context.active_object.active_material) == 256 and not tracebacks(), "...Esc keeps the size")
     t4_redraw()
 
 

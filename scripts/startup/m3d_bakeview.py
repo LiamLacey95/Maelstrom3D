@@ -346,8 +346,10 @@ def low_samples(context, low, extrusion):
     """The points a bake of `low` sends rays from, as numpy arrays: world positions of the extruded surface, the world directions of the
     rays (inwards), and for the face colors the loop and face of each, plus the cage's wire and triangles in object space. The extrusion is
     in object space (the bake does so), a point is sent from the corner normal of each loop, and from the middle of each face along
-    the mean of its corner normals (a bake's rays start all over the face)."""
-    ev = low.evaluated_get(context.evaluated_depsgraph_get())
+    the mean of its corner normals (a bake's rays start all over the face). A low poly whose only modifier is its Smooth Preview is
+    checked without it, as the bake does (T.plain_lows)."""
+    smooth = T.smooth_preview(low)
+    ev = low if smooth is not None and all(m == smooth or not m.show_viewport for m in low.modifiers) else low.evaluated_get(context.evaluated_depsgraph_get())
     me = ev.to_mesh()
     try:
         nv, nl, npoly = len(me.vertices), len(me.loops), len(me.polygons)
