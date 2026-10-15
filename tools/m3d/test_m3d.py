@@ -1274,8 +1274,8 @@ def phase1c():
     log = []
     S.PROPERTIES_PT_m3d_sc_paint.draw(type("Inst", (), {"layout": Rec(log)})(), ctx)
     check("Add Vertex Colors" in texts(log) and any("F4 Texture" in t for t in texts(log)), "Paint tab: vertex colors, textures in F4")
-    # The navigation bar shows only with All Settings in Sculpt and Texture; the gear is an icon with its tooltip.
-    check(W.NAV_BAR_ONLY_IN_ALL_SETTINGS == {'SCULPT', 'TEXTURE'} and W.sync_nav_bar(ctx, False) is None, "navigation bar rule")
+    # The navigation bar shows only with All Settings in every task workspace; the gear is an icon with its tooltip.
+    check(W.NAV_BAR_ONLY_IN_ALL_SETTINGS == set(W.KINDS) and W.sync_nav_bar(ctx, False) is None, "navigation bar rule")
     log = []
     m3d_ui.draw_workspace_picker(Rec(log), bpy.context)
     gear = [r for r in log if r._kind == "popover"]
@@ -5309,10 +5309,17 @@ for mode_name in ('OBJECT', 'EDIT', 'POSE', 'WEIGHT_PAINT'):
         check_calls_ext("shelf %s in %s" % (key, mode_name), log)
 bpy.ops.m3d.rig_mode(mode='OBJECT')
 status = []
-R.draw_status_line(Rec(status), RCtx())
+rig_wide_ = RCtx()
+rig_wide_.region = NS(type='TOOL_HEADER', width=1920)
+R.draw_status_line(Rec(status), rig_wide_)
 check({r.values().get("mode") for r in status if r._kind == "operator" and r.values().get("mode")}
       >= {'OBJECT', 'EDIT', 'POSE', 'WEIGHT_PAINT'}, "Status Line has the four mode buttons")
 check([r._args[1] for r in status if r._kind == "prop_enum" and r._args[1] == "display_type"].__len__() == 5, "Status Line: five bone display types")
+rig_narrow_ = []
+R.draw_status_line(Rec(rig_narrow_), RCtx())
+check(not [r for r in rig_narrow_ if r._kind == "prop_enum" and r._args[1] == "display_type"]
+      and [r._kw.get("text") for r in rig_narrow_ if r._kind == "prop" and r._args[1] == "display_type"] == [""],
+      "...a narrow window: the bone display is one menu")
 check({r._args[1] for r in status if r._kind == "prop"} >= {"show_names", "show_axes", "show_in_front", "use_mirror_x"},
       "Status Line: names, axes, in front, X-Mirror")
 check({r._args[2] for r in status if r._kind == "prop_enum" and r._args[1] == "pose_position"} == {'REST', 'POSE'}, "Status Line: Rest / Pose")
@@ -7452,11 +7459,13 @@ check(not any(r._kind == "prop" and r._args[1] == "m3d_face_limit" for r in hp_l
 o = hp_scene(("Hilt_low", 'LOW', "Hilt"), ("Hilt_high", 'HIGH', "Hilt"), ("Plain", 'NONE', ""))
 hp_select(o["Hilt_low"])
 hp_log = channel_box_log()
-check("Bake: Low · Hilt" in [r._kw.get("text") for r in hp_log if r._kind == "label"], "Channel Box: Bake: Low · Hilt")
+check("Low Poly · Hilt" in [r._kw.get("text") for r in hp_log if r._kind == "label"], "Channel Box: Low Poly · Hilt")
 check(any(r._kind == "operator_menu_enum" and r._args[:2] == ("m3d.hp_mark", "role") for r in hp_log), "...with a menu to change the role")
 check_calls("channel box bake row", hp_log)
 hp_select(o["Plain"])
-check("Bake: None" in [r._kw.get("text") for r in channel_box_log() if r._kind == "label"], "Channel Box: Bake: None")
+hp_log = channel_box_log()
+check(not any(r._kind == "operator_menu_enum" and r._args[:2] == ("m3d.hp_mark", "role") for r in hp_log)
+      and not any("·" in str(r._kw.get("text")) for r in hp_log), "...a mesh without a role: no row (the right-click menu marks it)")
 
 
 def hp_status():
@@ -13685,6 +13694,131 @@ log = []
 LY.draw_mask_menu(Rec(log), "", 1)
 check("Delete Effect" in [r._kw.get("text") for r in log if r._kind == "operator"], "...so its menu has Delete Effect")
 clean_scene()
+
+# --- UI polish, shared chrome: the navigation bar, one shelf style, Status Line groups, the keys of every mode in the status
+# bar, the Tool tab, the Channel Box's high / low poly row and the command line.
+import _console_mel
+from bl_ui.properties_workspace import WORKSPACE_PT_main
+bpy.utils.keyconfig_set(bpy.utils.preset_find("Maelstrom3D", "keyconfig"))
+check(W.NAV_BAR_ONLY_IN_ALL_SETTINGS == set(W.KINDS), "every task workspace hides the navigation bar beside its own tabs")
+pa_wm = bpy.context.window_manager
+
+
+def pa_hints(kind, mode, modal=(), brushes=True):
+    """(drawn, [(label, key item)]) of the status bar in a workspace of `kind` and `mode`."""
+    ws = NS(m3d_kind=kind, name=W.KINDS[kind][0], tools=NS(from_space_view3d_mode=lambda m: NS(use_brushes=brushes)))
+    log = []
+    ctx = NS(window=NS(modal_operators=list(modal)), mode=mode, workspace=ws, window_manager=pa_wm,
+             tool_settings=bpy.context.tool_settings)
+    drawn = m3d_ui.draw_status_hints(Rec(log), ctx)
+    return drawn, [(r._kw["text"], r._args[0]) for r in log if r._kind == "template_event_from_keymap_item"]
+
+
+def pa_key(kmi):
+    return "".join(m + "+" for m, on in (("Ctrl", kmi.ctrl), ("Shift", kmi.shift), ("Alt", kmi.alt)) if on) + kmi.type
+
+
+VIEW_KEYS = [("Tumble", "Alt+LEFTMOUSE"), ("Track", "Alt+MIDDLEMOUSE"), ("Dolly", "Alt+RIGHTMOUSE")]
+for kind, mode, want in (
+        ('MODEL', 'OBJECT', [("Select", "LEFTMOUSE"), ("Toggle", "Shift+LEFTMOUSE"), ("Deselect", "Ctrl+LEFTMOUSE"), *VIEW_KEYS,
+                             ("Marking Menu", "RIGHTMOUSE"), ("Hotbox", "SPACE")]),
+        ('MODEL', 'EDIT_MESH', [("Select", "LEFTMOUSE"), ("Toggle", "Shift+LEFTMOUSE"), ("Deselect", "Ctrl+LEFTMOUSE"), *VIEW_KEYS,
+                                ("Marking Menu", "RIGHTMOUSE"), ("Hotbox", "SPACE")]),
+        ('UV', 'EDIT_MESH', [("Select", "LEFTMOUSE"), ("Toggle", "Shift+LEFTMOUSE"), *VIEW_KEYS, ("UV Menu", "RIGHTMOUSE"),
+                             ("UV Tools", "Shift+RIGHTMOUSE")]),
+        ('RIG', 'EDIT_ARMATURE', [("Select", "LEFTMOUSE"), ("Toggle", "Shift+LEFTMOUSE"), ("Deselect", "Ctrl+LEFTMOUSE"), *VIEW_KEYS,
+                                  ("Extrude", "Ctrl+E"), ("Names", "Shift+N"), ("Menu", "RIGHTMOUSE")]),
+        ('RIG', 'PAINT_WEIGHT', [("Paint", "LEFTMOUSE"), ("Subtract", "Ctrl+LEFTMOUSE"), ("Smooth", "Shift+LEFTMOUSE"), ("Size", "S"),
+                                 ("Weight", "Ctrl+F"), ("Sample", "I"), *VIEW_KEYS]),
+        ('ANIM', 'POSE', [("Select", "LEFTMOUSE"), ("Toggle", "Shift+LEFTMOUSE"), *VIEW_KEYS, ("Set Key", "S"), ("Tween", "Alt+Q"),
+                          ("Play", "Alt+V")]),
+        ('RENDER', 'OBJECT', [("Select", "LEFTMOUSE"), ("Toggle", "Shift+LEFTMOUSE"), *VIEW_KEYS, ("Marking Menu", "RIGHTMOUSE"),
+                              ("Render", "Shift+F12"), ("Render View", "Alt+F12")])):
+    drawn, hints = pa_hints(kind, mode)
+    got = [(label, pa_key(kmi)) for label, kmi in hints]
+    check(drawn and got == want, "status bar keys of %s %s: %s" % (kind, mode, got))
+check(pa_hints('MODEL', 'OBJECT', modal=[1]) == (False, []), "...not while an operator runs (Blender's own keys then)")
+check(pa_hints('RIG', 'PAINT_WEIGHT', brushes=False) == (False, []), "...a paint mode with a tool that is not a brush: Blender's")
+check(pa_hints('MODEL', 'EDIT_CURVE') == (False, []), "...a mode without hints: Blender's")
+check([label for label, _k in pa_hints('SCULPT', 'SCULPT')[1]][:3] == ["Sculpt", "Smooth", "Mask"], "...Sculpt keeps its brush keys")
+
+# One shelf style: icon-only buttons are squares (a cell of their own, 1.5 wide), buttons with a label are as wide as it.
+class PaShelfCtx:
+    region, area, window_manager = NS(x=0, y=1251, width=2560, height=40, type='WINDOW'), NS(type='TOPBAR'), pa_wm
+
+    def __init__(self, kind):
+        self.workspace = W.find_workspace(kind)
+
+    def __getattr__(self, name):
+        return getattr(bpy.context, name)
+
+
+E.set_editing(False)
+for kind, key, labels in (('MODEL', 'POLY', False), ('UV', 'UV', True), ('RIG', 'RIG_SKELETON', True), ('ANIM', 'ANIM_ANIMATE', True),
+                          ('RENDER', 'RENDER_RENDER', True), ('RENDER', 'RENDER_LIGHTS', True)):
+    pa_wm.m3d_shelf = key
+    log = []
+    m3d_ui.draw_shelf(Rec(log), PaShelfCtx(kind))
+    check_calls("shelf " + key, log)
+    buttons = [(i, r) for i, r in enumerate(log) if r._kind == "operator"]
+    cells = [i for i, r in enumerate(log) if r._kind == "row" and "scale_x" in r.values()]
+    check(log[0]._kind == "row" and log[0].values() == {"scale_y": m3d_ui.SHELF_SCALE}, "%s: one tall row, not stretched" % key)
+    check(all(log[i + 1]._kind == "operator" and log[i + 1]._kw.get("text") == "" and log[i].scale_x == m3d_ui.SHELF_SCALE for i in cells)
+          and len(cells) == len([r for _i, r in buttons if not r._kw.get("text")]), "%s: an icon-only button is a square cell" % key)
+    check(all(bool(r._kw.get("text")) == labels for _i, r in buttons), "%s: %s" % (key, "icon and label" if labels else "icons only"))
+E.set_editing(True)
+pa_wm.m3d_shelf = 'UV'
+m3d_ui.draw_shelf(Rec([]), PaShelfCtx('UV'))
+check(all(w > E.ICON_CELL * 20 for _x, w, ref in E._geom["shelf"]["cells"] if ref), "edit mode: a button with a label gets room for it")
+E.set_editing(False)
+pa_wm.m3d_shelf = 'POLY'
+
+# Status Lines: groups apart; labels give way to icons on a narrow window (the workspace menu drops "Workspace:").
+pa_prefs = bpy.context.preferences
+check(m3d_ui.status_narrow(NS(region=NS(width=1366), preferences=pa_prefs), 1500)
+      and not m3d_ui.status_narrow(NS(region=NS(width=1920), preferences=pa_prefs), 1500)
+      and not m3d_ui.status_narrow(NS(region=None, preferences=pa_prefs), 1500), "narrow: by the Status Line's width")
+for width, label in ((1366, False), (1920, True)):
+    log = []
+    m3d_ui.draw_workspace_picker(Rec(log), NS(region=NS(width=width), preferences=pa_prefs, window=bpy.context.window))
+    check(("Workspace:" in [r._kw.get("text") for r in log if r._kind == "label"]) == label, "workspace menu label at %d px" % width)
+log = []
+m3d_ui.draw_file_buttons(Rec(log))
+check(log[-1]._kind == "separator", "the file buttons are a group of their own")
+
+
+class PaAnimCtx(ACtx):
+    def __init__(self, width):
+        super().__init__()
+        self.region = NS(type='TOOL_HEADER', width=width)
+
+
+for width, labels in ((2560, {"Object", "Pose", "Auto Key", "New keys:", "Graph", "Dope Sheet", "Playblast"}),
+                      (1920, {"Object", "Pose", "Auto Key", "New keys:"}), (1366, set())):
+    log = []
+    A.draw_status_line(Rec(log), PaAnimCtx(width))
+    texts = {r._kw.get("text") for r in log if r._kind in {"operator", "prop", "label"}}
+    want = {"Object", "Pose", "Auto Key", "New keys:", "Graph", "Dope Sheet", "Playblast"}
+    check(want & texts == labels, "Animation Status Line at %d px: labels %s" % (width, sorted(want & texts)))
+    check(len([r for r in log if r._kind == "operator" and r._args[0] == "m3d.anim_interp"]) == 4, "...the four interpolations at %d px" % width)
+
+# The Tool tab: no Workspace panel (the 3D view's sidebar keeps it); the Channel Box: the high / low poly row only for one.
+check(not WORKSPACE_PT_main.poll(NS(space_data=NS(type='PROPERTIES'))) and WORKSPACE_PT_main.poll(NS(space_data=NS(type='VIEW_3D'))),
+      "Tool tab: Blender's Workspace panel is hidden in the dock")
+check(PR.ROLE_LABEL == {'NONE': "None", 'LOW': "Low Poly", 'HIGH': "High Poly"}, "role names in full")
+
+# The command line: the example line only where two lines fit (Modeling's is one line high).
+pa_lines = []
+pa_scroll = _console_mel._scrollback
+_console_mel._scrollback = lambda text, kind: pa_lines.append(text)
+for height, shown in ((26, False), (60, True)):
+    pa_lines.clear()
+    sc_ = NS(font_size=14, prompt="")
+    _console_mel.banner(NS(space_data=sc_, region=NS(height=height), preferences=pa_prefs))
+    check(bool(pa_lines) == shown and sc_.prompt == _console_mel.PROMPT, "command line %d px high: example %s" % (height, shown))
+_console_mel._scrollback = pa_scroll
+check(_console_mel.EXAMPLE in m3d_mode.M3D_OT_command_language.description(None, NS(language='mel')),
+      "...and in the tooltip of Windows > Command Line: MEL")
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

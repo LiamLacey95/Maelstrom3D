@@ -871,9 +871,11 @@ def draw_status_line(layout, context):
     _call(row, "object.mode_set", 'EDITMODE_HLT', "Edit Mode", depress=context.mode == 'EDIT_MESH', mode='EDIT')
     note = m3d_pair.big_note(context)
     if note:
+        layout.separator()
         layout.label(text=note, icon='ERROR')
     ts, space = context.tool_settings, uv_space(context)
     if context.mode == 'EDIT_MESH':
+        layout.separator()
         layout.prop(ts, "use_uv_select_sync", text="UV Sync", icon='UV_SYNC_SELECT', toggle=True)
         row = layout.row(align=True)
         if ts.use_uv_select_sync:
@@ -882,11 +884,13 @@ def draw_status_line(layout, context):
             row.prop(ts, "uv_select_mode", text="", expand=True)
         row.prop(ts, "use_uv_select_island", text="", icon='UV_ISLANDSEL', toggle=True)
     if space is not None:
+        layout.separator()
         layout.prop(space.uv_editor, "use_live_unwrap", text="Live Unwrap", toggle=True)
         row = layout.row(align=True)
         row.prop(space.uv_editor, "show_stretch", text="Distortion", toggle=True)
         if space.uv_editor.show_stretch:
             row.prop(space.uv_editor, "display_stretch_type", text="")
+    layout.separator()
     layout.operator("m3d.uv_checker", text="Checker", icon='TEXTURE', depress=checker_on(context))
     layout.prop(context.scene.m3d_uv, "texture_size", text="")
     draw_workspace_picker(layout, context)

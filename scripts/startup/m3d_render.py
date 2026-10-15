@@ -1270,19 +1270,23 @@ def draw_status_line(layout, context):
     row = layout.row(align=True)
     for key, label in ENGINES:
         row.prop_enum(scene.render, "engine", key, text=label)
+    layout.separator()
     row = layout.row(align=True)
     row.scale_x = 1.4
     row.prop(scene, "camera", text="")
     now = current_quality(scene)
+    layout.separator()
     row = layout.row(align=True)
     for key, label in QUALITY:
         row.operator("m3d.render_preset", text=label, depress=now == key).preset = key
     if now == 'CUSTOM':
-        row.label(text="Custom")
+        layout.label(text="Custom")   # (settings of no preset: the state, beside the presets)
+    layout.separator()
     row = layout.row(align=True)
     row.operator("m3d.render", text="Render", icon='RENDER_STILL')
     row.operator("m3d.render", text="Render Animation", icon='RENDER_ANIMATION').animation = True
     space = viewport(context)
+    layout.separator()
     row = layout.row(align=True)
     row.operator("m3d.render_ipr", text="IPR", icon='SHADING_RENDERED', depress=space is not None and space.shading.type == 'RENDERED')
     row.operator("m3d.render_view", text="Render View", icon='IMAGE')

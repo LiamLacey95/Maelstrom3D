@@ -295,14 +295,15 @@ def draw_custom_shelf(layout, context, kind, edit, tray=False):
     (m3d_edit.py); editing in the Sculpt tray: each button gets move left / remove / move right."""
     import m3d_edit
     from m3d_mode import _button
+    from m3d_ui import shelf_cell, shelf_row
     items = shelf_items(kind)
     cells = edit and not tray
-    row = layout.row(align=True)
     rec = None
     if cells:
+        row = layout.row(align=True)
         rec = m3d_edit.begin_shelf(context, 'CUSTOM', kind)
     else:
-        row.scale_x = row.scale_y = 1.5
+        row = shelf_row(layout)
     if not items:
         text = "Right-click any button, Add to Shelf" + (" (or drag one onto this tab)" if cells else "")
         (m3d_edit.add_cell(rec, row, 12.0) if cells else row).label(text=text)
@@ -321,10 +322,12 @@ def draw_custom_shelf(layout, context, kind, edit, tray=False):
             target.active = drag["src"] != ("C", i)
             slot = drag["target"]
             target.alert = isinstance(slot, tuple) and slot[1] == i and drag["src"] is not None
+        else:
+            target = shelf_cell(row, text)
         _button(target, context, text, item["idname"], icon, _py_props(item["idname"], item["props"]))
         if edit and tray:
             sub = row.row(align=True)
-            sub.scale_x = 0.4
+            sub.scale_x = 0.6
             for action, arrow in (('LEFT', 'TRIA_LEFT'), ('REMOVE', 'X'), ('RIGHT', 'TRIA_RIGHT')):
                 o = sub.operator("m3d.shelf_edit", text="", icon=arrow)
                 o.action, o.index = action, i

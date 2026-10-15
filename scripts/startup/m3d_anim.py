@@ -1364,38 +1364,51 @@ class M3D_PT_anim_autokey(Panel):
             col.prop(ts, "use_record_with_nla", text="Layered Recording")
 
 
+INTERP_ICONS = {'STEPPED': 'IPO_CONSTANT', 'SPLINE': 'IPO_BEZIER', 'LINEAR': 'IPO_LINEAR', 'CLAMPED': 'HANDLE_AUTOCLAMPED'}
+
+
 def draw_status_line(layout, context):
     """Animation Status Line: file, Object / Pose, Auto Key (+ options), key type, new key interpolation, keying set,
-    playback range, FPS, loop mode, Graph / Dope Sheet, Blocking / Polish, Playblast."""
-    from m3d_ui import draw_file_buttons, draw_workspace_picker
+    playback range, FPS, loop mode, Graph / Dope Sheet, Blocking / Polish, Playblast. Narrower windows show icons (with
+    their tooltips) for the editors and Playblast first, then for the modes, Auto Key and the interpolation."""
+    from m3d_ui import draw_file_buttons, draw_workspace_picker, status_narrow
     scene, ts = context.scene, context.tool_settings
+    icons, editor_icons = status_narrow(context, 1700), status_narrow(context, 2100)
     draw_file_buttons(layout)
     row = layout.row(align=True)
     for mode, icon, label, modes in (('OBJECT', 'OBJECT_DATAMODE', "Object", {'OBJECT'}),
                                      ('POSE', 'POSE_HLT', "Pose", {'POSE'})):
-        row.operator("m3d.rig_mode", text=label, icon=icon, depress=context.mode in modes).mode = mode
+        row.operator("m3d.rig_mode", text="" if icons else label, icon=icon, depress=context.mode in modes).mode = mode
 
+    layout.separator()
     row = layout.row(align=True)
-    row.prop(ts, "use_keyframe_insert_auto", text="Auto Key", icon='RECORD_ON' if ts.use_keyframe_insert_auto
+    row.prop(ts, "use_keyframe_insert_auto", text="" if icons else "Auto Key", icon='RECORD_ON' if ts.use_keyframe_insert_auto
              else 'RECORD_OFF', toggle=True)
     row.popover(panel="M3D_PT_anim_autokey", text="")
+    layout.separator()
     row = layout.row(align=True)
     for key_type, icon in KEY_TYPE_ICONS:
         row.prop_enum(ts, "keyframe_type", key_type, text="", icon=icon)
 
+    layout.separator()
     row = layout.row(align=True)
-    row.label(text="New keys:")   # A Preferences setting (every file): the tooltips say so.
+    if not icons:
+        row.label(text="New keys:")   # A Preferences setting (every file): the tooltips say so.
     kind = new_key_kind(context)
     for k, label in INTERP_LABELS.items():
-        row.operator("m3d.anim_interp", text=label, depress=kind == k).kind = k
+        row.operator("m3d.anim_interp", text="" if icons else label, icon=INTERP_ICONS[k] if icons else 'NONE',
+                     depress=kind == k).kind = k
+    layout.separator()
     row = layout.row(align=True)
     row.operator("m3d.anim_preset", text="Blocking", depress=kind == 'STEPPED').preset = 'BLOCKING'
     row.operator("m3d.anim_preset", text="Polish", depress=kind == 'CLAMPED').preset = 'POLISH'
 
+    layout.separator()
     row = layout.row(align=True)
-    row.scale_x = 1.1
+    row.scale_x = 0.8 if icons else 1.1
     row.prop_search(scene.keying_sets_all, "active", scene, "keying_sets_all", text="")
 
+    layout.separator()
     row = layout.row(align=True)
     row.scale_x = 0.8
     if scene.use_preview_range:
@@ -1410,12 +1423,15 @@ def draw_status_line(layout, context):
     row.prop(scene.render, "fps", text="FPS")
     row.prop(scene, "playback_loop_mode", text="")
 
+    layout.separator()
     row = layout.row(align=True)
     area = bottom_area(context.screen)
     graph = area is not None and area.type == 'GRAPH_EDITOR'
-    row.operator("m3d.anim_editor", text="Graph", icon='GRAPH', depress=graph).editor = 'GRAPH'
-    row.operator("m3d.anim_editor", text="Dope Sheet", icon='ACTION', depress=area is not None and not graph).editor = 'DOPESHEET'
-    layout.operator("m3d.playblast", text="Playblast", icon='RENDER_ANIMATION').play = scene.m3d_anim.playblast_play
+    row.operator("m3d.anim_editor", text="" if editor_icons else "Graph", icon='GRAPH', depress=graph).editor = 'GRAPH'
+    row.operator("m3d.anim_editor", text="" if editor_icons else "Dope Sheet", icon='ACTION',
+                 depress=area is not None and not graph).editor = 'DOPESHEET'
+    layout.separator()
+    layout.operator("m3d.playblast", text="" if editor_icons else "Playblast", icon='RENDER_ANIMATION').play = scene.m3d_anim.playblast_play
     draw_workspace_picker(layout, context)
 
 

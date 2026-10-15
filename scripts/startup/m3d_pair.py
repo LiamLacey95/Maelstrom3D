@@ -35,7 +35,7 @@ ROLES = (
     ('LOW', "Low Poly", "The light mesh you unwrap, paint and export"),
     ('HIGH', "High Poly", "The detailed sculpt the maps are baked from"),
 )
-ROLE_LABEL = {'NONE': "None", 'LOW': "Low", 'HIGH': "High"}
+ROLE_LABEL = {k: label for k, label, _ in ROLES}
 
 
 # -----------------------------------------------------------------------------
@@ -864,10 +864,14 @@ def draw_sculpt_status(layout, context, ob, label=True):
 
 
 def draw_channel(layout, ob):
-    """Channel Box row: "Bake: Low · Sword" and a menu to change the role."""
+    """Channel Box row of a high or low poly: "Low Poly · Sword" (role and group) and a menu to change the role. A mesh
+    without a role shows nothing (High / Low Poly in the right-click menu marks it)."""
     p = ob.m3d_pair
+    if p.role == 'NONE':
+        return
     row = layout.row(align=True)
-    row.label(text="Bake: " + ROLE_LABEL[p.role] + (" · " + p.group if p.role != 'NONE' and p.group else ""))
+    row.label(text=ROLE_LABEL[p.role] + (" · " + p.group if p.group else ""),
+              icon='LINKED')
     row.operator_menu_enum("m3d.hp_mark", "role", text="", icon='DOWNARROW_HLT')
 
 

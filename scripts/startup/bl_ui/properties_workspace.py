@@ -27,6 +27,12 @@ class WORKSPACE_PT_main(WorkSpaceButtonsPanel, Panel):
     bl_label = "Workspace"
     bl_options = {'DEFAULT_CLOSED'}
 
+    @classmethod
+    def poll(cls, context):
+        # Maelstrom3D: not in the dock's Tool tab (the entry mode is in Workspace Settings, top right); the 3D view's
+        # sidebar keeps it.
+        return context.space_data is None or context.space_data.type != 'PROPERTIES'
+
     def draw(self, context):
         workspace = context.workspace
 

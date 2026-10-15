@@ -135,9 +135,15 @@ def autocomplete(context):
     return {'FINISHED'}
 
 
+EXAMPLE = "polyCube -w 2 -n box;  move -r 0 0 1;  python(\"print(cmds.ls())\")"
+
+
 def banner(context):
+    """The example line over the prompt, in a command line tall enough for two lines (Modeling's is one line high: the
+    line would be cut off by the Time Slider, so the example is in the tooltip of Windows > Command Line: MEL)."""
     sc = context.space_data
-    _scrollback("MEL command line: e.g. polyCube -w 2 -n box;  move -r 0 0 1;  python(\"print(cmds.ls())\")",
-                'INFO')
+    region = context.region
+    if region is None or region.height >= 2 * sc.font_size * (context.preferences.system.ui_scale or 1.0) + 8:
+        _scrollback("MEL command line: e.g. " + EXAMPLE, 'INFO')
     sc.prompt = PROMPT
     return {'FINISHED'}

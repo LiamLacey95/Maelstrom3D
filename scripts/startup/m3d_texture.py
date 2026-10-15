@@ -5383,6 +5383,7 @@ def draw_status_line(layout, context):
     _call(row, "object.mode_set", 'OBJECT_DATAMODE', "Object Mode", depress=context.mode == 'OBJECT', mode='OBJECT')
     _call(row, "object.mode_set", 'TPAINT_HLT', "Texture Paint Mode", depress=context.mode == 'PAINT_TEXTURE',
           mode='TEXTURE_PAINT')
+    layout.separator()
     note = m3d_pair.big_note(context)
     if note:
         layout.label(text=note, icon='ERROR')
@@ -5402,6 +5403,7 @@ def draw_status_line(layout, context):
         if tool == 'PROJECTION':
             draw_stencil_controls(layout, brush, tier)
     if ob is not None:
+        layout.separator()
         row = layout.row(align=True)
         row.label(text="Symmetry" if tier == 2 else "", icon='MOD_MIRROR')
         for axis in "xyz":
@@ -5412,8 +5414,10 @@ def draw_status_line(layout, context):
         space = viewport(context)
         persp = space is None or space.region_3d is None or space.region_3d.is_perspective
         _call(layout, "view3d.view_persportho", 'VIEW_PERSPECTIVE' if persp else 'VIEW_ORTHO', "Perspective / Orthographic")
+        layout.separator()
         layout.operator("m3d.tex_bake_mode", text="Bake Mesh Maps" if tier else "", icon='RENDER_STILL').on = True
         layout.operator("m3d.tex_export_dialog", text="Export Textures" if tier else "", icon='EXPORT')
+        layout.separator()
     draw_workspace_picker(layout, context, extra=right)
 
 

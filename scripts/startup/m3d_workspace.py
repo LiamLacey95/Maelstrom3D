@@ -506,17 +506,17 @@ def draw_dock_tabs(layout, context):
     return True
 
 
-# Workspaces whose docks show Blender's column of stock tabs (the navigation bar) only with All Settings: the dock's own
-# tabs are in its header.
-NAV_BAR_ONLY_IN_ALL_SETTINGS = {'SCULPT', 'TEXTURE'}
+# Workspaces whose docks (both sides) show Blender's column of stock tabs (the navigation bar) only with All Settings: the
+# dock's own tabs are in its header. Every task workspace; the extra ones (Shading...) keep Blender's.
+NAV_BAR_ONLY_IN_ALL_SETTINGS = set(KINDS)
 _nav_pending = set()   # areas (pointers) whose navigation bar is about to be shown or hidden
 
 
 def sync_nav_bar(context, all_settings):
-    """Show the dock's navigation bar while it shows All Settings, hide it otherwise (Sculpt and Texture). Called from the
+    """Show the dock's navigation bar while it shows All Settings, hide it otherwise (task workspaces). Called from the
     header's draw, which can't change regions: a timer toggles it right after."""
     area = context.area
-    if not isinstance(area, bpy.types.Area) or current_kind(context) not in NAV_BAR_ONLY_IN_ALL_SETTINGS:
+    if not isinstance(area, bpy.types.Area) or workspace_kind(context.workspace) not in NAV_BAR_ONLY_IN_ALL_SETTINGS:
         return
     nav = next((r for r in area.regions if r.type == 'NAVIGATION_BAR'), None)
     key = area.as_pointer()

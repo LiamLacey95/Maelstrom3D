@@ -886,6 +886,7 @@ def draw_status_line_model(layout, context):
         row.operator_menu_enum("object.mode_set", "mode", text="", icon='DOWNARROW_HLT')
     # Selection masks: which object types can be selected.
     if space is not None:
+        layout.separator()
         row = layout.row(align=True)
         for prop, icon in (("show_object_select_mesh", 'MESH_DATA'), ("show_object_select_curve", 'CURVE_DATA'),
                            ("show_object_select_light", 'LIGHT'), ("show_object_select_camera", 'CAMERA_DATA'),
@@ -893,6 +894,7 @@ def draw_status_line_model(layout, context):
             row.prop(space, prop, text="", icon=icon)
 
     # Snapping: grid, curve, point, view plane / live surface.
+    layout.separator()
     row = layout.row(align=True)
     for item in ('GRID', 'EDGE', 'VERTEX', 'FACE'):
         row.prop_enum(ts, "snap_elements", item, text="")
@@ -904,6 +906,7 @@ def draw_status_line_model(layout, context):
         layout.prop(ob.data, "use_mirror_x", text="", icon='MOD_MIRROR')
 
     # Render: render view, render current frame, IPR, render settings; shader editor.
+    layout.separator()
     row = layout.row(align=True)
     row.operator("render.view_show", text="", icon='IMAGE')
     row.operator("render.render", text="", icon='RENDER_STILL')
@@ -914,11 +917,13 @@ def draw_status_line_model(layout, context):
 
     # Input box: rename the selected object.
     if ob is not None:
+        layout.separator()
         sub = layout.row()
         sub.scale_x = 0.8
         sub.prop(ob, "name", text="", icon='GREASEPENCIL')
 
     # Sidebar buttons: Modeling Toolkit, Attribute Editor, Tool Settings, Channel Box / Layer Editor.
+    layout.separator()
     row = layout.row(align=True)
     for tab, icon in (('MODELING_TOOLKIT', 'EDITMODE_HLT'), ('OBJECT', 'PROPERTIES'), ('TOOL', 'TOOL_SETTINGS'),
                       ('CHANNEL_BOX', 'ALIGN_JUSTIFY')):
@@ -927,19 +932,30 @@ def draw_status_line_model(layout, context):
     draw_workspace_picker(layout, context)
 
 
+def status_narrow(context, width):
+    """Is the Status Line narrower than `width` pixels at UI scale 1? Its labels give way to icons (with tooltips) then.
+    False without a region (a test)."""
+    region = getattr(context, "region", None)
+    return bool(getattr(region, "width", 0)) and region.width / m3d_sculpt.ui_scale_factor(context) < width
+
+
 def draw_file_buttons(layout):
+    """New, Open, Save: the first group of every Status Line (the groups after it are apart by a separator)."""
     row = layout.row(align=True)
     row.operator("wm.read_homefile", text="", icon='FILE_NEW').app_template = ""
     row.operator("wm.open_mainfile", text="", icon='FILE_FOLDER')
     row.operator("wm.save_mainfile", text="", icon='FILE_TICK')
+    layout.separator()
 
 
 def draw_workspace_picker(layout, context, extra=None):
-    """The workspace menu and Settings at the right end of a Status Line; `extra(layout)` draws more buttons first."""
+    """The workspace menu and Settings at the right end of a Status Line; `extra(layout)` draws more buttons first. On a
+    narrow window the menu goes without its "Workspace:" label."""
     layout.separator_spacer()
     if extra is not None:
         extra(layout)
-    layout.label(text="Workspace:")
+    if not status_narrow(context, 1500):
+        layout.label(text="Workspace:")
     layout.template_ID(context.window, "workspace", new="workspace.add", unlink="workspace.delete")
     layout.popover("M3D_PT_workspace_settings", text="", icon='PREFERENCES')   # (its tooltip: Workspace settings...)
 
@@ -981,7 +997,7 @@ def draw_status_line(layout, context):
 
 
 # -----------------------------------------------------------------------------
-# Status bar (the bottom bar): the keys of the active brush tool
+# Status bar (the bottom bar): the keys of the mode, or of the active brush tool
 
 def _texture_tool_label(context):
     tool = m3d_texture.tool_of(context)
@@ -1010,6 +1026,43 @@ STATUS_HINTS = {
         ("Swap Colors", "paint.brush_colors_flip", {}),
     ), ("m3d.tex_tool", "Tools")),
 }
+
+# The keys of the other modes: hints (label, keymap, operator, options), drawn like the brush hints.
+_SELECT_HINTS = (("Select", "3D View", "view3d.select", {"deselect_all": True}),
+                 ("Toggle", "3D View", "view3d.select", {"toggle": True}),
+                 ("Deselect", "3D View", "view3d.select", {"deselect": True}))
+_VIEW_HINTS = (("Tumble", "3D View", "view3d.rotate", {}), ("Track", "3D View", "view3d.move", {}),
+               ("Dolly", "3D View", "view3d.zoom", {"delta": 0}))
+_MARKING_MENU = ("Marking Menu", "Object Mode", "wm.call_menu_pie", {"name": "M3D_MT_marking_menu"})
+_HOTBOX = ("Hotbox", "3D View", "m3d.space_hotbox", {})
+MODE_HINTS = {
+    'OBJECT': (*_SELECT_HINTS, *_VIEW_HINTS, _MARKING_MENU, _HOTBOX),
+    'EDIT_MESH': (*_SELECT_HINTS, *_VIEW_HINTS, ("Marking Menu", "Mesh", "wm.call_menu_pie", {"name": "M3D_MT_marking_menu"}),
+                  _HOTBOX),
+    'EDIT_ARMATURE': (*_SELECT_HINTS, *_VIEW_HINTS, ("Extrude", "Armature", "armature.extrude_move", {}),
+                      ("Names", "Armature", "wm.call_menu_pie", {"name": "M3D_MT_rig_names"}),
+                      ("Menu", "Armature", "wm.call_menu", {"name": "VIEW3D_MT_armature_context_menu"})),
+    'POSE': (*_SELECT_HINTS[:2], *_VIEW_HINTS, ("Set Key", "Pose", "anim.keyframe_insert_by_name", {"type": 'LocRotScale'}),
+             ("Tween", "Pose", "m3d.tween", {}), ("Play", "Frames", "screen.animation_play", {})),
+    'PAINT_WEIGHT': (("Paint", "Weight Paint", "paint.weight_paint", {"mode": 'NORMAL'}),
+                     ("Subtract", "Weight Paint", "paint.weight_paint", {"mode": 'INVERT'}),
+                     ("Smooth", "Weight Paint", "paint.weight_paint", {"brush_toggle": 'SMOOTH'}),
+                     ("Size", "Weight Paint", "wm.radial_control", {"data_path_primary": "tool_settings.weight_paint.brush.size"}),
+                     ("Weight", "Weight Paint", "wm.radial_control",
+                      {"data_path_primary": "tool_settings.weight_paint.brush.weight"}),
+                     ("Sample", "Weight Paint", "paint.weight_sample", {}), *_VIEW_HINTS),
+}
+# (kind, mode) -> hints, where a workspace has keys of its own in that mode.
+KIND_MODE_HINTS = {
+    ('UV', 'EDIT_MESH'): (("Select", "UV Editor", "uv.select", {"deselect_all": True}),
+                          ("Toggle", "UV Editor", "uv.select", {"toggle": True}), *_VIEW_HINTS,
+                          ("UV Menu", "UV Editor", "wm.call_menu_pie", {"name": "M3D_MT_uv_marking_menu"}),
+                          ("UV Tools", "UV Editor", "wm.call_menu_pie", {"name": "M3D_MT_uv_tools"})),
+    ('RENDER', 'OBJECT'): (*_SELECT_HINTS[:2], *_VIEW_HINTS, _MARKING_MENU,
+                           ("Render", "Screen Editing", "m3d.render", {"animation": False}),
+                           ("Render View", "Screen Editing", "m3d.render_view", {})),
+}
+BRUSH_MODES = {'SCULPT', 'PAINT_TEXTURE', 'PAINT_WEIGHT'}   # hints only with a brush tool (the other tools: Blender's own)
 
 
 def key_items(context, km_name, idname, props=None):
@@ -1051,30 +1104,53 @@ def with_key(context, text, km_name, idname, props=None):
     return "%s (%s)%s%s" % (head, key, colon, rest)
 
 
-def draw_status_hints(layout, context):
-    """The keys of the active brush tool in Sculpt and Texture Paint (hints like "LMB Sculpt, Shift Smooth, Ctrl Mask"),
-    taken from the keymap; they stand in for Blender's input status. False (nothing drawn) while an operator runs (the
-    input status shows its keys then) and for the other tools (their keys show when the mouse is over the view)."""
-    hints = STATUS_HINTS.get(current_kind(context))
+def plain_key(kmi):
+    """A key or mouse button a hint can show (not the wheel, a trackpad gesture, a 3D mouse, a media key or the menu key)."""
+    if kmi.type in {'LEFTMOUSE', 'MIDDLEMOUSE', 'RIGHTMOUSE'}:
+        return True
+    return kmi.map_type == 'KEYBOARD' and kmi.type != 'APP' and not kmi.type.startswith("MEDIA")
+
+
+def status_hints(context):
+    """What the status bar shows now: ([(label, keymap, operator, options)], numbered keys (keymap, operator, label) or
+    None), the brush keys of Sculpt and Texture Paint or the keys of the mode; None for Blender's input status."""
     win = context.window
-    if hints is None or context.mode != hints[0] or win is None or len(win.modal_operators):
+    if win is None or len(win.modal_operators):
+        return None
+    kind, mode = current_kind(context), context.mode
+    if mode in BRUSH_MODES:
+        tools = context.workspace.tools if context.workspace else None
+        tool = tools.from_space_view3d_mode(mode) if tools else None
+        if tool is None or not tool.use_brushes:
+            return None
+    brush = STATUS_HINTS.get(kind)
+    if brush is not None and mode == brush[0]:
+        _mode, km_name, items, (range_idname, range_label) = brush
+        return [(label, km_name, idname, props) for label, idname, props in items], (km_name, range_idname, range_label)
+    hints = KIND_MODE_HINTS.get((kind, mode)) or MODE_HINTS.get(mode)
+    return (hints, None) if hints else None
+
+
+def draw_status_hints(layout, context):
+    """The keys of the mode ("LMB Select, Alt+LMB Tumble, RMB Marking Menu") or of the active brush tool in Sculpt and
+    Texture Paint ("LMB Sculpt, Shift Smooth, Ctrl Mask"), taken from the keymap; they stand in for Blender's input status.
+    False (nothing drawn) while an operator runs (the input status shows its keys then), for a paint mode's tools that are
+    not brushes and for modes without hints (their keys show when the mouse is over the view)."""
+    found = status_hints(context)
+    if found is None:
         return False
-    tools = context.workspace.tools if context.workspace else None
-    tool = tools.from_space_view3d_mode(context.mode) if tools else None
-    if tool is None or not tool.use_brushes:
-        return False
-    mode, km_name, items, (range_idname, range_label) = hints
+    hints, numbered = found
     row = layout.row(align=True)
-    for label, idname, props in items:
-        found = key_items(context, km_name, idname, props)
-        if found:
-            row.template_event_from_keymap_item(hint_item(found), text=label(context) if callable(label) else label)
+    for label, km_name, idname, props in hints:
+        items = [k for k in key_items(context, km_name, idname, props) if plain_key(k)]
+        if items:
+            row.template_event_from_keymap_item(hint_item(items), text=label(context) if callable(label) else label)
             row.separator(factor=2.0)
-    numbered = key_items(context, km_name, range_idname)
-    if len(numbered) > 1:   # "Shift 1-7 Brushes": the first and last key of the row
-        first, last = numbered[0], numbered[-1]
+    keys = key_items(context, numbered[0], numbered[1]) if numbered else []
+    if len(keys) > 1:   # "Shift 1-7 Brushes": the first and last key of the row
+        first, last = keys[0], keys[-1]
         mods = "".join(m + "+" for m, on in (("Ctrl", first.ctrl), ("Shift", first.shift), ("Alt", first.alt)) if on)
-        row.label(text="%s%s-%s %s" % (mods, event_name(first), event_name(last), range_label))
+        row.label(text="%s%s-%s %s" % (mods, event_name(first), event_name(last), numbered[2]))
     return True
 
 
@@ -1291,8 +1367,28 @@ def restore_shelf(wm, prev_kind, kind):
     wm.m3d_shelf = want if want in keys else 'POLY' if 'POLY' in keys else keys[0]
 
 
+SHELF_SCALE = 1.5   # shelf buttons are this many units tall; an icon-only one is as wide (a square)
+
+
+def shelf_row(layout):
+    """The row of shelf buttons: tall, left-aligned, each button as wide as its content (see shelf_cell)."""
+    row = layout.row(align=True)
+    row.scale_y = SHELF_SCALE
+    return row
+
+
+def shelf_cell(row, label):
+    """Where a shelf button goes: an icon-only button is widened to a square; one with a label keeps its own width."""
+    if label:
+        return row
+    cell = row.row(align=True)
+    cell.scale_x = SHELF_SCALE
+    return cell
+
+
 def draw_shelf(layout, context):
-    """Shelf: the active shelf's buttons, large large (the tabs are the row above)."""
+    """Shelf: the active shelf's buttons, large (the tabs are the row above). One look on every shelf: buttons sized to
+    their content (icon-only squares on the long shelves, icon and short label on the task shelves), groups apart."""
     import m3d_edit
     from m3d_mode import _button
     wm, kind = context.window_manager, current_kind(context)
@@ -1302,12 +1398,12 @@ def draw_shelf(layout, context):
         from m3d_user import draw_custom_shelf
         draw_custom_shelf(layout, context, kind, edit)
         return
-    row = layout.row(align=True)
     if edit:
         # Fixed-width cells, so the edit mode's drag can tell which button is where.
+        row = layout.row(align=True)
         rec = m3d_edit.begin_shelf(context, key, kind)
     else:
-        row.scale_x = row.scale_y = 1.5
+        row = shelf_row(layout)
     for i, item in enumerate(SHELVES[key][1]):
         if item is None:
             if edit:
@@ -1324,10 +1420,11 @@ def draw_shelf(layout, context):
         else:
             idname, icon, props, *text = item
             label = text[0] if text else ""
-            target = row
             if edit:
-                width = m3d_edit.text_units(rec, label) if label and icon == 'NONE' else m3d_edit.ICON_CELL
-                target = m3d_edit.add_cell(rec, row, width, ("B", key, i), icon=width == m3d_edit.ICON_CELL)
+                width = m3d_edit.text_units(rec, label) + (1.0 if icon != 'NONE' else 0.0) if label else m3d_edit.ICON_CELL
+                target = m3d_edit.add_cell(rec, row, width, ("B", key, i), icon=not label)
+            else:
+                target = shelf_cell(row, label)
             _button(target, context, label, idname, icon, props,
                     depress=m3d_sculpt.is_active(context, idname, props))
 

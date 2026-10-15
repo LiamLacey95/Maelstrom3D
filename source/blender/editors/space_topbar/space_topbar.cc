@@ -130,6 +130,19 @@ static void topbar_maya_row_listener(const wmRegionListenerParams *params)
   }
 }
 
+/* Maelstrom3D: the shelf's buttons are 1.5 rows tall (`SHELF_SCALE` in m3d_ui.py) in a 1.5 row region, but the header
+ * layout starts them where a one-row button would start, so they would touch the region's bottom: move them up by half
+ * of the extra height, which centres them. */
+static void topbar_shelf_region_layout(const bContext *C, ARegion *region)
+{
+  ED_region_header_layout(C, region);
+  const float shelf_scale = 1.5f;
+  const float dy = floorf(UI_UNIT_Y * (shelf_scale - 1.0f) / 2.0f);
+  for (ui::Block &block : region->runtime->uiblocks) {
+    ui::block_translate(&block, 0.0f, dy);
+  }
+}
+
 static void topbar_header_listener(const wmRegionListenerParams *params)
 {
   ARegion *region = params->region;
@@ -296,7 +309,7 @@ void ED_spacetype_topbar()
   art = MEM_new_zeroed<ARegionType>("spacetype topbar main region");
   art->regionid = RGN_TYPE_WINDOW;
   art->init = topbar_main_region_init;
-  art->layout = ED_region_header_layout;
+  art->layout = topbar_shelf_region_layout;
   art->draw = ED_region_header_draw;
   art->listener = topbar_maya_row_listener; /* Maelstrom3D: the main region is the shelf. */
   art->prefsizex = UI_UNIT_X * 5; /* Mainly to avoid glitches */

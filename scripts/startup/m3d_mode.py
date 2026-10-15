@@ -1185,6 +1185,13 @@ class M3D_OT_command_language(Operator):
 
     language: bpy.props.EnumProperty(items=(('mel', "MEL", ""), ('python', "Python", "")))
 
+    @classmethod
+    def description(cls, _context, props):
+        if props.language == 'mel':
+            from _console_mel import EXAMPLE
+            return "Command line (bottom of Modeling) in MEL, e.g. " + EXAMPLE
+        return "Command line (bottom of Modeling) in Python, with cmds ready, e.g. cmds.polyCube(w=2)"
+
     def execute(self, context):
         for area in context.screen.areas:
             if area.type == 'CONSOLE':

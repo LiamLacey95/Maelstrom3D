@@ -2617,8 +2617,8 @@ PAGE_GATES = tuple(_gate(page, needs) for page, needs in GATES.items())
 
 def draw_status_line(layout, context):
     """Rigging Status Line: file, modes (Object / Edit / Pose / Weight Paint), X-Mirror, bone display, names, axes, in
-    front, Rest / Pose position, Drivers editor."""
-    from m3d_ui import draw_file_buttons, draw_workspace_picker
+    front, Rest / Pose position, Drivers editor. On a narrow window the bone display is a menu."""
+    from m3d_ui import draw_file_buttons, draw_workspace_picker, status_narrow
     draw_file_buttons(layout)
     row = layout.row(align=True)
     for mode, icon, label, modes in (
@@ -2628,23 +2628,31 @@ def draw_status_line(layout, context):
     rig = rig_of(context)
     if rig is not None:
         arm = rig.data
+        layout.separator()
         if context.mode == 'POSE':
             layout.prop(rig.pose, "use_mirror_x", text="X-Mirror", icon='MOD_MIRROR', toggle=True)
         elif context.mode == 'PAINT_WEIGHT' and context.active_object.type == 'MESH':
             layout.prop(context.active_object.data, "use_mirror_x", text="X-Mirror", icon='MOD_MIRROR', toggle=True)
         else:
             layout.prop(arm, "use_mirror_x", text="X-Mirror", icon='MOD_MIRROR', toggle=True)
+        layout.separator()
         row = layout.row(align=True)
-        for kind, label in (('OCTAHEDRAL', "Octahedral"), ('STICK', "Stick"), ('BBONE', "B-Bone"),
-                            ('ENVELOPE', "Envelope"), ('WIRE', "Wire")):
-            row.prop_enum(arm, "display_type", kind, text=label)
+        if status_narrow(context, 1500):
+            row.prop(arm, "display_type", text="")
+        else:
+            for kind, label in (('OCTAHEDRAL', "Octahedral"), ('STICK', "Stick"), ('BBONE', "B-Bone"),
+                                ('ENVELOPE', "Envelope"), ('WIRE', "Wire")):
+                row.prop_enum(arm, "display_type", kind, text=label)
+        layout.separator()
         row = layout.row(align=True)
         row.prop(arm, "show_names", text="Names", toggle=True)
         row.prop(arm, "show_axes", text="Axes", toggle=True)
         row.prop(rig, "show_in_front", text="In Front", toggle=True)
+        layout.separator()
         row = layout.row(align=True)
         row.prop_enum(arm, "pose_position", 'REST', text="Rest")
         row.prop_enum(arm, "pose_position", 'POSE', text="Pose")
+    layout.separator()
     layout.operator("m3d.rig_drivers_editor", text="Drivers", icon='DRIVER', depress=drivers_open(context.screen))
     draw_workspace_picker(layout, context)
 
@@ -2653,7 +2661,7 @@ def draw_status_line(layout, context):
 
 def _color_swatch(row, context):
     sub = row.row()
-    sub.scale_x = 0.8
+    sub.scale_x = 1.5   # (a square, like the shelf's icon buttons)
     sub.prop(context.scene.m3d_rig, "control_color", text="")
 
 

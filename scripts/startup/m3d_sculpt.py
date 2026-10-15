@@ -2248,7 +2248,9 @@ def draw_status_line(layout, context):
     sculpting = context.mode == 'SCULPT'
     brush = sculpt_brush(context) if sculpting else None
     if brush is not None:
+        layout.separator()
         draw_brush_controls(layout, context, brush, tier)
+    layout.separator()
     layout.popover("M3D_PT_sculpt_remesh", text="Remesh" if tier else "", icon='MOD_REMESH')
     if tier == 2 and mod is None and not dyntopo:
         # Voxel Remesh in place (the popover has the options, Auto Retopology, Multires and Dynamic Detail).
@@ -2258,6 +2260,7 @@ def draw_status_line(layout, context):
         draw_voxel_detail(sub, mesh, text="")
         _button(row, context, "Remesh", "object.voxel_remesh", 'NONE', {})
     # The mesh data is not updated while Dynamic Detail changes it, so no count then (the viewport's statistics have it).
+    layout.separator()
     layout.label(text="Dynamic Detail" if dyntopo else "%s faces" % format(face_count(ob), ","))
     m3d_pair.draw_sculpt_status(layout, context, ob, tier > 0)
     if not uniform_scale(ob):
@@ -2272,6 +2275,7 @@ def draw_status_line(layout, context):
     if sculpting and mod is None:
         _call(layout.row(align=True), "sculpt.dynamic_topology_toggle", 'CHECKBOX_HLT' if dyntopo else 'CHECKBOX_DEHLT',
               "Dynamic Detail: strokes add and remove faces as they go", depress=dyntopo)
+    layout.separator()
     row = layout.row(align=True)
     for axis in "xyz":
         row.prop(mesh, "use_mirror_" + axis, text=axis.upper(), toggle=True)
@@ -2279,6 +2283,7 @@ def draw_status_line(layout, context):
         layout.popover("M3D_PT_sculpt_automasking", text="Auto-Masking" if tier else "", icon='NONE' if tier else 'MOD_MASK')
     space = viewport(context)
     if space is not None:
+        layout.separator()
         row = layout.row(align=True)
         row.prop(space.overlay, "show_sculpt_mask", text="", icon='MOD_MASK')
         row.prop(space.overlay, "show_sculpt_face_sets", text="", icon='FACE_MAPS')
@@ -2293,7 +2298,7 @@ def _voxel_size(row, context):
     ob = mesh_of(context)
     if ob is not None:
         sub = row.row()
-        sub.scale_x = 2.5
+        sub.scale_x = 3.75
         draw_voxel_detail(sub, ob.data, text="")
 
 

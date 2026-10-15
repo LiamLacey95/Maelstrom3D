@@ -11896,6 +11896,76 @@ def p5_fit_check():
     bpy.ops.m3d.workspace(kind='MODEL')
 
 
+# --- Shared chrome: every task workspace hides the navigation bar beside its own tabs (All Settings brings it back), the
+# status bar shows the keys of the mode, a one-line command line shows no example line over the prompt.
+POL = {}
+
+
+def pol_dock():
+    return next(a for a in props_areas() if a.as_pointer() == POL["dock"])
+
+
+@step
+def pol_model():
+    bpy.ops.m3d.workspace(kind='MODEL')
+    for area in window().screen.areas:
+        area.tag_redraw()
+
+
+step(wait_until(lambda: window().workspace.name == "Modeling" and props_areas() and all(nav_width(a) <= 1 for a in props_areas()),
+                "no navigation bar beside the Modeling dock"))
+
+
+@step
+def pol_all_settings():
+    dock = props_areas()[0]
+    POL["dock"], POL["context"] = dock.as_pointer(), dock.spaces.active.context
+    dock.spaces.active.context = 'SCENE'   # What the All Settings tab shows (with nothing active).
+    dock.tag_redraw()
+
+
+step(wait_until(lambda: nav_width(pol_dock()) > 1, "the navigation bar with All Settings in Modeling"))
+
+
+@step
+def pol_tab_again():
+    dock = pol_dock()
+    dock.spaces.active.context = POL["context"] if POL["context"] in m3d_workspace.DOCK_CONTEXTS else 'CHANNEL_BOX'
+    dock.tag_redraw()
+
+
+step(wait_until(lambda: nav_width(pol_dock()) <= 1, "...and gone again on a tab of the dock"))
+
+
+@step
+def pol_hints():
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        mode, found = bpy.context.mode, m3d_ui.status_hints(bpy.context)
+    labels = [hint[0] for hint in found[0]] if found else []
+    if mode in {'OBJECT', 'EDIT_MESH'} and not window().modal_operators:
+        check(labels[:3] == ["Select", "Toggle", "Deselect"] and "Marking Menu" in labels and "Hotbox" in labels,
+              "the status bar has the keys of Modeling (%s): %s" % (mode, labels))
+    console = next((a for a in window().screen.areas if a.type == 'CONSOLE'), None)
+    if console is not None:
+        region, sc = next(r for r in console.regions if r.type == 'WINDOW'), console.spaces.active
+        if region.height < 2 * sc.font_size * (bpy.context.preferences.system.ui_scale or 1.0) + 8:
+            check(not any("MEL command line" in line.body for line in sc.scrollback),
+                  "a one-line command line has no example line over the prompt (%d px)" % region.height)
+    bpy.ops.m3d.workspace(kind='RIG')
+    for area in window().screen.areas:
+        area.tag_redraw()
+
+
+step(wait_until(lambda: window().workspace.name == "Rigging" and len(props_areas()) >= 2 and all(nav_width(a) <= 1 for a in props_areas()),
+                "no navigation bar beside the Rigging docks, left and right"))
+
+
+@step
+def pol_done():
+    check(not tracebacks(), "Python error in the shared chrome checks")
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
 @step
 def finish():
     errors = "".join(stderr_tee.buf + sys.stdout.buf)
