@@ -33,8 +33,8 @@ named here only to describe compatibility.*
 | Docks | A dock shows its own tabs in its header; Blender's column of stock tabs beside it shows only with **All Settings** (the Attribute Editor in Modeling), in every task workspace. The Tool tab shows the active tool's settings (Blender's Workspace panel is in the 3D view's sidebar, Tool tab). A page or panel that cannot work yet shows one card in every workspace: a hint line saying why and the button that fixes it (Pose Mode, New Camera from View, Assign New Material, the scene's objects to pick...); controls that cannot work are hidden rather than greyed, lists are as tall as their items (an empty one says how to fill it), and on a narrow dock button grids take fewer columns so no label is cut off | `m3d_workspace.py` (`sync_nav_bar`), `bl_ui/properties_workspace.py` |
 | UV editing | UV workspace (F3): dock tabs, Status Line and shelf for Cut/Sew/Unfold/Optimize/Layout, texel density, Auto Unwrap, UDIMs, checker map; sidebar UV Toolkit in other workspaces | `scripts/startup/m3d_uv.py` |
 | Texturing | Texture workspace (F4): tool strip, Assets, Texture Set List, Layers, Properties and dock strip laid out like a dedicated painting tool, painting keys, context toolbar, display modes of the 3D and 2D views, texture sets with their channels, size and mesh maps, Bake Mesh Maps, Export Textures and New Texture Project dialogs; paint layer stack, painted images are saved or packed with the file; assets: plain and smart materials, smart masks, brushes, alphas, environments and your own items | `scripts/startup/m3d_texture.py`, `scripts/startup/m3d_layers.py`, `scripts/startup/m3d_masks.py`, `scripts/startup/m3d_library.py` (data: `m3d_library_data.py`; preview pictures: `tools/m3d/library_thumbs.py`), `scripts/startup/m3d_bakegroups.py` (bake groups), `scripts/startup/m3d_bakeq.py` (the bake queue, the guard and the device), `scripts/startup/m3d_bakeview.py` (the view of Bake Mesh Maps), `scripts/startup/m3d_texset.py` (texture set settings, Export Textures dialog, New Texture Project) |
-| Rigging | Rigging workspace (F5): Outliner with the bone hierarchy and bone collections on the left, a large viewport, a dock of Channel Box, Skeleton, Controls & Constraints, Skin, Drive, Test and Collections tabs that follows the mode, a Time Slider (the Drivers editor opens over it); Joint tool (name lists, numbered names), Orient Joint, Mirror and Rename Chain, control shapes, constraints that keep their offset, IK with pole, Pole Vector, Rotate Order, bind with fallback, weight tools that keep weights adding up to 1, Driven Key, Check Rig, range-of-motion test, naming check, Rigify on demand; Ctrl+E, Shift+N | `scripts/startup/m3d_rig.py` |
-| Animation | Animation workspace (F6): a large viewport and a camera view, one bottom editor that switches between the Graph Editor and the Dope Sheet, a short Timeline, a dock of Channel Box, Pick, Tween & Poses, Motion, Layers and Playback tabs; Status Line with Auto Key, key type, new key interpolation, Key: Selected / Character, keying set, range, frame rate, loop mode, Blocking / Polish, Playblast; one Set Key rule (unlocked channels and custom properties), Tween (Alt+Q), Push / Relax / Breakdown, Mirror Pose / Animation, world position, object selection sets, rig controls, motion paths, ghost curves, NLA layers with weights, Playblast movie | `scripts/startup/m3d_anim.py` |
+| Rigging | Rigging workspace (F5): Outliner with the bone hierarchy and bone collections on the left, a large viewport, a dock of Channel Box, Skeleton, Controls & Constraints, Skin, Drive, Test and Collections tabs that follows the mode, a Time Slider (the Drivers editor opens over it); Joint tool (name lists, numbered names), **Quick Rig** (guides, skeleton, bind), Orient Joint, Mirror and Rename Chain, control shapes, constraints that keep their offset, IK with pole (animator controls, IK / FK switch and Match), Pole Vector, Rotate Order, bind with fallback, weight tools that keep weights adding up to 1, Driven Key, Check Rig, range-of-motion test, naming check, Rigify on demand; Ctrl+E, Shift+N | `scripts/startup/m3d_rig.py` |
+| Animation | Animation workspace (F6): a large viewport and a camera view, one bottom editor that switches between the Graph Editor and the Dope Sheet, a short Timeline, a dock of Channel Box, Pick, Tween & Poses, Motion, Layers and Playback tabs; Status Line with Auto Key, key type, new key interpolation, Key: Selected / Character, keying set, range, frame rate, loop mode, Blocking / Polish, Playblast; one Set Key rule (unlocked channels and custom properties), Tween (Alt+Q), Push / Relax / Breakdown, Mirror Pose / Animation, world position, object selection sets, rig controls, motion paths, mesh ghosting, ghost and buffer curves, Graph Editor keys, NLA layers with weights, Retarget, Playblast movie | `scripts/startup/m3d_anim.py` |
 | Rendering | Rendering workspace (F7): a 3D view and a Render View, a dock of Camera, Lighting, Materials, Render, Output, Passes & Layers and Advanced tabs; Status Line with engine, camera, Draft / Medium / Final presets, Render, IPR; light table, HDRI sky, camera from view; Shift+F12 | `scripts/startup/m3d_render.py` |
 | Pipeline | Projects (scenes, sourceimages, images, playblasts, export, cache), File > Import... for FBX / OBJ / glTF / USD / Alembic / .blend with studio units, Create Reference and the Reference Editor, Export to Engine (low polys, textures and animation for Unreal, Unity or glTF in one pass) | `scripts/startup/m3d_io.py` |
 | Title | Window title says Maelstrom3D | `wm_window.cc` |
@@ -85,7 +85,7 @@ named here only to describe compatibility.*
 | Delete | Faces deleted; edges and vertices dissolved |
 | Ctrl+E, Ctrl+B | Extrude, bevel |
 | Ctrl+A | Channel Box / Attribute Editor |
-| S, Shift+W/E/R (or Ctrl+Shift+W/E/R) | Set key, key translate/rotate/scale (the unlocked channels; S also the custom properties). S over a Channel Box row keys that channel |
+| S, Shift+W/E/R (or Ctrl+Shift+W/E/R) | Set key, key translate/rotate/scale (the unlocked channels; S also the custom properties; only the picked Channel Box channels when some are picked). S over a Channel Box row keys that channel |
 | , / . , Alt+, / Alt+. | Previous / next key, previous / next frame |
 | Alt+V, Alt+Shift+V | Play / stop, go to start |
 | = / - | Bigger / smaller manipulator |
@@ -928,9 +928,9 @@ where a driver is edited) and closes it again.
 |---|---|
 | Status Line | **Object / Edit / Pose / Weight Paint** mode buttons, X-Mirror (of the bones in Edit Mode, of the pose in Pose Mode, of the mesh in Weight Paint Mode), bone display (Octahedral, Stick, B-Bone, Envelope, Wire), Names, Axes, In Front, Rest / Pose position, Drivers |
 | Shelves | Skeleton (Joint, Extrude, Mirror, Orient, Names L/R, Parent, Disconnect), Controls (circle, square, arrow, cube and sphere shapes, a color and Apply, IK + Pole), Skin (Bind, Paint Weights, Normalize, Mirror Weights), Custom |
-| Channel Box tab | The same Channel Box as everywhere (Ctrl+A): the active object's channels, or in Pose Mode the active bone's, with its **Rotate Order** |
-| Skeleton tab | Joint tool and its options; Edit Bones (Extrude, Extrude Forked, Click Extrude, Subdivide, Duplicate, Delete, Fill Between Joints, Switch Direction, Align); Mirror (+X to -X, -X to +X, Select Mirror); Orient (Orient Joint and the roll presets); Names (Name Sides by X / Y / Z, Flip Names, **Rename Chain**, Prefix, Find / Replace, the naming check); Hierarchy (Parent connected / with offset, Disconnect, Clear Parent, Select Parent / Child); Generate Rig (Rigify) |
-| Controls & Constraints tab | Add Constraint buttons (Copy Location / Rotation / Scale / Transforms, Child Of, Damped Track, Stretch To, Armature, the Limit constraints, Action, Spline IK, IK) with **Keep Offset**, Remove Constraints; IK (chain length, pole distance, **IK with Pole**, IK to Bone, **Pole Vector**, Clear IK); the active bone's constraint stack; Control Shape and Color; Locks with **Rotate Order** and "New Bones in XYZ Euler" |
+| Channel Box tab | The same Channel Box as everywhere (Ctrl+A): the active object's channels, or in Pose Mode the active bone's, with its **Rotate Order**; an edit changes every selected bone or object |
+| Skeleton tab | Joint tool and its options; **Quick Rig** (Place Guides, Reset / Remove, Rigify Control Rig, Build and Bind); Edit Bones (Extrude, Extrude Forked, Click Extrude, Subdivide, Duplicate, Delete, Fill Between Joints, Switch Direction, Align); Mirror (+X to -X, -X to +X, Select Mirror); Orient (Orient Joint and the roll presets); Names (Name Sides by X / Y / Z, Flip Names, **Rename Chain**, Prefix, Find / Replace, the naming check); Hierarchy (Parent connected / with offset, Disconnect, Clear Parent, Select Parent / Child); Generate Rig (Rigify) |
+| Controls & Constraints tab | Add Constraint buttons (Copy Location / Rotation / Scale / Transforms, Child Of, Damped Track, Stretch To, Armature, the Limit constraints, Action, Spline IK, IK) with **Keep Offset**, Remove Constraints; IK (chain length, pole distance, **IK with Pole**, IK to Bone, **Pole Vector**, Clear IK, the **IK / FK** switch of each limb with **Match IK to FK** / **Match FK to IK**); the active bone's constraint stack; Control Shape and Color; Locks with **Rotate Order** and "New Bones in XYZ Euler" |
 | Skin tab | Bind (Automatic, Envelope or Empty Groups, with a fall back to envelope weights), Unbind (for a bound mesh); Weight Paint (mode button, brush weight, size and strength, **Auto Normalize**, Multi-Paint, Lock-Relative, Vertex / Face Select, bone selection and mirror options); Influences (every vertex group with a lock and a solo button, **Select Weighted Vertices**); Weights once the mesh has vertex groups (Flood and Weights from Bones in Weight Paint Mode, Smooth, Normalize All, Limit Total, Clean, Mirror Weights); Transfer Weights; Weight Table of the selected vertex (Normalize) |
 | Drive tab | Shape Keys (Add Basis Shape, then the list, value, Add, From Mix, Reset Values, Mirror Shape); **Driven Key**; the drivers of the active object with a button for the Drivers editor |
 | Test tab | Reset Pose, Reset Selected, Clear Location / Rotation / Scale, Copy / Paste / Paste Flipped; Rest / Pose position and Apply Pose as Rest Pose; **Range of Motion** (Make Test, Remove); Pose Library (Save Pose, the saved poses with Apply and Flipped, the viewport's pose shelf); **Check Rig** (also in Object Mode) |
@@ -973,7 +973,14 @@ color (selected and active bones are drawn lighter). No Shape removes it.
 
 **IK with Pole.** With the end bone of a limb active in Pose Mode, **IK with Pole** adds an IK constraint over the chosen
 number of bones, a target bone at the tip (IK_name) and a pole target bone out from the middle joint (Pole_name), and searches
-the pole angle so the limb bends toward the pole. Move the target to pose the limb and the pole to turn the bend.
+the pole angle so the limb bends toward the pole. Move the target to pose the limb and the pole to turn the bend. The target
+and the pole are ready to animate: a cube and a sphere shape, blue on the left (.L), red on the right (.R) and yellow in the
+middle, in a "Controls" bone collection; the hand (the bone that starts at the tip, if there is one) turns with the target;
+and the target has an **IK_FK** property (0 = IK, 1 = FK: a slider in the Channel Box, keyable with S) that blends the IK and
+that turn off, so the limb's own bones pose it as FK. **Match IK to FK** puts the target and the pole where the FK pose has
+the limb; **Match FK to IK** turns the limb's bones to where the IK has them, for this frame (keyed when Auto Key is on). They
+act on the limb of the selected bone (else every limb) and are in the IK panel, in Tween & Poses and in the Pick tab's
+Controls.
 **Pole Vector** (Constrain menu or the IK panel) makes another bone, or an object, the pole of an IK you already have:
 select the pole, then the bone with the IK.
 
@@ -1023,6 +1030,16 @@ bone in Quaternion mode switches to XYZ Euler when it is used as a rotation chan
 side, a bone that mirrors a sided bone by position but has no side, and numbered duplicates (`Bone.001`, `Bone.001.L` next
 to `Bone.L`), with a button that selects them.
 
+**Quick Rig** (Skeleton tab) rigs a standing humanoid mesh that faces the front view. Select the mesh and press **Place
+Guides**: nine numbered guides (Guide 1 Chin, 2 Neck, 3 Hips, then the left side's Shoulder, Elbow, Wrist, Hip, Knee and
+Ankle) appear where a character of that size usually has them, halfway through the mesh front to back (elbows a touch back,
+knees a touch forward, so IK limbs know which way to bend). Move them onto the
+joints (only the middle and the left side, +X: the right side mirrors). **Build and Bind** makes the skeleton (Hips, Spine,
+Chest, Neck, Head, and Shoulder, UpperArm, Forearm, Hand, Thigh, Shin, Foot, Toe on both sides), binds the mesh with
+automatic weights (envelope weights when those fail) and runs Check Rig. With **Rigify Control Rig** on it fits the Rigify
+basic human meta-rig to the guides instead and generates its control rig (Rigify is turned on when needed). The guides are
+hidden afterwards: Show Guides brings them back for another try, Reset puts them back where they started, Remove deletes them.
+
 **Rigify** ships with Blender and stays off until the Generate Rig panel is opened and **Enable Rigify** is pressed; then it
 offers a human meta-rig and Generate Rig. If it cannot be turned on the panel says why.
 
@@ -1043,11 +1060,11 @@ slow playback (it catches up when you stop).
 |---|---|
 | Status Line | Object / Pose, **Auto Key** (+ its options: replace or add keys, only the active keying set, layered recording), key type (Keyframe, Breakdown, Extreme, Moving Hold), **New keys** (Stepped, Spline, Linear, Clamped), Blocking / Polish (+ whose keys: Selection, Whole Character, Scene), **Key: Selected / Character**, keying set, playback range (start / end, preview range button), frame rate dropdown, loop mode, Graph / Dope Sheet, Playblast |
 | Shelves | Animate (Set Key, Translate / Rotate / Scale keys, Breakdown, Delete Key, Euler Filter, Stepped, Spline), Poses (Copy, Paste, Paste Flipped, Mirror Pose, Reset, Save Pose, Apply Pose menu), Custom |
-| Channel Box tab | The active object's channels, or in Pose Mode the **active bone's** channels (translate, the rotation of its mode, scale), with its custom properties as sliders (IK / FK switches); animated channels are coloured as usual (yellow = key on this frame, green = animated) |
-| Pick tab | **Controls** (Pose Mode): Select All Controls, Set Key keys Selected / Character, and for a generated (Rigify) rig its **Rig Controls** (IK / FK switches, snapping: the panel its script adds to the viewport sidebar); bone selection sets of the skeleton (list and one button per set), **object selection sets** (made from the selection; a click selects, Shift-click adds), bone collection picker (visibility toggle and a button that selects the collection's bones) |
-| Tween & Poses tab | Tween slider with 0 / 25 / 50 / 75 / 100 buttons, Key and Revert; Push, Relax, Breakdown, To Neighbor, To Rest (Pose Mode); Copy / Paste / Flipped, **Mirror**, **Mirror All**, **Mirror Anim**; World Position Copy / Paste (this frame or over the playback range); Save Pose, the saved poses with Apply and Flipped |
-| Motion tab | Motion paths (show, range, frame step, Calculate, then Update / Clear, Frame Numbers / Key Numbers, show in the viewport) of the selected bones or objects; Ghost Curves for the Graph Editor |
-| Layers tab | Layers are NLA tracks: Push Down, Add Additive Layer, the tracks (mute, name, solo, Edit, remove; under each its **Weight** and frames), the top action's blend and influence, Bake |
+| Channel Box tab | The active object's channels, or in Pose Mode the **active bone's** channels (translate, the rotation of its mode, scale), with its custom properties (0-1 switches such as IK / FK as sliders); an edit changes every selected bone or object; the dot after a value shows its keys (a diamond: a key on this frame) and keys or deletes the key on click; click or drag over channel names to pick them, middle-drag to change them, right-click for Key / Breakdown / Mute / Lock / Hide |
+| Pick tab | **Controls** (Pose Mode): Select All Controls, Set Key keys Selected / Character, the IK / FK switches of limbs made with IK with Pole (with Match IK to FK / FK to IK), and for a generated (Rigify) rig its **Rig Controls** (IK / FK switches, snapping: the panel its script adds to the viewport sidebar); bone selection sets of the skeleton (list and one button per set), **object selection sets** (made from the selection; a click selects, Shift-click adds), bone collection picker (visibility toggle and a button that selects the collection's bones) |
+| Tween & Poses tab | Tween slider with 0 / 25 / 50 / 75 / 100 buttons, Key and Revert; Push, Relax, Breakdown, To Neighbor, To Rest (Pose Mode); Copy / Paste / Flipped, **Mirror**, **Mirror All**, **Mirror Anim**; World Position Copy / Paste (this frame or over the playback range); **IK / FK** switches with Match IK to FK / FK to IK (limbs made with IK with Pole); Save Pose, the saved poses with Apply and Flipped |
+| Motion tab | Motion paths (show, range, frame step, Calculate, then Update / Clear, Frame Numbers / Key Numbers, show in the viewport) of the selected bones or objects; Ghost Curves for the Graph Editor and **Isolate Curve on Click**; **Ghosting** (on / off, Frames or Keys, Before, After, Every, Opacity) |
+| Layers tab | Layers are NLA tracks: Push Down, Add Additive Layer, the tracks (mute, name, solo, Edit, remove; under each its **Weight** and frames), the top action's blend and influence, Bake; **Retarget** (source and target skeleton, bone map with Match by Name, Load / Save presets, range, Root Motion) |
 | Playback tab | Range (start, end, preview range, **Frame Rate**, Range from Keys, Scene from Keys), Blocking / Polish (+ Convert: Selection, Whole Character, Scene) and the new key defaults, loop, pre-roll, sync, Playblast (Movie / Images, range, folder, size, Meshes Only, Burn-in, play when done) |
 
 **Tween.** With keys before and after the current frame, Tween sets the selected bones (Pose Mode) or objects to a value
@@ -1067,6 +1084,40 @@ bound to a skeleton warns: its object transform moves the whole mesh away from t
 **Tangents.** Stepped, Spline, Linear, Clamped and Flat (the Animate shelf, Shift+S + middle click) change the keys selected
 in the Graph Editor or Dope Sheet among the selected bones' (or objects') channels, else every key of those channels; the other
 bones are left alone. Clamped never overshoots between keys.
+
+**Channel Box.** A value typed or dragged in the Channel Box goes to every selected bone (Pose Mode) or object, not only the
+one it shows (locked channels are left alone, a rotation only to those in the same rotation mode; with Auto Key on it is
+keyed). Click a channel's name to pick it, or drag over several names; picked channels are highlighted. With channels picked,
+the Graph Editor shows only their curves, S keys only them, and a **middle-drag** in the Channel Box changes them on every
+selected bone or object (a virtual slider: half a degree or a hundredth per pixel, Ctrl faster, Shift slower, Esc or right
+click puts them back). **Right-click** a channel for Key Selected, Breakdown Selected, Mute / Unmute (its animation), Lock /
+Unlock, **Hide Selected** (out of the Channel Box, and S no longer keys it; **Show All Channels** or the button under the
+channels brings them back) and Deselect Channels; they act on the picked channels, or on the one clicked when none is.
+
+**Graph Editor and Dope Sheet keys.** A right click is a marking menu: Spline, Linear, Clamped, Flat and Stepped tangents for
+the selected keys (as above), in the Graph Editor **Buffer Snapshot** and **Swap Buffer**, and under More... the editor's own
+menu, **Normalize** (the curves scaled to -1 ... 1 to compare their shapes), **Isolate Curve on Click** and Clear Buffer.
+**Ctrl+Alt+.** and **Ctrl+Alt+,** select the next / previous key of each curve that has a selected key. The **buffer curve**
+keeps a copy of the selected curves (drawn grey behind them); Swap Buffer exchanges the curves and the copy, so you can
+compare two versions and go back (the buffer lasts until Maelstrom3D is closed). With **Isolate Curve on Click** on (Motion
+tab or the menu), clicking a channel in the Graph Editor's list shows only the selected curves.
+
+**Ghosting.** The Motion tab's **Ghosting** (also Visualize > Ghosting) draws see-through copies of the animated meshes some
+frames before (blue) and after (orange) the current one, fading with distance: every few frames (Frames, Every) or on the
+keys (Keys), Before and After setting how many. It shows the selected meshes, or the meshes a skeleton moves (the skeleton in
+Pose Mode, or a selected one). The copies are read once per frame and kept while the animation does not change; they update
+after an edit and when the frame changes (not during playback). Meshes over 300,000 faces together are not ghosted, and the
+tab says so. **Visualize** (Animation menu set) also has Create / Delete Motion Trail (the selected bones in Pose Mode, else
+the selected objects) and **Show Motion Trails**.
+
+**Retarget** (Layers tab) moves the animation of one skeleton onto another. Pick the animated **Source** and the **Target**,
+press **Match by Name**: the bone map pairs the bones by name in the usual schemes (Hips / Spine / LeftArm / LeftForeArm,
+prefixed names like rig:LeftArm, left / right, .L / .R, _L / _R, spine_01 / neck_01, Rigify DEF- / ORG- names and FK controls); edit a row
+(target bone, then the source bone it follows) or add one with +. **Save** keeps the map as a preset under its name, **Load**
+brings one back (they are kept with your settings, for every file). **Retarget** keys every frame of the range (the source's
+action, or the scene range) on the target: each mapped bone turns as its source bone turns from its rest pose, in the world,
+so bones that point differently still match, and with **Root Motion** the root (the hips) also moves as the source's,
+scaled by the heights of the two skeletons. The keys are worked out directly, so no constraints are left on the target.
 
 **Blocking and Polish.** Blocking makes new keys stepped, converts keys to stepped and shows the Dope Sheet. Polish makes new
 keys clamped splines, converts keys and shows the Graph Editor. Whose keys they convert is the dropdown beside them: the
@@ -1101,7 +1152,8 @@ on by default) and **Burn-in** (the frame, camera, file name and date on the pic
 after the file (`shot_v001.mp4`, `shot_v002.mp4` ...), never replacing an earlier one. Esc cancels images (a movie is written in
 one go). Your render output settings (path, format, size, frame range, burn-in) are put back afterwards.
 
-Keys: S sets a key, Shift+W / E / R key translate / rotate / scale, Alt+V plays, `,` and `.` jump between keys, Alt+, and Alt+.
+Keys: S sets a key, Shift+W / E / R key translate / rotate / scale, right click in the Graph Editor / Dope Sheet is the key
+marking menu, Ctrl+Alt+. / Ctrl+Alt+, select the next / previous key, Alt+V plays, `,` and `.` jump between keys, Alt+, and Alt+.
 step a frame, Shift+S is the keyframe marking menu (+ middle click: tangents; Object and Pose Mode), Z / Shift+Z undo / redo
 with the pointer over any editor, Ctrl+Left / Right jump to the start / end, **Alt+Q Tween**,
 **Alt+Shift+P / R / B Push / Relax / Breakdown** (Pose Mode).

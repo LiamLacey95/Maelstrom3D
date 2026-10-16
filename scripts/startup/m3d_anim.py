@@ -26,7 +26,8 @@ from bpy_extras.anim_utils import animdata_get_channelbag_for_assigned_slot
 from mathutils import Euler, Matrix, Quaternion
 
 from m3d_mode import _button
-from m3d_rig import (draw_pose_library, draw_selection_sets, pose_assets, rig_of, selected_pose_bones)
+from m3d_rig import (draw_ik_switches, draw_pose_library, draw_selection_sets, ik_setups, pose_assets, rig_of,
+                     selected_pose_bones)
 from m3d_sculpt import draw_lines, draw_object_picks, empty_state, grid, reason, split_props, viewport
 from m3d_workspace import _PagePanel, current_kind, workspace_kind
 
@@ -137,23 +138,18 @@ KEY_CHANNELS = (('ALL', "Set Key", "the unlocked translate, rotate and scale cha
 
 def key_channels(owner, channels='ALL'):
     """[(data path, index)] of an object's or pose bone's channels to key: translate, rotate (in its rotation mode) and
-    scale without the locked ones, and with 'ALL' the numeric custom properties (index -1)."""
-    from m3d_mode import custom_properties, rotation_channel
-    rot = rotation_channel(owner)[0]
-    out = []
-    for kind, attr, lock in (('LOCATION', "location", owner.lock_location), ('ROTATION', rot, owner.lock_rotation),
-                             ('SCALE', "scale", owner.lock_scale)):
-        if channels not in {'ALL', kind}:
-            continue
-        first = 0
-        if attr in {"rotation_quaternion", "rotation_axis_angle"}:   # W is locked only with the 4D lock.
-            first = 1
-            if not (owner.lock_rotations_4d and owner.lock_rotation_w):
-                out.append((attr, 0))
-        out += [(attr, first + i) for i in range(3) if not lock[i]]
-    if channels == 'ALL':
-        out += [('["%s"]' % bpy.utils.escape_identifier(name), -1) for name in custom_properties(owner)]
-    return out
+    scale without the locked ones, and with 'ALL' the numeric custom properties (index -1). Channels hidden in the Channel
+    Box are left out. `channels` can also be a list of Channel Box channels (the picked ones: m3d_mode.picked_channels)."""
+    from m3d_mode import TRANSFORM_KEYS, channel_locked, channel_path, custom_key, custom_properties, hidden_channels
+    if isinstance(channels, str):
+        kind = {'LOCATION': "t", 'ROTATION': "r", 'SCALE': "s"}.get(channels)
+        keys = [k for k in TRANSFORM_KEYS if kind in {None, k[0]}]
+        if channels == 'ALL':
+            keys += [custom_key(name) for name in custom_properties(owner)]
+    else:
+        keys = channels
+    hidden = hidden_channels(owner)
+    return [p for p in (channel_path(owner, k) for k in keys if k not in hidden) if p and not channel_locked(owner, *p)]
 
 
 def _fcurve(owner, path, index):
@@ -191,7 +187,8 @@ def set_keys(owners, key_type='KEYFRAME', channels='ALL', frame=None):
 
 class M3D_OT_set_key(Operator):
     """Set Key: key the unlocked translate, rotate and scale channels and the custom properties of the selected bones
-(Pose Mode; Key: Character keys all the character's controls) or the selected objects. Locked channels are skipped"""
+(Pose Mode; Key: Character keys all the character's controls) or the selected objects. Locked channels are skipped;
+channels picked in the Channel Box: only those"""
     bl_idname = "m3d.set_key"
     bl_label = "Set Key"
     bl_options = {'REGISTER', 'UNDO'}
@@ -208,9 +205,11 @@ class M3D_OT_set_key(Operator):
         return context.mode in {'OBJECT', 'POSE'} and context.active_object is not None
 
     def execute(self, context):
+        from m3d_mode import picked_channels
         from m3d_rig import is_bound
         owners = key_owners(context)
-        if not set_keys(owners, context.tool_settings.keyframe_type, self.channels):
+        picked = picked_channels(context) if self.channels == 'ALL' else []   # (channels picked in the Channel Box)
+        if not set_keys(owners, context.tool_settings.keyframe_type, picked or self.channels):
             self.report({'WARNING'}, "Nothing to key: select bones or objects (locked channels are skipped)")
             return {'CANCELLED'}
         bound = [o.name for o in owners if isinstance(o, bpy.types.Object) and is_bound(o)]
@@ -727,6 +726,20 @@ class M3D_AnimSet(PropertyGroup):
     items: CollectionProperty(type=M3D_AnimSetItem)
 
 
+class M3D_RetargetItem(PropertyGroup):
+    target: StringProperty(name="Target Bone", description="Bone of the skeleton that gets the animation")
+    source: StringProperty(name="Source Bone", description="Bone of the animated skeleton it follows")
+
+
+def _ghost_setting(self, _context):
+    ghost_toggle(self.ghost)
+
+
+def _ghost_changed(self, _context):
+    if self.ghost:
+        schedule_ghosts(clear=True)
+
+
 class M3D_AnimSettings(PropertyGroup):
     """Animation workspace options (Scene.m3d_anim)."""
     tween: FloatProperty(name="Tween", default=0.5, min=-0.5, max=1.5, update=_tween_preview,
@@ -762,6 +775,35 @@ class M3D_AnimSettings(PropertyGroup):
     playblast_burn_in: BoolProperty(name="Burn-in", default=True,
                                     description="Write the frame, camera, file name and date onto the pictures")
     playblast_note: StringProperty(description="Result of the last Playblast")
+    isolate_curve: BoolProperty(name="Isolate Curve on Click", default=False,
+                                description="Clicking a channel in the Graph Editor shows only the selected curves")
+    ghost: BoolProperty(name="Ghosting", default=False, update=_ghost_setting,
+                        description="Show tinted copies of the animated meshes before (blue) and after (orange) this "
+                        "frame")
+    ghost_mode: EnumProperty(name="Ghosts", default='FRAMES', update=_ghost_changed, items=(
+        ('FRAMES', "Frames", "Every few frames before and after this one"),
+        ('KEYS', "Keys", "On the keys before and after this frame")))
+    ghost_before: IntProperty(name="Before", default=3, min=0, max=10, update=_ghost_changed,
+                              description="Ghosts before this frame")
+    ghost_after: IntProperty(name="After", default=3, min=0, max=10, update=_ghost_changed,
+                             description="Ghosts after this frame")
+    ghost_step: IntProperty(name="Every", default=2, min=1, max=50, update=_ghost_changed,
+                            description="Frames between ghosts")
+    ghost_opacity: FloatProperty(name="Opacity", default=0.25, min=0.05, max=1.0, subtype='FACTOR',
+                                 description="Opacity of the nearest ghosts (farther ones fade)")
+    retarget_source: PointerProperty(name="Source", type=bpy.types.Object, poll=lambda self, ob: ob.type == 'ARMATURE',
+                                     description="The animated skeleton")
+    retarget_target: PointerProperty(name="Target", type=bpy.types.Object, poll=lambda self, ob: ob.type == 'ARMATURE',
+                                     description="The skeleton that gets the animation")
+    retarget_map: CollectionProperty(type=M3D_RetargetItem)
+    retarget_index: IntProperty(default=0)
+    retarget_preset: StringProperty(name="Preset", default="Bone Map", description="Name the bone map is saved under")
+    retarget_range: EnumProperty(name="Range", default='ACTION', items=(
+        ('ACTION', "Source Action", "The frames of the source skeleton's action"),
+        ('SCENE', "Scene Range", "From the scene start to the scene end")))
+    retarget_root: BoolProperty(name="Root Motion", default=True,
+                                description="The root bone (the hips) also moves as the source's does, scaled by the "
+                                "heights of the two skeletons")
 
 
 class M3D_UL_anim_sets(UIList):
@@ -1188,6 +1230,583 @@ class M3D_OT_anim_graph(Operator):
 
 
 # -----------------------------------------------------------------------------
+# Graph Editor / Dope Sheet: next and previous key, buffer curves, isolate a curve on click
+
+def editor_curves(context, selected=False):
+    """F-curves the Graph Editor or Dope Sheet shows (the selected ones with `selected`)."""
+    return list(getattr(context, "selected_visible_fcurves" if selected else "visible_fcurves", None) or [])
+
+
+def _in_key_editor(context):
+    return context.area is not None and context.area.type in {'GRAPH_EDITOR', 'DOPESHEET_EDITOR'}
+
+
+class M3D_OT_key_step(Operator):
+    """Select the next (or previous) key on each curve that has a selected key (Ctrl+Alt+. / Ctrl+Alt+,)"""
+    bl_idname = "m3d.key_step"
+    bl_label = "Select Next / Previous Key"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    direction: EnumProperty(items=(('NEXT', "Next", "Select the key after"),
+                                   ('PREVIOUS', "Previous", "Select the key before")))
+
+    @classmethod
+    def description(cls, _context, props):
+        return "Select the %s key on each curve that has a selected key" % props.direction.lower()
+
+    @classmethod
+    def poll(cls, context):
+        return _in_key_editor(context)
+
+    def execute(self, context):
+        moved = 0
+        for fc in editor_curves(context):
+            keys = sorted(fc.keyframe_points, key=lambda k: k.co.x)
+            picked = [i for i, k in enumerate(keys) if k.select_control_point]
+            if not picked:
+                continue
+            i = picked[-1] + 1 if self.direction == 'NEXT' else picked[0] - 1
+            if not 0 <= i < len(keys):
+                continue   # (the last key stays selected)
+            for k in keys:
+                k.select_control_point = k.select_left_handle = k.select_right_handle = False
+            keys[i].select_control_point = True
+            moved += 1
+        if not moved:
+            self.report({'INFO'}, "No %s key to select" % self.direction.lower())
+            return {'CANCELLED'}
+        context.area.tag_redraw()
+        return {'FINISHED'}
+
+
+# (action name, data path, index) -> the keys of a curve when it went into the buffer (session only)
+_buffers = {}
+KEY_SETTINGS = ("interpolation", "easing", "back", "amplitude", "period", "type")
+
+
+def curve_id(fc):
+    return fc.id_data.name, fc.data_path, fc.array_index
+
+
+def read_keys(fc):
+    return [(tuple(k.co), tuple(k.handle_left), tuple(k.handle_right), k.handle_left_type, k.handle_right_type,
+             *(getattr(k, f) for f in KEY_SETTINGS)) for k in fc.keyframe_points]
+
+
+def write_keys(fc, keys):
+    """Replace the keys of a curve with `keys` (read_keys)."""
+    fc.keyframe_points.clear()
+    fc.keyframe_points.add(len(keys))
+    for k, (co, left, right, left_type, right_type, *settings) in zip(fc.keyframe_points, keys):
+        for name, value in zip(KEY_SETTINGS, settings):
+            setattr(k, name, value)
+        k.co, k.handle_left_type, k.handle_right_type = co, left_type, right_type
+        k.handle_left, k.handle_right = left, right
+    fc.update()
+
+
+class M3D_OT_buffer_curve(Operator):
+    """Buffer curve: keep a copy of the selected curves (shown grey behind them), swap it with the curves to compare two
+versions, or clear it"""
+    bl_idname = "m3d.buffer_curve"
+    bl_label = "Buffer Curve"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    action: EnumProperty(items=(('SNAPSHOT', "Snapshot", ""), ('SWAP', "Swap", ""), ('CLEAR', "Clear", "")))
+
+    @classmethod
+    def description(cls, _context, props):
+        return {'SNAPSHOT': "Keep a copy of the selected curves in the buffer (drawn grey behind them)",
+                'SWAP': "Swap the selected curves with their buffer copies (again to swap back)",
+                'CLEAR': "Forget the buffer copies and their grey curves"}[props.action]
+
+    @classmethod
+    def poll(cls, context):
+        return context.area is not None and context.area.type == 'GRAPH_EDITOR'
+
+    def execute(self, context):
+        curves = editor_curves(context, selected=True) or editor_curves(context)
+
+        def ghosts(op):   # (the grey curves only show it: the editor's ghost curves of the selected curves)
+            try:
+                op()
+            except RuntimeError:
+                pass
+        if self.action == 'CLEAR':
+            for fc in curves:
+                _buffers.pop(curve_id(fc), None)
+            ghosts(bpy.ops.graph.ghost_curves_clear)
+            return {'FINISHED'}
+        if self.action == 'SNAPSHOT':
+            for fc in curves:
+                _buffers[curve_id(fc)] = read_keys(fc)
+            ghosts(bpy.ops.graph.ghost_curves_create)
+            self.report({'INFO'}, "Buffer: %d curve(s)" % len(curves))
+            return {'FINISHED'}
+        swap = [fc for fc in curves if curve_id(fc) in _buffers]
+        if not swap:
+            self.report({'WARNING'}, "No buffer for these curves: take a Snapshot first")
+            return {'CANCELLED'}
+        ghosts(bpy.ops.graph.ghost_curves_create)   # (the grey curves show what goes into the buffer now)
+        for fc in swap:
+            keys = read_keys(fc)
+            write_keys(fc, _buffers[curve_id(fc)])
+            _buffers[curve_id(fc)] = keys
+        self.report({'INFO'}, "Swapped %d curve(s) with the buffer" % len(swap))
+        return {'FINISHED'}
+
+
+class M3D_OT_graph_isolate(Operator):
+    """Click a channel: select it and show only the selected curves (Isolate Curve on Click, Graph Editor)"""
+    bl_idname = "m3d.graph_isolate"
+    bl_label = "Click Channel (Isolate Curve when on)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return (context.area is not None and context.area.type == 'GRAPH_EDITOR'
+                and context.scene.m3d_anim.isolate_curve)
+
+    def invoke(self, context, event):
+        bpy.ops.anim.channels_click('INVOKE_DEFAULT')
+        curves = [fc for ob in context.view_layer.objects for fc in channel_fcurves(ob)]
+        if any(fc.select for fc in curves):   # (a click on an object or group row leaves the curves as they are)
+            for fc in curves:
+                fc.hide = not fc.select
+        context.area.tag_redraw()
+        return {'FINISHED'}
+
+
+# -----------------------------------------------------------------------------
+# Ghosting: tinted copies of the animated meshes some frames (or keys) before and after this one, drawn in the viewport.
+# The meshes of a frame are read once (the scene goes to that frame for a moment, after the frame changes and not while
+# playing) and kept while the animation is unchanged; an edit clears them.
+
+GHOST_FACES = 300000   # (all ghosted meshes together, per frame: bigger is skipped, the Motion tab says so)
+GHOST_BEFORE, GHOST_AFTER = (0.25, 0.45, 1.0), (1.0, 0.5, 0.15)
+_ghost = {"handle": None, "cache": {}, "objects": (), "busy": False, "skipped": []}
+
+
+def ghost_objects(context):
+    """The meshes ghosting shows: in Pose Mode those the skeleton deforms, else the selected meshes and the meshes the
+    selected skeletons deform."""
+    rig = posed_rig(context)
+    rigs = {rig} if rig is not None else {o for o in context.selected_objects if o.type == 'ARMATURE'}
+    meshes = set() if rig is not None else {o for o in context.selected_objects if o.type == 'MESH'}
+    meshes |= {o for o in context.view_layer.objects if o.type == 'MESH'
+               and any(m.type == 'ARMATURE' and m.object in rigs for m in o.modifiers)}
+    return sorted((o for o in meshes if o.visible_get()), key=lambda o: o.name)
+
+
+def ghost_frames(context):
+    """[(frame, -i or +i)]: the frames ghosting shows, before (negative) and after the current one."""
+    s, scene = context.scene.m3d_anim, context.scene
+    here = scene.frame_current
+    if s.ghost_mode == 'FRAMES':
+        return [(here - i * s.ghost_step, -i) for i in range(1, s.ghost_before + 1)] + \
+               [(here + i * s.ghost_step, i) for i in range(1, s.ghost_after + 1)]
+    owners = {o for ob in ghost_objects(context)
+              for o in [ob, *(m.object for m in ob.modifiers if m.type == 'ARMATURE')] if o}
+    keys = sorted({round(k.co.x) for o in owners for fc in channel_fcurves(o) for k in fc.keyframe_points})
+    before, after = [k for k in keys if k < here][::-1], [k for k in keys if k > here]
+    return [(f, -i - 1) for i, f in enumerate(before[:s.ghost_before])] + \
+           [(f, i + 1) for i, f in enumerate(after[:s.ghost_after])]
+
+
+def _mesh_triangles(ob, depsgraph):
+    """(world positions, triangle corner indices) of the evaluated mesh as numpy arrays, or None past the size cap."""
+    import numpy as np
+    ev = ob.evaluated_get(depsgraph)
+    me = ev.to_mesh()
+    try:
+        me.calc_loop_triangles()
+        tris = len(me.loop_triangles)
+        if not tris:
+            return None
+        idx = np.empty(tris * 3, dtype=np.int32)
+        me.loop_triangles.foreach_get("vertices", idx)
+        co = np.empty(len(me.vertices) * 3, dtype=np.float32)
+        me.vertices.foreach_get("co", co)
+        mat = np.array(ev.matrix_world, dtype=np.float32)
+        return (co.reshape(-1, 3) @ mat[:3, :3].T + mat[:3, 3]).astype(np.float32), idx.reshape(-1, 3)
+    finally:
+        ev.to_mesh_clear()
+
+
+def build_ghosts(context):
+    """Read the meshes of the ghost frames that are not cached yet (the scene steps there and back). Returns the number
+    of frames read."""
+    scene = context.scene
+    objects = ghost_objects(context)
+    names = tuple(o.name for o in objects)
+    if names != _ghost["objects"]:
+        _ghost["cache"].clear()
+        _ghost["objects"] = names
+    frames = [f for f, _i in ghost_frames(context)]
+    for f in list(_ghost["cache"]):
+        if f not in frames:   # (only the frames around this one stay)
+            del _ghost["cache"][f]
+    todo = [f for f in frames if f not in _ghost["cache"]]
+    big = sum(len(o.data.polygons) for o in objects)
+    _ghost["skipped"] = [o.name for o in objects] if big > GHOST_FACES else []
+    if not todo or not objects or _ghost["skipped"]:
+        return 0
+    here, sub = scene.frame_current, scene.frame_subframe
+    _ghost["busy"] = True
+    try:
+        for f in todo:
+            scene.frame_set(f)
+            depsgraph = context.evaluated_depsgraph_get()
+            tris = [t for t in (_mesh_triangles(o, depsgraph) for o in objects) if t]
+            _ghost["cache"][f] = {"tris": tris, "batches": None}
+    finally:
+        scene.frame_set(here, subframe=sub)
+        _ghost["busy"] = False
+    return len(todo)
+
+
+def _ghost_refresh():
+    wm = bpy.context.window_manager
+    if bpy.context.scene is None or not bpy.context.scene.m3d_anim.ghost:
+        return None
+    if any(win.screen.is_animation_playing for win in wm.windows):
+        return None   # (playback shows the frames already read)
+    window = bpy.context.window or (wm.windows[0] if wm.windows else None)
+    with bpy.context.temp_override(window=window) if window else bpy.context.temp_override():
+        if build_ghosts(bpy.context):
+            for win in wm.windows:
+                for area in win.screen.areas:
+                    if area.type == 'VIEW_3D':
+                        area.tag_redraw()
+    return None
+
+
+def schedule_ghosts(clear=False):
+    if clear:
+        _ghost["cache"].clear()
+    if bpy.app.timers.is_registered(_ghost_refresh):
+        bpy.app.timers.unregister(_ghost_refresh)
+    bpy.app.timers.register(_ghost_refresh, first_interval=0.25)
+
+
+def _ghost_draw():
+    context = bpy.context
+    s = context.scene.m3d_anim if context.scene else None
+    if s is None or not s.ghost or not _ghost["cache"]:
+        return
+    import gpu
+    from gpu_extras.batch import batch_for_shader
+    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    gpu.state.blend_set('ALPHA')
+    gpu.state.depth_test_set('LESS_EQUAL')
+    gpu.state.depth_mask_set(False)
+    count = max(s.ghost_before, s.ghost_after, 1)
+    for frame, step in ghost_frames(context):
+        entry = _ghost["cache"].get(frame)
+        if entry is None:
+            continue
+        if entry["batches"] is None:
+            entry["batches"] = [batch_for_shader(shader, 'TRIS', {"pos": co}, indices=idx) for co, idx in entry["tris"]]
+        rgb = GHOST_BEFORE if step < 0 else GHOST_AFTER
+        shader.uniform_float("color", (*rgb, s.ghost_opacity * (1.0 - (abs(step) - 1) / (count + 1))))
+        for batch in entry["batches"]:
+            batch.draw(shader)
+    gpu.state.depth_mask_set(True)
+    gpu.state.depth_test_set('NONE')
+    gpu.state.blend_set('NONE')
+
+
+def ghost_toggle(on):
+    """Add or remove the ghost drawing (and its cache)."""
+    if on and _ghost["handle"] is None:
+        _ghost["handle"] = bpy.types.SpaceView3D.draw_handler_add(_ghost_draw, (), 'WINDOW', 'POST_VIEW')
+    elif not on and _ghost["handle"] is not None:
+        bpy.types.SpaceView3D.draw_handler_remove(_ghost["handle"], 'WINDOW')
+        _ghost["handle"] = None
+    _ghost["cache"].clear()
+    if on:
+        schedule_ghosts()
+
+
+@bpy.app.handlers.persistent
+def _ghost_frame(scene, _depsgraph=None):
+    if scene.m3d_anim.ghost and not _ghost["busy"]:
+        schedule_ghosts()
+
+
+@bpy.app.handlers.persistent
+def _ghost_edit(scene, depsgraph):
+    """An edit of the animation, a pose or a mesh: the ghosts are read again."""
+    if not scene.m3d_anim.ghost or _ghost["busy"]:
+        return
+    if any(isinstance(u.id, bpy.types.Action) or u.is_updated_transform or u.is_updated_geometry
+           for u in depsgraph.updates):
+        schedule_ghosts(clear=True)
+
+
+@bpy.app.handlers.persistent
+def _ghost_load(*_args):
+    scene = bpy.context.scene
+    ghost_toggle(scene is not None and scene.m3d_anim.ghost)
+
+
+# -----------------------------------------------------------------------------
+# Retarget: the animation of one skeleton onto another through a bone map (auto-matched by name, editable, saved as a
+# preset in m3d_user.json). Each mapped bone of the target turns as its source bone turns from its rest pose (in the
+# world, so differently oriented bones match), the root also moves (scaled by the two skeletons' heights); every frame of
+# the range is keyed on the target. The keys are worked out directly: no constraints are left behind.
+
+# Part names of the usual naming schemes (lower case, without separators and side) -> body part
+PARTS = {
+    **dict.fromkeys(("hips", "pelvis", "torso"), "hips"), **dict.fromkeys(("spine", "spine01"), "spine"),
+    **dict.fromkeys(("spine1", "spine02"), "spine1"),
+    **dict.fromkeys(("spine2", "spine03", "chest", "upperchest", "spine3"), "chest"),
+    **dict.fromkeys(("neck", "neck01"), "neck"), "head": "head",
+    **dict.fromkeys(("shoulder", "clavicle", "collar"), "shoulder"),
+    **dict.fromkeys(("upperarm", "arm", "uparm", "upperarmfk"), "upperarm"),
+    **dict.fromkeys(("forearm", "lowerarm", "elbow", "forearmfk"), "forearm"),
+    **dict.fromkeys(("hand", "wrist", "handfk"), "hand"),
+    **dict.fromkeys(("thigh", "upleg", "upperleg", "thighfk"), "thigh"),
+    **dict.fromkeys(("shin", "leg", "lowerleg", "calf", "knee", "shinfk"), "shin"),
+    **dict.fromkeys(("foot", "ankle", "footfk"), "foot"),
+    **dict.fromkeys(("toe", "toes", "toebase", "ball", "toefk"), "toe"),
+}
+# Rigify's numbered spine (hips at the bottom, head at the top)
+RIGIFY_SPINE = {"spine": "hips", "spine001": "spine", "spine002": "spine1", "spine003": "chest", "spine004": "neck",
+                "spine006": "head"}
+_SIDE_END = re.compile(r"(?:[._\- ](L|R|l|r)|[._\- ]?(Left|Right|left|right))$")
+_SIDE_START = re.compile(r"^(?:(Left|Right|left|right)[._\- ]?|(L|R|l|r)[._\- ])")
+
+
+def bone_part(name, rigify=False):
+    """(body part, side 'L' / 'R' / '', preference) of a bone name in the usual naming schemes: Hips / LeftForeArm,
+    a prefixed rig:LeftForeArm, forearm.L, DEF-forearm.L, Forearm_L. ('', '', 0) for a name it does not know."""
+    base = name.split(":")[-1]
+    prefix = re.match(r"^(DEF|ORG|MCH)[-_.]", base)
+    if prefix:
+        base = base[prefix.end():]
+    side = ""
+    match = _SIDE_END.search(base)
+    if match:
+        side, base = (match.group(1) or match.group(2))[0].upper(), base[:match.start()]
+    else:
+        match = _SIDE_START.match(base)
+        if match:
+            side, base = (match.group(1) or match.group(2))[0].upper(), base[match.end():]
+    key = re.sub(r"[^a-z0-9]", "", base.lower())
+    part = RIGIFY_SPINE.get(key) if rigify else None
+    part = part or PARTS.get(key, "")
+    if not part or (prefix and prefix.group(1) == "MCH") or re.search(r"(ik|tweak|parent|target|pole)$", key):
+        return "", "", 0
+    # (a generated rig has several bones per part: its FK controls first, then the ORG and DEF bones)
+    rank = 3 if not prefix or key.endswith("fk") else {"ORG": 2, "DEF": 1}[prefix.group(1)]
+    return part, side, rank
+
+
+def is_rigify(rig):
+    return any(re.search(r"spine\.00\d$", b.name) for b in rig.data.bones)
+
+
+def auto_map(source, target):
+    """[(target bone, source bone)] matched by body part and side."""
+    def parts(rig):
+        rigify, best = is_rigify(rig), {}
+        for bone in rig.data.bones:
+            part, side, rank = bone_part(bone.name, rigify)
+            if part and rank > best.get((part, side), ("", 0))[1]:
+                best[(part, side)] = (bone.name, rank)
+        return {k: v[0] for k, v in best.items()}
+    found = parts(source)
+    return [(name, found[key]) for key, name in sorted(parts(target).items(), key=lambda kv: depth_of(target, kv[1]))
+            if key in found]
+
+
+def depth_of(rig, name):
+    return len(rig.data.bones[name].parent_recursive)
+
+
+def retarget_pairs(s):
+    return [(item.target, item.source) for item in s.retarget_map if item.target and item.source]
+
+
+def retarget_bake(context, source, target, pairs, frames, root_motion=True):
+    """Key the target's mapped bones over `frames`. Returns the number of keyed bones."""
+    scene = context.scene
+    tbones, sbones = target.data.bones, source.data.bones
+    mapping = {t: s for t, s in pairs if t in tbones and s in sbones}
+    if not mapping:
+        return 0
+    order = sorted(tbones, key=lambda b: len(b.parent_recursive))
+    s3 = source.matrix_world.to_3x3().normalized()
+    t3 = target.matrix_world.to_3x3().normalized()
+    t3inv = t3.inverted()
+    src_rest = {s: s3 @ sbones[s].matrix_local.to_3x3() for s in mapping.values()}
+    root = min(mapping, key=lambda t: len(tbones[t].parent_recursive))
+    src_root = sbones[mapping[root]]
+    src_rest_head = source.matrix_world @ src_root.head_local
+    tgt_rest_head = target.matrix_world @ tbones[root].head_local
+    s_height = (source.matrix_world @ src_root.head_local - source.matrix_world.translation).z
+    t_height = (target.matrix_world @ tbones[root].head_local - target.matrix_world.translation).z
+    ratio = t_height / s_height if abs(s_height) > 1e-6 and abs(t_height) > 1e-6 else 1.0
+    here = scene.frame_current
+    for pb in (target.pose.bones[t] for t in mapping):
+        pb.matrix_basis = Matrix.Identity(4)
+    try:
+        for frame in frames:
+            scene.frame_set(frame)
+            pose = {}   # target bone -> its rotation in armature space this frame
+            for bone in order:
+                rest = bone.matrix_local.to_3x3()
+                parent = bone.parent
+                base = pose[parent.name] @ parent.matrix_local.to_3x3().inverted() @ rest if parent else rest
+                if bone.name not in mapping:
+                    pose[bone.name] = base
+                    continue
+                s = mapping[bone.name]
+                now = s3 @ source.pose.bones[s].matrix.to_3x3()
+                turn = now.normalized() @ src_rest[s].normalized().inverted()
+                want = t3inv @ turn @ t3 @ rest
+                pose[bone.name] = want
+                pb = target.pose.bones[bone.name]
+                local = (base.inverted() @ want).to_quaternion()
+                if pb.rotation_mode == 'QUATERNION':
+                    pb.rotation_quaternion = local
+                    path = "rotation_quaternion"
+                elif pb.rotation_mode == 'AXIS_ANGLE':
+                    axis, angle = local.to_axis_angle()
+                    pb.rotation_axis_angle = (angle, *axis)
+                    path = "rotation_axis_angle"
+                else:
+                    pb.rotation_euler = local.to_euler(pb.rotation_mode, pb.rotation_euler)
+                    path = "rotation_euler"
+                pb.keyframe_insert(path, frame=frame)
+                if root_motion and bone.name == root:
+                    head = source.matrix_world @ source.pose.bones[mapping[root]].head
+                    wanted = target.matrix_world.inverted() @ (tgt_rest_head + (head - src_rest_head) * ratio)
+                    pb.location = rest.inverted() @ (wanted - bone.head_local)
+                    pb.keyframe_insert("location", frame=frame)
+    finally:
+        scene.frame_set(here)
+    return len(mapping)
+
+
+def retarget_presets():
+    import m3d_user
+    maps = m3d_user.data().get("retarget_maps")
+    return maps if isinstance(maps, dict) else {}
+
+
+def _preset_items(_self, _context):
+    names = sorted(n for n, m in retarget_presets().items() if isinstance(m, dict))
+    return [(n, n, "Load the bone map " + n) for n in names] or [('NONE', "No Presets", "")]
+
+
+class M3D_OT_retarget_map(Operator):
+    """Bone map of Retarget: match the bones by name, add or remove a row, save or load a preset"""
+    bl_idname = "m3d.retarget_map"
+    bl_label = "Bone Map"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    # (Load first: the default, for the preset menu of the panel)
+    action: EnumProperty(items=(('LOAD', "Load Preset", ""), ('AUTO', "Match by Name", ""), ('ADD', "Add Row", ""),
+                                ('REMOVE', "Remove Row", ""), ('SAVE', "Save Preset", ""),
+                                ('DELETE', "Delete Preset", "")))
+    preset: EnumProperty(name="Preset", items=_preset_items)
+
+    @classmethod
+    def description(cls, _context, props):
+        return {'AUTO': "Fill the map: bones matched by their names (Hips / Spine / LeftArm ..., left / right, .L / .R, "
+                        "_L / _R, prefixed names like rig:LeftArm, Rigify DEF- / ORG-)",
+                'ADD': "Add a row to the map", 'REMOVE': "Remove the selected row",
+                'SAVE': "Save the map as a preset (under the Preset name), for the next character with these names",
+                'LOAD': "Load a saved bone map", 'DELETE': "Delete the saved preset of this name"}[props.action]
+
+    def execute(self, context):
+        import m3d_user
+        s = context.scene.m3d_anim
+        if self.action == 'AUTO':
+            if s.retarget_source is None or s.retarget_target is None:
+                self.report({'WARNING'}, "Pick the source and the target skeleton first")
+                return {'CANCELLED'}
+            s.retarget_map.clear()
+            for target, source in auto_map(s.retarget_source, s.retarget_target):
+                item = s.retarget_map.add()
+                item.target, item.source = target, source
+            self.report({'INFO'}, "Matched %d bones" % len(s.retarget_map))
+        elif self.action == 'ADD':
+            s.retarget_map.add()
+            s.retarget_index = len(s.retarget_map) - 1
+        elif self.action == 'REMOVE':
+            if 0 <= s.retarget_index < len(s.retarget_map):
+                s.retarget_map.remove(s.retarget_index)
+                s.retarget_index = max(0, s.retarget_index - 1)
+        elif self.action == 'SAVE':
+            maps = retarget_presets()
+            maps[s.retarget_preset] = dict(retarget_pairs(s))
+            m3d_user.data()["retarget_maps"] = maps
+            m3d_user.save()
+            self.report({'INFO'}, "Saved the bone map %s" % s.retarget_preset)
+        elif self.action == 'DELETE':
+            maps = retarget_presets()
+            maps.pop(s.retarget_preset, None)
+            m3d_user.data()["retarget_maps"] = maps
+            m3d_user.save()
+        else:
+            saved = retarget_presets().get(self.preset)
+            if not isinstance(saved, dict):
+                return {'CANCELLED'}
+            s.retarget_map.clear()
+            for target, source in saved.items():
+                item = s.retarget_map.add()
+                item.target, item.source = str(target), str(source)
+            s.retarget_preset = self.preset
+        return {'FINISHED'}
+
+
+class M3D_OT_retarget(Operator):
+    """Retarget: key the target skeleton over the range so it moves as the source skeleton does, through the bone map"""
+    bl_idname = "m3d.retarget"
+    bl_label = "Retarget"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        s = context.scene.m3d_anim
+        source, target = s.retarget_source, s.retarget_target
+        if source is None or target is None or source == target:
+            self.report({'WARNING'}, "Pick two different skeletons: the animated source and the target")
+            return {'CANCELLED'}
+        pairs = retarget_pairs(s)
+        if not pairs:
+            self.report({'WARNING'}, "The bone map is empty: Match by Name, or add rows")
+            return {'CANCELLED'}
+        action = source.animation_data.action if source.animation_data else None
+        if s.retarget_range == 'ACTION' and action is not None:
+            start, end = (int(round(f)) for f in action.frame_range)
+        else:
+            start, end = context.scene.frame_start, context.scene.frame_end
+        leave = context.mode != 'OBJECT'
+        if leave:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        count = retarget_bake(context, source, target, pairs, range(start, end + 1), s.retarget_root)
+        self.report({'INFO'}, "Retargeted %d bones onto %s, frames %d-%d" % (count, target.name, start, end))
+        return {'FINISHED'}
+
+
+class M3D_UL_retarget(UIList):
+    def draw_item(self, context, layout, data, item, _icon, _active_data, _active_prop, _index):
+        s = context.scene.m3d_anim
+        row = layout.row(align=True)
+        if s.retarget_target is not None:
+            row.prop_search(item, "target", s.retarget_target.data, "bones", text="")
+        else:
+            row.prop(item, "target", text="")
+        if s.retarget_source is not None:
+            row.prop_search(item, "source", s.retarget_source.data, "bones", text="")
+        else:
+            row.prop(item, "source", text="")
+
+
+# -----------------------------------------------------------------------------
 # Layers: NLA tracks
 
 def layer_owner(context):
@@ -1572,6 +2191,8 @@ class PROPERTIES_PT_m3d_an_controls(_Pick, Panel):
         row = layout.row(align=True)
         row.label(text="Set Key keys")
         row.prop(context.scene.m3d_anim, "key_scope", expand=True)
+        if ik_setups(rig):   # (limbs made with IK with Pole: their IK / FK switch and Match)
+            draw_ik_switches(layout.box(), context, rig)
         rig_id = rig.data.get("rig_id")
         if not isinstance(rig_id, str):
             return
@@ -1730,6 +2351,9 @@ class PROPERTIES_PT_m3d_an_poses(_Tween, Panel):
             ("Copy Range", "m3d.anim_world_position", 'COPYDOWN', {"action": 'COPY', "over_range": True}),
             ("Paste Range", "m3d.anim_world_position", 'PASTEDOWN', {"action": 'PASTE', "over_range": True}),
         ), columns=2)
+        if posed_rig(context) is not None and ik_setups(rig):
+            layout.label(text="IK / FK")
+            draw_ik_switches(layout, context, rig)
         split_props(layout)
         layout.prop(context.scene.m3d_rig, "pose_name")
         layout.operator("m3d.rig_pose_save", icon='ASSET_MANAGER')
@@ -1791,6 +2415,33 @@ class PROPERTIES_PT_m3d_an_ghost(_Motion, Panel):
         row.operator("m3d.anim_graph", text="Create", icon='GHOST_ENABLED').action = 'GHOST_CREATE'
         row.operator("m3d.anim_graph", text="Clear", icon='GHOST_DISABLED').action = 'GHOST_CLEAR'
         reason(layout, "A copy of the curves to compare in the Graph Editor")
+        layout.prop(context.scene.m3d_anim, "isolate_curve")
+        reason(layout, "Right-click in the Graph Editor: tangents, buffer curve snapshot / swap, Normalize")
+
+
+class PROPERTIES_PT_m3d_an_onion(_Motion, Panel):
+    bl_label = "Ghosting"
+
+    def draw(self, context):
+        layout = self.layout
+        s = context.scene.m3d_anim
+        layout.prop(s, "ghost", toggle=True, icon='ONIONSKIN_ON' if s.ghost else 'ONIONSKIN_OFF')
+        split_props(layout)
+        col = layout.column()
+        col.active = s.ghost
+        col.row().prop(s, "ghost_mode", expand=True)
+        col.prop(s, "ghost_before")
+        col.prop(s, "ghost_after")
+        if s.ghost_mode == 'FRAMES':
+            col.prop(s, "ghost_step")
+        col.prop(s, "ghost_opacity", slider=True)
+        if s.ghost and _ghost["skipped"]:
+            draw_lines(layout, context, "Too heavy to ghost (over %d faces): %s"
+                       % (GHOST_FACES, ", ".join(_ghost["skipped"])), icon='ERROR')
+        elif s.ghost and not ghost_objects(context):
+            reason(layout, "Select a mesh, or a skeleton (Pose Mode: the meshes it moves)")
+        else:
+            reason(layout, "Blue before this frame, orange after; the selected meshes, or the ones the skeleton moves")
 
 
 # --- Layers
@@ -1860,6 +2511,36 @@ class PROPERTIES_PT_m3d_an_bake(_Layers, Panel):
         _button(layout, context, "Bake Layers to One Action", "nla.bake", 'NLA',
                 {"frame_start": first, "frame_end": last, "visual_keying": True, **mode})
         reason(layout, "Bakes the selection over the playback range")
+
+
+class PROPERTIES_PT_m3d_an_retarget(_Layers, Panel):
+    bl_label = "Retarget"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        s = context.scene.m3d_anim
+        split_props(layout)
+        layout.prop(s, "retarget_source")
+        layout.prop(s, "retarget_target")
+        layout.use_property_split = False
+        row = layout.row(align=True)
+        row.operator("m3d.retarget_map", text="Match by Name", icon='LINKED').action = 'AUTO'
+        row.operator_menu_enum("m3d.retarget_map", "preset", text="Load", icon='PRESET')
+        row = layout.row()
+        row.template_list("M3D_UL_retarget", "", s, "retarget_map", s, "retarget_index", rows=4, show_handles=False)
+        col = row.column(align=True)
+        col.operator("m3d.retarget_map", text="", icon='ADD').action = 'ADD'
+        col.operator("m3d.retarget_map", text="", icon='REMOVE').action = 'REMOVE'
+        row = layout.row(align=True)
+        row.prop(s, "retarget_preset", text="")
+        row.operator("m3d.retarget_map", text="Save", icon='FILE_TICK').action = 'SAVE'
+        layout.row().prop(s, "retarget_range", expand=True)
+        layout.prop(s, "retarget_root")
+        col = layout.column(align=True)
+        col.scale_y = 1.3
+        col.operator("m3d.retarget", icon='ARMATURE_DATA')
+        reason(layout, "Rows: target bone, then the source bone it follows. The target is keyed on every frame")
 
 
 # --- Playback
@@ -2156,7 +2837,9 @@ def follow(wm):
 classes = (
     M3D_AnimSetItem,
     M3D_AnimSet,
+    M3D_RetargetItem,
     M3D_AnimSettings,
+    M3D_UL_retarget,
     M3D_UL_anim_sets,
     M3D_OT_set_key,
     M3D_OT_tween,
@@ -2175,6 +2858,11 @@ classes = (
     M3D_OT_anim_world_position,
     M3D_OT_anim_paths,
     M3D_OT_anim_graph,
+    M3D_OT_key_step,
+    M3D_OT_buffer_curve,
+    M3D_OT_graph_isolate,
+    M3D_OT_retarget_map,
+    M3D_OT_retarget,
     M3D_OT_anim_layer,
     M3D_OT_playblast,
     M3D_MT_anim_poses,
@@ -2190,8 +2878,10 @@ classes = (
     PROPERTIES_PT_m3d_an_poses,
     PROPERTIES_PT_m3d_an_paths,
     PROPERTIES_PT_m3d_an_ghost,
+    PROPERTIES_PT_m3d_an_onion,
     PROPERTIES_PT_m3d_an_layers,
     PROPERTIES_PT_m3d_an_bake,
+    PROPERTIES_PT_m3d_an_retarget,
     PROPERTIES_PT_m3d_an_range,
     PROPERTIES_PT_m3d_an_blocking,
     PROPERTIES_PT_m3d_an_playback,
@@ -2212,6 +2902,9 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.m3d_anim = PointerProperty(type=M3D_AnimSettings)
+    bpy.app.handlers.frame_change_post.append(_ghost_frame)
+    bpy.app.handlers.depsgraph_update_post.append(_ghost_edit)
+    bpy.app.handlers.load_post.append(_ghost_load)
     for menu in ZOOM_MENUS:
         getattr(bpy.types, menu).append(draw_zoom_region)
 
@@ -2219,6 +2912,10 @@ def register():
 def unregister():
     for menu in ZOOM_MENUS:
         getattr(bpy.types, menu).remove(draw_zoom_region)
+    ghost_toggle(False)
+    bpy.app.handlers.frame_change_post.remove(_ghost_frame)
+    bpy.app.handlers.depsgraph_update_post.remove(_ghost_edit)
+    bpy.app.handlers.load_post.remove(_ghost_load)
     del bpy.types.Scene.m3d_anim
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

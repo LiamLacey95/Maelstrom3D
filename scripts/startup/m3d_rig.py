@@ -220,6 +220,10 @@ class M3D_RigSettings(PropertyGroup):
         ('BEZIER', "Smooth", "Smooth curve through the keys"), ('LINEAR', "Linear", "Straight lines between the keys"),
         ('CONSTANT', "Stepped", "Holds each value until the next key")))
     rigify_note: StringProperty(description="Result of the last Rigify step")
+    qr_mesh: _pointer("Mesh", "The character mesh Quick Rig places the guides on", lambda self, ob: ob.type == 'MESH')
+    qr_rigify: BoolProperty(name="Rigify Control Rig", default=False,
+                            description="Fit the Rigify human meta-rig to the guides and generate its control rig (IK / FK "
+                            "arms and legs, a torso); off: a simple skeleton of plain bones")
 
 
 # -----------------------------------------------------------------------------
@@ -1053,9 +1057,16 @@ def pole_position(bones, factor):
     return mid + away * (factor * total)
 
 
+def tip_child(bone):
+    """The child (bone or edit bone) that starts at the tip of `bone`: the hand of a forearm, the foot of a shin."""
+    near = [c for c in bone.children if (c.head - bone.tail).length <= 1e-3 * max(bone.length, 1e-6)]
+    return next((c for c in near if c.use_connect), near[0] if near else None)
+
+
 def ik_with_pole(context, rig, end_name, chain, factor):
     """An IK constraint on `end_name` with a target bone at its tip and, for chains of two or more bones, a pole target
-    bone. The pole angle is searched so the chain bends toward the pole. Returns (target name, pole name or None)."""
+    bone. The pole angle is searched so the chain bends toward the pole. The target and the pole become animator controls
+    (ik_controls). Returns (target name, pole name or None)."""
     arm = rig.data
     bones = ik_chain(arm, end_name, chain)
     tip = bones[-1].tail_local.copy()
@@ -1065,9 +1076,15 @@ def ik_with_pole(context, rig, end_name, chain, factor):
     mode = rig.mode
     if mode != 'EDIT':
         bpy.ops.object.mode_set(mode='EDIT')
+    end = arm.edit_bones[end_name]
+    hand = tip_child(end)
     target = arm.edit_bones.new("IK_" + end_name)
-    target.head, target.tail = tip, tip + Vector((0.0, 0.0, small))
+    # Lined up with the hand (the bone that copies its rotation; else the end bone), so it does not turn at rest.
+    along = hand or end
+    target.head, target.tail = tip, tip + (along.tail - along.head).normalized() * small
+    target.roll = along.roll
     target.use_deform = False
+    hand_name = hand.name if hand else None
     pole = None
     if pole_pos is not None:
         pole = arm.edit_bones.new("Pole_" + end_name)
@@ -1083,9 +1100,193 @@ def ik_with_pole(context, rig, end_name, chain, factor):
     if pole_name:
         con.pole_target, con.pole_subtarget = rig, pole_name
         fit_pole_angle(context, rig, con, end_name, pole_pos)
+    ik_controls(context, rig, end_name, rig.pose.bones[hand_name] if hand_name else None, con, target_name, pole_name)
     if mode != 'POSE':
         bpy.ops.object.mode_set(mode=mode)
     return target_name, pole_name
+
+
+IK_SWITCH = "IK_FK"
+CONTROLS = "Controls"
+SIDE_RGB = {'L': PRESET_RGB['BLUE'], 'R': PRESET_RGB['RED'], '': PRESET_RGB['YELLOW']}
+
+
+def ik_controls(context, rig, end_name, hand, con, target_name, pole_name):
+    """Make an IK setup ready to animate: a cube shape on the target and a sphere on the pole, coloured by side (.L blue,
+    .R red, middle yellow), both in the "Controls" bone collection; the hand (the bone at the end of the chain, if there is
+    one) copies the target's rotation; an IK_FK property on the target (0 = IK, 1 = FK; a slider in the Channel Box)
+    drives the IK and that rotation."""
+    rgb = SIDE_RGB[side_of_name(end_name)]
+    coll = rig.data.collections.get(CONTROLS) or rig.data.collections.new(CONTROLS)
+    for name, shape, scale in ((target_name, 'CUBE', 2.0), (pole_name, 'SPHERE', 1.0)):
+        if name is None:
+            continue
+        pb = rig.pose.bones[name]
+        pb.custom_shape = widget_object(context, shape)
+        pb.custom_shape_scale_xyz = (scale,) * 3
+        color_pose_bone(pb, rgb)
+        coll.assign(pb)
+    target = rig.pose.bones[target_name]
+    target[IK_SWITCH] = 0.0
+    target.id_properties_ui(IK_SWITCH).update(min=0.0, max=1.0, soft_min=0.0, soft_max=1.0,
+                                              description="0 = IK (the target moves the limb), 1 = FK (rotate its bones)")
+    target.property_overridable_library_set('["%s"]' % IK_SWITCH, True)
+    driven = [con]
+    if hand is not None:
+        follow = hand.constraints.new('COPY_ROTATION')
+        follow.name, follow.target, follow.subtarget = "IK Rotation", rig, target_name
+        driven.append(follow)
+    for c in driven:
+        fc = c.driver_add("influence")
+        drv = fc.driver
+        drv.type, drv.expression = 'SCRIPTED', "1 - switch"   # (a simple expression: no Python needed to run it)
+        var = drv.variables.new()
+        var.name, var.type = "switch", 'SINGLE_PROP'
+        var.targets[0].id = rig
+        var.targets[0].data_path = 'pose.bones["%s"]["%s"]' % (bpy.utils.escape_identifier(target_name), IK_SWITCH)
+    context.view_layer.update()
+
+
+IKSetup = namedtuple("IKSetup", "end con target pole chain hand")
+
+
+def ik_setups(rig):
+    """[IKSetup] of the IK constraints of `rig` whose target bone has an IK_FK switch (IK with Pole makes them)."""
+    out = []
+    for pb in rig.pose.bones:
+        for con in pb.constraints:
+            if con.type != 'IK' or con.target != rig or not con.subtarget:
+                continue
+            target = rig.pose.bones.get(con.subtarget)
+            if target is None or IK_SWITCH not in target:
+                continue
+            pole = rig.pose.bones.get(con.pole_subtarget) if con.pole_target == rig and con.pole_subtarget else None
+            chain = [rig.pose.bones[b.name] for b in ik_chain(rig.data, pb.name, con.chain_count or len(rig.data.bones))]
+            hand = next((p for p in rig.pose.bones for c in p.constraints if c.type == 'COPY_ROTATION'
+                         and c.target == rig and c.subtarget == target.name), None)
+            out.append(IKSetup(pb, con, target, pole, chain, hand))
+    return out
+
+
+def ik_setup_of(rig, names):
+    """The IK setups that one of the bones `names` belongs to (a bone of the chain, the target or the pole); all of them
+    when none of the bones is part of one."""
+    setups = ik_setups(rig)
+    picked = [s for s in setups if names & ({b.name for b in s.chain} | {s.target.name} | {s.pole.name if s.pole else "",
+                                                                                         s.hand.name if s.hand else ""})]
+    return picked or setups
+
+
+def _with_switch(context, setup, value, read):
+    """Evaluate the rig with the IK_FK switch of `setup` at `value`, call read(), and put the switch back."""
+    before = setup.target[IK_SWITCH]
+    setup.target[IK_SWITCH] = value
+    setup.target.id_data.update_tag()
+    context.view_layer.update()
+    try:
+        return read()
+    finally:
+        setup.target[IK_SWITCH] = before
+        setup.target.id_data.update_tag()
+        context.view_layer.update()
+
+
+def match_fk_to_ik(context, setup):
+    """Pose the chain's own (FK) channels where the IK puts the bones now. Returns the changed pose bones."""
+    rig = setup.target.id_data
+    bones = setup.chain + ([setup.hand] if setup.hand else [])
+    mats = _with_switch(context, setup, 0.0, lambda: [pb.matrix.copy() for pb in bones])
+    before = setup.target[IK_SWITCH]
+    setup.target[IK_SWITCH] = 1.0   # (the channels are set with the IK off: each bone below its FK parent)
+    try:
+        for pb, mat in zip(bones, mats):
+            rig.update_tag()
+            context.view_layer.update()
+            pb.matrix = mat
+    finally:
+        setup.target[IK_SWITCH] = before
+        rig.update_tag()
+        context.view_layer.update()
+    return bones
+
+
+def match_ik_to_fk(context, setup):
+    """Put the IK target on the tip of the FK chain (turned like the hand, else like the end bone) and the pole out from
+    its middle joint, on the side the chain bends to. Returns the changed pose bones."""
+    def read():
+        return ([pb.matrix.copy() for pb in setup.chain], setup.chain[-1].tail.copy(),
+                (setup.hand or setup.chain[-1]).matrix.copy())
+    mats, tip, turn = _with_switch(context, setup, 1.0, read)
+    target = setup.target
+    target.matrix = Matrix.Translation(tip) @ turn.to_quaternion().to_matrix().to_4x4()
+    changed = [target]
+    if setup.pole is not None and len(setup.chain) > 1:
+        root, mid = mats[0].translation, mats[len(mats) // 2].translation
+        line = tip - root
+        away = mid - (root + line * ((mid - root).dot(line) / max(line.dot(line), 1e-12)))
+        bones = [pb.bone for pb in setup.chain]
+        rest_mid = bones[len(bones) // 2].head_local
+        distance = (setup.pole.bone.head_local - rest_mid).length
+        if away.length > 1e-4 * max(line.length, 1e-6):   # (a straight chain: the pole stays where it is)
+            pole = setup.pole
+            pole.matrix = Matrix.Translation(mid + away.normalized() * distance) @ pole.matrix.to_3x3().to_4x4()
+            changed.append(pole)
+    target.id_data.update_tag()
+    context.view_layer.update()
+    return changed
+
+
+class M3D_OT_rig_ik_match(Operator):
+    """Match an IK / FK limb for this frame (keyed when Auto Key is on): the limb of the selected bone (its chain, IK
+target or pole), else every limb made with IK with Pole"""
+    bl_idname = "m3d.rig_ik_match"
+    bl_label = "Match IK / FK"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    direction: EnumProperty(items=(('IK_TO_FK', "Match IK to FK", "Move the IK target and pole onto the FK pose"),
+                                   ('FK_TO_IK', "Match FK to IK", "Rotate the FK bones onto the IK pose")))
+
+    @classmethod
+    def description(cls, _context, props):
+        return {'IK_TO_FK': "Match IK to FK: move the IK target and pole so the IK limb lands on the FK pose (this frame)",
+                'FK_TO_IK': "Match FK to IK: rotate the limb's own bones onto where the IK puts them (this frame)"}[
+            props.direction]
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.active_object
+        return ob is not None and ob.type == 'ARMATURE' and ob.mode == 'POSE'
+
+    def execute(self, context):
+        from m3d_anim import set_keys
+        rig = context.active_object
+        names = {pb.name for pb in selected_pose_bones(rig)}
+        setups = ik_setup_of(rig, names)
+        if not setups:
+            self.report({'WARNING'}, "No IK / FK limb: make one with IK with Pole (Controls tab)")
+            return {'CANCELLED'}
+        changed = []
+        for setup in setups:
+            changed += (match_ik_to_fk if self.direction == 'IK_TO_FK' else match_fk_to_ik)(context, setup)
+        if context.scene.tool_settings.use_keyframe_insert_auto:
+            set_keys(changed, context.scene.tool_settings.keyframe_type)
+        self.report({'INFO'}, "Matched %s for %s" % ("IK to FK" if self.direction == 'IK_TO_FK' else "FK to IK",
+                                                    ", ".join(s.end.name for s in setups)))
+        return {'FINISHED'}
+
+
+def draw_ik_switches(layout, context, rig):
+    """The IK_FK switch of each IK / FK limb with the Match buttons (nothing without one)."""
+    setups = ik_setups(rig)
+    if not setups:
+        return False
+    col = layout.column(align=True)
+    for setup in setups:
+        col.prop(setup.target, '["%s"]' % IK_SWITCH, text="%s IK / FK" % setup.end.name, slider=True)
+    row = layout.row(align=True)
+    for direction, label in (('IK_TO_FK', "Match IK to FK"), ('FK_TO_IK', "Match FK to IK")):
+        row.operator("m3d.rig_ik_match", text=label).direction = direction
+    return True
 
 
 def fit_pole_angle(context, rig, con, end_name, pole_pos):
@@ -1101,14 +1302,20 @@ def fit_pole_angle(context, rig, con, end_name, pole_pos):
         rest = target_pb.location.copy()
         target_pb.location = rest + target_pb.bone.matrix_local.to_3x3().inverted() @ ((root - tip).normalized() * total * 0.25)
     best = None
-    for step in range(24):
-        angle = math.radians(-180 + step * 15)
-        con.pole_angle = angle
-        context.view_layer.update()
-        evaluated = rig.evaluated_get(context.evaluated_depsgraph_get())
-        dist = (evaluated.pose.bones[mid_name].head - pole_pos).length
-        if best is None or dist < best[0] - 1e-9:
-            best = (dist, angle)
+
+    def tries(angles):
+        nonlocal best
+        for angle in angles:
+            con.pole_angle = angle
+            context.view_layer.update()
+            evaluated = rig.evaluated_get(context.evaluated_depsgraph_get())
+            dist = (evaluated.pose.bones[mid_name].head - pole_pos).length
+            if best is None or dist < best[0] - 1e-9:
+                best = (dist, angle)
+    tries([math.radians(-180 + step * 15) for step in range(24)])
+    for step in (5.0, 1.5, 0.5, 0.15):   # (then closer around the best, so Match IK to FK lands on the FK pose)
+        here = best[1]
+        tries([here - math.radians(step), here + math.radians(step)])
     con.pole_angle = best[1]
     if target_pb is not None:
         target_pb.location = rest
@@ -2544,6 +2751,288 @@ active meta-rig"""
 
 
 # -----------------------------------------------------------------------------
+# Quick Rig: numbered guides on a humanoid mesh (the middle and its left side; the right side mirrors), a skeleton fitted
+# to them (a simple one of our own, or the Rigify human meta-rig and the rig it generates), bound with automatic weights
+# and checked. The character stands on the ground facing -Y (the front view), its left side on +X.
+
+# (guide, x from the middle and height, as fractions of the character's height; the arms: T-pose, see guide_spots)
+QR_GUIDES = (("Chin", 0.0, 0.875), ("Neck", 0.0, 0.83), ("Hips", 0.0, 0.53), ("Shoulder", 0.10, 0.81),
+             ("Elbow", 0.25, 0.81), ("Wrist", 0.40, 0.81), ("Hip", 0.09, 0.50), ("Knee", 0.09, 0.28),
+             ("Ankle", 0.09, 0.05))
+QR_SIDED = {"Shoulder", "Elbow", "Wrist", "Hip", "Knee", "Ankle"}
+QR_COLLECTION = "Quick Rig Guides"
+
+
+def guide_name(i, part):
+    return "Guide %d %s%s" % (i + 1, part, ".L" if part in QR_SIDED else "")
+
+
+def world_bounds(ob):
+    """(min corner, max corner) of the object's bounding box in the world."""
+    pts = [ob.matrix_world @ Vector(c) for c in ob.bound_box]
+    return (Vector(min(p[i] for p in pts) for i in range(3)), Vector(max(p[i] for p in pts) for i in range(3)))
+
+
+def guide_spots(ob):
+    """{guide: world position} first guesses from the mesh's size: arms out (T-pose) when the mesh is wide, else down."""
+    low, high = world_bounds(ob)
+    height = max(high.z - low.z, 1e-6)
+    mid = (low + high) / 2
+    half = (high.x - low.x) / 2
+    spots = {}
+    for part, x, z in QR_GUIDES:
+        if part in {"Elbow", "Wrist"} and half < 0.3 * height:   # (arms down, or an A-pose)
+            x, z = {"Elbow": (0.15, 0.66), "Wrist": (0.19, 0.53)}[part]
+        elif part == "Wrist":
+            x = min(x, 0.9 * half / height)
+        elif part == "Elbow":
+            x = (0.10 + min(0.40, 0.9 * half / height)) / 2
+        spots[part] = Vector((mid.x + x * height, mid.y, low.z + z * height))
+    return spots
+
+
+def center_in_mesh(ob, point):
+    """`point` moved front to back (along Y) to halfway between where the mesh is hit from the front and from the back."""
+    low, high = world_bounds(ob)
+    inv = ob.matrix_world.inverted()
+    hits = []
+    for start, way in ((low.y - 1.0, 1.0), (high.y + 1.0, -1.0)):
+        origin = inv @ Vector((point.x, start, point.z))
+        direction = (inv.to_3x3() @ Vector((0.0, way, 0.0))).normalized()
+        found, location, _normal, _index = ob.ray_cast(origin, direction)
+        if not found:
+            return point
+        hits.append((ob.matrix_world @ location).y)
+    return Vector((point.x, sum(hits) / 2, point.z))
+
+
+def guides_collection(context):
+    coll = bpy.data.collections.get(QR_COLLECTION) or bpy.data.collections.new(QR_COLLECTION)
+    if coll.name not in context.scene.collection.children:
+        context.scene.collection.children.link(coll)
+    return coll
+
+
+def guide_objects():
+    """{guide part: its empty} of the guides in the scene."""
+    found = {}
+    for i, (part, _x, _z) in enumerate(QR_GUIDES):
+        ob = bpy.data.objects.get(guide_name(i, part))
+        if ob is not None:
+            found[part] = ob
+    return found
+
+
+def place_guides(context, mesh, reset=False):
+    """Numbered guide empties on `mesh` (made where they are missing, or all again with `reset`); returns them."""
+    coll = guides_collection(context)
+    low, high = world_bounds(mesh)
+    size = (high.z - low.z) * 0.025
+    found = guide_objects()
+    spots = guide_spots(mesh)
+    for i, (part, _x, _z) in enumerate(QR_GUIDES):
+        ob = found.get(part)
+        if ob is None:
+            ob = bpy.data.objects.new(guide_name(i, part), None)
+            coll.objects.link(ob)
+            found[part] = ob
+            reset_one = True
+        else:
+            reset_one = reset
+        ob.empty_display_type, ob.empty_display_size = 'SPHERE', size
+        ob.show_name = ob.show_in_front = True
+        if reset_one:   # (elbows a little back, knees a little forward: an IK chain needs a bend to know its way)
+            bend = {"Elbow": 0.012, "Knee": -0.012}.get(part, 0.0) * (high.z - low.z)
+            ob.location = center_in_mesh(mesh, spots[part]) + Vector((0.0, bend, 0.0))
+    layer = context.view_layer.layer_collection.children.get(coll.name)
+    if layer is not None:
+        layer.exclude = False
+        layer.hide_viewport = False
+    return found
+
+
+def mirrored(point, middle_x):
+    return Vector((2.0 * middle_x - point.x, point.y, point.z))
+
+
+def joint_points(guides, mesh):
+    """{point: armature position} of the skeleton's joints from the guides (left side and middle)."""
+    low, high = world_bounds(mesh)
+    height = high.z - low.z
+    g = {part: ob.matrix_world.translation.copy() for part, ob in guides.items()}
+    hips, neck, chin = g["Hips"], g["Neck"], g["Chin"]
+    p = {"spine%d" % i: hips.lerp(neck, t) for i, t in enumerate((0.0, 0.2, 0.45, 0.7, 1.0))}
+    p.update(g)
+    p["neck_mid"] = neck.lerp(chin, 0.5)
+    p["head_top"] = Vector((chin.x, chin.y, max(high.z, chin.z + 0.05 * height)))
+    p["clavicle"] = Vector((neck.x + (g["Shoulder"].x - neck.x) * 0.2, g["Shoulder"].y, g["Shoulder"].z - 0.01 * height))
+    forearm = g["Wrist"] - g["Elbow"]
+    p["hand_tip"] = g["Wrist"] + forearm.normalized() * forearm.length * 0.45
+    ankle = g["Ankle"]
+    floor = low.z + 0.02 * height
+    p["ball"] = Vector((ankle.x, ankle.y - 0.08 * height, floor))
+    p["toe_tip"] = Vector((ankle.x, ankle.y - 0.13 * height, floor))
+    p["heel_in"] = Vector((ankle.x - 0.025 * height, ankle.y + 0.03 * height, low.z))
+    p["heel_out"] = Vector((ankle.x + 0.025 * height, ankle.y + 0.03 * height, low.z))
+    p["pelvis_tip"] = Vector((g["Hip"].x, hips.y - 0.04 * height, hips.z + 0.1 * height))
+    chest = hips.lerp(neck, 0.75)
+    p["breast"] = chest + Vector((0.05 * height, -0.06 * height, 0.0))
+    p["breast_tip"] = chest + Vector((0.05 * height, -0.1 * height, 0.0))
+    return p
+
+
+# Our skeleton: (bone, head point, tail point, parent, connected); the .L bones get .R copies.
+QR_BONES = (
+    ("Hips", "spine0", "spine1", None, False), ("Spine", "spine1", "spine2", "Hips", True),
+    ("Chest", "spine2", "spine4", "Spine", True), ("Neck", "spine4", "Chin", "Chest", True),
+    ("Head", "Chin", "head_top", "Neck", True),
+    ("Shoulder.L", "clavicle", "Shoulder", "Chest", False), ("UpperArm.L", "Shoulder", "Elbow", "Shoulder.L", True),
+    ("Forearm.L", "Elbow", "Wrist", "UpperArm.L", True), ("Hand.L", "Wrist", "hand_tip", "Forearm.L", True),
+    ("Thigh.L", "Hip", "Knee", "Hips", False), ("Shin.L", "Knee", "Ankle", "Thigh.L", True),
+    ("Foot.L", "Ankle", "ball", "Shin.L", True), ("Toe.L", "ball", "toe_tip", "Foot.L", True),
+)
+# The Rigify basic human meta-rig: bone -> (head point, tail point)
+QR_RIGIFY = {
+    "spine": ("spine0", "spine1"), "spine.001": ("spine1", "spine2"), "spine.002": ("spine2", "spine3"),
+    "spine.003": ("spine3", "spine4"), "spine.004": ("spine4", "neck_mid"), "spine.005": ("neck_mid", "Chin"),
+    "spine.006": ("Chin", "head_top"), "shoulder.L": ("clavicle", "Shoulder"), "upper_arm.L": ("Shoulder", "Elbow"),
+    "forearm.L": ("Elbow", "Wrist"), "hand.L": ("Wrist", "hand_tip"), "thigh.L": ("Hip", "Knee"),
+    "shin.L": ("Knee", "Ankle"), "foot.L": ("Ankle", "ball"), "toe.L": ("ball", "toe_tip"),
+    "heel.02.L": ("heel_in", "heel_out"), "pelvis.L": ("spine0", "pelvis_tip"), "breast.L": ("breast", "breast_tip"),
+}
+
+
+def build_skeleton(context, points, middle_x):
+    """Our simple skeleton fitted to the joint points; the right side mirrors the left. Returns the armature object."""
+    arm = bpy.data.armatures.new("QuickRig")
+    rig = bpy.data.objects.new("QuickRig", arm)
+    context.collection.objects.link(rig)
+    arm.display_type = 'STICK'
+    rig.show_in_front = True
+    _select_only(context, rig)
+    bpy.ops.object.mode_set(mode='EDIT')
+    for name, head, tail, parent, connect in QR_BONES:
+        for side in (".L", ".R") if name.endswith(".L") else ("",):
+            eb = arm.edit_bones.new(name[:-2] + side if side else name)
+            flip = side == ".R"
+            eb.head = mirrored(points[head], middle_x) if flip else points[head]
+            eb.tail = mirrored(points[tail], middle_x) if flip else points[tail]
+            if parent:
+                eb.parent = arm.edit_bones[parent[:-2] + side if parent.endswith(".L") and side else parent]
+                eb.use_connect = connect
+    for eb in arm.edit_bones:   # (Z forward for the spine, legs and arms; up for the feet)
+        foot = eb.name.startswith(("Foot", "Toe"))
+        eb.align_roll(Vector((0.0, 0.0, 1.0)) if foot else Vector((0.0, -1.0, 0.0)))
+        if eb.name.endswith(".R"):
+            mirror = arm.edit_bones[eb.name[:-2] + ".L"]
+            eb.roll = -mirror.roll
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for pb in rig.pose.bones:
+        pb.rotation_mode = 'XYZ'
+    return rig
+
+
+def fit_rigify(context, points, middle_x):
+    """The Rigify basic human meta-rig moved onto the joint points (the .R bones mirror the .L ones). Returns it."""
+    bpy.ops.object.armature_basic_human_metarig_add()
+    meta = context.active_object
+    meta.matrix_world = Matrix.Identity(4)
+    bpy.ops.object.mode_set(mode='EDIT')
+    bones = meta.data.edit_bones
+    connected = {eb.name for eb in bones if eb.use_connect}   # (Rigify reads its chains from these: they are kept)
+    for eb in bones:
+        eb.use_connect = False   # (both ends are set; connected bones are joined again below)
+    for name, (head, tail) in QR_RIGIFY.items():
+        for side_name, flip in ((name, False), (name[:-2] + ".R", True)) if name.endswith(".L") else ((name, False),):
+            eb = bones.get(side_name)
+            if eb is None:
+                continue
+            eb.head = mirrored(points[head], middle_x) if flip else points[head]
+            eb.tail = mirrored(points[tail], middle_x) if flip else points[tail]
+    for eb in bones:
+        eb.use_connect = eb.name in connected
+    bpy.ops.object.mode_set(mode='OBJECT')
+    return meta
+
+
+class M3D_OT_rig_quick(Operator):
+    """Quick Rig: place numbered guides on the selected mesh, then build a skeleton on them, bind the mesh and check
+the rig"""
+    bl_idname = "m3d.rig_quick"
+    bl_label = "Quick Rig"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    action: EnumProperty(items=(('GUIDES', "Place Guides", ""), ('RESET', "Reset Guides", ""), ('BUILD', "Build", ""),
+                                ('REMOVE', "Remove Guides", "")))
+
+    @classmethod
+    def description(cls, _context, props):
+        return {'GUIDES': "Put numbered guides on the selected mesh (chin, neck, hips, then shoulder, elbow, wrist, hip, "
+                          "knee and ankle of the left side, +X): move them onto the joints",
+                'RESET': "Put the guides back where Quick Rig first guessed them",
+                'BUILD': "Build the skeleton on the guides (the right side mirrors), bind the mesh with automatic "
+                         "weights and run Check Rig",
+                'REMOVE': "Delete the guides"}[props.action]
+
+    def execute(self, context):
+        s = context.scene.m3d_rig
+        if self.action == 'REMOVE':
+            for ob in guide_objects().values():
+                bpy.data.objects.remove(ob)
+            coll = bpy.data.collections.get(QR_COLLECTION)
+            if coll is not None and not coll.objects:
+                bpy.data.collections.remove(coll)
+            return {'FINISHED'}
+        active = context.active_object
+        mesh = active if active is not None and active.type == 'MESH' else s.qr_mesh
+        if mesh is None or mesh.type != 'MESH':
+            self.report({'WARNING'}, "Select the character's mesh first")
+            return {'CANCELLED'}
+        s.qr_mesh = mesh
+        leave_modes(context)
+        if self.action in {'GUIDES', 'RESET'}:
+            guides = place_guides(context, mesh, reset=self.action == 'RESET')
+            _select_only(context, guides["Chin"])
+            self.report({'INFO'}, "Move the numbered guides onto the joints (left side; the right side mirrors), then Build")
+            return {'FINISHED'}
+        guides = guide_objects()
+        if len(guides) < len(QR_GUIDES):
+            guides = place_guides(context, mesh)
+        points = joint_points(guides, mesh)
+        middle_x = points["Hips"].x
+        if s.qr_rigify:
+            if not rigify_enabled() and M3D_OT_rig_rigify.enable(self, s) == {'CANCELLED'}:
+                return {'CANCELLED'}
+            try:
+                meta = fit_rigify(context, points, middle_x)
+                bpy.ops.pose.rigify_generate()
+            except (RuntimeError, AttributeError) as err:
+                s.rigify_note = str(err).strip()[:200]
+                self.report({'WARNING'}, "Rigify: " + s.rigify_note)
+                return {'CANCELLED'}
+            rig = getattr(meta.data, "rigify_target_rig", None) or context.active_object
+            if rig is None or rig is meta or rig.type != 'ARMATURE':
+                self.report({'WARNING'}, "Rigify made no rig")
+                return {'CANCELLED'}
+            meta.hide_set(True)
+        else:
+            rig = build_skeleton(context, points, middle_x)
+        layer = context.view_layer.layer_collection.children.get(QR_COLLECTION)
+        if layer is not None:
+            layer.hide_viewport = True   # (the guides stay for a second try: Place Guides shows them again)
+        try:
+            message = bind(context, rig, [mesh], 'AUTO', s.skin_fallback)
+        except RuntimeError as err:
+            self.report({'ERROR'}, str(err).strip())
+            return {'CANCELLED'}
+        problems = check_rig(context, rig)
+        if problems:
+            message += ". Check Rig (Test tab): " + "; ".join(p.text for p in problems[:2]) + (" ..." if len(problems) > 2 else "")
+        self.report({'WARNING'} if "instead" in message or problems else {'INFO'}, message)
+        return {'FINISHED'}
+
+
+# -----------------------------------------------------------------------------
 # Naming pie and small helpers
 
 class M3D_MT_rig_names(Menu):
@@ -2641,6 +3130,34 @@ class PROPERTIES_PT_m3d_rg_create(_Skeleton, Panel):
             layout.prop(arm, "use_mirror_x", text="X-Mirror")
             if arm.use_mirror_x:
                 reason(layout, "The Joint Tool names a one-sided chain .L / .R and mirrors it")
+
+
+class PROPERTIES_PT_m3d_rg_quickrig(_Page, Panel):
+    page = "rig_skeleton"
+    bl_label = "Quick Rig"
+    needs = ()
+
+    def draw(self, context):
+        layout = self.layout
+        s = context.scene.m3d_rig
+        guides = guide_objects()
+        col = layout.column(align=True)
+        col.scale_y = 1.3
+        col.operator("m3d.rig_quick", text="1. Show Guides" if guides else "1. Place Guides",
+                     icon='EMPTY_DATA').action = 'GUIDES'
+        if guides:
+            row = layout.row(align=True)
+            row.operator("m3d.rig_quick", text="Reset Guides", icon='LOOP_BACK').action = 'RESET'
+            row.operator("m3d.rig_quick", text="Remove", icon='X').action = 'REMOVE'
+            _small(layout, "2. Move the numbered guides onto the joints: the middle and the left side (+X); the right "
+                           "side mirrors")
+        else:
+            _small(layout, "Select the character's mesh (standing, facing the front view)")
+        layout.prop(s, "qr_rigify")
+        col = layout.column(align=True)
+        col.scale_y = 1.3
+        col.operator("m3d.rig_quick", text="3. Build and Bind", icon='ARMATURE_DATA').action = 'BUILD'
+        _small(layout, "Builds the skeleton, binds the mesh with automatic weights and runs Check Rig (Test tab)")
 
 
 class PROPERTIES_PT_m3d_rg_edit(_Skeleton, Panel):
@@ -2837,6 +3354,9 @@ class PROPERTIES_PT_m3d_rg_ik(_Controls, Panel):
             row.prop(pb, "lock_ik_y", text="Y", toggle=True)
             row.prop(pb, "lock_ik_z", text="Z", toggle=True)
             layout.prop(pb, "ik_stretch", slider=True)
+        layout.use_property_split = False
+        if draw_ik_switches(layout, context, rig):
+            _small(layout, "IK_FK: 0 = the target moves the limb, 1 = rotate its bones (a key on it switches over time)")
 
 
 def draw_constraint(layout, pb, con):
@@ -3618,6 +4138,7 @@ classes = (
     M3D_OT_rig_rotate_order,
     M3D_OT_rig_ik_pole,
     M3D_OT_rig_pole_vector,
+    M3D_OT_rig_ik_match,
     M3D_OT_rig_constrain,
     M3D_OT_rig_constraints_clear,
     M3D_OT_rig_name_check,
@@ -3639,10 +4160,12 @@ classes = (
     M3D_OT_rig_pose_apply,
     M3D_OT_rig_pose_save,
     M3D_OT_rig_rigify,
+    M3D_OT_rig_quick,
     M3D_MT_rig_names,
     M3D_UL_rig_influences,
     *PAGE_GATES,
     PROPERTIES_PT_m3d_rg_create,
+    PROPERTIES_PT_m3d_rg_quickrig,
     PROPERTIES_PT_m3d_rg_edit,
     PROPERTIES_PT_m3d_rg_mirror,
     PROPERTIES_PT_m3d_rg_orient,

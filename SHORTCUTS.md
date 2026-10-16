@@ -12,7 +12,8 @@ your own keys).
 | Space Bar | Hotbox / four views |
 | Z | Undo |
 | Shift+Z | Redo |
-| Ctrl+Alt+S | Save Scene |
+| Ctrl+S | Save Scene |
+| Ctrl+O | Open Scene |
 | Ctrl+Space Bar | Maximize panel |
 
 ## View and Select
@@ -342,6 +343,28 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 | Shift+Left Bracket | — | Cycle Workspace (direction='PREV') |
 | Shift+Right Bracket | — | Cycle Workspace (direction='NEXT') |
 
+### Graph Editor
+
+| Key | Before (Industry Compatible) | Now (Maelstrom3D) |
+|---|---|---|
+| RMB | Menu: F-Curve | Menu: Keys |
+| Ctrl+Alt+, | — | Select Next / Previous Key (direction='PREVIOUS') |
+| Ctrl+Alt+. | — | Select Next / Previous Key (direction='NEXT') |
+
+### Dopesheet
+
+| Key | Before (Industry Compatible) | Now (Maelstrom3D) |
+|---|---|---|
+| RMB | Menu: Dope Sheet | Menu: Keys |
+| Ctrl+Alt+, | — | Select Next / Previous Key (direction='PREVIOUS') |
+| Ctrl+Alt+. | — | Select Next / Previous Key (direction='NEXT') |
+
+### Animation Channels
+
+| Key | Before (Industry Compatible) | Now (Maelstrom3D) |
+|---|---|---|
+| LMB | Mouse Click on Channels | Click Channel (Isolate Curve when on) |
+
 ### View2D
 
 | Key | Before (Industry Compatible) | Now (Maelstrom3D) |
@@ -352,7 +375,9 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 
 | Key | Before (Industry Compatible) | Now (Maelstrom3D) |
 |---|---|---|
+| S | Insert Keyframe (Buttons) | Key Channel |
 | S | Insert Keyframe (Buttons) | Insert Keyframe (Buttons) (all=False) |
+| MMB | — | Drag Channels |
 
 ### Generic Gizmo Drag
 
@@ -379,6 +404,10 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 | Z | Zoom to Border | Undo |
 | Shift+Z | — | Redo |
 | Ctrl+Space | — | View Layout (mode='TOGGLE') |
+| Right Arrow | — | Cycle Render Slot (reverse=False) |
+| Left Arrow | — | Cycle Render Slot (reverse=True) |
+| J | — | Cycle Render Slot (reverse=False) |
+| Shift+J | — | Cycle Render Slot (reverse=True) |
 
 ### UV Editor
 

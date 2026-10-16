@@ -13650,6 +13650,290 @@ def p11_done():
     bpy.ops.m3d.workspace(kind='MODEL')
 
 
+# ----------------------------------------------------------------------------------------------------
+# UX pass 2, P11b in the real window: Channel Box picks (a click on a name), a drag on a value goes to both selected bones, a
+# middle-drag changes the picked channel, the right-click menu of a channel; in the Graph Editor Ctrl+Alt+. selects the next key
+# and a right click opens the key marking menu; ghosting reads the frames around the current one after a frame change.
+
+import m3d_marking
+
+P11B = {"menus": [], "graph_mm": 0}
+
+
+def p11b_dock_region():
+    area = an_dock()
+    return area, next(r for r in area.regions if r.type == 'WINDOW')
+
+
+def p11b_redraw():
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+def p11b_bones():
+    rig = bpy.data.objects.get("P11G")
+    return rig.pose.bones["A"], rig.pose.bones["B"], rig.pose.bones["C"]
+
+
+def p11b_graph():
+    area = m3d_anim.bottom_area(window().screen)
+    return area, next(r for r in area.regions if r.type == 'WINDOW')
+
+
+def p11b_menu_spy(self, context):
+    ptr = getattr(context, "button_pointer", None)
+    P11B["menus"].append(ptr.bl_rna.identifier if ptr is not None else "")
+
+
+def p11b_graph_spy(self, context):
+    P11B["graph_mm"] += 1
+
+
+@step
+def p11b_setup():
+    bpy.ops.m3d.workspace(kind='ANIM')
+    for ob in list(bpy.data.objects):
+        if ob.mode != 'OBJECT':
+            bpy.context.view_layer.objects.active = ob
+            bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.object.select_all(action='DESELECT')
+    arm = bpy.data.armatures.new("P11G")
+    rig = bpy.data.objects.new("P11G", arm)
+    bpy.context.collection.objects.link(rig)
+    bpy.context.view_layer.objects.active = rig
+    rig.select_set(True)
+    bpy.ops.object.mode_set(mode='EDIT')
+    for i, name in enumerate("ABC"):
+        eb = arm.edit_bones.new(name)
+        eb.head, eb.tail = (i * 0.5 + 4.0, 0.0, 0.0), (i * 0.5 + 4.0, 0.0, 0.5)
+    bpy.ops.object.mode_set(mode='POSE')
+    scene = bpy.context.scene
+    scene.tool_settings.use_keyframe_insert_auto = False
+    for pb in rig.pose.bones:
+        pb.rotation_mode = 'XYZ'
+        pb.select = pb.name in {"A", "B"}
+        for frame, x in ((1, 0.0), (10, 1.0)):
+            pb.location = (x, 0.0, 0.0)
+            pb.keyframe_insert("location", frame=frame)
+        pb.location = (0.0, 0.0, 0.0)
+    rig.data.bones.active = rig.data.bones["A"]
+    scene.frame_set(1)
+    an_status("m3d.anim_editor", editor='GRAPH')
+    press_ok("m3d.dock_page", _area=an_dock(), tab="channel_box")
+    if not hasattr(bpy.types, "M3D_OT_test_probe"):
+        bpy.utils.register_class(M3D_OT_test_probe)
+    km = bpy.context.window_manager.keyconfigs.addon.keymaps.new(name="Window", space_type='EMPTY', region_type='WINDOW')
+    P11B["km"], P11B["kmi"] = km, km.keymap_items.new("m3d.test_probe", 'F19', 'PRESS')
+    bpy.types.UI_MT_button_context_menu.append(p11b_menu_spy)
+    m3d_marking.M3D_MT_graph_mm.append(p11b_graph_spy)
+    p11b_redraw()
+
+
+@step
+def p11b_dock():   # (again: entering Pose Mode may have brought back the page picked for it earlier)
+    press_ok("m3d.dock_page", _area=an_dock(), tab="channel_box")
+    p11b_redraw()
+
+
+step(wait_until(lambda: an_dock().spaces.active.context == 'CHANNEL_BOX', "the dock on the Channel Box"))
+
+
+@step
+def p11b_scan():
+    _area, region = p11b_dock_region()
+    check(not tracebacks(), "Python error drawing the Channel Box with two bones")
+    scale = bpy.context.preferences.system.ui_scale or 1.0
+    top = region.y + region.height - int(30 * scale)
+    points = [(region.x + int(region.width * f), y) for f in (0.2, 0.7) for y in range(top, max(region.y, top - int(420 * scale)), -int(6 * scale))]
+    s3e_scan(points)
+
+
+step(wait_until(s3e_scanned, "the Channel Box scan", tries=40))
+
+
+@step
+def p11b_pick():
+    P11B["tx"] = s3e_hits(r"m3d_channel_picks\.tx$")
+    P11B["ty"] = s3e_hits(r"m3d_channel_values\.ty$")
+    check(P11B["tx"] and P11B["ty"], "the Channel Box rows: a name to pick, a value (%d, %d points found; dock on %s; %s)"
+          % (len(P11B["tx"]), len(P11B["ty"]), an_dock().spaces.active.context, sorted(set(S3E["probes"].values()))[:8]))
+    if not P11B["tx"] or not P11B["ty"]:
+        P11B["tx"] = P11B["ty"] = [(0, 0)]
+        return
+    P11B["pick_xy"] = xy = s3e_center(P11B["tx"])
+    event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]))
+    event('MOUSEMOVE', xy=xy)
+
+
+@step
+def p11b_pick_click():   # (a step after the hover: the name is the active button by then)
+    xy = P11B.get("pick_xy")
+    if xy is not None:
+        event('LEFTMOUSE', 'PRESS', xy)
+        event('LEFTMOUSE', 'RELEASE', xy)
+
+
+step(wait_until(lambda: bpy.context.window_manager.m3d_channel_picks.tx, "the click on Translate X to pick it"))
+
+
+@step
+def p11b_pick_check():
+    rig = bpy.data.objects.get("P11G")
+    shown = {(fc.data_path, fc.array_index) for fc in m3d_anim.channel_fcurves(rig) if not fc.hide and '"C"' not in fc.data_path}
+    check(shown == {('pose.bones["A"].location', 0), ('pose.bones["B"].location', 0)},
+          "a picked channel: the Graph Editor shows only its curves on the selected bones: %s" % sorted(shown))
+    xy = s3e_center(P11B["ty"])
+    P11B["drag_xy"] = xy
+    event('MOUSEMOVE', xy=(xy[0] + 1, xy[1]))
+    event('MOUSEMOVE', xy=xy)
+
+
+@step
+def p11b_value_drag():
+    xy = P11B["drag_xy"]
+    event('LEFTMOUSE', 'PRESS', xy)
+    for dx in (5, 10, 20, 40, 60):
+        event('MOUSEMOVE', xy=(xy[0] + dx, xy[1]))
+
+
+@step
+def p11b_value_release():
+    xy = P11B["drag_xy"]
+    event('LEFTMOUSE', 'RELEASE', (xy[0] + 60, xy[1]))
+
+
+step(wait_until(lambda: abs(p11b_bones()[0].location.y) > 1e-4, "the drag on Translate Y"))
+
+
+@step
+def p11b_value_check():
+    a, b, c = p11b_bones()
+    check(abs(a.location.y) > 1e-4 and abs(a.location.y - b.location.y) < 1e-6 and c.location.y == 0.0,
+          "a drag on a Channel Box value changes both selected bones (%.3f, %.3f, %.3f)" % (a.location.y, b.location.y, c.location.y))
+    _area, region = p11b_dock_region()
+    xy = (region.x + region.width // 2, region.y + region.height // 3)
+    P11B["mid_xy"], P11B["x0"] = xy, (a.location.x, b.location.x)
+    event('MOUSEMOVE', xy=xy)
+    event('MIDDLEMOUSE', 'PRESS', xy)
+    for dx in (20, 50, 100):
+        event('MOUSEMOVE', xy=(xy[0] + dx, xy[1]))
+
+
+@step
+def p11b_middle_release():
+    xy = P11B["mid_xy"]
+    event('MIDDLEMOUSE', 'RELEASE', (xy[0] + 100, xy[1]))
+
+
+step(wait_until(lambda: abs(p11b_bones()[0].location.x - P11B["x0"][0]) > 0.3, "the middle-drag in the Channel Box"))
+
+
+@step
+def p11b_middle_check():
+    a, b, _c = p11b_bones()
+    check(abs((a.location.x - P11B["x0"][0]) - 1.0) < 0.15 and abs((b.location.x - P11B["x0"][1]) - 1.0) < 0.15,
+          "middle-drag: the picked channel of both bones, a hundredth per pixel (%.3f, %.3f)" % (a.location.x, b.location.x))
+    xy = s3e_center(P11B["tx"])
+    event('MOUSEMOVE', xy=xy)
+    event('RIGHTMOUSE', 'PRESS', xy)
+    event('RIGHTMOUSE', 'RELEASE', xy)
+
+
+step(wait_until(lambda: P11B["menus"], "the right-click menu of a channel"))
+
+
+@step
+def p11b_menu_check():
+    check("M3D_ChannelPicks" in P11B["menus"], "right-click on a channel name: its menu (%s)" % P11B["menus"])
+    xy = s3e_center(P11B["tx"])
+    event('ESC', 'PRESS', xy)
+    event('ESC', 'RELEASE', xy)
+    rig = bpy.data.objects.get("P11G")
+    fc = next(f for f in m3d_anim.channel_fcurves(rig) if f.data_path == 'pose.bones["A"].location' and f.array_index == 0)
+    for k in fc.keyframe_points:
+        k.select_control_point = k.co.x < 5
+        k.select_left_handle = k.select_right_handle = False
+    P11B["fc"] = fc
+    area, region = p11b_graph()
+    P11B["graph_xy"] = (region.x + region.width // 2, region.y + region.height // 2)
+    p11b_redraw()
+
+
+@step
+def p11b_next_key():
+    an_mod_key('PERIOD', True, ctrl=True, alt=True, xy=P11B["graph_xy"])
+    an_mod_key('PERIOD', False, ctrl=True, alt=True, xy=P11B["graph_xy"])
+
+
+step(wait_until(lambda: [k.co.x for k in P11B["fc"].keyframe_points if k.select_control_point] == [10.0],
+                "Ctrl+Alt+. to select the next key"))
+
+
+@step
+def p11b_graph_menu():
+    xy = P11B["graph_xy"]
+    event('MOUSEMOVE', xy=xy)
+    event('RIGHTMOUSE', 'PRESS', xy)
+    event('RIGHTMOUSE', 'RELEASE', xy)
+
+
+step(wait_until(lambda: P11B["graph_mm"] > 0, "the key marking menu on a right click in the Graph Editor"))
+
+
+@step
+def p11b_graph_menu_close():
+    xy = P11B["graph_xy"]
+    event('ESC', 'PRESS', xy)
+    event('ESC', 'RELEASE', xy)
+    check(not tracebacks(), "Python error in the Channel Box / Graph Editor steps")
+    with bpy.context.temp_override(window=window(), area=an_dock()):
+        bpy.ops.m3d.channel_op(action='DESELECT')
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.object.select_all(action='DESELECT')
+    bpy.ops.mesh.primitive_cube_add(size=0.5, location=(6.0, 0.0, 0.0))
+    cube = bpy.context.active_object
+    cube.name = "P11Ghost"
+    for frame, x in ((1, 6.0), (11, 8.0)):
+        cube.location.x = x
+        cube.keyframe_insert("location", index=0, frame=frame)
+    scene = bpy.context.scene
+    anim = scene.m3d_anim
+    anim.ghost_mode, anim.ghost_before, anim.ghost_after, anim.ghost_step = 'FRAMES', 2, 2, 2
+    anim.ghost = True
+    scene.frame_set(5)
+
+
+step(wait_until(lambda: sorted(m3d_anim._ghost["cache"]) == [1, 3, 7, 9], "ghosting to read the frames around frame 5", tries=30))
+
+
+@step
+def p11b_ghost_check():
+    check(m3d_anim._ghost["handle"] is not None and bpy.context.scene.frame_current == 5, "ghosting: the draw handler, the frame kept")
+    p11b_redraw()
+
+
+@step
+def p11b_ghost_drawn():
+    check(not tracebacks(), "Python error drawing the ghosts")
+    bpy.context.scene.m3d_anim.ghost = False
+    check(m3d_anim._ghost["handle"] is None, "ghosting off: the handler is removed")
+
+
+@step
+def p11b_done():
+    bpy.types.UI_MT_button_context_menu.remove(p11b_menu_spy)
+    m3d_marking.M3D_MT_graph_mm.remove(p11b_graph_spy)
+    P11B["km"].keymap_items.remove(P11B["kmi"])
+    for name in ("P11G", "P11Ghost"):
+        ob = bpy.data.objects.get(name)
+        if ob is not None:
+            bpy.data.objects.remove(ob)
+    bpy.context.scene.frame_set(1)
+    an_status("m3d.anim_editor", editor='DOPESHEET')
+    bpy.ops.m3d.workspace(kind='MODEL')
+    check(not tracebacks(), "Python error in the P11b steps")
+
+
 @step
 def finish():
     errors = "".join(stderr_tee.buf + sys.stdout.buf)

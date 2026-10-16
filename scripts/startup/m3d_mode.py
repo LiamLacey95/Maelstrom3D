@@ -1067,13 +1067,25 @@ class _DockPanel:
 
 
 def channel_owner(context):
-    """What the Channel Box edits: the active pose bone while a skeleton is in Pose Mode, else the active object."""
+    """What the Channel Box shows: the active pose bone while a skeleton is in Pose Mode, else the active object."""
     ob = context.active_object
     if ob is not None and ob.type == 'ARMATURE' and ob.mode == 'POSE':
         bone = ob.data.bones.active
         if bone is not None and bone.name in ob.pose.bones:
             return ob.pose.bones[bone.name]
     return ob
+
+
+def channel_owners(context):
+    """What a Channel Box edit changes: the selected bones in Pose Mode, else the selected objects (the shown one first)."""
+    owner = channel_owner(context)
+    if owner is None:
+        return []
+    if isinstance(owner, bpy.types.PoseBone):
+        others = [pb for pb in owner.id_data.pose.bones if pb.select and not pb.hide and pb != owner]
+    else:
+        others = [ob for ob in context.selected_objects if ob != owner]
+    return [owner, *others]
 
 
 def rotation_channel(owner):
@@ -1086,6 +1098,260 @@ def custom_properties(owner):
     """Names of the owner's numeric custom properties (shown as sliders)."""
     return [k for k in owner.keys() if not k.startswith("_") and isinstance(owner[k], (int, float))
             and not isinstance(owner[k], bool)]
+
+
+# -----------------------------------------------------------------------------
+# Channel Box channels. A channel is a key: "tx" ... "sz" (translate, rotate, scale; "rw" is the W of a quaternion or the
+# angle of an axis angle) or the data path of a custom property ('["IK_FK"]'). Picked channels (click or drag over the
+# names) are what S keys, what the Graph Editor shows and what a middle-drag changes. An edit in a field changes every
+# selected bone or object: the fields are stand-ins on the scene (m3d_channel_values) that pass the edit on.
+
+TRANSFORM_KEYS = ("tx", "ty", "tz", "rw", "rx", "ry", "rz", "sx", "sy", "sz")
+CUSTOM_SLOTS = 24   # (custom properties the Channel Box shows)
+HIDDEN = "_m3d_hidden"   # owner property: the channels Hide Selected took out of the Channel Box
+
+
+def custom_key(name):
+    return '["%s"]' % bpy.utils.escape_identifier(name)
+
+
+def channel_keys(owner):
+    """The owner's channels in Channel Box order (W only for a quaternion or an axis angle), custom properties last."""
+    four = owner.rotation_mode in {'QUATERNION', 'AXIS_ANGLE'}
+    return ([k for k in TRANSFORM_KEYS if k != "rw" or four]
+            + [custom_key(n) for n in custom_properties(owner)[:CUSTOM_SLOTS]])
+
+
+def channel_path(owner, key):
+    """(property, index) of a channel of an object or pose bone (index -1 for a custom property), or None when the owner
+    has no such channel."""
+    if key.startswith("["):
+        return (key, -1) if key in {custom_key(n) for n in custom_properties(owner)} else None
+    attr = {"t": "location", "s": "scale"}.get(key[0]) or rotation_channel(owner)[0]
+    four = attr in {"rotation_quaternion", "rotation_axis_angle"}
+    if key[1] == "w":
+        return (attr, 0) if four else None
+    return attr, "xyz".index(key[1]) + four
+
+
+def channel_label(key):
+    if key.startswith("["):
+        return bpy.utils.unescape_identifier(key[2:-2])
+    return "%s %s" % ({"t": "Translate", "r": "Rotate", "s": "Scale"}[key[0]], key[1].upper())
+
+
+def channel_value(owner, path, index):
+    value = owner[bpy.utils.unescape_identifier(path[2:-2])] if path.startswith("[") else getattr(owner, path)
+    return value if index < 0 else value[index]
+
+
+def set_channel_value(owner, path, index, value):
+    if path.startswith("["):
+        name = bpy.utils.unescape_identifier(path[2:-2])
+        ui = owner.id_properties_ui(name).as_dict()
+        value = min(max(value, ui.get("min", value)), ui.get("max", value))
+        owner[name] = int(round(value)) if isinstance(owner[name], int) else value
+        owner.id_data.update_tag()   # (drivers that read it)
+    else:
+        getattr(owner, path)[index] = value
+
+
+def lock_of(owner, path, index):
+    """(lock property, index or -1) of a transform channel, or None (custom properties; a W without the 4D lock)."""
+    if path.startswith("["):
+        return None
+    if path in {"location", "scale"}:
+        return "lock_" + path, index
+    if path == "rotation_euler":
+        return "lock_rotation", index
+    if index == 0:
+        return ("lock_rotation_w", -1) if owner.lock_rotations_4d else None
+    return "lock_rotation", index - 1
+
+
+def channel_locked(owner, path, index):
+    lock = lock_of(owner, path, index)
+    if lock is None:
+        return False
+    value = getattr(owner, lock[0])
+    return bool(value if lock[1] < 0 else value[lock[1]])
+
+
+def hidden_channels(owner):
+    return set(owner.get(HIDDEN, ()))
+
+
+def picked_channels(context):
+    """The picked channels of the Channel Box (custom properties by the shown owner's names)."""
+    picks = context.window_manager.m3d_channel_picks
+    keys = [k for k in TRANSFORM_KEYS if getattr(picks, k)]
+    owner = channel_owner(context)
+    if owner is not None:
+        keys += [custom_key(n) for i, n in enumerate(custom_properties(owner)[:CUSTOM_SLOTS]) if picks.custom[i]]
+    return keys
+
+
+def owner_curves(owner):
+    """F-curves of an object's own channels or of a pose bone's."""
+    from m3d_anim import channel_fcurves
+    base = "" if isinstance(owner, bpy.types.ID) else owner.path_from_id()
+    curves = channel_fcurves(owner.id_data)
+    if not base:
+        return [fc for fc in curves if not fc.data_path.startswith("pose.bones[")]
+    return [fc for fc in curves if fc.data_path.startswith(base + ".") or fc.data_path.startswith(base + "[")]
+
+
+def channel_curves(owner, keys):
+    """F-curves of the channels `keys` of the owner."""
+    base = "" if isinstance(owner, bpy.types.ID) else owner.path_from_id()
+    wanted = set()
+    for key in keys:
+        p = channel_path(owner, key)
+        if p is not None:
+            wanted.add((base + ("" if not base or p[0].startswith("[") else ".") + p[0], max(p[1], 0)))
+    return [fc for fc in owner_curves(owner) if (fc.data_path, fc.array_index) in wanted]
+
+
+def show_picked_curves(context):
+    """The Graph Editor shows only the curves of the picked channels (all of them again when none is picked)."""
+    keys = picked_channels(context)
+    for owner in channel_owners(context):
+        picked = channel_curves(owner, keys)
+        for fc in owner_curves(owner):
+            fc.hide = bool(keys) and fc not in picked
+            if keys:
+                fc.select = fc in picked
+    for area in context.screen.areas if context.screen else ():
+        if area.type in {'GRAPH_EDITOR', 'DOPESHEET_EDITOR'}:
+            area.tag_redraw()
+
+
+def _picks_changed(_self, context):
+    show_picked_curves(context)
+
+
+PICK_TIP = ("Pick the channel (click, or drag over the names): S keys the picked channels, the Graph Editor shows their "
+            "curves, a middle-drag changes them; right-click for Key, Breakdown, Mute, Lock and Hide")
+M3D_ChannelPicks = type("M3D_ChannelPicks", (bpy.types.PropertyGroup,), {"__annotations__": {
+    **{k: bpy.props.BoolProperty(name=channel_label(k), update=_picks_changed, options=set(), description=PICK_TIP)
+       for k in TRANSFORM_KEYS},
+    "custom": bpy.props.BoolVectorProperty(name="Custom", size=CUSTOM_SLOTS, update=_picks_changed, options=set(),
+                                           description=PICK_TIP),
+}})
+
+
+def _proxy_key(owner, name):
+    """The channel a value stand-in shows on the owner, or None (another rotation mode, no such custom property).
+    Stand-ins: tx..sz; rx..rz Euler, qw..qz quaternion, aw..az axis angle; c0.. custom properties, u0.. the 0-1 ones."""
+    if name[0] in "cu":
+        names = custom_properties(owner)
+        i = int(name[1:])
+        return custom_key(names[i]) if i < len(names) else None
+    family = {"q": 'QUATERNION', "a": 'AXIS_ANGLE'}.get(name[0])
+    if family is not None:
+        return "r" + name[1] if owner.rotation_mode == family else None
+    if name[0] == "r" and owner.rotation_mode in {'QUATERNION', 'AXIS_ANGLE'}:
+        return None
+    return name
+
+
+def _proxy_get(name):
+    def get(_self):
+        owner = channel_owner(bpy.context)
+        key = _proxy_key(owner, name) if owner is not None else None
+        p = channel_path(owner, key) if key else None
+        return float(channel_value(owner, *p)) if p else 0.0
+    return get
+
+
+def _proxy_set(name):
+    def set_(_self, value):
+        context = bpy.context
+        owners = channel_owners(context)
+        key = _proxy_key(owners[0], name) if owners else None
+        if key is None:
+            return
+        rotation = rotation_channel(owners[0])[0]
+        auto = context.scene.tool_settings.use_keyframe_insert_auto
+        for owner in owners:
+            if key[0] == "r" and rotation_channel(owner)[0] != rotation:
+                continue   # (another rotation mode: its channels mean something else)
+            p = channel_path(owner, key)
+            if p is None or channel_locked(owner, *p):
+                continue
+            set_channel_value(owner, *p, value)
+            if auto:
+                try:
+                    owner.keyframe_insert(p[0], index=p[1])
+                except (RuntimeError, TypeError):
+                    pass
+    return set_
+
+
+def _proxy(name, **kw):
+    return bpy.props.FloatProperty(name=name, get=_proxy_get(name), set=_proxy_set(name), options=set(), precision=3,
+                                   **kw)
+
+
+M3D_ChannelValues = type("M3D_ChannelValues", (bpy.types.PropertyGroup,), {"__annotations__": {
+    **{n: _proxy(n, subtype='DISTANCE') for n in ("tx", "ty", "tz")},
+    **{n: _proxy(n, subtype='ANGLE') for n in ("rx", "ry", "rz", "aw")},
+    **{n: _proxy(n) for n in ("qw", "qx", "qy", "qz", "ax", "ay", "az", "sx", "sy", "sz")},
+    **{"c%d" % i: _proxy("c%d" % i) for i in range(CUSTOM_SLOTS)},
+    **{"u%d" % i: _proxy("u%d" % i, min=0.0, max=1.0) for i in range(CUSTOM_SLOTS)},   # (0-1 switches: sliders)
+}})
+
+
+def proxy_name(owner, key):
+    """The value stand-in that shows a channel of the owner."""
+    if key.startswith("["):
+        name = bpy.utils.unescape_identifier(key[2:-2])
+        ui = owner.id_properties_ui(name).as_dict()
+        unit = ui.get("min") == 0 and ui.get("max") == 1
+        return "%s%d" % ("u" if unit else "c", custom_properties(owner).index(name))
+    if key[0] == "r":
+        return {'QUATERNION': "q", 'AXIS_ANGLE': "a"}.get(owner.rotation_mode, "r") + key[1]
+    return key
+
+
+def button_channel(context, identifier):
+    """The channel of a Channel Box button (a pick or a value stand-in), or "" (a custom pick: its index is unknown)."""
+    if identifier in TRANSFORM_KEYS:
+        return identifier
+    owner = channel_owner(context)
+    if owner is None or not identifier[1:]:
+        return ""
+    if identifier[0] in "cu" and identifier[1:].isdigit():
+        return _proxy_key(owner, identifier) or ""
+    if identifier[0] in "qa":
+        return "r" + identifier[1]
+    return ""
+
+
+def draw_channel_row(col, context, owner, key):
+    """One channel: its name (a toggle that picks it), the value (for every selected bone or object), the key state and
+    the lock."""
+    picks, values = context.window_manager.m3d_channel_picks, context.scene.m3d_channel_values
+    path, index = channel_path(owner, key)
+    row = col.row(align=True)
+    split = row.split(factor=0.48, align=True)
+    if key.startswith("["):
+        split.prop(picks, "custom", index=custom_properties(owner).index(channel_label(key)), text=channel_label(key),
+                   toggle=True)
+    else:
+        split.prop(picks, key, text=channel_label(key), toggle=True)
+    sub = split.row(align=True)
+    sub.active = not channel_locked(owner, path, index)
+    name = proxy_name(owner, key)
+    sub.prop(values, name, text="", slider=name[0] == "u")
+    row.prop_decorator(owner, path, index=index)
+    lock = lock_of(owner, path, index)
+    if lock is None:
+        row.label(text="", icon='BLANK1')
+    elif lock[1] >= 0:
+        row.prop(owner, lock[0], index=lock[1], text="", emboss=False, icon='DECORATE_UNLOCKED')
+    else:
+        row.prop(owner, lock[0], text="", emboss=False, icon='DECORATE_UNLOCKED')
 
 
 class PROPERTIES_PT_m3d_channel_box(_DockPanel, Panel):
@@ -1107,22 +1373,12 @@ class PROPERTIES_PT_m3d_channel_box(_DockPanel, Panel):
             layout.prop(owner.bone, "name", text="")
         if owner is ob and ob.type == 'MESH':
             m3d_pair.draw_channel(layout, ob)   # (the role is one lookup: nothing per vertex)
+        hidden = hidden_channels(owner)
+        keys = [k for k in channel_keys(owner) if k not in hidden]
         col = layout.column(align=True)
-        rot, rot_label = rotation_channel(owner)
-        for label, attr, lock in (("Translate", "location", "lock_location"), (rot_label, rot, "lock_rotation"),
-                                  ("Scale", "scale", "lock_scale")):
-            count = 4 if attr in {"rotation_quaternion", "rotation_axis_angle"} else 3
-            axes = "WXYZ" if count == 4 else "XYZ"
-            for i in range(count):
-                j = i - (count - 3)   # Index in the lock (W has none).
-                row = col.row(align=True)
-                sub = row.row(align=True)
-                sub.active = j < 0 or not getattr(owner, lock)[j]
-                sub.prop(owner, attr, index=i, text=f"{label} {axes[i]}")
-                if j >= 0:
-                    row.prop(owner, lock, index=j, text="", emboss=False, icon='DECORATE_UNLOCKED')
-                else:
-                    row.label(text="", icon='BLANK1')
+        for key in keys:
+            if not key.startswith("["):
+                draw_channel_row(col, context, owner, key)
         if context.mode in {'OBJECT', 'POSE'}:   # (Set Rotate Order keeps the pose and the keys; it acts on the selection)
             from m3d_rig import ROTATE_LABELS
             row = col.row(align=True)
@@ -1131,12 +1387,15 @@ class PROPERTIES_PT_m3d_channel_box(_DockPanel, Panel):
         if owner is ob:
             col.prop(ob, "hide_viewport", text="Visibility", invert_checkbox=True, toggle=True)
 
-        names = custom_properties(owner)
-        if names:   # IK / FK switches and the like: sliders.
+        custom = [k for k in keys if k.startswith("[")]
+        if custom:   # IK / FK switches and the like (0 to 1: sliders).
             layout.label(text="CUSTOM")
             col = layout.column(align=True)
-            for name in names:
-                col.prop(owner, '["%s"]' % bpy.utils.escape_identifier(name), text=name, slider=True)
+            for key in custom:
+                draw_channel_row(col, context, owner, key)
+        if hidden:
+            layout.operator("m3d.channel_op", text="Show %d Hidden Channel(s)" % len(hidden),
+                            icon='HIDE_OFF').action = 'SHOW_ALL'
 
         if owner is ob and ob.data is not None:
             layout.label(text="SHAPES")
@@ -1260,6 +1519,184 @@ def layer_context_menu(self, context):
 
 
 LAYER_ROWS = 60   # rows drawn in the Layer Editor
+
+
+# (action, label, icon) of the right-click menu of a channel
+CHANNEL_ACTIONS = (('KEY', "Key Selected", 'KEY_HLT'), ('BREAKDOWN', "Breakdown Selected", 'KEYTYPE_BREAKDOWN_VEC'),
+                   ('MUTE', "Mute Selected", 'MUTE_IPO_ON'), ('UNMUTE', "Unmute Selected", 'MUTE_IPO_OFF'),
+                   ('LOCK', "Lock Selected", 'LOCKED'), ('UNLOCK', "Unlock Selected", 'UNLOCKED'),
+                   ('HIDE', "Hide Selected", 'HIDE_ON'), ('SHOW_ALL', "Show All Channels", 'HIDE_OFF'),
+                   ('DESELECT', "Deselect Channels", 'X'))
+
+
+def clear_picks(context):
+    picks = context.window_manager.m3d_channel_picks
+    for k in TRANSFORM_KEYS:
+        if getattr(picks, k):
+            setattr(picks, k, False)
+    if any(picks.custom):
+        picks.custom = (False,) * CUSTOM_SLOTS
+
+
+class M3D_OT_channel_op(Operator):
+    """Channel Box: act on the picked channels (else the one right-clicked) of the selected bones or objects"""
+    bl_idname = "m3d.channel_op"
+    bl_label = "Channels"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    action: bpy.props.EnumProperty(items=[(a, label, "") for a, label, _i in CHANNEL_ACTIONS])
+    channel: bpy.props.StringProperty(description="The channel right-clicked (used when none is picked)",
+                                      options={'SKIP_SAVE'})
+
+    @classmethod
+    def description(cls, _context, props):
+        return {'KEY': "Key the picked channels of the selected bones or objects",
+                'BREAKDOWN': "Key the picked channels as breakdowns",
+                'MUTE': "Mute the animation of the picked channels",
+                'UNMUTE': "Play the animation of the picked channels again",
+                'LOCK': "Lock the picked channels (the transform tools leave them alone)",
+                'UNLOCK': "Unlock the picked channels",
+                'HIDE': "Take the picked channels out of the Channel Box (S no longer keys them)",
+                'SHOW_ALL': "Show the hidden channels again", 'DESELECT': "Unpick every channel"}[props.action]
+
+    @classmethod
+    def poll(cls, context):
+        return channel_owner(context) is not None
+
+    def execute(self, context):
+        keys = picked_channels(context) or ([self.channel] if self.channel else [])
+        owners = channel_owners(context)
+        if self.action == 'SHOW_ALL':
+            for owner in owners:
+                if HIDDEN in owner:
+                    del owner[HIDDEN]
+            return {'FINISHED'}
+        if self.action == 'DESELECT':
+            clear_picks(context)
+            return {'FINISHED'}
+        if not keys:
+            self.report({'WARNING'}, "Pick channels first: click or drag over their names")
+            return {'CANCELLED'}
+        if self.action in {'KEY', 'BREAKDOWN'}:
+            from m3d_anim import set_keys
+            kind = 'BREAKDOWN' if self.action == 'BREAKDOWN' else context.scene.tool_settings.keyframe_type
+            self.report({'INFO'}, "Keyed %d channel(s)" % set_keys(owners, kind, keys))
+            frame = context.scene.frame_current
+            for owner in owners:   # (a key that was already there keeps its type otherwise)
+                for fc in channel_curves(owner, keys):
+                    for k in fc.keyframe_points:
+                        if abs(k.co.x - frame) < 0.5:
+                            k.type = kind
+            return {'FINISHED'}
+        for owner in owners:
+            if self.action in {'MUTE', 'UNMUTE'}:
+                for fc in channel_curves(owner, keys):
+                    fc.mute = self.action == 'MUTE'
+            elif self.action in {'LOCK', 'UNLOCK'}:
+                for key in keys:
+                    p = channel_path(owner, key)
+                    lock = lock_of(owner, *p) if p else None
+                    if lock is not None and lock[1] >= 0:
+                        getattr(owner, lock[0])[lock[1]] = self.action == 'LOCK'
+                    elif lock is not None:
+                        setattr(owner, lock[0], self.action == 'LOCK')
+            elif self.action == 'HIDE':
+                owner[HIDDEN] = sorted(hidden_channels(owner) | {k for k in keys if channel_path(owner, k)})
+        if self.action == 'HIDE':
+            clear_picks(context)
+        return {'FINISHED'}
+
+
+def hovered_channel(context):
+    """The channel of the Channel Box button under the pointer, or ""."""
+    ptr, prop = getattr(context, "button_pointer", None), getattr(context, "button_prop", None)
+    if ptr is None or prop is None or ptr.bl_rna.identifier not in {"M3D_ChannelPicks", "M3D_ChannelValues"}:
+        return ""
+    return button_channel(context, prop.identifier)
+
+
+class M3D_OT_channel_key(Operator):
+    """S over a Channel Box channel: key that channel of the selected bones or objects (the picked channels when it is
+one of them)"""
+    bl_idname = "m3d.channel_key"
+    bl_label = "Key Channel"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return bool(hovered_channel(context)) and channel_owner(context) is not None
+
+    def execute(self, context):
+        from m3d_anim import set_keys
+        key, picked = hovered_channel(context), picked_channels(context)
+        count = set_keys(channel_owners(context), context.scene.tool_settings.keyframe_type,
+                         picked if key in picked else [key])
+        return {'FINISHED'} if count else {'CANCELLED'}
+
+
+class M3D_OT_channel_drag(Operator):
+    """Middle-drag in the Channel Box: change the picked channels of the selected bones or objects, left and right (a
+virtual slider; Ctrl faster, Shift slower, Esc or right click puts them back)"""
+    bl_idname = "m3d.channel_drag"
+    bl_label = "Drag Channels"
+    bl_options = {'REGISTER', 'UNDO', 'GRAB_CURSOR', 'BLOCKING'}
+
+    @classmethod
+    def poll(cls, context):
+        space = context.space_data
+        return (space is not None and space.type == 'PROPERTIES' and space.context == 'CHANNEL_BOX'
+                and bool(picked_channels(context)))
+
+    @staticmethod
+    def step(path):
+        """Change per pixel: half a degree, else a hundredth (of a unit, of a scale, of a 0-1 switch)."""
+        return {"rotation_euler": 0.0087266, "rotation_quaternion": 0.005}.get(path, 0.01)
+
+    def invoke(self, context, event):
+        keys = picked_channels(context)
+        self.items = []
+        for owner in channel_owners(context):
+            for key in keys:
+                p = channel_path(owner, key)
+                if p is not None and not channel_locked(owner, *p):
+                    self.items.append((owner, p, channel_value(owner, *p)))
+        if not self.items:
+            return {'CANCELLED'}
+        self.start = event.mouse_x
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def apply(self, offset):
+        for owner, p, value in self.items:
+            set_channel_value(owner, *p, value + offset * self.step(p[0]))
+
+    def modal(self, context, event):
+        if event.type == 'MOUSEMOVE':
+            self.apply((event.mouse_x - self.start) * (10.0 if event.ctrl else 0.1 if event.shift else 1.0))
+            context.area.tag_redraw()
+        elif event.type in {'MIDDLEMOUSE', 'LEFTMOUSE', 'RET', 'NUMPAD_ENTER'} and event.value == 'RELEASE':
+            if context.scene.tool_settings.use_keyframe_insert_auto:
+                for owner, (path, index), _value in self.items:
+                    owner.keyframe_insert(path, index=index)
+            return {'FINISHED'}
+        elif event.type in {'ESC', 'RIGHTMOUSE'}:
+            self.apply(0.0)
+            context.area.tag_redraw()
+            return {'CANCELLED'}
+        return {'RUNNING_MODAL'}
+
+
+def draw_channel_menu(self, context):
+    """Right-click on a Channel Box channel: the commands of the picked channels (or of that one)."""
+    ptr = getattr(context, "button_pointer", None)
+    if ptr is None or ptr.bl_rna.identifier not in {"M3D_ChannelPicks", "M3D_ChannelValues"}:
+        return
+    layout = self.layout
+    layout.separator()
+    clicked = hovered_channel(context)
+    for action, label, icon in CHANNEL_ACTIONS:
+        o = layout.operator("m3d.channel_op", text=label, icon=icon)
+        o.action, o.channel = action, clicked
 
 
 class PROPERTIES_PT_m3d_layer_editor(_DockPanel, Panel):
@@ -1582,6 +2019,11 @@ classes = (
     M3D_MT_hotbox,
     M3D_MT_marking_menu,
     M3D_MT_convert_selection_pie,
+    M3D_ChannelPicks,
+    M3D_ChannelValues,
+    M3D_OT_channel_op,
+    M3D_OT_channel_key,
+    M3D_OT_channel_drag,
     PROPERTIES_PT_m3d_channel_box,
     M3D_OT_layer_edit,
     M3D_MT_layer,
@@ -1666,6 +2108,9 @@ def _timeline_controls_below():
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    bpy.types.WindowManager.m3d_channel_picks = bpy.props.PointerProperty(type=M3D_ChannelPicks)
+    bpy.types.Scene.m3d_channel_values = bpy.props.PointerProperty(type=M3D_ChannelValues)
+    bpy.types.UI_MT_button_context_menu.append(draw_channel_menu)
     bpy.app.handlers.load_factory_startup_post.append(m3d_workspace_names)
     bpy.app.handlers.load_factory_startup_post.append(m3d_startup_layout)
     bpy.app.handlers.load_factory_startup_post.append(m3d_startup_scene)
@@ -1682,5 +2127,8 @@ def unregister():
     bpy.app.handlers.load_factory_startup_post.remove(m3d_startup_layout)
     bpy.app.handlers.load_factory_startup_post.remove(m3d_startup_scene)
     bpy.app.handlers.load_factory_preferences_post.remove(m3d_preferences)
+    bpy.types.UI_MT_button_context_menu.remove(draw_channel_menu)
+    del bpy.types.Scene.m3d_channel_values
+    del bpy.types.WindowManager.m3d_channel_picks
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
