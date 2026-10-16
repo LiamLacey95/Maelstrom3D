@@ -4,7 +4,8 @@
 
 """
 MEL for the Maelstrom3D command line: `polyCube -w 2 -n box; move -r 0 0 1;` runs the matching
-`maya.cmds` command. `python("...")` runs Python with `cmds` available.
+`maya.cmds` command. `python("...")` runs Python with `cmds` available, `help` lists the commands. Results and errors
+also show in the status bar (the command line is one line high).
 """
 
 __all__ = (
@@ -91,11 +92,23 @@ def run(text):
             exec(code, {"cmds": cmds, "bpy": bpy})
             continue
         command, args, flags = parse(statement)
-        func = getattr(cmds, command, None)
+        if command == "help":
+            result = Help(help_text())
+            continue
+        func = getattr(cmds, command, None) if command in cmds.__all__ else None
         if func is None:
-            raise NameError("Cannot find procedure \"%s\"." % command)
+            raise NameError("'%s' isn't supported yet. Type help for the list." % command)
         result = func(*args, **flags)
     return result
+
+
+class Help(str):
+    """The text of the help command (the command line also shows it as a popup)."""
+
+
+def help_text():
+    import m3d.cmds as cmds
+    return "Commands: %s. python(\"...\") runs Python with cmds ready." % ", ".join(sorted(cmds.__all__, key=str.lower))
 
 
 def _scrollback(text, kind):
@@ -110,15 +123,29 @@ def execute(context, _is_interactive):
     except IndexError:
         return {'CANCELLED'}
     _scrollback(sc.prompt + line, 'INPUT')
+    import m3d_help
     try:
         result = run(line)
-        if result is not None:
+        if isinstance(result, Help):
+            _scrollback(result, 'INFO')
+            context.window_manager.popup_menu(_draw_help, title="MEL commands", icon='CONSOLE')
+        elif result is not None:
             shown = " ".join(map(str, result)) if isinstance(result, (list, tuple)) else result
             _scrollback("// Result: %s //" % shown, 'OUTPUT')
+            m3d_help.show_note("Result: %s" % shown)   # (the one-line command line shows only the prompt)
     except Exception as err:
         _scrollback("// Error: %s //" % err, 'ERROR')
+        m3d_help.show_note("Error: %s" % err, 'ERROR')
     bpy.ops.console.history_append(text="", current_character=0, remove_duplicates=True)
     return {'FINISHED'}
+
+
+def _draw_help(menu, _context):
+    import m3d.cmds as cmds
+    grid = menu.layout.grid_flow(columns=4, even_columns=True)
+    for name in sorted(cmds.__all__, key=str.lower):
+        grid.label(text=name, translate=False)
+    menu.layout.label(text="python(\"...\") runs Python with cmds ready. Tab completes a name.")
 
 
 def autocomplete(context):

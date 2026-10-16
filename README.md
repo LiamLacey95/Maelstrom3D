@@ -19,7 +19,11 @@ release). Everything is set up out of the box.
 - **Portable** (`...-portable.zip`): unzip anywhere (a USB stick works) and run `Maelstrom3D.exe`; settings stay in its
   `portable` folder.
 
-Maelstrom3D keeps its settings apart from Blender's (`%APPDATA%\Maelstrom3D`), so both can be installed side by side.
+Maelstrom3D keeps its settings apart from Blender's (`%APPDATA%\Maelstrom3D\5.2\config`; the portable one in its
+`portable` folder), so both can be installed side by side. **File > Defaults > Export Settings / Import Settings** takes
+them between the installed and the portable Maelstrom3D or to another computer, and a new version folder picks up the
+previous one's settings on its first start. Found a bug? **Help > Report a Bug** opens a pre-filled report here (nothing
+is sent until you submit it).
 
 | | |
 |---|---|

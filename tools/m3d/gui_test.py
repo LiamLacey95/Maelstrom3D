@@ -12526,6 +12526,155 @@ def polb_done():
     bpy.ops.m3d.workspace(kind='MODEL')
 
 
+# ----------------------------------------------------------------------------------------------------
+# Files, help and trust (UX pass 2, P5): Delete Workspace and its F-key, Windows > Command Line, a component tool from
+# Object Mode, the status bar note, the card after a session that ended unexpectedly.
+
+import m3d_help
+
+
+@step
+def p5_setup():
+    import tempfile
+    if not GIZMO.get("cfg"):   # (a run of this segment alone: the settings still go to a temp folder)
+        GIZMO["cfg"] = tempfile.mkdtemp(prefix="m3d_gui_")
+        m3d_user._path = lambda create=False: os.path.join(GIZMO["cfg"], "m3d_user.json")
+        m3d_user.reset_cache()
+    bpy.ops.m3d.workspace(kind='RIG')
+
+
+step(wait_until(lambda: window().workspace.name == "Rigging", "the Rigging workspace"))
+
+
+@step
+def p5_delete_workspace():
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        check(bpy.ops.m3d.workspace_delete() == {'FINISHED'}, "Delete Workspace")
+
+
+step(wait_until(lambda: "Rigging" not in bpy.data.workspaces and window().workspace.name != "Rigging", "Rigging deleted"))
+
+
+@step
+def p5_fkey_restores():
+    check(m3d_workspace.find_workspace('RIG') is None, "Rigging is gone")
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        check(bpy.ops.m3d.workspace(kind='RIG') == {'FINISHED'}, "F5 with Rigging deleted: it comes back")
+
+
+step(wait_until(lambda: window().workspace.name == "Rigging", "the restored Rigging workspace"))
+
+
+@step
+def p5_fkey_restored():
+    ws = window().workspace
+    check(m3d_workspace.workspace_kind(ws) == 'RIG' and bpy.context.window_manager.m3d_menu_set == 'RIGGING'
+          and any(a.type == 'PROPERTIES' for a in window().screen.areas) and not tracebacks(),
+          "the restored Rigging: its factory layout and menu set")
+    check(not any(a.type == 'CONSOLE' for a in window().screen.areas), "(Rigging has no command line)")
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        check(bpy.ops.m3d.command_line() == {'FINISHED'}, "Windows > Command Line in Rigging")
+
+
+@step
+def p5_command_line():
+    consoles = [a for a in window().screen.areas if a.type == 'CONSOLE']
+    scale = bpy.context.preferences.system.ui_scale
+    check(len(consoles) == 1 and consoles[0].height < 60 * scale and consoles[0].spaces.active.language == 'mel',
+          "a one-line MEL command line under the 3D view: %s" % [(a.height, a.spaces.active.language) for a in consoles])
+    view = max((a for a in window().screen.areas if a.type == 'VIEW_3D'), key=lambda a: a.width * a.height)
+    check(consoles and consoles[0].y < view.y and consoles[0].width == view.width, "...under it, as wide")
+
+
+@step
+def p5_command_line_tidy():
+    console = next((a for a in window().screen.areas if a.type == 'CONSOLE'), None)
+    sc = console.spaces.active if console else None
+    check(sc is not None and not sc.show_region_header and sc.prompt == "MEL ", "the command line: no header, the MEL prompt")
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.m3d.command_line()
+
+
+@step
+def p5_command_line_closed():
+    check(not any(a.type == 'CONSOLE' for a in window().screen.areas) and not tracebacks(), "Windows > Command Line again hides it")
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
+step(wait_until(lambda: window().workspace.name == "Modeling", "the Modeling workspace"))
+
+
+@step
+def p5_component_tool():
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        if bpy.context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.ops.object.select_all(action='DESELECT')
+        bpy.ops.m3d.add_primitive(kind='CUBE')
+    ob = bpy.context.active_object
+    GIZMO["p5_cube"] = ob.name
+    # Edit Mesh > Add Divisions from the menu bar, the cube in Object Mode: it runs on the whole mesh in component mode.
+    with bpy.context.temp_override(window=win, screen=win.screen):
+        res = bpy.ops.m3d.call('INVOKE_DEFAULT', idname="mesh.subdivide", props="{}", label="Add Divisions")
+    check(res == {'FINISHED'} and ob.mode == 'EDIT', "Add Divisions from Object Mode: component mode (%s, %s)" % (res, ob.mode))
+
+
+@step
+def p5_component_tool_explain():
+    win, area, region = view3d()
+    ob = bpy.data.objects[GIZMO["p5_cube"]]
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.object.mode_set(mode='OBJECT')
+    check(len(ob.data.polygons) == 24, "...on all of it (%d faces)" % len(ob.data.polygons))
+    with bpy.context.temp_override(window=win, screen=win.screen):
+        res = bpy.ops.m3d.call('INVOKE_DEFAULT', idname="mesh.merge", props="{'type': 'COLLAPSE'}", label="Collapse")
+    check(res == {'CANCELLED'} and ob.mode == 'OBJECT' and len(ob.data.polygons) == 24, "Collapse from Object Mode: explained, nothing done")
+    bpy.data.objects.remove(ob)
+    # The status bar redraws for a note.
+    GIZMO["p5_drawn"], GIZMO["p5_draw"] = [], m3d_help.draw_status
+
+    def rec(layout):
+        GIZMO["p5_drawn"].append(m3d_help.note_text())
+        GIZMO["p5_draw"](layout)
+    m3d_help.draw_status = rec
+    m3d_help.show_note("P5 note", seconds=3.0)
+
+
+step(wait_until(lambda: "P5 note" in GIZMO["p5_drawn"], "the status bar to show the note"))
+
+
+@step
+def p5_recover_card():
+    import tempfile, time
+    m3d_help.draw_status = GIZMO["p5_draw"]
+    base = GIZMO["p5_base"] = tempfile.mkdtemp(prefix="m3d_gui_tmp_")
+    GIZMO["p5_temp_base"], m3d_help.temp_base = m3d_help.temp_base, lambda: base
+    for name, age in (("quit.blend", 100), ("scene_99999_autosave.blend", 10)):
+        open(os.path.join(base, name), "w").close()
+        os.utime(os.path.join(base, name), (time.time() - age, time.time() - age))
+    m3d_help.offer_recovery()   # (the card opens: "Last session ended unexpectedly")
+    path = os.path.join(base, "scene_99999_autosave.blend")
+    check(m3d_user.data().get("recover_offered", [None])[0] == path and m3d_help.crash_autosave() is None and not tracebacks(),
+          "the card for an auto save newer than the last quit, once")
+
+
+@step
+def p5_recover_card_close():
+    import shutil
+    event('ESC', 'PRESS')
+    event('ESC', 'RELEASE')
+    m3d_help.temp_base = GIZMO["p5_temp_base"]
+    m3d_user.data().pop("recover_offered", None)
+    m3d_user.save()
+    shutil.rmtree(GIZMO["p5_base"], ignore_errors=True)
+
+
+@step
+def p5_done():
+    check(not tracebacks(), "Python error in the P5 steps")
+
+
 @step
 def finish():
     errors = "".join(stderr_tee.buf + sys.stdout.buf)

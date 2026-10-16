@@ -565,13 +565,16 @@ def dolly_prefs():
 inputs_.view_zoom_axis, inputs_.invert_mouse_zoom = 'VERTICAL', True
 m3d_mode.m3d_preferences()
 check(dolly_prefs() == ('DOLLY', 'HORIZONTAL', False), "factory preferences: Maya dolly %s" % (dolly_prefs(),))
+check(not bpy.context.preferences.view.show_statusbar_version, "factory preferences: Blender's version off in the status bar")
 inputs_.view_zoom_method, inputs_.view_zoom_axis, inputs_.invert_mouse_zoom = 'CONTINUE', 'VERTICAL', True
+bpy.context.preferences.view.show_statusbar_version = True
 m3d_user.reset_cache()
 check(m3d_user.data().get("prefs_version") is None, "no preferences version before the migration")
 m3d_mode.migrate_preferences()
 check(dolly_prefs() == ('DOLLY', 'HORIZONTAL', False), "migration: Maya dolly %s" % (dolly_prefs(),))
 m3d_user.reset_cache()
 check(m3d_user.data().get("prefs_version") == m3d_mode.PREFS_VERSION, "migration records the version in m3d_user.json")
+check(not bpy.context.preferences.view.show_statusbar_version, "migration: Blender's version off in the status bar (ours is there)")
 inputs_.view_zoom_axis, inputs_.invert_mouse_zoom = 'VERTICAL', True   # The user changes their mind...
 m3d_mode.migrate_preferences()
 check(dolly_prefs() == ('DOLLY', 'VERTICAL', True), "...and the migration does not run again (%s)" % (dolly_prefs(),))
@@ -6664,6 +6667,8 @@ def ws_ops(log):
 log = []
 m3d_ui.draw_workspace_picker(Rec(log), WsCtx(bpy.data.workspaces[0]))
 check(any(r._kind == "popover" and r._args[0] == "M3D_PT_workspace_settings" for r in log), "Status Line has the Workspace Settings popover")
+check([(r._args[1], r._kw.get("new"), r._kw.get("unlink", "")) for r in log if r._kind in {"template_ID", "template_search"}] == [("workspace", "workspace.add", "")]
+      and not [r for r in log if r._kind == "template_ID"], "the workspace picker has no delete button, not even greyed out (Workspace Settings has Delete Workspace)")
 check(hasattr(W.M3D_OT_workspace_reset, "invoke"), "Reset Workspace asks for confirmation")
 check(hasattr(bpy.types, "M3D_PT_workspace_settings"), "settings panel registered")
 for kind_, (wname_, *_rest) in W.KINDS.items():
@@ -6671,7 +6676,8 @@ for kind_, (wname_, *_rest) in W.KINDS.items():
     check(ws_ is not None, "workspace for " + kind_)
     ops_ = ws_ops(ws_settings_log(ws_))
     names_ = [o[0] for o in ops_]
-    check("m3d.workspace_reset" in names_ and "wm.save_homefile" in names_, "%s settings: reset and save as default" % kind_)
+    check("m3d.workspace_reset" in names_ and "m3d.save_layouts_default" in names_ and "m3d.workspace_delete" in names_,
+          "%s settings: reset, save as default, delete" % kind_)
     check(any(o[0] == "screen.userpref_show" and o[1].get("section") == 'KEYMAP' for o in ops_), "%s settings: keyboard shortcuts" % kind_)
     shown_ = [o[1]["tab"] for o in ops_ if o[0] == "m3d.dock_tab_toggle"]
     tabs_ = W.DOCK_TABS[W.tabs_kind(WsCtx(ws_))]   # (Texture: the table of its layout; a page without a tab has no toggle)
@@ -15054,6 +15060,219 @@ bpy.ops.m3d.rig_mode(mode='OBJECT')
 clean_scene()
 for act_ in list(bpy.data.actions):
     bpy.data.actions.remove(act_)
+
+# --- Files, help and trust (UX pass 2, P5): File > Recover / Revert / Defaults, the Help menu, version, log file and status
+# bar note, the crash card, settings reset / export / import, plain errors, MEL help and file safety. Everything on temp folders.
+import zipfile
+import m3d_help as HP
+p5_tmp = tempfile.mkdtemp(prefix="m3d_p5_")
+p5_file = {e.get("label"): e for e in m3d_ui.MENUS["M3D_MT_file"][1]}
+check(p5_file["Recover"]["idname"] == "TOPBAR_MT_file_recover" and p5_file["Revert"]["idname"] == "wm.revert_mainfile"
+      and p5_file["Defaults"]["idname"] == "M3D_MT_file_defaults", "File: Recover (Last Session, Auto Save...), Revert, Defaults")
+p5_log = []
+m3d_ui.draw_entries(Rec(p5_log), bpy.context, m3d_ui.MENUS["M3D_MT_file"][1])
+p5_ops = [r._args[0] for r in p5_log if r._kind == "operator"]
+check(("wm.revert_mainfile" in p5_ops) == bpy.data.is_saved and "TOPBAR_MT_file_recover" in [r._args[0] for r in p5_log if r._kind == "menu"],
+      "Revert only for a saved file (hidden, not greyed out): %s" % p5_ops)
+check([e.get("idname") for e in m3d_ui.MENUS["M3D_MT_file_defaults"][1] if e["kind"] == 'OP'] ==
+      ["m3d.save_layouts_default", "wm.read_homefile", "m3d.reset_settings", "m3d.reset_settings", "m3d.reset_settings",
+       "m3d.settings_export", "m3d.settings_import"], "File > Defaults: layouts, resets, settings export / import")
+p5_help = {e.get("label"): e for e in m3d_ui.MENUS["M3D_MT_help"][1] if e["kind"] == 'OP'}
+check(set(p5_help) == {"Maelstrom3D Guide", "Keyboard Shortcuts", "Hotkey Editor", "What's New in This Alpha", "Report a Bug...",
+                       "Open Crash Log", "Open Log Folder", "About Maelstrom3D", "Blender Manual (reference)"}
+      and not any(e.get("idname") == "TOPBAR_MT_help" for e in m3d_ui.MENUS["M3D_MT_help"][1]), "Help: our own menu, %s" % sorted(p5_help))
+check(all(e["props"]["url"].startswith(HP.REPO) for e in p5_help.values() if e["idname"] == "wm.url_open"), "Help links go to the Maelstrom3D repository")
+check(any(e.get("idname") == "m3d.command_line" for e in m3d_ui.MENUS["M3D_MT_windows"][1]), "Windows > Command Line")
+# Version: datafiles/m3d_version.txt, "dev" without it.
+p5_sysres = bpy.utils.system_resource
+HP.version_tag.cache_clear()
+bpy.utils.system_resource = lambda *a, **k: p5_tmp
+check(HP.version_tag() == "dev" and HP.version_label() == "Maelstrom3D alpha dev (Blender %d.%d.%d)" % bpy.app.version[:3], "no version file: dev")
+with open(os.path.join(p5_tmp, "m3d_version.txt"), "w") as fh_:
+    fh_.write("m3d.9\n")
+HP.version_tag.cache_clear()
+check(HP.version_label() == "Maelstrom3D alpha m3d.9 (Blender %d.%d.%d)" % bpy.app.version[:3], "the version file's tag: " + HP.version_label())
+bpy.utils.system_resource = p5_sysres
+HP.version_tag.cache_clear()
+check(os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "release", "datafiles", "m3d_version.txt")),
+      "release/datafiles/m3d_version.txt is in the repository")
+# The status bar: the note while it lasts, the version at the right end; Blender's own version off.
+from bl_ui.space_statusbar import STATUSBAR_HT_header
+def p5_status():
+    log_ = []
+    STATUSBAR_HT_header.draw(NS(layout=Rec(log_)), bpy.context)
+    return [r._kw.get("text") for r in log_ if r._kind == "label"]
+check(HP.version_label() in p5_status() and HP.note_text() == "", "status bar: the version")
+HP.show_note("Result: pCube1", seconds=30)
+check("Result: pCube1" in p5_status(), "status bar: a note")
+HP._note["until"] = 0.0
+check("Result: pCube1" not in p5_status(), "...gone after its time")
+# Log file: stderr copied, rolled past the limit; a traceback through one of our files leaves a note.
+p5_logfile = os.path.join(p5_tmp, "m3d_log.txt")
+p5_tee = HP.LogTee(None, p5_logfile)
+p5_tee.write("plain line\n")
+check(open(p5_logfile).read().endswith("plain line\n") and HP.version_label() in open(p5_logfile).read(), "the log file gets stderr, after a session line")
+check(HP.note_text() == "", "...a plain line leaves no note")
+p5_tee.write('Traceback (most recent call last):\n  File "C:\\\\x\\\\scripts\\\\startup\\\\m3d_texture.py", line 9, in draw\n')
+p5_tee.write("ValueError: oops\n")
+check(HP.note_text() == "Something went wrong in m3d_texture.py (draw): Help > Report a Bug", "a traceback in our panel: note " + HP.note_text())
+HP._note["until"] = 0.0
+p5_max = HP.LOG_MAX
+HP.LOG_MAX = 10
+p5_tee.write("after the limit\n")
+HP.LOG_MAX = p5_max
+check(os.path.exists(os.path.join(p5_tmp, HP.OLD_LOG_NAME)) and open(p5_logfile).read() == "after the limit\n", "the log rolls over past its size")
+check(isinstance(sys.stderr, HP.LogTee) and sys.stderr.path is None, "stderr is watched; no log file in a --factory-startup session")
+# Report a Bug: a pre-filled new-issue link, short enough; nothing is opened by the tests.
+from urllib.parse import urlparse, parse_qs
+p5_url = HP.bug_report_url("Maelstrom3D alpha m3d.9 (Blender 5.2.2)", "Windows 11", "GPU X", "".join("line %d\n" % i for i in range(3000)))
+p5_q = parse_qs(urlparse(p5_url).query)
+check(p5_url.startswith(HP.REPO + "/issues/new?") and len(p5_url) <= HP.MAX_URL and p5_q["template"] == ["bug.yml"]
+      and p5_q["version"] == ["Maelstrom3D alpha m3d.9 (Blender 5.2.2)"] and p5_q["os"] == ["Windows 11"] and p5_q["gpu"] == ["GPU X"]
+      and p5_q["log"][0].endswith("line 2999"), "Report a Bug link: fields filled, the log's last lines")
+check(HP.bug_report_url("v", "o", "g", "").count("log=") == 1 and len(HP.system_info()) == 2, "...also without a log")
+p5_yml = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".github", "ISSUE_TEMPLATE", "bug.yml")).read()
+check(all("id: %s" % f in p5_yml for f in ("version", "os", "gpu", "log", "steps")), "the issue form has the fields the link fills")
+check(not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".github", "FUNDING.yml")), "no funding file")
+# The temp folder: crash logs and the auto save a crash leaves behind (newer than quit.blend, not this session's, asked once).
+p5_base = tempfile.mkdtemp(prefix="m3d_p5_tmp_")
+p5_tb = HP.temp_base
+HP.temp_base = lambda: p5_base
+check(HP.crash_log() is None and HP.crash_autosave() is None, "no crash log, no auto save")
+def p5_touch(name, age):
+    path_ = os.path.join(p5_base, name)
+    open(path_, "w").close()
+    os.utime(path_, (time.time() - age, time.time() - age))
+    return path_
+p5_touch("quit.blend", 100)
+p5_touch("blender.crash.txt", 300)
+p5_new = p5_touch("scene.crash.txt", 50)
+check(HP.crash_log() == p5_new, "Open Crash Log: the newest crash log")
+p5_touch("4242_autosave.blend", 200)
+check(HP.crash_autosave() is None, "an auto save older than the last quit: no card")
+p5_auto = p5_touch("scene_4343_autosave.blend", 10)
+p5_touch("%d_autosave.blend" % os.getpid(), 1)
+check(HP.crash_autosave() == p5_auto, "an auto save newer than the last quit (not this session's): the card offers it")
+m3d_user.data()["recover_offered"] = [p5_auto, os.path.getmtime(p5_auto)]
+check(HP.crash_autosave() is None, "...once")
+del m3d_user.data()["recover_offered"]
+HP.temp_base = p5_tb
+check(not HP.carry_settings(), "settings of a previous version: not with the config folder overridden (copy_prev's own rule)")
+# m3d_user.json: a damaged file is kept as .bak before it is replaced.
+p5_path = m3d_user._path(create=True)
+m3d_user.save()
+p5_keep = open(p5_path, encoding="utf-8").read()
+with open(p5_path, "w") as fh_:
+    fh_.write("{damaged")
+m3d_user.reset_cache()
+check(m3d_user.data() == {} and open(p5_path + ".bak").read() == "{damaged", "a damaged m3d_user.json is kept as m3d_user.json.bak")
+with open(p5_path, "w", encoding="utf-8") as fh_:
+    fh_.write(p5_keep)
+m3d_user.reset_cache()
+# Reset Shelves & Docks / Everything: their keys go, a copy stays; Everything also moves the layouts of new files aside.
+p5_saved = json.loads(p5_keep)
+m3d_user.data().update({"shelf": {"MODEL": []}, "dock": {}, "hidden_tabs": {"MODEL": ["tool"]}, "render_presets": {"A": {}},
+                        "prefs_version": 2})
+m3d_user.save()
+HP.reset_user_settings(False)
+m3d_user.reset_cache()
+check(not {"shelf", "dock", "hidden_tabs"} & set(m3d_user.data()) and "render_presets" in m3d_user.data()
+      and "hidden_tabs" in json.load(open(p5_path + ".bak")), "Reset Shelves & Docks: those go, a copy is kept")
+p5_startup = os.path.join(HP.config_dir(), "startup.blend")
+open(p5_startup, "w").close()
+HP.reset_user_settings(True)
+m3d_user.reset_cache()
+check(m3d_user.data() == {"prefs_version": 2} and not os.path.exists(p5_startup) and os.path.exists(p5_startup + ".bak"),
+      "Reset Everything: only the preferences version stays, startup.blend becomes startup.blend.bak")
+m3d_user.data().clear()
+m3d_user.data().update(p5_saved)
+m3d_user.save()
+check(hasattr(m3d_workspace.M3D_OT_workspace_delete, "invoke") and hasattr(HP.M3D_OT_reset_settings, "invoke")
+      and hasattr(HP.M3D_OT_save_layouts_default, "invoke") and hasattr(HP.M3D_OT_report_bug, "invoke"), "deletes, resets, saving defaults and the bug report ask first")
+# Settings export / import: a zip of the config folder; unsafe or foreign zips are refused; what was there is kept in a backup.
+p5_cfg, p5_cfg2 = os.path.join(p5_tmp, "cfg"), os.path.join(p5_tmp, "cfg2")
+os.makedirs(os.path.join(p5_cfg, "sub"))
+for name_, text_ in (("userpref.blend", "P"), ("m3d_user.json", "{}"), ("m3d_log.txt", "log"), ("m3d_user.json.bak", "b"), ("sub/x.txt", "x")):
+    with open(os.path.join(p5_cfg, name_), "w") as fh_:
+        fh_.write(text_)
+p5_zip = os.path.join(p5_tmp, "settings.zip")
+check(sorted(HP.export_settings(p5_zip, p5_cfg)) == ["m3d_user.json", "sub/x.txt", "userpref.blend"], "Export Settings: the settings, not the log or backups")
+os.makedirs(p5_cfg2)
+with open(os.path.join(p5_cfg2, "userpref.blend"), "w") as fh_:
+    fh_.write("OLD")
+HP.import_settings(p5_zip, p5_cfg2)
+check(open(os.path.join(p5_cfg2, "userpref.blend")).read() == "P" and open(os.path.join(p5_cfg2, "sub", "x.txt")).read() == "x"
+      and zipfile.ZipFile(os.path.join(p5_cfg2, "m3d_settings_backup.zip")).read("userpref.blend") == b"OLD",
+      "Import Settings: unpacked, the settings before kept in m3d_settings_backup.zip")
+for bad_, names_ in (("evil.zip", {"../evil.txt": "x", "userpref.blend": "P"}), ("abs.zip", {"C:/evil.txt": "x", "m3d_user.json": "{}"}),
+                     ("other.zip", {"photo.jpg": "x"})):
+    with zipfile.ZipFile(os.path.join(p5_tmp, bad_), "w") as zf_:
+        for n_, t_ in names_.items():
+            zf_.writestr(n_, t_)
+    try:
+        HP.import_settings(os.path.join(p5_tmp, bad_), p5_cfg2)
+        p5_ok = False
+    except ValueError:
+        p5_ok = True
+    check(p5_ok and not os.path.exists(os.path.join(p5_tmp, "evil.txt")), "Import Settings refuses " + bad_)
+# Plain errors: a component tool from Object Mode switches to components (whole mesh) or says what to do; never the bpy.ops text.
+clean_scene()
+bpy.ops.mesh.primitive_cube_add()
+p5_cube = bpy.context.active_object
+class P5Op:
+    def __init__(self):
+        self.reports = []
+    def report(self, kind, text):
+        self.reports.append((kind, text))
+p5_op = P5Op()
+check(m3d_mode.run_tool(p5_op, "mesh.subdivide", "Add Divisions", 'EXEC_DEFAULT', {}) == {'FINISHED'} and p5_cube.mode == 'EDIT',
+      "Add Divisions in Object Mode: component mode, the whole mesh")
+bpy.ops.object.mode_set(mode='OBJECT')
+check(len(p5_cube.data.polygons) == 24 and p5_op.reports[0][0] == {'INFO'} and "whole mesh" in p5_op.reports[0][1], "...it ran on all of it: %s" % p5_op.reports)
+p5_op = P5Op()
+check(m3d_mode.run_tool(p5_op, "mesh.merge", "Collapse", 'EXEC_DEFAULT', {"type": 'COLLAPSE'}) == {'CANCELLED'} and p5_cube.mode == 'OBJECT'
+      and p5_op.reports == [({'WARNING'}, "Collapse can't run here: " + m3d_mode.poll_reason(bpy.context, "mesh.merge"))]
+      and "F9" in p5_op.reports[0][1], "Collapse in Object Mode: explained, the mesh untouched: %s" % p5_op.reports)
+check(m3d_mode.plain_error(bpy.context, "mesh.bevel", "", RuntimeError("Operator bpy.ops.mesh.bevel.poll() failed, context is incorrect"))
+      .startswith("Bevel can't run here: ") and m3d_mode.plain_error(bpy.context, "mesh.bevel", "Bevel", RuntimeError("Error: Nothing selected\n"))
+      == "Bevel: Nothing selected", "plain error texts, no bpy.ops")
+bpy.ops.object.select_all(action='DESELECT')
+check(m3d_mode.poll_reason(bpy.context, "object.join") == "select an object first", "...and what to select")
+# MEL: help, unsupported commands, file -new / -o refuse unsaved changes without -f.
+check(isinstance(_console_mel.run("help"), _console_mel.Help) and "polyCube" in _console_mel.run("help;"), "MEL help lists the commands")
+for cmd_, want_ in (("fooBar 1", "'fooBar' isn't supported yet. Type help for the list."), ("_get x", "'_get' isn't supported yet. Type help for the list.")):
+    try:
+        _console_mel.run(cmd_)
+        p5_err = ""
+    except Exception as err_:
+        p5_err = str(err_)
+    check(p5_err == want_, "MEL: %s -> %s" % (cmd_, p5_err))
+bpy.ops.mesh.primitive_cube_add()
+check(bpy.data.is_dirty, "(the scene has unsaved changes)")
+for cmd_ in ("file -new", "file -o \"%s\"" % os.path.join(p5_tmp, "x.blend")):
+    try:
+        _console_mel.run(cmd_)
+        p5_err = ""
+    except RuntimeError as err_:
+        p5_err = str(err_)
+    check(p5_err.startswith("Unsaved changes") and "-f" in p5_err and bpy.data.objects, "MEL %s refuses unsaved changes: %s" % (cmd_, p5_err))
+p5_notes = []
+p5_show = HP.show_note
+HP.show_note = lambda text, icon='INFO', seconds=8.0: p5_notes.append((text, icon))
+p5_sc = NS(history=[NS(body="polyCube -n p5box")], prompt="MEL ")
+p5_sb = _console_mel._scrollback
+_console_mel._scrollback = lambda text, kind: None
+p5_bpy = _console_mel.bpy
+_console_mel.bpy = NS(ops=NS(console=NS(history_append=lambda **k: None)))
+_console_mel.execute(NS(space_data=p5_sc), False)
+p5_sc.history[-1].body = "nope"
+_console_mel.execute(NS(space_data=p5_sc), False)
+_console_mel.bpy, _console_mel._scrollback, HP.show_note = p5_bpy, p5_sb, p5_show
+check(p5_notes == [("Result: p5box polyCube1", 'INFO'), ("Error: 'nope' isn't supported yet. Type help for the list.", 'ERROR')],
+      "MEL results and errors in the status bar: %s" % p5_notes)
+clean_scene()
+shutil.rmtree(p5_tmp, ignore_errors=True)
+shutil.rmtree(p5_base, ignore_errors=True)
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

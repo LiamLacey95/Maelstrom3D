@@ -134,14 +134,75 @@ class M3D_OT_call(Operator):
             return {'CANCELLED'}
         area = max(areas, key=lambda a: a.width * a.height)
         region = next(r for r in area.regions if r.type == 'WINDOW')
-        mod, name = self.idname.split(".")
-        try:
-            with context.temp_override(area=area, region=region, space_data=area.spaces.active):
-                getattr(getattr(bpy.ops, mod), name)('INVOKE_DEFAULT', **literal_eval(self.props))
-        except RuntimeError as err:
-            self.report({'WARNING'}, str(err).strip())
-            return {'CANCELLED'}
-        return {'FINISHED'}
+        with context.temp_override(area=area, region=region, space_data=area.spaces.active):
+            return run_tool(self, self.idname, self.label, 'INVOKE_DEFAULT', literal_eval(self.props))
+
+
+# Component tools that make sense on a whole mesh: clicked with a mesh in Object Mode, they switch to component mode with all
+# of it selected (the others say what to select).
+WHOLE_MESH_TOOLS = {"mesh.bevel", "mesh.subdivide", "mesh.remove_doubles", "mesh.flip_normals",
+                    "mesh.normals_make_consistent", "mesh.set_normals_from_faces", "mesh.tris_convert_to_quads",
+                    "mesh.vertices_smooth", "mesh.poke", "mesh.symmetrize"}
+
+
+def op_label(idname, label=""):
+    """What a command is called on its button: `label`, else the operator's name."""
+    if label:
+        return label
+    mod, name = idname.split(".")
+    try:
+        return getattr(getattr(bpy.ops, mod), name).get_rna_type().name
+    except (AttributeError, KeyError):
+        return idname
+
+
+def poll_reason(context, idname):
+    """Why a command can't run with this selection and mode, in plain words."""
+    ob = context.active_object
+    if idname.startswith(("mesh.", "view3d.edit_mesh")):
+        if ob is None or ob.type != 'MESH':
+            return "select a mesh first"
+        if ob.mode != 'EDIT':
+            return "it works on vertices, edges or faces: pick them with F9 / F10 / F11 (or right-click) and select some"
+        return "select the vertices, edges or faces it works on first"
+    if idname.startswith(("uv.", "m3d.uv_")):
+        return "it works on UVs: select a mesh and open the UV workspace (F3)"
+    if not context.selected_objects:
+        return "select an object first"
+    return "it doesn't work on this selection or in this mode"
+
+
+def plain_error(context, idname, label, err):
+    """An error of a command run from a button, as the user reads it: never the operator call's own text."""
+    name = op_label(idname, label)
+    text = str(err).strip()
+    if not text or "poll()" in text or "context is incorrect" in text:
+        return "%s can't run here: %s" % (name, poll_reason(context, idname))
+    lines = [line.split(": ", 1)[-1] if line.startswith(("Error: ", "Warning: ", "Info: ")) else line
+             for line in text.splitlines() if line.strip()]
+    return "%s: %s" % (name, " ".join(lines))
+
+
+def run_tool(op, idname, label, mode, props, *args):
+    """Run `idname` from a button (in the current context override); errors are reported in plain words. A component tool
+    clicked with a mesh in Object Mode switches to component mode first (WHOLE_MESH_TOOLS), or says what to do."""
+    context = bpy.context
+    mod, name = idname.split(".")
+    func = getattr(getattr(bpy.ops, mod), name)
+    ob = context.active_object
+    if not func.poll() and idname in WHOLE_MESH_TOOLS and ob is not None and ob.type == 'MESH' and context.mode == 'OBJECT':
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        op.report({'INFO'}, "%s: the whole mesh (component mode, everything selected)" % op_label(idname, label))
+    if not func.poll():
+        op.report({'WARNING'}, plain_error(context, idname, label, ""))
+        return {'CANCELLED'}
+    try:
+        func(mode, *args, **props)
+    except RuntimeError as err:
+        op.report({'WARNING'}, plain_error(context, idname, label, err))
+        return {'CANCELLED'}
+    return {'FINISHED'}
 
 
 # Modeling Toolkit tools that are picked or dragged in the viewport: no options box, run as usual.
@@ -205,19 +266,14 @@ class M3D_OT_tool(Operator):
         for key, value in FIRST_VALUES.get(self.idname, {}).items():
             if key not in props and getattr(last, key) == last.bl_rna.properties[key].default:
                 props[key] = value
-        mod, name = self.idname.split(".")
         mode = 'EXEC_DEFAULT' if self.idname in EXEC_TOOLS else 'INVOKE_DEFAULT'
         # The C options box opens only while this is set (see interface_region_hud.cc).
         wm["m3d_options_box"] = _box_xy(context, event, area, region)
         try:
             with context.temp_override(area=area, region=region, space_data=area.spaces.active):
-                getattr(getattr(bpy.ops, mod), name)(mode, True, **props)
-        except RuntimeError as err:
-            self.report({'WARNING'}, str(err).strip())
-            return {'CANCELLED'}
+                return run_tool(self, self.idname, self.label, mode, props, True)
         finally:
             del wm["m3d_options_box"]
-        return {'FINISHED'}
 
 
 def tool_button(layout, context, label, idname, icon, props):
@@ -1247,7 +1303,7 @@ def _zoom_preferences(prefs):
 
 
 # Bump when a default that existing users should get changes, and add its step to migrate_preferences().
-PREFS_VERSION = 1
+PREFS_VERSION = 2
 
 
 def migrate_preferences():
@@ -1255,9 +1311,14 @@ def migrate_preferences():
     only runs for fresh ones). The version lives in m3d_user.json; it is written only after the preferences are
     saved, so a failed save retries next start, and a later choice by the user is never overridden."""
     import m3d_user
-    if m3d_user.data().get("prefs_version", 0) >= PREFS_VERSION:
+    done = m3d_user.data().get("prefs_version", 0)
+    if done >= PREFS_VERSION:
         return
-    _zoom_preferences(bpy.context.preferences)
+    prefs = bpy.context.preferences
+    if done < 1:
+        _zoom_preferences(prefs)
+    if done < 2:
+        prefs.view.show_statusbar_version = False   # (the status bar shows the Maelstrom3D version instead: m3d_help.py)
     try:
         bpy.ops.wm.save_userpref()
     except RuntimeError:
@@ -1282,6 +1343,7 @@ def m3d_preferences(*_args):
     prefs.system.use_region_overlap = False
     prefs.view.show_splash = False
     prefs.view.show_navigate_ui = False
+    prefs.view.show_statusbar_version = False   # (the status bar shows the Maelstrom3D version instead: m3d_help.py)
     segoe = os.path.join(os.environ.get("WINDIR", "C:/Windows"), "Fonts", "segoeui.ttf")
     if not prefs.view.font_path_ui and os.path.exists(segoe):
         prefs.view.font_path_ui = segoe
@@ -1298,10 +1360,13 @@ class M3D_OT_command_language(Operator):
     def description(cls, _context, props):
         if props.language == 'mel':
             from _console_mel import EXAMPLE
-            return "Command line (bottom of Modeling) in MEL, e.g. " + EXAMPLE
-        return "Command line (bottom of Modeling) in Python, with cmds ready, e.g. cmds.polyCube(w=2)"
+            return "Command line (bottom of Modeling, or Windows > Command Line) in MEL, e.g. " + EXAMPLE
+        return "Command line (bottom of Modeling, or Windows > Command Line) in Python, with cmds ready, e.g. cmds.polyCube(w=2)"
 
     def execute(self, context):
+        if not any(a.type == 'CONSOLE' for a in context.screen.areas):
+            import m3d_help
+            m3d_help.open_command_line(context)   # (a workspace without one gets the one-line strip)
         for area in context.screen.areas:
             if area.type == 'CONSOLE':
                 area.spaces.active.language = self.language
