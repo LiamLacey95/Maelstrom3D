@@ -16038,7 +16038,7 @@ check(any(e.get("idname") == "wm.search_single_menu" and e["props"].get("menu_id
 p8_help = {e.get("label"): e.get("idname") for e in m3d_ui.MENUS["M3D_MT_help"][1] if e["kind"] == 'OP'}
 check(p8_help.get("Keyboard Shortcuts") == "m3d.key_card" and p8_help.get("Getting Started") == "wm.splash"
       and p8_help.get("Check for Updates") == "m3d.check_updates", "Help: key card, Getting Started (the splash), Check for Updates")
-check(any(e.get("path") == "preferences.view.ui_scale" for e in m3d_ui.MENUS["M3D_MT_ui_elements"][1]), "Display > UI Elements > UI Size")
+check(any(e.get("idname") == "M3D_MT_ui_size" for e in m3d_ui.MENUS["M3D_MT_ui_elements"][1]) and len(m3d_ui.MENUS["M3D_MT_ui_size"][1]) == 5, "Display > UI Elements > UI Size (a menu of sizes: a menu cannot hold a number field)")
 check(bpy.types.WindowManager.bl_rna.properties["m3d_menu_set"].name == "Menus", "the menu set list is called Menus")
 p8_log = []
 m3d_ui.draw_menu_bar(Rec(p8_log), bpy.context)

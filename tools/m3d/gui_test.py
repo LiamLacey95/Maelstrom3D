@@ -13045,10 +13045,20 @@ def p8_brush():
     win, area, region = view3d()
     with bpy.context.temp_override(window=win, area=area, region=region):
         bpy.ops.wm.tool_set_by_id(name="builtin.brush")
-        bpy.ops.view3d.view_all(center=True)   # (Sculpt's own view: earlier steps may have left it looking elsewhere)
+    # Sculpt's own view: earlier steps may have left it looking elsewhere. Set at once (view_all animates: a stroke during the
+    # animation misses).
+    r3d = area.spaces.active.region_3d
+    r3d.view_location, r3d.view_distance = bpy.context.active_object.matrix_world.translation, 4.0
     press_ok("brush.asset_activate", **m3d_sculpt.brush_props("Draw"))
     brush = bpy.context.tool_settings.sculpt.brush
+    P8["brush_before"] = {"texture": brush.texture and brush.texture.name,
+                          "map_mode": brush.texture_slot.map_mode if brush.texture_slot else None,
+                          "stroke": brush.stroke_method, "lazy": brush.use_smooth_stroke, "spacing": brush.spacing,
+                          "frontface": brush.use_frontface}
+    print("P8 brush as the earlier steps left it:", P8["brush_before"])
     brush.size, brush.strength, brush.direction = 150, 1.0, 'ADD'
+    # (the Draw brush is shared with the earlier steps: no alpha, a spaced stroke, no Lazy Mouse)
+    brush.texture, brush.stroke_method, brush.use_smooth_stroke, brush.use_frontface = None, 'SPACE', False, False
     ups = bpy.context.tool_settings.sculpt.unified_paint_settings
     ups.use_unified_size = ups.use_unified_strength = False
 
@@ -13071,9 +13081,19 @@ step(wait_until(lambda: abs(p8_positions() - P8["edited"]).max() > 1e-4, "the st
 @step
 def p8_stroke_check():
     brush = bpy.context.tool_settings.sculpt.brush
-    check(abs(p8_positions() - P8["edited"]).max() > 1e-4, "the stroke sculpted (tool %s, brush %s, size %s, strength %s, modal %s)"
+    sc, ob = bpy.context.tool_settings.sculpt, bpy.context.active_object
+    from bpy_extras.view3d_utils import location_3d_to_region_2d
+    _win, area, region = view3d()
+    centre = location_3d_to_region_2d(region, area.spaces.active.region_3d, ob.matrix_world.translation) if ob else None
+    diag = {"ob": ob and ob.name, "faces": ob and len(ob.data.polygons), "mods": ob and [m.type for m in ob.modifiers],
+            "hidden": ob and ob.hide_get(), "locks": (sc.lock_x, sc.lock_y, sc.lock_z),
+            "automask": [p.identifier for p in sc.bl_rna.properties if p.identifier.startswith("use_automasking") and getattr(sc, p.identifier) is True],
+            "brush_automask": [p.identifier for p in brush.bl_rna.properties if p.identifier.startswith("use_automasking") and getattr(brush, p.identifier) is True] if brush else None,
+            "centre_px": centre and (round(centre.x), round(centre.y)), "region": (region.width, region.height),
+            "area": (area.x, area.y, area.width, area.height), "workspace": window().workspace.name}
+    check(abs(p8_positions() - P8["edited"]).max() > 1e-4, "the stroke sculpted (tool %s, brush %s, size %s, strength %s, modal %s, %s)"
           % (active_tool_id(), brush and brush.name, brush and brush.size, brush and brush.strength,
-             [o.bl_idname for o in window().modal_operators]))
+             [o.bl_idname for o in window().modal_operators], diag))
 step(p8_key('Z', ctrl=True))
 step(wait_until(lambda: abs(p8_positions() - P8["edited"]).max() < 1e-6, "Ctrl+Z to take the stroke back", tries=40))
 

@@ -738,7 +738,15 @@ MENUS = {
         prop("Viewport Menu Bar", "space_data.show_region_header"),
         prop("Help Line", "screen.show_statusbar"),
         SEP,
-        prop("UI Size", "preferences.view.ui_scale"),
+        sub("UI Size", "M3D_MT_ui_size"),
+    ]),
+    # (a menu can't hold a number field: the usual sizes, the exact one is in Preferences > Interface)
+    "M3D_MT_ui_size": ("UI Size", [
+        op("100%", "wm.context_set_float", data_path="preferences.view.ui_scale", value=1.0),
+        op("125%", "wm.context_set_float", data_path="preferences.view.ui_scale", value=1.25),
+        op("150%", "wm.context_set_float", data_path="preferences.view.ui_scale", value=1.5),
+        op("175%", "wm.context_set_float", data_path="preferences.view.ui_scale", value=1.75),
+        op("200%", "wm.context_set_float", data_path="preferences.view.ui_scale", value=2.0),
     ]),
     "M3D_MT_general_editors": ("General Editors", [
         editor("Outliner", 'OUTLINER', 'OUTLINER'),
