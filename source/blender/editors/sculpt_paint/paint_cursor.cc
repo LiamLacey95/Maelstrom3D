@@ -1153,7 +1153,12 @@ static void paint_cursor_draw_3D_view_brush_cursor(PaintCursorContext &pcontext)
     return;
   }
 
-  BLI_assert(pcontext.ss);
+  /* Maelstrom3D: an undo step that restores the file from before the object had a sculpt session can leave Sculpt Mode on
+   * without one for a redraw: draw the plain 2D cursor then instead of reading a null session. */
+  if (pcontext.ss == nullptr) {
+    paint_draw_legacy_3D_view_brush_cursor(pcontext);
+    return;
+  }
 
   mesh_cursor_update_and_init(pcontext);
 
