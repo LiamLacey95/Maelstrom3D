@@ -5046,8 +5046,8 @@ for page in R.GATES:
     if page != "skeleton":
         check(rig_gated("rig_" + page), "rig_%s without a skeleton shows its message first: %s" % (page, rig_shown("rig_" + page)))
 # (the Skeleton tab's own Create panel makes the skeleton: no card above it)
-check(rig_shown("rig_skeleton") == ["PROPERTIES_PT_m3d_rg_create", "PROPERTIES_PT_m3d_rg_rigify"],
-      "Skeleton tab without a skeleton: Create, Rigify: %s" % rig_shown("rig_skeleton"))
+check(rig_shown("rig_skeleton") == ["PROPERTIES_PT_m3d_rg_create", "PROPERTIES_PT_m3d_rg_quickrig", "PROPERTIES_PT_m3d_rg_rigify"],
+      "Skeleton tab without a skeleton: Create, Quick Rig, Rigify: %s" % rig_shown("rig_skeleton"))
 check(not any(n.endswith("_gate") for n in rig_shown("rig_drive")) and len(rig_shown("rig_drive")) >= 3, "Drive tab needs no skeleton")
 check(not R.ready(bpy.context, ('RIG',)) and R.rig_of(bpy.context) is None and R.skin_mesh(bpy.context) is None, "no skeleton, no mesh")
 
@@ -5702,10 +5702,11 @@ bpy.ops.m3d.rig_mode(mode='OBJECT')
 
 # --- Bone collections and selection sets (Blender's own operators, used by the Collections tab)
 bpy.ops.m3d.rig_mode(mode='POSE')
-check(bpy.ops.armature.collection_add() == {'FINISHED'} and len(rig.data.collections_all) == 1, "Bone collection added")
+bc_count = len(rig.data.collections_all)   # (IK with Pole above made a Controls collection)
+check(bpy.ops.armature.collection_add() == {'FINISHED'} and len(rig.data.collections_all) == bc_count + 1, "Bone collection added")
 for pb_ in rig.pose.bones:
     pb_.select = pb_.name in {"Joint", "Joint.001"}
-check(bpy.ops.armature.collection_assign() == {'FINISHED'} and len(rig.data.collections_all[0].bones) == 2, "...and assigned")
+check(bpy.ops.armature.collection_assign() == {'FINISHED'} and len(rig.data.collections.active.bones) == 2, "...and assigned")
 check(bpy.ops.pose.selection_set_add_and_assign() == {'FINISHED'} and len(rig.selection_sets) == 1, "Selection set added")
 bpy.ops.m3d.rig_mode(mode='OBJECT')
 
@@ -5946,18 +5947,20 @@ bpy.context.view_layer.objects.active = rig_a
 log = channel_box_log()
 owners = {r._args[0].name for r in log if r._kind == "prop" and hasattr(r._args[0], "bone")}
 check(owners == {"Arm"}, "Channel Box shows the active bone in Pose Mode: %s" % owners)
-check(any(r._kind == "prop" and r._args[1] == '["IK_FK"]' and r._kw.get("slider") for r in log), "...its custom property as a slider")
+check(any(r._kind == "prop_decorator" and r._args[1] == '["IK_FK"]' for r in log)
+      and any(r._kind == "prop" and r._args[1] in {"u0", "c0"} and r._args[0] == bpy.context.scene.m3d_channel_values for r in log),
+      "...its custom property (its value for the selected bones, its key state)")
 check_calls("channel box pose", log)
 rig_a.data.bones.active = rig_a.data.bones["Root"]
 check({r._args[0].name for r in channel_box_log() if r._kind == "prop" and hasattr(r._args[0], "bone")} == {"Root"}, "...and follows the active bone")
 rig_a.data.bones.active = rig_a.data.bones["Arm"]
 arm_pb.rotation_mode = 'QUATERNION'
-check(any(r._kind == "prop" and r._args[1] == "rotation_quaternion" for r in channel_box_log()), "...with the rotation mode's own channels")
+check(any(r._kind == "prop_decorator" and r._args[1] == "rotation_quaternion" for r in channel_box_log()), "...with the rotation mode's own channels")
 arm_pb.rotation_mode = 'XYZ'
 bpy.ops.m3d.rig_mode(mode='OBJECT')
 R._select_only(bpy.context, cube_)
 log = channel_box_log()
-check({r._args[0] for r in log if r._kind == "prop" and r._args[1] == "location"} == {cube_}, "Channel Box shows the object in Object Mode")
+check({r._args[0] for r in log if r._kind == "prop_decorator" and r._args[1] == "location"} == {cube_}, "Channel Box shows the object in Object Mode")
 check_calls("channel box object", log)
 
 # Channel Box INPUTS: "<Kind> inputs" with the kind's rows above the modifiers; frozen shows the note and Delete History.
@@ -16190,6 +16193,378 @@ bpy.ops.wm.save_as_mainfile(filepath=p8_path)
 bpy.ops.wm.open_mainfile(filepath=p8_path)
 check(len(bpy.data.workspaces) == p8_count, "saved with them, the file is not changed again")
 HP.show_note("", seconds=0)
+
+# --- UX pass 2, P11b: rig / anim advanced (IK / FK controls, Channel Box picks and multi-edit, Graph Editor keys, Quick Rig,
+# Retarget, ghosting and motion trails)
+import m3d_anim as P11A
+import m3d_rig as P11R
+from mathutils import Vector as P11V
+clean_scene()
+for p11_act in list(bpy.data.actions):
+    bpy.data.actions.remove(p11_act)
+p11_scene = bpy.context.scene
+p11_scene.frame_set(1)
+p11_scene.tool_settings.use_keyframe_insert_auto = False
+p11_wm = bpy.context.window_manager
+
+
+def p11_chain(name, bones, x=0.0, z=2.0, step=(0.0, -0.1, -0.9)):
+    """A skeleton object with a connected chain of bones (names), from (x, 0, z) down."""
+    arm_ = bpy.data.armatures.new(name)
+    ob_ = bpy.data.objects.new(name, arm_)
+    bpy.context.collection.objects.link(ob_)
+    P11R._select_only(bpy.context, ob_)
+    bpy.ops.object.mode_set(mode='EDIT')
+    prev_, head_ = None, P11V((x, 0.0, z))
+    for i_, bone_ in enumerate(bones):
+        eb_ = arm_.edit_bones.new(bone_)
+        tail_ = head_ + P11V(step if i_ % 2 == 0 else (step[0], -step[1], step[2]))
+        eb_.head, eb_.tail = head_, tail_
+        if prev_ is not None:
+            eb_.parent, eb_.use_connect = prev_, True
+        prev_, head_ = eb_, tail_
+    bpy.ops.object.mode_set(mode='OBJECT')
+    return ob_
+
+
+# IK with Pole builds animator controls: shapes and side colours, the Controls collection, the hand follows the target,
+# an IK_FK switch drives the IK; Match IK <-> FK.
+p11_rig = p11_chain("P11Arm", ["Upper.L", "Lower.L", "Hand.L"])
+bpy.ops.object.mode_set(mode='POSE')
+for p11_pb in p11_rig.pose.bones:
+    p11_pb.rotation_mode = 'XYZ'
+p11_rig.data.bones.active = p11_rig.data.bones["Lower.L"]
+p11_rs = p11_scene.m3d_rig
+p11_rs.ik_chain, p11_rs.ik_pole = 2, 0.6
+check(bpy.ops.m3d.rig_ik_pole() == {'FINISHED'}, "P11b: IK with Pole")
+p11_t, p11_p = p11_rig.pose.bones["IK_Lower.L"], p11_rig.pose.bones["Pole_Lower.L"]
+check(p11_t.custom_shape is not None and p11_t.custom_shape.name == "WGT-Cube" and p11_p.custom_shape.name == "WGT-Sphere",
+      "the IK target gets a cube, the pole a sphere")
+check(all(p.color.palette == 'CUSTOM' and tuple(round(c, 2) for c in p.color.custom.normal) == (0.2, 0.4, 0.95)
+          for p in (p11_t, p11_p)), "...coloured blue for a .L limb")
+p11_coll = p11_rig.data.collections.get("Controls")
+check(p11_coll is not None and {b.name for b in p11_coll.bones} == {"IK_Lower.L", "Pole_Lower.L"}, "...both in a Controls collection")
+p11_follow = [c for c in p11_rig.pose.bones["Hand.L"].constraints if c.type == 'COPY_ROTATION']
+check(len(p11_follow) == 1 and p11_follow[0].subtarget == "IK_Lower.L", "the hand copies the target's rotation")
+p11_ui = p11_t.id_properties_ui("IK_FK").as_dict()
+check(p11_t["IK_FK"] == 0.0 and p11_ui.get("min") == 0.0 and p11_ui.get("max") == 1.0, "an IK_FK 0-1 switch on the target")
+check({d.data_path for d in p11_rig.animation_data.drivers} >= {'pose.bones["Lower.L"].constraints["IK"].influence',
+                                                               'pose.bones["Hand.L"].constraints["IK Rotation"].influence'},
+      "...that drives the IK and the hand's rotation: %s" % [d.data_path for d in p11_rig.animation_data.drivers])
+check(abs((P11R.SIDE_RGB['R'][0]) - 0.9) < 1e-6 and P11R.SIDE_RGB[''] == P11R.PRESET_RGB['YELLOW'], "right red, middle yellow")
+p11_t["IK_FK"] = 1.0
+p11_rig.update_tag()
+bpy.context.view_layer.update()
+p11_ev = p11_rig.evaluated_get(bpy.context.evaluated_depsgraph_get())
+check(p11_ev.pose.bones["Lower.L"].constraints["IK"].influence == 0.0, "IK_FK 1 turns the IK off (FK)")
+p11_t["IK_FK"] = 0.0
+p11_t.location = p11_t.bone.matrix_local.to_3x3().inverted() @ P11V((0.0, 0.0, 0.6))
+p11_t.rotation_euler = (0.3, 0.0, 0.2)
+p11_rig.update_tag()
+bpy.context.view_layer.update()
+p11_names = ("Upper.L", "Lower.L", "Hand.L")
+
+
+def p11_joints():
+    return [p11_rig.pose.bones[n].head.copy() for n in p11_names] + [p11_rig.pose.bones["Hand.L"].tail.copy()]
+
+
+p11_ik = p11_joints()
+P11R._select_only(bpy.context, p11_rig)
+bpy.ops.object.mode_set(mode='POSE')
+for p11_pb in p11_rig.pose.bones:
+    p11_pb.select = p11_pb.name == "IK_Lower.L"
+p11_scene.tool_settings.use_keyframe_insert_auto = True
+check(bpy.ops.m3d.rig_ik_match(direction='FK_TO_IK') == {'FINISHED'}, "Match FK to IK")
+p11_scene.tool_settings.use_keyframe_insert_auto = False
+p11_t["IK_FK"] = 1.0
+p11_rig.update_tag()
+bpy.context.view_layer.update()
+check(max((a - b).length for a, b in zip(p11_ik, p11_joints())) < 1e-4, "...the FK bones land where the IK had them")
+check({fc.data_path for fc in P11A.channel_fcurves(p11_rig)} >= {'pose.bones["%s"].rotation_euler' % n for n in p11_names},
+      "...keyed with Auto Key on")
+for p11_n, p11_r in zip(p11_names, ((0.5, 0.3, 0.2), (-0.9, 0.0, 0.0), (0.3, 0.2, 0.1))):
+    p11_rig.pose.bones[p11_n].rotation_euler = p11_r
+p11_rig.animation_data.action = None
+bpy.context.view_layer.update()
+p11_fk = p11_joints()
+check(bpy.ops.m3d.rig_ik_match(direction='IK_TO_FK') == {'FINISHED'}, "Match IK to FK")
+for p11_n in p11_names:
+    p11_rig.pose.bones[p11_n].rotation_euler = (0.0, 0.0, 0.0)
+p11_t["IK_FK"] = 0.0
+p11_rig.update_tag()
+bpy.context.view_layer.update()
+check(max((a - b).length for a, b in zip(p11_fk, p11_joints())) < 2e-3, "...the IK limb lands on the FK pose: %s"
+      % max((a - b).length for a, b in zip(p11_fk, p11_joints())))
+p11_log = []
+P11R.draw_ik_switches(Rec(p11_log), bpy.context, p11_rig)
+check(any(r._kind == "prop" and r._args[1] == '["IK_FK"]' and r._kw.get("slider") for r in p11_log)
+      and {r.values().get("direction") for r in p11_log if r._kind == "operator"} == {'IK_TO_FK', 'FK_TO_IK'},
+      "the IK / FK switch and both Match buttons are drawn")
+check_calls("ik switches", p11_log)
+check(len(P11A.ik_setups(p11_rig)) == 1 and P11R.ik_setup_of(p11_rig, {"Hand.L"})[0].end.name == "Lower.L", "the limb is found from its hand")
+
+# Channel Box: an edit goes to every selected bone, picked channels drive the Graph Editor and S, right-click commands.
+p11_box = p11_chain("P11Box", ["A", "B", "C"], x=3.0)
+bpy.ops.object.mode_set(mode='POSE')
+for p11_pb in p11_box.pose.bones:
+    p11_pb.rotation_mode = 'XYZ'
+    p11_pb.select = p11_pb.name in {"A", "B"}
+    p11_pb["Blend"] = 0.0
+    p11_pb.id_properties_ui("Blend").update(min=0.0, max=1.0)
+p11_box.data.bones.active = p11_box.data.bones["A"]
+p11_box.pose.bones["B"].lock_location[1] = True
+p11_vals, p11_picks = p11_scene.m3d_channel_values, p11_wm.m3d_channel_picks
+p11_vals.tx, p11_vals.ty, p11_vals.rz, p11_vals.u0 = 0.5, 0.25, 0.3, 0.7
+p11_a, p11_b, p11_c = (p11_box.pose.bones[n] for n in "ABC")
+check(p11_a.location.x == p11_b.location.x == 0.5 and p11_c.location.x == 0.0, "Channel Box: an edit goes to every selected bone")
+check(p11_a.location.y == 0.25 and p11_b.location.y == 0.0, "...not to a locked channel")
+check(abs(p11_b.rotation_euler.z - 0.3) < 1e-6 and abs(p11_b["Blend"] - 0.7) < 1e-6, "...rotations and custom properties too")
+check(abs(p11_vals.rz - 0.3) < 1e-6 and abs(p11_vals.u0 - 0.7) < 1e-6 and p11_vals.qx == 0.0, "...and shows the active bone's values")
+bpy.ops.m3d.set_key(channels='ALL')
+p11_scene.frame_set(10)
+p11_picks.tx = True
+p11_picks.custom[0] = True
+check(m3d_mode.picked_channels(bpy.context) == ["tx", '["Blend"]'], "picking channels: %s" % m3d_mode.picked_channels(bpy.context))
+p11_shown = {(fc.data_path, fc.array_index) for fc in P11A.channel_fcurves(p11_box) if not fc.hide}
+check(p11_shown == {('pose.bones["A"].location', 0), ('pose.bones["A"]["Blend"]', 0), ('pose.bones["B"].location', 0),
+                    ('pose.bones["B"]["Blend"]', 0), ('pose.bones["C"].location', 0), ('pose.bones["C"]["Blend"]', 0)}
+      or p11_shown == {('pose.bones["A"].location', 0), ('pose.bones["A"]["Blend"]', 0), ('pose.bones["B"].location', 0),
+                       ('pose.bones["B"]["Blend"]', 0)}, "...the Graph Editor shows only their curves: %s" % sorted(p11_shown))
+check(bpy.ops.m3d.set_key(channels='ALL') == {'FINISHED'}, "S with picked channels")
+p11_at10 = {(fc.data_path, fc.array_index) for fc in P11A.channel_fcurves(p11_box) if any(k.co.x == 10 for k in fc.keyframe_points)}
+check(p11_at10 == {('pose.bones["A"].location', 0), ('pose.bones["A"]["Blend"]', 0), ('pose.bones["B"].location', 0),
+                   ('pose.bones["B"]["Blend"]', 0)}, "...keys only the picked channels: %s" % sorted(p11_at10))
+check(bpy.ops.m3d.channel_op(action='BREAKDOWN') == {'FINISHED'}
+      and all(k.type == 'BREAKDOWN' for fc in P11A.channel_fcurves(p11_box) for k in fc.keyframe_points if k.co.x == 10),
+      "Breakdown Selected")
+bpy.ops.m3d.channel_op(action='MUTE')
+check({fc.data_path for fc in P11A.channel_fcurves(p11_box) if fc.mute} == {'pose.bones["A"].location', 'pose.bones["A"]["Blend"]',
+                                                                          'pose.bones["B"].location', 'pose.bones["B"]["Blend"]'},
+      "Mute Selected")
+bpy.ops.m3d.channel_op(action='UNMUTE')
+bpy.ops.m3d.channel_op(action='LOCK')
+check(p11_a.lock_location[0] and p11_b.lock_location[0] and not p11_c.lock_location[0], "Lock Selected")
+bpy.ops.m3d.channel_op(action='UNLOCK')
+check(not p11_a.lock_location[0] and not any(fc.mute for fc in P11A.channel_fcurves(p11_box)), "Unlock / Unmute")
+p11_drag = NS(items=[(p11_a, ("location", 0), 0.5), (p11_a, ("rotation_euler", 2), 0.3)], step=m3d_mode.M3D_OT_channel_drag.step)
+m3d_mode.M3D_OT_channel_drag.apply(p11_drag, 100.0)
+check(abs(p11_a.location.x - 1.5) < 1e-5 and abs(p11_a.rotation_euler.z - (0.3 + math.radians(50))) < 1e-4,
+      "middle-drag: a hundredth of a unit, half a degree per pixel")
+m3d_mode.M3D_OT_channel_drag.apply(p11_drag, 0.0)
+check(abs(p11_a.location.x - 0.5) < 1e-6, "...and back")
+p11_ctx = NS(button_pointer=p11_picks, button_prop=p11_picks.bl_rna.properties["tx"], window_manager=p11_wm,
+             active_object=p11_box, selected_objects=[p11_box], scene=p11_scene)
+check(m3d_mode.hovered_channel(p11_ctx) == "tx", "the channel under the pointer")
+p11_menu = []
+m3d_mode.draw_channel_menu(NS(layout=Rec(p11_menu)), p11_ctx)
+check({r.values().get("action") for r in p11_menu if r._kind == "operator"} == {a for a, _l, _i in m3d_mode.CHANNEL_ACTIONS}
+      and all(r.values().get("channel") == "tx" for r in p11_menu if r._kind == "operator"), "right-click: the channel commands")
+p11_menu = []
+m3d_mode.draw_channel_menu(NS(layout=Rec(p11_menu)), NS(button_pointer=p11_scene, button_prop=None))
+check(not p11_menu, "...only on Channel Box channels")
+p11_vctx = NS(button_pointer=p11_vals, button_prop=p11_vals.bl_rna.properties["u0"], window_manager=p11_wm,
+              active_object=p11_box, selected_objects=[p11_box], scene=p11_scene)
+check(m3d_mode.hovered_channel(p11_vctx) == '["Blend"]', "...a custom property's value too")
+p11_scene.frame_set(20)
+p11_picks.tx, p11_picks.custom[0] = False, False
+check(m3d_mode.M3D_OT_channel_key.execute(NS(), p11_vctx) == {'FINISHED'}
+      and {fc.data_path for fc in P11A.channel_fcurves(p11_box) if any(k.co.x == 20 for k in fc.keyframe_points)}
+      == {'pose.bones["A"]["Blend"]', 'pose.bones["B"]["Blend"]'}, "S over a channel keys it on the selected bones")
+check(not any(fc.hide for fc in P11A.channel_fcurves(p11_box) if 'pose.bones["A"]' in fc.data_path), "no picks: every curve shows")
+p11_picks.ty = True
+bpy.ops.m3d.channel_op(action='HIDE')
+check(list(p11_a["_m3d_hidden"]) == ["ty"] and not p11_picks.ty and ("location", 1) not in P11A.key_channels(p11_a),
+      "Hide Selected: out of the Channel Box and of S")
+p11_log = []
+m3d_mode.PROPERTIES_PT_m3d_channel_box.draw(type("Inst", (), {"layout": Rec(p11_log)})(), bpy.context)
+check_calls("channel box picks", p11_log)
+check(not any(r._kind == "prop" and r._args[1] == "ty" for r in p11_log)
+      and any(r._kind == "operator" and r.values().get("action") == 'SHOW_ALL' for r in p11_log), "...with a button to show them")
+check(any(r._kind == "prop" and r._args[0] == p11_picks and r._args[1] == "tx" and r._kw.get("toggle") for r in p11_log)
+      and any(r._kind == "prop" and r._args[0] == p11_vals and r._args[1] == "u0" and r._kw.get("slider") for r in p11_log)
+      and any(r._kind == "prop_decorator" and r._args[1] == "location" for r in p11_log),
+      "rows: a name to pick, the value for the selection (0-1 switch: a slider), the key state")
+bpy.ops.m3d.channel_op(action='SHOW_ALL')
+check("_m3d_hidden" not in p11_a, "Show All Channels")
+check(find("User Interface", "m3d.channel_key", "S") and kc.keymaps["User Interface"].keymap_items[0].idname == "m3d.channel_key"
+      and find("User Interface", "m3d.channel_drag", "MIDDLEMOUSE"), "keys: S over a channel, middle-drag in the Channel Box")
+bpy.ops.object.mode_set(mode='OBJECT')
+
+# Graph Editor / Dope Sheet keys: the marking menu, next / previous key, buffer curve, isolate.
+for p11_km in ("Graph Editor", "Dopesheet"):
+    check([k.properties.name for k in find(p11_km, "wm.call_menu_pie", "RIGHTMOUSE", shift=False, ctrl=False)] == ["M3D_MT_graph_mm"],
+          "right click in the %s: the key marking menu" % p11_km)
+    check(find(p11_km, "m3d.key_step", "PERIOD", ctrl=True, alt=True)[0].properties.direction == 'NEXT'
+          and find(p11_km, "m3d.key_step", "COMMA", ctrl=True, alt=True)[0].properties.direction == 'PREVIOUS',
+          "...Ctrl+Alt+. / , next / previous key")
+check(kc.keymaps["Animation Channels"].keymap_items[0].idname == "m3d.graph_isolate", "isolate goes before the channel click")
+p11_log = []
+m3d_marking.M3D_MT_graph_mm.draw(NS(layout=Rec(p11_log)), NS(area=NS(type='GRAPH_EDITOR'), scene=p11_scene,
+                                                            space_data=NS(bl_rna=bpy.types.SpaceGraphEditor.bl_rna)))
+check_calls("graph marking menu", p11_log)
+check({r.values().get("kind") for r in p11_log if r._kind == "operator" and r._args[0] == "m3d.set_tangents"} == {k for k, _l, _i in m3d_marking.TANGENTS}
+      and {r.values().get("action") for r in p11_log if r._kind == "operator" and r._args[0] == "m3d.buffer_curve"} == {'SNAPSHOT', 'SWAP', 'CLEAR'}
+      and any(r._kind == "prop" and r._args[1] == "use_normalization" for r in p11_log), "...tangents, buffer curve, Normalize")
+p11_cube = bpy.data.objects.new("P11Keys", None)
+bpy.context.collection.objects.link(p11_cube)
+for p11_f, p11_v in ((1, 0.0), (5, 2.0), (9, 1.0)):
+    p11_cube.location.x = p11_v
+    p11_cube.keyframe_insert("location", index=0, frame=p11_f)
+p11_fc = P11A.channel_fcurves(p11_cube)[0]
+for p11_k in p11_fc.keyframe_points:
+    p11_k.select_control_point = p11_k.co.x == 5
+p11_gctx = NS(area=NS(type='GRAPH_EDITOR', tag_redraw=lambda: None), visible_fcurves=[p11_fc], selected_visible_fcurves=[p11_fc])
+check(P11A.M3D_OT_key_step.execute(NS(direction='NEXT', report=lambda *a: None), p11_gctx) == {'FINISHED'}
+      and [k.co.x for k in p11_fc.keyframe_points if k.select_control_point] == [9], "Select Next Key")
+P11A.M3D_OT_key_step.execute(NS(direction='PREVIOUS', report=lambda *a: None), p11_gctx)
+P11A.M3D_OT_key_step.execute(NS(direction='PREVIOUS', report=lambda *a: None), p11_gctx)
+check([k.co.x for k in p11_fc.keyframe_points if k.select_control_point] == [1], "...Select Previous Key")
+p11_before = P11A.read_keys(p11_fc)
+p11_bop = lambda action: P11A.M3D_OT_buffer_curve.execute(NS(action=action, report=lambda *a: None), p11_gctx)
+check(p11_bop('SWAP') == {'CANCELLED'}, "Swap Buffer needs a snapshot first")
+check(p11_bop('SNAPSHOT') == {'FINISHED'}, "Buffer Snapshot")
+p11_fc.keyframe_points[1].co.y = 5.0
+p11_fc.keyframe_points.insert(12, 3.0)
+p11_fc.update()
+p11_edited = P11A.read_keys(p11_fc)
+check(p11_bop('SWAP') == {'FINISHED'} and P11A.read_keys(p11_fc) == p11_before, "Swap Buffer: the snapshot is back")
+check(p11_bop('SWAP') == {'FINISHED'} and P11A.read_keys(p11_fc) == p11_edited, "...and swapping again brings the edit back")
+p11_bop('CLEAR')
+check(P11A.curve_id(p11_fc) not in P11A._buffers, "Clear Buffer")
+p11_scene.m3d_anim.isolate_curve = False
+check(not P11A.M3D_OT_graph_isolate.poll(NS(area=NS(type='GRAPH_EDITOR'), scene=p11_scene)), "isolate on click: off by default")
+p11_scene.m3d_anim.isolate_curve = True
+check(P11A.M3D_OT_graph_isolate.poll(NS(area=NS(type='GRAPH_EDITOR'), scene=p11_scene))
+      and not P11A.M3D_OT_graph_isolate.poll(NS(area=NS(type='DOPESHEET_EDITOR'), scene=p11_scene)), "...on: in the Graph Editor")
+p11_scene.m3d_anim.isolate_curve = False
+
+# Visualize: motion trails through m3d.anim_paths (bones in Pose Mode), the Ghosting toggle.
+p11_vis = {e.get("label"): e for e in m3d_ui.MENUS["M3D_MT_visualize"][1]}
+check(p11_vis["Create Motion Trail"]["idname"] == "m3d.anim_paths" and p11_vis["Create Motion Trail"]["modes"] is None
+      and p11_vis["Delete Motion Trail"]["props"] == {"action": 'CLEAR'} and "Ghosting (Onion Skin)" not in p11_vis
+      and p11_vis["Show Motion Trails"]["path"] == "space_data.overlay.show_motion_paths"
+      and p11_vis["Ghosting"]["path"] == "scene.m3d_anim.ghost", "Visualize: motion trails for bones too, Show Motion Trails, Ghosting")
+
+# Quick Rig: guides on a humanoid made of boxes, the skeleton built on them, bound, checked.
+import bmesh as p11_bmesh
+p11_bm = p11_bmesh.new()
+for p11_loc, p11_size in (((0, 0, 1.25), (0.35, 0.2, 0.55)), ((0, 0, 1.75), (0.22, 0.22, 0.25)), ((0.5, 0, 1.6), (0.7, 0.1, 0.1)),
+                          ((-0.5, 0, 1.6), (0.7, 0.1, 0.1)), ((0.15, 0, 0.5), (0.14, 0.14, 1.0)), ((-0.15, 0, 0.5), (0.14, 0.14, 1.0))):
+    for p11_v in p11_bmesh.ops.create_cube(p11_bm, size=1.0)["verts"]:
+        p11_v.co = P11V(p11_loc) + P11V((p11_v.co.x * p11_size[0], p11_v.co.y * p11_size[1], p11_v.co.z * p11_size[2]))
+p11_me = bpy.data.meshes.new("P11Body")
+p11_bm.to_mesh(p11_me)
+p11_body = bpy.data.objects.new("P11Body", p11_me)
+bpy.context.collection.objects.link(p11_body)
+P11R._select_only(bpy.context, p11_body)
+check(bpy.ops.m3d.rig_quick(action='GUIDES') == {'FINISHED'} and len(P11R.guide_objects()) == 9, "Quick Rig: nine guides")
+p11_g = {k: o.location.copy() for k, o in P11R.guide_objects().items()}
+check(bpy.data.objects.get("Guide 1 Chin") is not None and bpy.data.objects.get("Guide 6 Wrist.L") is not None
+      and p11_g["Wrist"].x > p11_g["Elbow"].x > p11_g["Shoulder"].x > 0 and p11_g["Chin"].z > p11_g["Neck"].z > p11_g["Hips"].z
+      > p11_g["Knee"].z > p11_g["Ankle"].z, "...numbered, in the order of a body (T-pose arms out): %s" % p11_g)
+check(abs(p11_g["Shoulder"].y) < 1e-4 and 0.0 < p11_g["Elbow"].y < 0.05 and -0.05 < p11_g["Knee"].y < 0.0,
+      "...halfway through the mesh front to back (elbows a little back, knees a little forward)")
+P11R.guide_objects()["Elbow"].location.z += 0.05   # (moved by hand)
+P11R._select_only(bpy.context, p11_body)
+p11_body.scale = (1.0, 1.0, 1.02)   # (a scale left unapplied: Check Rig lists it)
+check(bpy.ops.m3d.rig_quick(action='BUILD') == {'FINISHED'}, "Build and Bind")
+p11_qr = bpy.data.objects.get("QuickRig")
+check(p11_qr is not None and len(p11_qr.data.bones) == 21 and {"Hand.L", "Hand.R", "Toe.R", "Head"} <= set(p11_qr.data.bones.keys()),
+      "...a skeleton of 21 bones, both sides")
+p11_el, p11_er = p11_qr.data.bones["Forearm.L"].head_local, p11_qr.data.bones["Forearm.R"].head_local
+check((p11_el - (p11_g["Elbow"] + P11V((0, 0, 0.05)))).length < 1e-4 and abs(p11_er.x + p11_el.x) < 1e-4 and abs(p11_er.z - p11_el.z) < 1e-4,
+      "...on the guides (the right side mirrors the left)")
+check(P11R.is_bound(p11_body) and P11R._checked["rig"] == "QuickRig" and 'TRANSFORMS' in {p.kind for p in P11R._checked["problems"]},
+      "...the mesh is bound and Check Rig lists the problems: %s" % [p.text for p in P11R._checked["problems"]])
+check(bpy.context.view_layer.layer_collection.children[P11R.QR_COLLECTION].hide_viewport, "...the guides are hidden afterwards")
+bpy.ops.m3d.rig_quick(action='REMOVE')
+check(not P11R.guide_objects() and P11R.QR_COLLECTION not in bpy.data.collections, "Remove Guides")
+p11_log = []
+P11R.PROPERTIES_PT_m3d_rg_quickrig.draw(type("Inst", (), {"layout": Rec(p11_log)})(), bpy.context)
+check_calls("quick rig", p11_log)
+check({r.values().get("action") for r in p11_log if r._kind == "operator"} == {'GUIDES', 'BUILD'}, "Quick Rig panel: Place Guides, Build")
+
+# Retarget: a three-bone source onto a target with other names, through the bone map; presets.
+p11_src = p11_chain("P11Src", ["mixamorig:Hips", "mixamorig:Spine", "mixamorig:Neck"], x=6.0, z=1.0, step=(0.0, 0.0, 0.5))
+p11_tgt = p11_chain("P11Tgt", ["pelvis", "spine_01", "neck_01"], x=8.0, z=1.0, step=(0.0, 0.0, 0.5))
+check(P11A.auto_map(p11_src, p11_tgt) == [("pelvis", "mixamorig:Hips"), ("spine_01", "mixamorig:Spine"), ("neck_01", "mixamorig:Neck")],
+      "Retarget: bones matched by name")
+check([P11A.bone_part(n)[:2] for n in ("LeftForeArm", "mixamorig:LeftUpLeg", "DEF-upper_arm.L", "Forearm_R", "thigh.l",
+                                       "UpperArm.L", "calf_r", "RightHand")]
+      == [("forearm", "L"), ("thigh", "L"), ("upperarm", "L"), ("forearm", "R"), ("thigh", "L"), ("upperarm", "L"),
+          ("shin", "R"), ("hand", "R")], "...in the usual naming schemes")
+check(not P11A.bone_part("MCH-forearm_ik.L")[0] and not P11A.bone_part("DEF-upper_arm.L.001")[0]
+      and P11A.bone_part("spine.003", rigify=True)[0] == "chest" and P11A.bone_part("upper_arm_fk.R")[:2] == ("upperarm", "R"),
+      "...Rigify's mechanism bones left out, its spine and FK controls known")
+for p11_pb in p11_src.pose.bones:
+    p11_pb.rotation_mode = 'XYZ'
+p11_sp, p11_hp = p11_src.pose.bones["mixamorig:Spine"], p11_src.pose.bones["mixamorig:Hips"]
+for p11_f, p11_rot, p11_loc in ((1, (0, 0, 0), (0, 0, 0)), (10, (0.6, 0, 0.3), (0, 0.5, 0))):
+    p11_sp.rotation_euler, p11_hp.location = p11_rot, p11_loc
+    p11_sp.keyframe_insert("rotation_euler", frame=p11_f)
+    p11_hp.keyframe_insert("location", frame=p11_f)
+p11_as = p11_scene.m3d_anim
+p11_as.retarget_source, p11_as.retarget_target = p11_src, p11_tgt
+check(bpy.ops.m3d.retarget_map(action='AUTO') == {'FINISHED'} and len(p11_as.retarget_map) == 3, "Match by Name fills the map")
+bpy.ops.m3d.retarget_map(action='ADD')
+check(len(p11_as.retarget_map) == 4, "...a row can be added")
+bpy.ops.m3d.retarget_map(action='REMOVE')
+p11_as.retarget_preset = "P11 Map"
+bpy.ops.m3d.retarget_map(action='SAVE')
+check(m3d_user.data()["retarget_maps"]["P11 Map"] == {"pelvis": "mixamorig:Hips", "spine_01": "mixamorig:Spine",
+                                                     "neck_01": "mixamorig:Neck"}, "Save Preset: in m3d_user.json")
+p11_as.retarget_map.clear()
+check(bpy.ops.m3d.retarget_map(action='LOAD', preset="P11 Map") == {'FINISHED'} and len(p11_as.retarget_map) == 3, "Load Preset")
+P11R._select_only(bpy.context, p11_tgt)
+p11_as.retarget_range, p11_as.retarget_root = 'ACTION', True
+check(bpy.ops.m3d.retarget() == {'FINISHED'}, "Retarget")
+p11_curves = P11A.channel_fcurves(p11_tgt)
+check({fc.data_path.rpartition(".")[0] for fc in p11_curves if "rotation" in fc.data_path}
+      == {'pose.bones["pelvis"]', 'pose.bones["spine_01"]', 'pose.bones["neck_01"]'}
+      and 'pose.bones["pelvis"].location' in {fc.data_path for fc in p11_curves}
+      and all(len(fc.keyframe_points) == 10 for fc in p11_curves), "...keys every frame of the source's action on the target")
+p11_ok = True
+for p11_f in (1, 5, 10):
+    p11_scene.frame_set(p11_f)
+    for p11_s, p11_t2 in (("mixamorig:Neck", "neck_01"), ("mixamorig:Spine", "spine_01")):
+        p11_d = (p11_src.matrix_world @ p11_src.pose.bones[p11_s].tail) - (p11_tgt.matrix_world @ p11_tgt.pose.bones[p11_t2].tail)
+        p11_ok = p11_ok and (p11_d - P11V((-2.0, 0.0, 0.0))).length < 1e-3
+check(p11_ok, "...and the target moves as the source does (frames 1, 5, 10)")
+check(not any(len(pb.constraints) for pb in p11_tgt.pose.bones), "...no constraints are left on the target")
+p11_log = []
+P11A.PROPERTIES_PT_m3d_an_retarget.draw(type("Inst", (), {"layout": Rec(p11_log)})(), bpy.context)
+check_calls("retarget", p11_log)
+del m3d_user.data()["retarget_maps"]["P11 Map"]
+
+# Ghosting: the draw handler comes and goes with the toggle; the meshes of the frames around this one are read once.
+P11R._select_only(bpy.context, p11_body)
+p11_qr.pose.bones["Hips"].location = (0, 0, 0)
+p11_qr.pose.bones["Hips"].keyframe_insert("location", frame=1)
+p11_qr.pose.bones["Hips"].location = (0, 0.3, 0)   # (along the bone: up)
+p11_qr.pose.bones["Hips"].keyframe_insert("location", frame=9)
+p11_scene.frame_set(5)
+p11_as.ghost_mode, p11_as.ghost_before, p11_as.ghost_after, p11_as.ghost_step = 'FRAMES', 2, 2, 2
+p11_as.ghost = True
+check(P11A._ghost["handle"] is not None, "Ghosting: the draw handler is on")
+check(P11A.ghost_objects(bpy.context) == [p11_body], "...for the selected mesh")
+check(P11A.build_ghosts(bpy.context) == 4 and sorted(P11A._ghost["cache"]) == [1, 3, 7, 9], "...four frames read: %s" % sorted(P11A._ghost["cache"]))
+check(p11_scene.frame_current == 5, "...the scene is back on its frame")
+p11_low = min(v[2] for v in P11A._ghost["cache"][1]["tris"][0][0])
+p11_high = min(v[2] for v in P11A._ghost["cache"][9]["tris"][0][0])
+check(abs((p11_high - p11_low) - 0.3) < 0.05, "...each with the mesh as the skeleton poses it then (%.3f)" % (p11_high - p11_low))
+check(P11A.build_ghosts(bpy.context) == 0, "...and kept (cached)")
+p11_scene.frame_set(6)
+check(P11A.build_ghosts(bpy.context) == 4 and sorted(P11A._ghost["cache"]) == [2, 4, 8, 10], "a new frame: the frames around it")
+p11_as.ghost_mode = 'KEYS'
+check(P11A.ghost_frames(bpy.context) == [(1, -1), (9, 1)], "Keys: on the keys around this frame: %s" % P11A.ghost_frames(bpy.context))
+p11_log = []
+P11A.PROPERTIES_PT_m3d_an_onion.draw(type("Inst", (), {"layout": Rec(p11_log)})(), bpy.context)
+check_calls("ghosting", p11_log)
+p11_as.ghost = False
+check(P11A._ghost["handle"] is None and not P11A._ghost["cache"], "Ghosting off: the handler and the meshes are gone")
+p11_scene.frame_set(1)
+clean_scene()
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

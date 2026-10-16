@@ -655,9 +655,12 @@ MENUS = {
         op("Previous Key", "screen.keyframe_jump", 'PREV_KEYFRAME', next=False),
     ]),
     "M3D_MT_visualize": ("Visualize", [
-        op("Create Motion Trail", "object.paths_calculate", modes=OBJECT),
-        op("Delete Motion Trail", "object.paths_clear", modes=OBJECT),
-        prop("Ghosting (Onion Skin)", "space_data.overlay.show_motion_paths"),
+        # (m3d.anim_paths: the selected bones in Pose Mode, else the selected objects)
+        op("Create Motion Trail", "m3d.anim_paths", 'ANIM_DATA', action='CALCULATE'),
+        op("Delete Motion Trail", "m3d.anim_paths", 'X', action='CLEAR'),
+        prop("Show Motion Trails", "space_data.overlay.show_motion_paths"),
+        SEP,
+        prop("Ghosting", "scene.m3d_anim.ghost"),
     ]),
 
     # FX menu set.

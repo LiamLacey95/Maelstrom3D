@@ -220,6 +220,27 @@ class M3D_MT_tangent_mm(Menu):
             _op(pie, "m3d.set_tangents", label, icon, kind=kind)
 
 
+class M3D_MT_graph_mm(Menu):
+    """Right click in the Graph Editor / Dope Sheet: tangents of the selected keys, the buffer curve, the editor's menu"""
+    bl_label = "Keys"
+
+    def draw(self, context):
+        pie = self.layout.menu_pie()
+        for kind, label, icon in TANGENTS:
+            _op(pie, "m3d.set_tangents", label, icon, kind=kind)
+        graph = context.area is not None and context.area.type == 'GRAPH_EDITOR'
+        if graph:
+            _op(pie, "m3d.buffer_curve", "Buffer Snapshot", 'GHOST_ENABLED', action='SNAPSHOT')
+            _op(pie, "m3d.buffer_curve", "Swap Buffer", 'FILE_REFRESH', action='SWAP')
+        col = pie.column(align=True)
+        o = col.operator("wm.call_menu", text="More...", icon='COLLAPSEMENU')
+        o.name = "GRAPH_MT_context_menu" if graph else "DOPESHEET_MT_context_menu"
+        if graph:
+            col.prop(context.space_data, "use_normalization", text="Normalize")
+            col.prop(context.scene.m3d_anim, "isolate_curve")
+            _op(col, "m3d.buffer_curve", "Clear Buffer", 'GHOST_DISABLED', action='CLEAR')
+
+
 _last_hidden = []
 
 
@@ -715,6 +736,7 @@ classes = (
     M3D_OT_cut,
     M3D_OT_set_tangents,
     M3D_MT_tangent_mm,
+    M3D_MT_graph_mm,
     M3D_OT_hide_selection,
     M3D_OT_show_hidden,
     M3D_OT_nudge,

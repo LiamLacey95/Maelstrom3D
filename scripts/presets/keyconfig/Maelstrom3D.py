@@ -227,10 +227,30 @@ OVERRIDES = {
         _kmi("screen.workspace_cycle", 'LEFT_BRACKET', props={"direction": 'PREV'}, shift=True),
         _kmi("screen.workspace_cycle", 'RIGHT_BRACKET', props={"direction": 'NEXT'}, shift=True),
     ],
+    # Graph Editor and Dope Sheet: right click is the key marking menu (tangents of the selected keys, the buffer curve,
+    # Normalize, the editor's own menu under More...), Ctrl+Alt+, / . select the previous / next key of each curve.
+    "Graph Editor": [
+        _pie("M3D_MT_graph_mm", 'RIGHTMOUSE'),
+        _kmi("m3d.key_step", 'COMMA', props={"direction": 'PREVIOUS'}, ctrl=True, alt=True, repeat=True),
+        _kmi("m3d.key_step", 'PERIOD', props={"direction": 'NEXT'}, ctrl=True, alt=True, repeat=True),
+    ],
+    "Dopesheet": [
+        _pie("M3D_MT_graph_mm", 'RIGHTMOUSE'),
+        _kmi("m3d.key_step", 'COMMA', props={"direction": 'PREVIOUS'}, ctrl=True, alt=True, repeat=True),
+        _kmi("m3d.key_step", 'PERIOD', props={"direction": 'NEXT'}, ctrl=True, alt=True, repeat=True),
+    ],
+    # Isolate Curve on Click (Motion tab, the Graph Editor's right-click menu): a click on a channel shows only its curve.
+    "Animation Channels": [_kmi("m3d.graph_isolate", 'LEFTMOUSE')],
     # Z is Undo (Window): Zoom Region stays on the View menu of the Graph Editor and Dope Sheet (m3d_anim.py).
     "View2D": [("REMOVE", {"type": 'Z', "value": 'PRESS'}, None)],
-    # S over a button keys that channel alone (a Channel Box row is one channel; Blender keys the whole vector).
-    "User Interface": [_kmi("anim.keyframe_insert_button", 'S', props={"all": False})],
+    # S over a button keys that channel alone (a Channel Box row is one channel; Blender keys the whole vector; over a
+    # Channel Box channel m3d.channel_key keys it on every selected bone or object). Middle-drag in the Channel Box changes
+    # the picked channels (a virtual slider).
+    "User Interface": [
+        _kmi("m3d.channel_key", 'S'),
+        _kmi("anim.keyframe_insert_button", 'S', props={"all": False}),
+        _kmi("m3d.channel_drag", 'MIDDLEMOUSE'),
+    ],
     # Shift+drag on the move manipulator extrudes (components only; objects keep box selection).
     "Generic Gizmo Drag": [
         _kmi("m3d.gizmo_shift_drag", 'LEFTMOUSE', 'CLICK_DRAG', shift=True),
@@ -364,7 +384,7 @@ def selection_modifiers(keyconfig_data):
 
 
 # Items that go before the keymap's own (a key does what the first item of the keymap that can run does).
-FIRST = {"m3d.tex_polyfill"}
+FIRST = {"m3d.tex_polyfill", "m3d.channel_key", "m3d.graph_isolate"}
 KEEP_OTHERS = {"m3d.layer_key"}   # items that go last and leave the keymap's own items on the same key alone
 
 
