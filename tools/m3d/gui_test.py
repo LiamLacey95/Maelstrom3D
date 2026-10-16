@@ -1367,7 +1367,7 @@ step(wait_until(lambda: e_shelf_ready('POLY'), "the shelf cells in edit mode"))
 def edit_shelf_probe_check():
     check(not tracebacks(), "Python error drawing the shelf in edit mode")
     rec = m3d_edit._geom["shelf"]
-    check(len([c for c in rec["cells"] if c[2]]) == 22, "edit-mode shelf has a cell per button: %d" % len(rec["cells"]))
+    check(len([c for c in rec["cells"] if c[2]]) == 24, "edit-mode shelf has a cell per button (Create High Poly and Auto-Pair are on the Poly shelf): %d" % len(rec["cells"]))
 
 
 # A click on a shelf button without a drag does nothing while editing (the press and release are taken).
@@ -9474,6 +9474,131 @@ def hp_cleanup():
         bpy.data.objects.remove(ob)
     bpy.context.scene.m3d_show_low = False
     check(not tracebacks(), "Python error in the high poly / low poly tests")
+
+
+# UX pass 2, P2 in the real window: Ctrl+D duplicates in Sculpt, a heavy Ctrl+3 asks first (Esc: nothing done, Enter: done),
+# Apply Multires on a lower level asks naming what is lost, F2 on a game mesh stays in Object Mode with its card.
+def p2_center():
+    _win, _area, region = view3d()
+    return region.x + region.width // 2, region.y + region.height // 2
+
+
+def p2_key(key, **mods):
+    xy = p2_center()
+    event('MOUSEMOVE', xy=xy)
+    event(key, 'PRESS', xy, **mods)
+    event(key, 'RELEASE', xy, **mods)
+
+
+@step
+def p2_scene():
+    with hp_viewport():
+        for ob in list(bpy.data.objects):
+            bpy.data.objects.remove(ob)
+        bpy.ops.mesh.primitive_cube_add(size=2)
+        bpy.context.active_object.name = "P2Box"
+        bpy.ops.view3d.view_all(center=True)
+    hp_press('F2')
+
+
+step(wait_until(lambda: hp_in('SCULPT') and bpy.context.mode == 'SCULPT', "F2 on a plain cube"))
+
+
+@step
+def p2_ctrl3():
+    GIZMO["p2_ask"] = HPR.ASK_FACES
+    HPR.ASK_FACES = 100   # (a cube's level 3, 384 faces, is "heavy" here: the real limit would need a mesh of millions)
+    p2_key('THREE', ctrl=True)
+
+
+@step
+def p2_ctrl3_asks():
+    check(m3d_sculpt.multires_of(hp_ob("P2Box")) is None, "a heavy Ctrl+3 asks before it subdivides")
+    p2_key('ESC')
+
+
+@step
+def p2_ctrl3_again():
+    check(m3d_sculpt.multires_of(hp_ob("P2Box")) is None, "...Esc: nothing is done")
+    p2_key('THREE', ctrl=True)
+
+
+@step
+def p2_ctrl3_confirm():
+    p2_key('RET')
+
+
+step(wait_until(lambda: m3d_sculpt.multires_of(hp_ob("P2Box")) is not None, "Enter to confirm Ctrl+3"))
+
+
+@step
+def p2_ctrl3_done():
+    HPR.ASK_FACES = GIZMO["p2_ask"]
+    mod = m3d_sculpt.multires_of(hp_ob("P2Box"))
+    check(mod.total_levels == 3 and mod.sculpt_levels == 3 and bpy.context.mode == 'SCULPT', "...Enter: level 3 (%d)" % mod.total_levels)
+    mod.sculpt_levels = mod.levels = 1
+    with hp_viewport():
+        res = bpy.ops.m3d.multires_apply('INVOKE_DEFAULT')
+    check(res == {'RUNNING_MODAL'} and m3d_sculpt.multires_of(hp_ob("P2Box")) is not None, "Apply Multires on level 1 of 3 asks first: %s" % res)
+    p2_key('ESC')
+
+
+@step
+def p2_apply_cancelled():
+    check(m3d_sculpt.multires_of(hp_ob("P2Box")) is not None, "...Esc keeps the levels")
+    GIZMO["p2_objects"] = len(bpy.data.objects)
+    p2_key('D', ctrl=True)
+
+
+step(wait_until(lambda: len(bpy.data.objects) == GIZMO["p2_objects"] + 1, "Ctrl+D in Sculpt"))
+
+
+@step
+def p2_ctrl_d_check():
+    ob = bpy.context.active_object
+    check(ob is not None and ob.name != "P2Box" and bpy.context.mode == 'SCULPT', "Ctrl+D in Sculpt: a copy, sculpted (%s)" % (ob and ob.name))
+    check(not tracebacks(), "Python error in the Sculpt keys")
+    hp_press('F1')
+
+
+step(wait_until(lambda: hp_in('MODEL') and bpy.context.mode == 'OBJECT', "F1 before the game mesh"))
+
+
+@step
+def p2_game_mesh():
+    with hp_viewport():
+        for ob in list(bpy.data.objects):
+            bpy.data.objects.remove(ob)
+        bpy.ops.mesh.primitive_cube_add(size=2)
+        bpy.context.active_object.name = "P2Crate"
+        bpy.ops.m3d.hp_mark(role='LOW')
+    hp_press('F2')
+
+
+step(wait_until(lambda: hp_in('SCULPT'), "F2 on a game mesh"))
+
+
+@step
+def p2_game_mesh_wait():
+    pass
+
+
+@step
+def p2_game_mesh_card():
+    check(bpy.context.mode == 'OBJECT' and hp_ob("P2Crate").mode == 'OBJECT', "F2 on a game mesh stays in Object Mode (the card asks)")
+    check(window().workspace.object_mode == 'SCULPT', "...and the workspace keeps its own entry mode")
+    check(not tracebacks(), "Python error drawing the game mesh card")
+    hp_press('F1')
+
+
+step(wait_until(lambda: hp_in('MODEL'), "F1 after the game mesh"))
+
+
+@step
+def p2_cleanup():
+    for ob in list(bpy.data.objects):
+        bpy.data.objects.remove(ob)
+    check(not tracebacks(), "Python error in the P2 sculpt tests")
 
 
 # ----------------------------------------------------------------------------------------------------

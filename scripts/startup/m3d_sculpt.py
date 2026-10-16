@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 """
-Sculpt workspace (F2) for Maelstrom3D: the brush tray (left), the dock pages (Geometry, Mask, Face Sets, Deform,
-Paint, Display, Objects), the Sculpt Status Line, shelf items and the operators behind them.
+Sculpt workspace (F2) for Maelstrom3D: the brush tray (left), the dock pages (Geometry, Objects, Mask, Face Sets,
+Deform, Paint, Display), the Sculpt Status Line, shelf items and the operators behind them.
 
 The layout is built by tools/m3d/build_startup.py (phase1_sculpt), the tabs are DOCK_TABS['SCULPT'] in
 m3d_workspace.py, the menus and shelves in m3d_ui.py. Controls that stock Blender already draws (brush settings,
@@ -366,8 +366,13 @@ def face_count(ob):
     """Faces being sculpted: the mesh's, or with Multires the level being sculpted (O(1): each base corner becomes
     4^(level - 1) faces). The viewport's statistics count the same."""
     mod = multires_of(ob)
-    mesh = ob.data
-    return len(mesh.loops) * 4 ** (mod.sculpt_levels - 1) if mod is not None and mod.sculpt_levels else len(mesh.polygons)
+    return m3d_pair.level_faces(ob, mod.sculpt_levels if mod is not None else 0)
+
+
+def next_level_faces(ob):
+    """Faces of the next Multires level Subdivide adds (O(1))."""
+    mod = multires_of(ob)
+    return m3d_pair.level_faces(ob, (mod.total_levels if mod is not None else 0) + 1)
 
 
 def short_count(n):
@@ -774,10 +779,17 @@ class M3D_OT_multires_subdivide(Operator):
     def poll(cls, context):
         return mesh_of(context) is not None
 
+    def invoke(self, context, event):
+        return m3d_pair.heavy_guard(self, context, event, next_level_faces(mesh_of(context)), "Subdivide")
+
     def execute(self, context):
         ob = mesh_of(context)
         if ob.use_dynamic_topology_sculpting:
             self.report({'WARNING'}, "Turn off Dynamic Detail to subdivide")
+            return {'CANCELLED'}
+        problem = m3d_pair.heavy_problem(next_level_faces(ob), "Subdivide")
+        if problem:
+            self.report({'ERROR'}, problem)
             return {'CANCELLED'}
         try:
             if multires_of(ob) is None:
@@ -785,6 +797,97 @@ class M3D_OT_multires_subdivide(Operator):
             bpy.ops.object.multires_subdivide(modifier=multires_of(ob).name, mode=self.mode)
         except RuntimeError as err:
             self.report({'WARNING'}, str(err).strip())
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+class M3D_OT_sculpt_level(Operator):
+    """Ctrl+0 ... Ctrl+5 in Sculpt: show and sculpt this Multires level. Levels the mesh does not have are added (the
+    first adds Multires); a level of millions of faces asks first"""
+    bl_idname = "m3d.sculpt_level"
+    bl_label = "Multires Level"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    level: bpy.props.IntProperty(name="Level", min=0, max=6)
+
+    @classmethod
+    def poll(cls, context):
+        return mesh_of(context) is not None
+
+    def faces(self, ob):
+        """Faces of the levels this adds (0: it adds none)."""
+        mod = multires_of(ob)
+        return m3d_pair.level_faces(ob, self.level) if self.level > (mod.total_levels if mod is not None else 0) else 0
+
+    def invoke(self, context, event):
+        return m3d_pair.heavy_guard(self, context, event, self.faces(mesh_of(context)), "Level %d" % self.level)
+
+    def execute(self, context):
+        ob = mesh_of(context)
+        problem = m3d_pair.heavy_problem(self.faces(ob), "Level %d" % self.level)
+        if problem:
+            self.report({'ERROR'}, problem)
+            return {'CANCELLED'}
+        mod = multires_of(ob)
+        if mod is None and self.level == 0:
+            return {'CANCELLED'}
+        if self.faces(ob) and ob.use_dynamic_topology_sculpting:
+            self.report({'WARNING'}, "Turn off Dynamic Detail to subdivide")
+            return {'CANCELLED'}
+        try:
+            if mod is None:
+                mod = ob.modifiers.new("Multires", 'MULTIRES')
+            with context.temp_override(active_object=ob, object=ob):
+                for _ in range(self.level - mod.total_levels):
+                    bpy.ops.object.multires_subdivide(modifier=mod.name, mode='CATMULL_CLARK')
+        except RuntimeError as err:
+            self.report({'WARNING'}, str(err).replace("Error: ", "").strip())
+            return {'CANCELLED'}
+        mod.levels = mod.sculpt_levels = self.level
+        return {'FINISHED'}
+
+
+class M3D_OT_voxel_remesh(Operator):
+    """Rebuild the mesh as an even mesh of faces the size of the voxel size (Detail: about how many faces that gives).
+    UVs and Face Sets are lost; a remesh of millions of faces asks first"""
+    bl_idname = "m3d.voxel_remesh"
+    bl_label = "Voxel Remesh"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    faces: bpy.props.IntProperty(name="Faces", min=0, options={'SKIP_SAVE'},
+                                 description="Set the voxel size for about this many faces first (0: the size as it is)")
+
+    @classmethod
+    def poll(cls, context):
+        ob = mesh_of(context)
+        return ob is not None and multires_of(ob) is None and not ob.use_dynamic_topology_sculpting
+
+    @classmethod
+    def description(cls, _context, props):
+        if props.faces:
+            return "Voxel Remesh to about %s faces: an even mesh to sculpt on (UVs and Face Sets are lost)" % short_count(props.faces)
+        return cls.__doc__
+
+    def estimate(self, mesh):
+        return self.faces or voxel_faces(mesh)
+
+    def invoke(self, context, event):
+        return m3d_pair.heavy_guard(self, context, event, self.estimate(mesh_of(context).data), "Voxel Remesh")
+
+    def execute(self, context):
+        mesh = mesh_of(context).data
+        problem = m3d_pair.heavy_problem(self.estimate(mesh), "Voxel Remesh")
+        if problem:
+            self.report({'ERROR'}, problem + " (raise the voxel size)")
+            return {'CANCELLED'}
+        if self.faces:
+            area = surface_area(mesh, grid=True)
+            if area > 0:
+                mesh.remesh_voxel_size = max((area / self.faces) ** 0.5, 0.0001)
+        try:
+            bpy.ops.object.voxel_remesh()
+        except RuntimeError as err:
+            self.report({'WARNING'}, str(err).replace("Error: ", "").strip())
             return {'CANCELLED'}
         return {'FINISHED'}
 
@@ -872,6 +975,14 @@ class M3D_OT_multires_edit(Operator):
         ob = mesh_of(context)
         return ob is not None and multires_of(ob) is not None
 
+    def invoke(self, context, event):
+        ob = mesh_of(context)
+        message = delete_message(ob, multires_of(ob)) if self.action == 'DELETE_HIGHER' else None
+        if message is None:
+            return self.execute(context)
+        return context.window_manager.invoke_confirm(self, event, title="Delete Higher Levels", message=message,
+                                                     confirm_text="Delete", icon='ERROR')
+
     def execute(self, context):
         name = multires_of(mesh_of(context)).name
         run = {'DELETE_HIGHER': bpy.ops.object.multires_higher_levels_delete,
@@ -885,6 +996,35 @@ class M3D_OT_multires_edit(Operator):
         return {'FINISHED'}
 
 
+def current_level(ob, mod):
+    """The level Multires works on: the sculpt level in Sculpt Mode, else the display level (as Blender's own)."""
+    return mod.sculpt_levels if ob.mode == 'SCULPT' else mod.levels
+
+
+def level_text(ob, mod, level):
+    return "level %d of %d (%s faces)" % (level, mod.total_levels, short_count(m3d_pair.level_faces(ob, level)))
+
+
+def delete_message(ob, mod):
+    """What Delete higher levels asks ("Delete levels 3-5 of Sphere? ..."), None when there are none above."""
+    level = current_level(ob, mod)
+    if level >= mod.total_levels:
+        return None
+    one = level + 1 == mod.total_levels
+    lost = "level %d" % mod.total_levels if one else "levels %d-%d" % (level + 1, mod.total_levels)
+    return "Delete %s of %s? The detail sculpted on %s is lost" % (lost, ob.name, "it" if one else "them")
+
+
+def apply_message(ob, mod, highest=False):
+    """What Apply Multires keeps and loses: "Keep level 2 of 5 (130k faces)? Levels 3-5 are lost"."""
+    level = mod.total_levels if highest else mod.sculpt_levels
+    if level >= mod.total_levels:
+        return "Keep %s: all the detail stays" % level_text(ob, mod, level)
+    one = level + 1 == mod.total_levels
+    lost = "Level %d is" % mod.total_levels if one else "Levels %d-%d are" % (level + 1, mod.total_levels)
+    return "Keep %s? %s lost" % (level_text(ob, mod, level), lost)
+
+
 class M3D_OT_multires_apply(Operator):
     """Make the sculpted detail the mesh itself (Multires is removed): Voxel Remesh, Auto Retopology and Dynamic Detail
     work again"""
@@ -892,10 +1032,27 @@ class M3D_OT_multires_apply(Operator):
     bl_label = "Apply Multires"
     bl_options = {'REGISTER', 'UNDO'}
 
+    highest: bpy.props.BoolProperty(name="Use Highest Level", options={'SKIP_SAVE'},
+                                    description="Keep the highest level (all the detail) instead of the level being sculpted")
+
     @classmethod
     def poll(cls, context):
         ob = mesh_of(context)
         return ob is not None and multires_of(ob) is not None
+
+    def invoke(self, context, event):
+        mod = multires_of(mesh_of(context))
+        if mod.sculpt_levels >= mod.total_levels:
+            return self.execute(context)   # (no detail is lost)
+        return context.window_manager.invoke_props_dialog(self, title="Apply Multires", confirm_text="Apply", width=380)
+
+    def draw(self, context):
+        ob = mesh_of(context)
+        mod = multires_of(ob)
+        layout = self.layout
+        draw_lines(layout, context, apply_message(ob, mod, self.highest), icon='INFO' if self.highest else 'ERROR',
+                   width=380 * (context.preferences.system.ui_scale or 1.0))
+        layout.prop(self, "highest", text="Use highest level (%s)" % level_text(ob, mod, mod.total_levels))
 
     def execute(self, context):
         ob = mesh_of(context)
@@ -903,7 +1060,7 @@ class M3D_OT_multires_apply(Operator):
         if mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')   # (Apply works in Object Mode only)
         mod = multires_of(ob)
-        mod.levels = mod.render_levels = mod.sculpt_levels   # the level being sculpted is the one kept
+        mod.levels = mod.render_levels = mod.total_levels if self.highest else mod.sculpt_levels   # (the level kept)
         try:
             with context.temp_override(active_object=ob, object=ob):
                 bpy.ops.object.modifier_apply(modifier=mod.name)
@@ -930,8 +1087,24 @@ def _show_in_sculpt(context, ob):
         bpy.ops.object.mode_set(mode='SCULPT')
 
 
+def split_face_sets(mesh):
+    """Cut the mesh apart along the borders of its face sets (each face set is then a loose part of its own). False when
+    it has no face sets."""
+    import bmesh
+    if ".sculpt_face_set" not in mesh.attributes:
+        return False
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    layer = bm.faces.layers.int.get(".sculpt_face_set")
+    cut = [e for e in bm.edges if len({f[layer] for f in e.link_faces}) > 1]
+    bmesh.ops.split_edges(bm, edges=cut)
+    bm.to_mesh(mesh)
+    bm.free()
+    return True
+
+
 class M3D_OT_sculpt_object(Operator):
-    """Objects tab: pick a mesh, show or hide it, solo it, or append a duplicate"""
+    """Objects tab: pick a mesh, show or hide it, solo it, append a duplicate, delete it, merge or split meshes"""
     bl_idname = "m3d.sculpt_object"
     bl_label = "Sculpt Object"
     bl_options = {'REGISTER', 'UNDO'}
@@ -943,6 +1116,11 @@ class M3D_OT_sculpt_object(Operator):
         ('SOLO', "Solo", "Hide every other mesh (again: show them)"),
         ('DUPLICATE', "Duplicate", "Append a copy of this mesh and sculpt it"),
         ('START', "Sculpt", "Make this the active mesh and sculpt it"),
+        ('DELETE', "Delete", "Delete this mesh"),
+        ('SHOW_ALL', "Show All", "Show every mesh"),
+        ('MERGE', "Merge Visible", "Merge the shown meshes into this one"),
+        ('SPLIT_LOOSE', "Split Loose Parts", "Make each loose part of this mesh a mesh of its own"),
+        ('SPLIT_FACE_SETS', "Split Face Sets", "Make each face set of this mesh a mesh of its own"),
     ))
 
     @classmethod
@@ -950,13 +1128,28 @@ class M3D_OT_sculpt_object(Operator):
         return {'SELECT': "Make this the active mesh", 'VISIBLE': "Show or hide this mesh in the viewport",
                 'SOLO': "Hide every other mesh; click again to show them",
                 'DUPLICATE': "Append a copy of this mesh and sculpt it",
-                'START': "Sculpt this mesh"}[props.action]
+                'START': "Sculpt this mesh", 'DELETE': "Delete this mesh", 'SHOW_ALL': "Show every mesh of the scene",
+                'MERGE': "Merge the shown meshes into the active one (one mesh to sculpt)",
+                'SPLIT_LOOSE': "Make each loose part of the active mesh a mesh of its own",
+                'SPLIT_FACE_SETS': "Make each face set of the active mesh a mesh of its own"}[props.action]
 
     def execute(self, context):
+        meshes = [o for o in context.view_layer.objects if o.type == 'MESH']
+        if self.action == 'SHOW_ALL':
+            for o in meshes:
+                o.hide_set(False)
+            return {'FINISHED'}
         ob = bpy.data.objects.get(self.name)
         if ob is None or ob.type != 'MESH':
             return {'CANCELLED'}
-        meshes = [o for o in context.view_layer.objects if o.type == 'MESH']
+        if self.action == 'DELETE':
+            if context.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
+            with context.temp_override(selected_objects=[ob], selected_editable_objects=[ob]):
+                bpy.ops.object.delete()
+            return {'FINISHED'}
+        if self.action in {'MERGE', 'SPLIT_LOOSE', 'SPLIT_FACE_SETS'}:
+            return self.reshape(context, ob, meshes)
         if self.action == 'VISIBLE':
             if ob is context.active_object and not ob.hide_get() and context.mode != 'OBJECT':
                 bpy.ops.object.mode_set(mode='OBJECT')   # leave Sculpt Mode before the mesh goes away
@@ -976,6 +1169,65 @@ class M3D_OT_sculpt_object(Operator):
             bpy.ops.object.mode_set(mode='SCULPT')
         return {'FINISHED'}
 
+    def reshape(self, context, ob, meshes):
+        """Merge Visible, Split Loose Parts, Split Face Sets (in Object Mode; the mode comes back)."""
+        mode = context.mode
+        _show_in_sculpt(context, ob)
+        if context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        try:
+            if self.action == 'MERGE':
+                shown = [o for o in meshes if o.visible_get()]
+                if len(shown) < 2:
+                    self.report({'WARNING'}, "Show the meshes to merge first")
+                    return {'CANCELLED'}
+                for o in shown:
+                    o.select_set(True)
+                bpy.ops.object.join()
+            else:
+                if self.action == 'SPLIT_FACE_SETS' and not split_face_sets(ob.data):
+                    self.report({'WARNING'}, "%s has no face sets (Face Sets tab: Make Face Sets)" % ob.name)
+                    return {'CANCELLED'}
+                bpy.ops.object.mode_set(mode='EDIT')
+                bpy.ops.mesh.select_all(action='SELECT')
+                bpy.ops.mesh.separate(type='LOOSE')
+                bpy.ops.object.mode_set(mode='OBJECT')
+                for o in context.selected_objects:   # (the new meshes come selected: only the active one stays)
+                    o.select_set(o == ob)
+        except RuntimeError as err:
+            self.report({'WARNING'}, str(err).replace("Error: ", "").strip())
+            return {'CANCELLED'}
+        finally:
+            if mode == 'SCULPT' and context.mode != 'SCULPT':
+                bpy.ops.object.mode_set(mode='SCULPT')
+        return {'FINISHED'}
+
+
+QUAD_SPHERE_CUTS = 31   # cuts of each edge of the cube the start sphere is made of: 32 x 32 quads a side, 6,144 in all
+
+
+def quad_sphere(context, radius=1.0, cuts=QUAD_SPHERE_CUTS):
+    """A sphere of even quads at the origin, active and selected: a cube divided `cuts` times along each edge with its
+    points pushed out to the radius. No poles (a UV sphere pinches at the top and bottom) and enough faces to sculpt."""
+    import bmesh
+    bm = bmesh.new()
+    bm.loops.layers.uv.new("UVMap")
+    bmesh.ops.create_cube(bm, size=2.0, calc_uvs=True)
+    bmesh.ops.subdivide_edges(bm, edges=bm.edges[:], cuts=cuts, use_grid_fill=True)
+    for v in bm.verts:
+        v.co = v.co.normalized() * radius
+    mesh = bpy.data.meshes.new("Sphere")
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.shade_smooth()
+    ob = bpy.data.objects.new("Sphere", mesh)
+    context.collection.objects.link(ob)
+    for other in context.selected_objects:
+        other.select_set(False)
+    ob.select_set(True)
+    context.view_layer.objects.active = ob
+    return ob
+
 
 class M3D_OT_sculpt_add_mesh(Operator):
     """Add a mesh at the origin and start sculpting it"""
@@ -989,12 +1241,78 @@ class M3D_OT_sculpt_add_mesh(Operator):
 
     @classmethod
     def description(cls, _context, props):
+        if props.kind == 'SPHERE':
+            return "Add a sphere of even quads (6,144 faces) and start sculpting it"
         return "Add a %s and start sculpting it" % props.kind.lower()
 
-    def execute(self, _context):
-        bpy.ops.m3d.add_primitive(kind=self.kind)
+    def execute(self, context):
+        if self.kind == 'SPHERE':
+            if context.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
+            quad_sphere(context)
+        else:
+            bpy.ops.m3d.add_primitive(kind=self.kind)
         bpy.ops.object.mode_set(mode='SCULPT')
         return {'FINISHED'}
+
+
+def off_centre(ob):
+    """The mirror axes (of those that are on) about which the mesh is not centred: the middle of its bounding box is off
+    its origin by more than 1% of its size, so a symmetric stroke lands beside the other side. O(1): the bounding box."""
+    box = ob.bound_box
+    lo = [min(c[i] for c in box) for i in range(3)]
+    hi = [max(c[i] for c in box) for i in range(3)]
+    size = max(h - l for h, l in zip(hi, lo))
+    return [axis.upper() for i, axis in enumerate("xyz")
+            if getattr(ob.data, "use_mirror_" + axis) and abs(lo[i] + hi[i]) / 2 > 0.01 * size]
+
+
+class M3D_OT_sculpt_center_pivot(Operator):
+    """Move the pivot to the middle of the mesh (the mesh stays where it is): symmetry mirrors about the pivot"""
+    bl_idname = "m3d.sculpt_center_pivot"
+    bl_label = "Center Pivot"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return mesh_of(context) is not None
+
+    def execute(self, context):
+        ob = mesh_of(context)
+        mode = ob.mode
+        if mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        try:
+            with context.temp_override(active_object=ob, object=ob, selected_objects=[ob], selected_editable_objects=[ob]):
+                bpy.ops.object.origin_set(type='ORIGIN_GEOMETRY', center='BOUNDS')
+        except RuntimeError as err:
+            self.report({'WARNING'}, str(err).replace("Error: ", "").strip())
+            return {'CANCELLED'}
+        finally:
+            if mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode=mode)
+        return {'FINISHED'}
+
+
+FEW_FACES = 5_000          # a mesh with fewer faces (no Multires, no Dynamic Detail) is too coarse to sculpt detail into
+DETAIL_REMESH = 100_000    # Add Detail's Voxel Remesh: about this many faces
+HEAVY_VIEW = 2_000_000     # with more faces than this the Status Line offers Fast Navigation (low resolution while navigating)
+
+
+class M3D_MT_sculpt_add_detail(bpy.types.Menu):
+    """The ways to give a coarse mesh enough faces to sculpt"""
+    bl_label = "Add Detail"
+
+    def draw(self, context):
+        layout = self.layout
+        ob = mesh_of(context)
+        if ob is None:
+            return
+        layout.operator("m3d.voxel_remesh", text="Voxel Remesh (~%s faces)" % short_count(DETAIL_REMESH),
+                        icon='MOD_REMESH').faces = DETAIL_REMESH
+        faces = short_count(next_level_faces(ob))
+        layout.operator("m3d.multires_subdivide", text="Subdivide (smooth) → %s faces" % faces).mode = 'CATMULL_CLARK'
+        layout.operator("m3d.multires_subdivide", text="Subdivide (keep shape) → %s faces" % faces).mode = 'SIMPLE'
 
 
 # --- Ctrl gestures: masking and visibility (Ctrl+LMB in the Sculpt keymap, with Alt and Shift)
@@ -1377,10 +1695,23 @@ class _BrushPage(_PagePanel):
             not hasattr(stock, "poll") or stock.poll(context))
 
 
+def draw_game_card(layout, context):
+    """F2 on a game mesh without a high poly (m3d_pair.game_mesh) stays in Object Mode and asks: sculpt a high poly copy of
+    it (the game mesh stays as it is, to bake onto), or this mesh itself."""
+    col = empty_state(layout, context, "This is a game mesh: sculpt a high poly copy of it, or this mesh itself")
+    row = col.row(align=True)
+    row.scale_y = 1.3
+    m3d_pair.draw_create(row, context)
+    _button(row, context, "Sculpt this mesh", "object.mode_set", 'SCULPTMODE_HLT', {"mode": 'SCULPT'})
+
+
 def _gate(page, need):
     """The panel a page shows instead of its own outside Sculpt Mode: how to get there. (Without a mesh the docks show
     the start card instead, see pages_shown.)"""
     def draw(self, context):
+        if m3d_pair.game_mesh(context, mesh_of(context)):
+            draw_game_card(self.layout, context)
+            return
         empty_state(self.layout, context, "Enter Sculpt Mode to use these tools",
                     ("Sculpt Mode", "object.mode_set", 'SCULPTMODE_HLT', {"mode": 'SCULPT'}))
     return type("PROPERTIES_PT_m3d_sc_%s_gate" % page, (_PagePanel, Panel), {
@@ -1613,8 +1944,14 @@ def draw_multires(layout, context):
         dyntopo_off(layout, context)
         return
     row = layout.row(align=True)
-    for label, mode in (("Subdivide (smooth)", 'CATMULL_CLARK'), ("Subdivide (keep shape)", 'SIMPLE')):
-        row.operator("m3d.multires_subdivide", text=label).mode = mode
+    faces = short_count(next_level_faces(ob))
+    labels = [("%s → %s" % (label, faces), mode) for label, mode in (("Subdivide (smooth)", 'CATMULL_CLARK'),
+                                                                     ("Subdivide (keep shape)", 'SIMPLE'))]
+    wide = fits(context, [label for label, _mode in labels])
+    for label, mode in labels:
+        row.operator("m3d.multires_subdivide", text=label if wide else label.partition(" →")[0]).mode = mode
+    if not wide:   # (a narrow dock: the face count on a line of its own)
+        reason(layout, "The next level has %s faces" % faces)
     if mod is None:
         reason(layout, "Adds detail levels to sculpt on and step between")
     else:
@@ -1652,7 +1989,7 @@ def draw_voxel(layout, context):
         return
     mesh = ob.data
     draw_voxel_detail(layout, mesh)
-    _button(layout, context, "Voxel Remesh", "object.voxel_remesh", 'MOD_REMESH', {})
+    _button(layout, context, "Voxel Remesh", "m3d.voxel_remesh", 'MOD_REMESH', {})
     header, body = layout.panel("m3d_voxel_advanced", default_closed=True)
     header.label(text="Advanced")
     if body:
@@ -1668,12 +2005,23 @@ def draw_voxel(layout, context):
 
 
 def draw_quadriflow(layout, context):
-    """Auto Retopology (quads): the mesh rebuilt as even quads; the target (face count, ratio or edge length), its options
-    and the button."""
-    if blocked(layout, context, mesh_of(context)):
+    """Retopology: the low poly of this sculpt, made for you (Auto Low Poly, a paired copy: the sculpt stays) or drawn over
+    it (Quad Draw, symmetric or not); under Advanced the mesh itself rebuilt as even quads (Rebuild as Quads: the target
+    face count, ratio or edge length and its options)."""
+    ob = mesh_of(context)
+    lows, highs = m3d_pair.pair_of(context, ob)
+    if lows and highs:
+        reason(layout, "This mesh has a low poly: %s" % lows[0].name)
+    else:
+        col = layout.column(align=True)
+        m3d_pair.draw_make_low(col, context)
+        reason(layout, "Makes the low poly as a new mesh paired with this one, which stays as it is")
+    header, body = layout.panel("m3d_quadriflow_advanced", default_closed=True)
+    header.label(text="Advanced")
+    if not body or blocked(body, context, ob):
         return
-    split_props(layout)
-    col = layout.column()
+    split_props(body)
+    col = body.column()
     props = context.window_manager.operator_properties_last("object.quadriflow_remesh")
     col.prop(props, "mode")
     col.prop(props, {'RATIO': "target_ratio", 'EDGE': "target_edge_length", 'FACES': "target_faces"}[props.mode])
@@ -1681,9 +2029,8 @@ def draw_quadriflow(layout, context):
     col.prop(props, "use_preserve_sharp")
     col.prop(props, "use_preserve_boundary")
     col.prop(props, "smooth_normals")
-    col.label(text="Replaces the mesh (UVs and Face Sets are lost)", icon='INFO')
-    col.operator_context = 'EXEC_DEFAULT'
-    _button(col, context, "Auto Retopology", "object.quadriflow_remesh", 'MOD_REMESH', {})
+    reason(col, "Rebuilds this mesh itself (UVs and Face Sets are lost)")
+    _button(col, context, "Rebuild as Quads", "m3d.retopo_quads", 'MOD_REMESH', {})
 
 
 def draw_dyntopo(layout, context):
@@ -1735,7 +2082,7 @@ class PROPERTIES_PT_m3d_sc_voxel(_Geometry, Panel):
 
 
 class PROPERTIES_PT_m3d_sc_quadriflow(_Geometry, Panel):
-    bl_label = "Auto Retopology (quads)"
+    bl_label = "Retopology"
     bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
@@ -2093,10 +2440,11 @@ class PROPERTIES_PT_m3d_sc_objects(_Page, Panel):
         for label, kind in (("Sphere", 'SPHERE'), ("Cube", 'CUBE'), ("Cylinder", 'CYLINDER')):
             row.operator("m3d.sculpt_add_mesh", text=label, icon='ADD').kind = kind
         meshes = [o for o in context.view_layer.objects if o.type == 'MESH']
+        active = mesh_of(context)
         if not meshes:
             reason(layout, "No meshes in the scene")
-        elif mesh_of(context):
-            m3d_pair.draw_sculpt_status(layout, context, context.active_object)
+        elif active:
+            m3d_pair.draw_sculpt_status(layout, context, active)
         col = layout.column(align=True)
         for ob in meshes:
             hidden = ob.hide_get()
@@ -2106,14 +2454,31 @@ class PROPERTIES_PT_m3d_sc_objects(_Page, Panel):
             o = row.operator("m3d.sculpt_object", text="", icon='HIDE_ON' if hidden else 'HIDE_OFF')
             o.name, o.action = ob.name, 'VISIBLE'
             sub = row.row(align=True)
-            o = sub.operator("m3d.sculpt_object", text="%s  (%s faces)" % (ob.name, format(face_count(ob), ",")),
-                             depress=ob is context.active_object)
-            o.name, o.action = ob.name, 'SELECT'
             sub.active = not hidden
+            role = ob.m3d_pair.role
+            badge = "" if role == 'NONE' else "  · " + m3d_pair.ROLE_LABEL[role]
+            if ob is active:   # (the active mesh's name is a field: click it to rename)
+                sub.prop(ob, "name", text="")
+                sub.label(text="%s faces%s" % (short_count(face_count(ob)), badge))
+            else:
+                o = sub.operator("m3d.sculpt_object", text="%s  (%s faces)%s" % (ob.name, format(face_count(ob), ","), badge))
+                o.name, o.action = ob.name, 'SELECT'
             o = row.operator("m3d.sculpt_object", text="", icon='SOLO_ON' if solo else 'SOLO_OFF', depress=solo)
             o.name, o.action = ob.name, 'SOLO'
             o = row.operator("m3d.sculpt_object", text="", icon='DUPLICATE')
             o.name, o.action = ob.name, 'DUPLICATE'
+            o = row.operator("m3d.sculpt_object", text="", icon='X')
+            o.name, o.action = ob.name, 'DELETE'
+        if not meshes:
+            return
+        flow = layout.grid_flow(row_major=True, columns=2, even_columns=True, align=True)
+        if any(o.hide_get() for o in meshes):
+            flow.operator("m3d.sculpt_object", text="Show All", icon='HIDE_OFF').action = 'SHOW_ALL'
+        if active is not None:
+            for label, action, icon in (("Merge Visible", 'MERGE', 'AUTOMERGE_ON'), ("Split Loose Parts", 'SPLIT_LOOSE', 'MOD_EXPLODE'),
+                                        ("Split Face Sets", 'SPLIT_FACE_SETS', 'FACE_MAPS')):
+                o = flow.operator("m3d.sculpt_object", text=label, icon=icon)
+                o.name, o.action = active.name, action
 
 
 GATES = {"sculpt_brushes": 'SCULPT', "sculpt_geometry": 'MESH', "sculpt_mask": 'SCULPT', "sculpt_face_sets": 'SCULPT',
@@ -2247,7 +2612,7 @@ class M3D_PT_sculpt_brush(Panel):
 
 
 class M3D_PT_sculpt_remesh(Panel):
-    """Remesh and topology: Voxel Remesh, Auto Retopology, Multires levels and Dynamic Detail"""
+    """Remesh and topology: Voxel Remesh, Retopology, Multires levels and Dynamic Detail"""
     bl_space_type = 'TOPBAR'
     bl_region_type = 'HEADER'
     bl_label = "Remesh"
@@ -2260,7 +2625,7 @@ class M3D_PT_sculpt_remesh(Panel):
     def draw(self, context):
         layout = self.layout
         for key, label, draw, closed in (("voxel", "Voxel Remesh", draw_voxel, False),
-                                         ("quadriflow", "Auto Retopology (quads)", draw_quadriflow, True),
+                                         ("quadriflow", "Retopology", draw_quadriflow, True),
                                          ("multires", "Multires", draw_multires, True),
                                          ("dyntopo", "Dynamic Detail", draw_dyntopo, True)):
             header, body = layout.panel("m3d_sculpt_remesh_" + key, default_closed=closed)
@@ -2335,10 +2700,22 @@ def draw_status_line(layout, context):
         sub = row.row(align=True)
         sub.ui_units_x = 7
         draw_voxel_detail(sub, mesh, text="")
-        _button(row, context, "Remesh", "object.voxel_remesh", 'NONE', {})
+        _button(row, context, "Remesh", "m3d.voxel_remesh", 'NONE', {})
     # The mesh data is not updated while Dynamic Detail changes it, so no count then (the viewport's statistics have it).
     layout.separator()
-    layout.label(text="Dynamic Detail" if dyntopo else "%s faces" % format(face_count(ob), ","))
+    faces = face_count(ob)
+    if dyntopo:
+        layout.label(text="Dynamic Detail")
+    elif mod is None and faces < FEW_FACES:
+        row = layout.row(align=True)
+        row.alert = True
+        row.ui_units_x = 10 if tier else 6   # (a header sizes a menu button for its text poorly)
+        row.menu("M3D_MT_sculpt_add_detail", text="Too few faces: Add Detail" if tier else "Add Detail", icon='ERROR')
+    else:
+        layout.label(text="%s faces" % format(faces, ","))
+        if sculpting and faces > HEAVY_VIEW and not context.tool_settings.sculpt.show_low_resolution:
+            layout.prop(context.tool_settings.sculpt, "show_low_resolution", text="Fast Navigation" if tier else "",
+                        icon='MOD_DECIM', toggle=True)
     m3d_pair.draw_sculpt_status(layout, context, ob, tier > 0)
     if not uniform_scale(ob):
         row = layout.row(align=True)
@@ -2356,6 +2733,10 @@ def draw_status_line(layout, context):
     row = layout.row(align=True)
     for axis in "xyz":
         row.prop(mesh, "use_mirror_" + axis, text=axis.upper(), toggle=True)
+    if off_centre(ob):
+        row = layout.row(align=True)
+        row.alert = True
+        row.operator("m3d.sculpt_center_pivot", text="Off-centre: Center Pivot" if tier else "Center Pivot", icon='ERROR')
     if sculpting:
         layout.popover("M3D_PT_sculpt_automasking", text="Auto-Masking" if tier else "", icon='NONE' if tier else 'MOD_MASK')
     space = viewport(context)
@@ -2385,10 +2766,11 @@ SHELF_BRUSHES = [
     *(brush_item(label, name) for label, name in BRUSHES),
 ]
 SHELF_REMESH = [
-    ("object.voxel_remesh", 'MOD_REMESH', {}),
+    ("m3d.voxel_remesh", 'MOD_REMESH', {}),
     _voxel_size,
     None,
-    ("object.quadriflow_remesh", 'MESH_GRID', {}),
+    ("m3d.hp_auto_low", 'MOD_DECIM', {}),
+    ("m3d.retopo_quads", 'MESH_GRID', {}),
     None,
     ("m3d.multires_subdivide", 'ADD', {"mode": 'CATMULL_CLARK'}),
     ("m3d.multires_level", 'TRIA_RIGHT', {"delta": 1}),
@@ -2413,6 +2795,10 @@ classes = (
     M3D_OT_pick_object,
     M3D_OT_sculpt_tool,
     M3D_OT_multires_subdivide,
+    M3D_OT_sculpt_level,
+    M3D_OT_voxel_remesh,
+    M3D_OT_sculpt_center_pivot,
+    M3D_MT_sculpt_add_detail,
     M3D_OT_sculpt_apply_scale,
     M3D_OT_multires_level,
     M3D_OT_multires_edit,

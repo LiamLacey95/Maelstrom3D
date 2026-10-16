@@ -1450,9 +1450,10 @@ def plain_lows(obs):
 @contextmanager
 def bake_scene(context, ob, highs=None, hide=(), cycles=True):
     """`_bake_scene` with the Smooth Preview of the low polys off (`plain_lows`: `ob`, and the other low polys a list of
-    them passes as `highs`), all of it no edit of the meshes (m3d_pair.quiet: the bake does not make itself out of date)."""
+    them passes as `highs`), all of it no edit of the meshes (m3d_pair.quiet: the bake does not make itself out of date). The
+    meshes of pairs that renders leave out (m3d_pair.sync_render) are there for it, but `hide`."""
     lows = [ob, *(o for o in meshes_of(highs) if o.m3d_pair.role == 'LOW')]
-    with m3d_pair.quiet(context), plain_lows(lows), _bake_scene(context, ob, highs, hide, cycles):
+    with m3d_pair.quiet(context), plain_lows(lows), m3d_pair.rendered(hide), _bake_scene(context, ob, highs, hide, cycles):
         yield
 
 

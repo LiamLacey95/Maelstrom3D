@@ -269,6 +269,14 @@ class M3D_OT_hp_new_low(Operator):
     bl_label = "New Low Poly"
     bl_options = {'REGISTER', 'UNDO'}
 
+    symmetric: BoolProperty(name="Symmetric (X)", options={'SKIP_SAVE'},
+                            description="Draw one half: a Mirror modifier (X, points on the middle stay there) makes the other")
+
+    @classmethod
+    def description(cls, _context, props):
+        return ("Draw one half of a new low poly over the live surface (Quad Draw): a Mirror modifier makes the other half"
+                if props.symmetric else cls.__doc__)
+
     @classmethod
     def poll(cls, context):
         return context.scene.m3d_live_surface is not None or surface_for(context) is not None
@@ -295,6 +303,9 @@ class M3D_OT_hp_new_low(Operator):
         for collection in surface.users_collection or (context.scene.collection,):
             collection.objects.link(low)
         low.matrix_world = surface.matrix_world.copy()
+        if self.symmetric:
+            mirror = low.modifiers.new("Mirror", 'MIRROR')
+            mirror.use_clip = mirror.use_mirror_merge = True
         m3d_pair.inherit_explode(low, surface)
         m3d_pair.leave_modes(context)
         finish_low(context, low, group)
@@ -303,8 +314,9 @@ class M3D_OT_hp_new_low(Operator):
         return {'FINISHED'}
 
 
-def copy_of(context, src, name):
-    """A copy of the mesh `src` as it shows (modifiers applied) with no role, inputs or flags of `src`."""
+def copy_of(context, src, name, drop=()):
+    """A copy of the mesh `src` as it shows (modifiers applied, but those of a type in `drop`) with no role, inputs or
+    flags of `src`."""
     copy = src.copy()
     copy.data = src.data.copy()
     copy.name = copy.data.name = name
@@ -312,8 +324,12 @@ def copy_of(context, src, name):
         collection.objects.link(copy)
     m3d_inputs.clear(copy)
     p = copy.m3d_pair
-    p.role, p.group, p.parked, p.ghost = 'NONE', "", False, ""
+    if p.render_parked:   # (left out of renders as a part of `src`'s pair)
+        copy.hide_render = False
+    p.role, p.group, p.parked, p.ghost, p.render_parked, p.display_level = 'NONE', "", False, "", False, 0
     copy.hide_select = copy.hide_viewport = False   # (a live surface can't be selected)
+    for mod in [m for m in copy.modifiers if m.type in drop]:
+        copy.modifiers.remove(mod)
     if copy.modifiers:   # (a Multires high poly: what the viewport shows, not its base mesh)
         try:
             mesh = bpy.data.meshes.new_from_object(copy.evaluated_get(context.evaluated_depsgraph_get()))
@@ -335,12 +351,14 @@ def discard(ob):
         bpy.data.meshes.remove(mesh)
 
 
-def decimate(context, ob, target):
-    """Collapse the faces of `ob` into `target` triangles, about (the Decimate modifier, applied)."""
+def decimate(context, ob, target, symmetry=False):
+    """Collapse the faces of `ob` into `target` triangles, about (the Decimate modifier, applied); `symmetry`: the same on
+    both sides of X."""
     tris = len(ob.data.loop_triangles)
     if tris > target:
         mod = ob.modifiers.new("Decimate", 'DECIMATE')
         mod.decimate_type, mod.ratio, mod.use_collapse_triangulate = 'COLLAPSE', target / tris, True
+        mod.use_symmetry, mod.symmetry_axis = symmetry, 'X'
         with m3d_pair._on(context, ob):
             bpy.ops.object.modifier_apply(modifier=mod.name)
 
@@ -357,6 +375,23 @@ def merge_tiny_edges(ob):
     bm.free()
 
 
+def reduce(context, ob, boundary, name=""):
+    """A mesh over QUADRIFLOW_LIMIT faces is brought down to about that before QuadriFlow: Voxel Remesh (~1 s instead of
+    ~30 s at 1.5M faces, and a closed mesh, which QuadriFlow needs), or with `boundary` Decimate (a voxel remesh would close
+    the open borders). Returns the note for the report, about `name` (the mesh's own by default; "" when nothing was done)."""
+    if len(ob.data.polygons) <= QUADRIFLOW_LIMIT:
+        return ""
+    name = name or ob.name
+    if boundary:
+        decimate(context, ob, QUADRIFLOW_LIMIT)
+        merge_tiny_edges(ob)
+    else:
+        ob.data.remesh_voxel_size = (m3d_pair.surface_area(ob.data) / QUADRIFLOW_LIMIT) ** 0.5
+        with m3d_pair._on(context, ob):
+            bpy.ops.object.voxel_remesh()
+    return " (%s first reduced to about %s faces)" % (name, format_count(QUADRIFLOW_LIMIT))
+
+
 class M3D_OT_hp_auto_low(Operator):
     """Make a low poly from the high poly: a copy of it with fewer faces, paired with it. It has no UVs yet"""
     bl_idname = "m3d.hp_auto_low"
@@ -370,6 +405,9 @@ class M3D_OT_hp_auto_low(Operator):
                        soft_max=100000)
     sharp: BoolProperty(name="Preserve Sharp", description="Keep the sharp features of the high poly")
     boundary: BoolProperty(name="Preserve Boundary", description="Keep the open borders of the high poly")
+    symmetry: BoolProperty(name="Symmetry (X)", options={'SKIP_SAVE'},
+                           description="The low poly is the same on both sides of X (on at first when the high poly's Mirror X "
+                                       "is on)")
 
     @classmethod
     def poll(cls, context):
@@ -379,6 +417,7 @@ class M3D_OT_hp_auto_low(Operator):
         layout = self.layout
         layout.prop(self, "method")
         layout.prop(self, "faces")
+        layout.prop(self, "symmetry")
         if self.method == 'QUADRIFLOW':
             layout.prop(self, "sharp")
             layout.prop(self, "boundary")
@@ -387,6 +426,8 @@ class M3D_OT_hp_auto_low(Operator):
         surface = surface_for(context)
         if surface is None:
             return {'CANCELLED'}
+        if not self.properties.is_property_set("symmetry"):
+            self.symmetry = surface.data.use_mirror_x
         t0 = time.perf_counter()
         m3d_pair.leave_modes(context)   # (the copy is of the mesh as it is stored)
         group = group_for(context, surface)
@@ -394,22 +435,16 @@ class M3D_OT_hp_auto_low(Operator):
         note = ""
         try:
             if self.method == 'QUADRIFLOW':
-                if len(copy.data.polygons) > QUADRIFLOW_LIMIT:
-                    if self.boundary:   # (Voxel Remesh would close the open borders)
-                        decimate(context, copy, QUADRIFLOW_LIMIT)
-                        merge_tiny_edges(copy)
-                    else:   # Voxel Remesh: ~1 s instead of ~30 s at 1.5M faces, and a closed mesh, which QuadriFlow needs
-                        copy.data.remesh_voxel_size = (m3d_pair.surface_area(copy.data) / QUADRIFLOW_LIMIT) ** 0.5
-                        with m3d_pair._on(context, copy):
-                            bpy.ops.object.voxel_remesh()
-                    note = " (%s first reduced to about %s faces)" % (surface.name, format_count(QUADRIFLOW_LIMIT))
+                note = reduce(context, copy, self.boundary, surface.name)
+                copy.data.use_mirror_x = self.symmetry   # (QuadriFlow's symmetry is the mesh's own)
                 with m3d_pair._on(context, copy):
                     done = bpy.ops.object.quadriflow_remesh(mode='FACES', target_faces=self.faces, smooth_normals=True,
-                                                            use_preserve_sharp=self.sharp, use_preserve_boundary=self.boundary)
+                                                            use_preserve_sharp=self.sharp, use_preserve_boundary=self.boundary,
+                                                            use_mesh_symmetry=self.symmetry)
                 if done != {'FINISHED'}:
                     raise RuntimeError("Auto Retopology found no result")
             else:
-                decimate(context, copy, self.faces)
+                decimate(context, copy, self.faces, self.symmetry)
                 copy.data.shade_smooth()
         except RuntimeError as err:
             discard(copy)
@@ -423,6 +458,103 @@ class M3D_OT_hp_auto_low(Operator):
         finish_low(context, copy, group)
         self.report({'INFO'}, "%s: %s faces in %.1f s%s. Unwrap it in the UV workspace (F3)" % (
             copy.name, format(len(copy.data.polygons), ","), time.perf_counter() - t0, note))
+        return {'FINISHED'}
+
+
+def conform_target(context, ob):
+    """The surface the low poly `ob` conforms to: the live surface, else the shown high poly of its pair (None: none)."""
+    target = context.scene.m3d_live_surface
+    if target is None:
+        target = next((h for h in pair_of(context, ob)[1] if not h.hide_get()), None)
+    return target if target is not None and target != ob and target.visible_get() else None
+
+
+class M3D_OT_hp_conform(Operator):
+    """Move every point of this low poly onto the live surface (or its high poly), along the point's normal"""
+    bl_idname = "m3d.hp_conform"
+    bl_label = "Conform to Surface"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.view_layer.objects.active
+        return is_mesh(ob) and conform_target(context, ob) is not None
+
+    def execute(self, context):
+        ob = context.view_layer.objects.active
+        mode = ob.mode
+        if mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')   # (Apply works in Object Mode only)
+        mod = ob.modifiers.new("Conform", 'SHRINKWRAP')
+        mod.target, mod.wrap_method, mod.wrap_mode = conform_target(context, ob), 'PROJECT', 'ON_SURFACE'
+        mod.use_negative_direction = mod.use_positive_direction = True   # (no axis: along the normals, both ways)
+        try:
+            with m3d_pair._on(context, ob):
+                bpy.ops.object.modifier_move_to_index(modifier=mod.name, index=0)   # (before a Mirror)
+                bpy.ops.object.modifier_apply(modifier=mod.name)
+        except RuntimeError as err:
+            ob.modifiers.remove(mod)
+            self.report({'WARNING'}, str(err).replace("Error: ", "").strip())
+            return {'CANCELLED'}
+        finally:
+            if mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode=mode)
+        return {'FINISHED'}
+
+
+class M3D_OT_retopo_quads(Operator):
+    """Rebuild this mesh as even quads, in place: the target face count, ratio or edge length below. UVs and Face Sets
+    are lost; a mesh of more than 300,000 faces is reduced first. Auto Low Poly makes a paired copy instead"""
+    bl_idname = "m3d.retopo_quads"
+    bl_label = "Rebuild as Quads"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.view_layer.objects.active
+        return is_mesh(ob) and not any(m.type == 'MULTIRES' for m in ob.modifiers) and not ob.use_dynamic_topology_sculpting
+
+    @staticmethod
+    def estimate(context, ob):
+        """About how many faces QuadriFlow makes with its last settings (the Geometry tab's)."""
+        props = context.window_manager.operator_properties_last("object.quadriflow_remesh")
+        if props.mode == 'FACES':
+            return props.target_faces
+        if props.mode == 'RATIO':
+            return min(len(ob.data.polygons), QUADRIFLOW_LIMIT) * props.target_ratio
+        return m3d_pair.surface_area(ob.data) / max(props.target_edge_length, 1e-6) ** 2
+
+    def invoke(self, context, event):
+        ob = context.view_layer.objects.active
+        return m3d_pair.heavy_guard(self, context, event, self.estimate(context, ob), "Rebuild as Quads")
+
+    def execute(self, context):
+        ob = context.view_layer.objects.active
+        problem = m3d_pair.heavy_problem(self.estimate(context, ob), "Rebuild as Quads")
+        if problem:
+            self.report({'ERROR'}, problem)
+            return {'CANCELLED'}
+        props = context.window_manager.operator_properties_last("object.quadriflow_remesh")
+        options = {name: getattr(props, name) for name in (
+            "mode", "target_ratio", "target_edge_length", "target_faces", "use_mesh_symmetry", "use_preserve_sharp",
+            "use_preserve_boundary", "smooth_normals", "seed")}
+        mode = ob.mode
+        if mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        try:
+            note = reduce(context, ob, options["use_preserve_boundary"])
+            with m3d_pair._on(context, ob):
+                done = bpy.ops.object.quadriflow_remesh('EXEC_DEFAULT', **options)
+            if done != {'FINISHED'}:
+                raise RuntimeError("found no result")
+        except RuntimeError as err:
+            self.report({'ERROR'}, "Auto Retopology could not remesh %s (%s): the mesh must be closed, without loose edges "
+                        "or flipped faces. Try Voxel Remesh first" % (ob.name, str(err).replace("Error: ", "").strip()))
+            return {'CANCELLED'}
+        finally:
+            if mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode=mode)
+        self.report({'INFO'}, "%s: %s faces%s" % (ob.name, format(len(ob.data.polygons), ","), note))
         return {'FINISHED'}
 
 
@@ -499,6 +631,8 @@ def draw_quad_hint(layout, context):
         row.label(text="Quad Draw: Make Live first", icon='INFO')
         if surface_for(context) not in (None, context.active_object):   # (a mesh can't be live while you edit it)
             row.operator("m3d.hp_make_live", text="", icon='SNAP_FACE')
+    elif M3D_OT_hp_conform.poll(context):
+        layout.operator("m3d.hp_conform", icon='MOD_SHRINKWRAP')
 
 
 classes = (
@@ -506,6 +640,8 @@ classes = (
     M3D_OT_hp_make_not_live,
     M3D_OT_hp_new_low,
     M3D_OT_hp_auto_low,
+    M3D_OT_hp_conform,
+    M3D_OT_retopo_quads,
     M3D_OT_quad_add,
 )
 

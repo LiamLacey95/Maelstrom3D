@@ -416,7 +416,8 @@ def hidden_for(context, low, group, groups, scope):
     for name, (lows, highs) in groups.items():
         if name == group or scope == 'MODEL':
             keep.update(o.name for o in (highs or lows))
-    return [o for o in context.view_layer.objects if o.type in T.RENDERED and o.name not in keep and not o.hide_render]
+    return [o for o in context.view_layer.objects if o.type in T.RENDERED and o.name not in keep
+            and (not o.hide_render or o.m3d_pair.render_parked)]   # (a pair's mesh left out of renders: see m3d_pair.rendered)
 
 
 def ticked(s):

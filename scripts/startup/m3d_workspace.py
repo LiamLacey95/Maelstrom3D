@@ -118,13 +118,36 @@ class M3D_OT_workspace(Operator):
             use_selected_mesh(context)
         # A high poly is hidden (Sculpt shows it) before the window changes, so the redraw never draws the wrong one.
         import m3d_pair
-        hold = m3d_pair.before_switch(context, win.workspace if win is not None else context.workspace, ws)
+        old = win.workspace if win is not None else context.workspace
+        if win is not None and old != ws and m3d_pair.slow_switch(context, self.kind, ws):
+            wait(win, old, "Opening %s..." % KINDS[self.kind][0])
+        hold = m3d_pair.before_switch(context, old, ws)
         if win is not None:
             win.workspace = ws
             if hold:
                 m3d_pair.hold_object_mode(ws)   # a huge mesh stays in Object Mode here (the note says so)
         wm.m3d_menu_set = KINDS[self.kind][3]
         return {'FINISHED'}
+
+
+def wait(win, ws, text):
+    """A switch that takes a moment: the wait cursor and `text` in the status bar now (the window is drawn once to show
+    them), both gone once the switch is over (a timer runs after the next redraw)."""
+    win.cursor_modal_set('WAIT')
+    ws.status_text_set(text)
+    try:
+        bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+    except RuntimeError:
+        pass   # (no window to draw: a script)
+    name = ws.name
+
+    def done():
+        for w in bpy.context.window_manager.windows:
+            w.cursor_modal_restore()
+        old = bpy.data.workspaces.get(name)
+        if old is not None:
+            old.status_text_set(None)
+    bpy.app.timers.register(done, first_interval=0.0)
 
 
 # The menu set and shelf follow the window's workspace, however it was switched (menu, F-key, Shift+[ ]).
@@ -182,8 +205,8 @@ DOCK_TABS = {kind: {'RIGHT': (_CHANNEL_BOX, _TOOLKIT, _TOOL), 'LEFT': ()} for ki
 # Sculpt: the brush tray on the left, task tabs on the right (pages: m3d_sculpt.py).
 DOCK_TABS['SCULPT'] = {
     'RIGHT': tuple(Tab("sculpt_" + page, label, 'MODELING_TOOLKIT', "sculpt_" + page) for page, label in (
-        ("geometry", "Geometry"), ("mask", "Mask"), ("face_sets", "Face Sets"), ("deform", "Deform"),
-        ("paint", "Paint"), ("display", "Display"), ("objects", "Objects"))),
+        ("geometry", "Geometry"), ("objects", "Objects"), ("mask", "Mask"), ("face_sets", "Face Sets"),
+        ("deform", "Deform"), ("paint", "Paint"), ("display", "Display"))),
     'LEFT': (Tab("sculpt_brushes", "Brushes", 'MODELING_TOOLKIT', "sculpt_brushes"),),
 }
 # UV: the UV tools on the right (pages: m3d_uv.py); no left tray.
