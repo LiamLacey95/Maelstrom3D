@@ -13,6 +13,7 @@ import bpy
 from bpy.types import Menu, Panel
 
 import m3d_anim
+import m3d_io
 import m3d_render
 from m3d_help import DOCS, REPO
 import m3d_retopo
@@ -179,20 +180,27 @@ MENUS = {
     "M3D_MT_file": ("File", [
         op("New Scene", "wm.read_homefile", 'FILE_NEW', app_template=""),
         {**op("New Texture Project...", "m3d.tex_project", 'FILE_NEW'), "sets": {'TEXTURING'}},   # (only in the Texturing menu set)
-        op("Open Scene...", "wm.open_mainfile", 'FILE_FOLDER'),
+        op("Open Scene...", "m3d.open_scene", 'FILE_FOLDER'),   # (in the project's scenes folder; Blender's Open without a project)
         sub("Recent Files", "TOPBAR_MT_file_open_recent"),
         SEP,
-        op("Save Scene", "wm.save_mainfile", 'FILE_TICK'),
-        op("Save Scene As...", "wm.save_as_mainfile"),
+        op("Save Scene", "m3d.save_scene", 'FILE_TICK'),
+        op("Save Scene As...", "m3d.save_scene", as_new=True),
         op("Increment and Save", "wm.save_mainfile", incremental=True),
         {**op("Save All Images", "m3d.tex_save_all", 'FILE_TICK'), "sets": {'TEXTURING'}},   # (the painted images, on their own)
         {**op("Revert", "wm.revert_mainfile", 'FILE_REFRESH'), "when": lambda _context: bpy.data.is_saved},   # (a saved file only)
         sub("Recover", "TOPBAR_MT_file_recover", 'RECOVER_LAST'),
         SEP,
-        op("Import...", "wm.append", 'IMPORT'),
-        op("Create Reference...", "wm.link", 'LINK_BLEND'),
+        op("Set Project...", "m3d.project_set", 'FILE_FOLDER'),
+        op("New Project...", "m3d.project_set", 'NEWFOLDER', create=True),
+        sub("Recent Projects", "M3D_MT_recent_projects"),
+        SEP,
+        op("Import...", "m3d.import_file", 'IMPORT'),
+        op("Import from Scene File (.blend)...", "wm.append", 'APPEND_BLEND'),
+        op("Create Reference...", "m3d.create_reference", 'LINK_BLEND'),
         sub("Import Other Formats", "TOPBAR_MT_file_import"),
-        sub("Export", "TOPBAR_MT_file_export", 'EXPORT'),
+        op("Export to Engine...", "m3d.export_engine", 'EXPORT'),
+        {**op("Repeat Last Export", "m3d.export_engine", 'FILE_REFRESH', repeat=True), "when": m3d_io.repeat_ready},
+        sub("Export Other Formats", "TOPBAR_MT_file_export", 'EXPORT'),
         SEP,
         sub("External Data", "TOPBAR_MT_file_external_data"),
         sub("Clean Up", "TOPBAR_MT_file_cleanup"),
@@ -332,6 +340,7 @@ MENUS = {
         editor("Dope Sheet", 'DOPESHEET', 'ACTION'),
         editor("UV Editor", 'UV', 'UV'),
         editor("Script Editor", 'TEXT_EDITOR', 'TEXT'),
+        op("Reference Editor", "wm.call_panel", 'LINK_BLEND', name="M3D_PT_reference_editor", keep_open=True),
         SEP,
         op("Command Line", "m3d.command_line", 'CONSOLE'),
         op("Command Line: MEL", "m3d.command_language", 'CONSOLE', language='mel'),
@@ -549,6 +558,9 @@ MENUS = {
     "M3D_MT_export": ("Export", [
         op("Export Textures... (Ctrl+Shift+E)", "m3d.tex_export_dialog", 'EXPORT'),
         op("Export Active Set", "m3d.tex_export", 'EXPORT'),
+        SEP,
+        op("Export to Engine...", "m3d.export_engine", 'EXPORT'),
+        {**op("Repeat Last Export", "m3d.export_engine", 'FILE_REFRESH', repeat=True), "when": m3d_io.repeat_ready},
         sub("Export Scene", "TOPBAR_MT_file_export", 'EXPORT'),
     ]),
 
@@ -623,6 +635,7 @@ MENUS = {
         op("Blocking Preset", "m3d.anim_preset", preset='BLOCKING'),
         op("Polish Preset", "m3d.anim_preset", preset='POLISH'),
         op("Playblast", "m3d.playblast", 'RENDER_ANIMATION'),
+        op("Export to Engine...", "m3d.export_engine", 'EXPORT'),
         SEP,
         prop("Auto Keyframe", "tool_settings.use_keyframe_insert_auto"),
         op("Bake Simulation", "nla.bake"),
@@ -982,8 +995,8 @@ def draw_file_buttons(layout):
     """New, Open, Save: the first group of every Status Line (the groups after it are apart by a separator)."""
     row = layout.row(align=True)
     row.operator("wm.read_homefile", text="", icon='FILE_NEW').app_template = ""
-    row.operator("wm.open_mainfile", text="", icon='FILE_FOLDER')
-    row.operator("wm.save_mainfile", text="", icon='FILE_TICK')
+    row.operator("m3d.open_scene", text="", icon='FILE_FOLDER')   # (their tooltips name the project)
+    row.operator("m3d.save_scene", text="", icon='FILE_TICK')
     layout.separator()
 
 

@@ -213,7 +213,11 @@ OVERRIDES = {
     "Window": [
         # F1-F7: task workspaces (kinds in m3d_workspace.py). The menu set dropdown still offers every set.
         *(_kmi("m3d.workspace", k, props={"kind": kind}) for kind, k in WORKSPACE_KEYS),
-        _kmi("wm.link", 'R', ctrl=True),
+        _kmi("m3d.create_reference", 'R', ctrl=True),
+        # Open / Save start in the project's scenes folder (m3d_io.py; Blender's own without a project).
+        _kmi("m3d.open_scene", 'O', ctrl=True),
+        _kmi("m3d.save_scene", 'S', ctrl=True),
+        _kmi("m3d.save_scene", 'S', props={"as_new": True}, ctrl=True, shift=True),
         _kmi("ed.redo", 'Y', ctrl=True, repeat=True),
         # Z / Shift+Z undo / redo in every editor (the 3D View and Image keymaps put them over their Zoom Region too).
         _kmi("ed.undo", 'Z', repeat=True),

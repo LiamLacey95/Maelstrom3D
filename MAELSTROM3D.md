@@ -26,7 +26,7 @@ named here only to describe compatibility.*
 | Editor names | Attribute Editor, Shader Editor, Script Editor, Command Line, Command History, Time Editor | `rna_space.cc`, `node_shader_tree.cc` |
 | Marking menus | RMB, Shift+RMB, Ctrl+RMB in the viewport; RMB, Shift+RMB in the UV Editor; Space hotbox | `m3d_mode.py`, `m3d_uv.py` |
 | Status bar (bottom) | The keys of the workspace and mode, read from the keymap (so they follow your own keys): in Object and Edit Mode LMB Select, Shift Toggle, Ctrl Deselect, Alt+LMB / MMB / RMB Tumble / Track / Dolly, RMB Marking Menu, Space Hotbox; UV: the UV Editor's selection, UV Menu and UV Tools; Rigging Edit Mode: Extrude, Names, Menu; Weight Paint: Paint, Subtract, Smooth, Size, Weight, Sample; Pose Mode: Set Key, Tween, Play; Rendering: Render, Render View; Sculpt and Texture: the keys of the brush (see there). While a tool or gesture runs, the bar shows that tool's keys instead. In the middle: the command line's last result or error, and a short note when one of Maelstrom3D's panels hits an error ("Something went wrong in m3d_texture.py: Help > Report a Bug"). At the right end: the version, "Maelstrom3D alpha m3d.5 (Blender 5.2.2)" | `m3d_ui.py` (`draw_status_hints`), `m3d_help.py`, `bl_ui/space_statusbar.py` |
-| File menu | New / Open / Recent, Save, Increment and Save, **Revert** (a saved file: back to its saved state), **Recover** > Last Session / Auto Save..., Import / Export, **Defaults** > Save Layouts as Default, Load Factory Layouts, Reset Preferences, Reset Shelves & Docks, Reset Everything (each asks first; resets keep a copy: m3d_user.json.bak, startup.blend.bak), Export Settings... / Import Settings... (a zip of the settings folder: preferences, layouts for new files, shelves, docks, render presets; to move them between the installed and the portable Maelstrom3D or to another computer; importing keeps the settings it replaces in m3d_settings_backup.zip). After a session that ended unexpectedly (an auto save newer than the last quit) the next start asks once: **Recover Auto Save**. A damaged m3d_user.json is kept as m3d_user.json.bak before it is replaced. The first start of a new version folder (the next Blender base version) takes over the previous version's settings | `m3d_ui.py` (`M3D_MT_file`, `M3D_MT_file_defaults`), `m3d_help.py`, `m3d_user.py` |
+| File menu | New / Open / Recent, Save, Increment and Save, **Revert** (a saved file: back to its saved state), **Recover** > Last Session / Auto Save..., **Set Project... / New Project... / Recent Projects**, **Import...** (one picker for every format), Import from Scene File (.blend)..., **Create Reference...**, Import Other Formats, **Export to Engine...** / Repeat Last Export, Export Other Formats (see Pipeline below), **Defaults** > Save Layouts as Default, Load Factory Layouts, Reset Preferences, Reset Shelves & Docks, Reset Everything (each asks first; resets keep a copy: m3d_user.json.bak, startup.blend.bak), Export Settings... / Import Settings... (a zip of the settings folder: preferences, layouts for new files, shelves, docks, render presets; to move them between the installed and the portable Maelstrom3D or to another computer; importing keeps the settings it replaces in m3d_settings_backup.zip). After a session that ended unexpectedly (an auto save newer than the last quit) the next start asks once: **Recover Auto Save**. A damaged m3d_user.json is kept as m3d_user.json.bak before it is replaced. The first start of a new version folder (the next Blender base version) takes over the previous version's settings | `m3d_ui.py` (`M3D_MT_file`, `M3D_MT_file_defaults`), `m3d_help.py`, `m3d_user.py` |
 | Help menu | **Maelstrom3D Guide** (this page), **Keyboard Shortcuts** (SHORTCUTS.md), Hotkey Editor, **What's New in This Alpha** (the release notes), **Report a Bug...** (opens a new GitHub issue in the browser with the version, OS, graphics card and the last lines of the log filled in; nothing is sent until you submit it), **Open Crash Log** (the newest crash log in the temp folder), **Open Log Folder** (the settings folder with m3d_log.txt: the Python errors of recent sessions, about 1 MB, the older part in m3d_log.old.txt), **About Maelstrom3D** (version, license, links), Blender Manual (reference) | `m3d_ui.py` (`M3D_MT_help`), `m3d_help.py`, `.github/ISSUE_TEMPLATE/bug.yml` |
 | Errors | A command that can't run where it is clicked says why in plain words ("Bevel can't run here: it works on vertices, edges or faces..."). Bevel, Add Divisions, Merge, Flip, Conform, Average Vertices, Poke, Symmetrize and Quadrangulate clicked with a mesh in Object Mode switch to component mode with the whole mesh selected and run on all of it | `m3d_mode.py` (`run_tool`) |
 | Docks | A dock shows its own tabs in its header; Blender's column of stock tabs beside it shows only with **All Settings** (the Attribute Editor in Modeling), in every task workspace. The Tool tab shows the active tool's settings (Blender's Workspace panel is in the 3D view's sidebar, Tool tab). A page or panel that cannot work yet shows one card in every workspace: a hint line saying why and the button that fixes it (Pose Mode, New Camera from View, Assign New Material, the scene's objects to pick...); controls that cannot work are hidden rather than greyed, lists are as tall as their items (an empty one says how to fill it), and on a narrow dock button grids take fewer columns so no label is cut off | `m3d_workspace.py` (`sync_nav_bar`), `bl_ui/properties_workspace.py` |
@@ -35,6 +35,7 @@ named here only to describe compatibility.*
 | Rigging | Rigging workspace (F5): Outliner with the bone hierarchy and bone collections on the left, a large viewport, a dock of Channel Box, Skeleton, Controls & Constraints, Skin, Drive, Test and Collections tabs that follows the mode, a Time Slider (the Drivers editor opens over it); Joint tool (name lists, numbered names), Orient Joint, Mirror and Rename Chain, control shapes, constraints that keep their offset, IK with pole, Pole Vector, Rotate Order, bind with fallback, weight tools that keep weights adding up to 1, Driven Key, Check Rig, range-of-motion test, naming check, Rigify on demand; Ctrl+E, Shift+N | `scripts/startup/m3d_rig.py` |
 | Animation | Animation workspace (F6): a large viewport and a camera view, one bottom editor that switches between the Graph Editor and the Dope Sheet, a short Timeline, a dock of Channel Box, Pick, Tween & Poses, Motion, Layers and Playback tabs; Status Line with Auto Key, key type, new key interpolation, Key: Selected / Character, keying set, range, frame rate, loop mode, Blocking / Polish, Playblast; one Set Key rule (unlocked channels and custom properties), Tween (Alt+Q), Push / Relax / Breakdown, Mirror Pose / Animation, world position, object selection sets, rig controls, motion paths, ghost curves, NLA layers with weights, Playblast movie | `scripts/startup/m3d_anim.py` |
 | Rendering | Rendering workspace (F7): a 3D view and a Render View, a dock of Camera, Lighting, Materials, Render, Output, Passes & Layers and Advanced tabs; Status Line with engine, camera, Draft / Medium / Final presets, Render, IPR; light table, HDRI sky, camera from view; Shift+F12 | `scripts/startup/m3d_render.py` |
+| Pipeline | Projects (scenes, sourceimages, images, playblasts, export, cache), File > Import... for FBX / OBJ / glTF / USD / Alembic / .blend with studio units, Create Reference and the Reference Editor, Export to Engine (low polys, textures and animation for Unreal, Unity or glTF in one pass) | `scripts/startup/m3d_io.py` |
 | Title | Window title says Maelstrom3D | `wm_window.cc` |
 
 ## Everyday controls
@@ -630,7 +631,7 @@ again before anything is drawn. A mesh without a bake group is refused; a group 
 **Export Textures** (the dock strip, the toolbar, the Export menu or Ctrl+Shift+E) opens a dialog. On the left are the **Texture Sets** to export (a checkbox for each) and the **Output Maps** of the template, each with a
 checkbox that skips it and the file name it will have. On the right: the **Template** (the engine the files are for), the **Output Directory** (it may start with `//`, next to the saved file), the **File Type** (PNG, TGA, TIFF
 or EXR) with its **Bit Depth** (PNG and TIFF 8 or 16 bit, EXR 16 or 32 bit float, TGA 8 bit), the **Size** (the size of each set, or 64 to 8192 px: the layers are resampled) and the **Padding**, and the Bake meshes option. **Export**
-writes the files, and a summary lists them. A file is named after the texture set: its material when several meshes share it (`T_Crate_BC.png` for Crate_low and Crate_low_lid), else the mesh without its _low / _high suffix (`T_Crate_BC.png` for Crate_low), with the material too when the mesh has more than one (`T_Hero_Body_BC.png`). **File Name** (below the Output Directory) is the pattern, kept for each template: `$set` (that name), `$mesh` (the mesh without its suffix), `$material`, and any prefix or suffix around them (`Props_$set`). The padding around the UV islands takes the islands of every mesh of the set, so each mesh keeps its own colours. A channel without a paint image uses the shader's value, and
+writes the files, and a summary lists them (**Export to Engine...** beside the count writes the meshes and the animation with them, see Pipeline). A file is named after the texture set: its material when several meshes share it (`T_Crate_BC.png` for Crate_low and Crate_low_lid), else the mesh without its _low / _high suffix (`T_Crate_BC.png` for Crate_low), with the material too when the mesh has more than one (`T_Hero_Body_BC.png`). **File Name** (below the Output Directory) is the pattern, kept for each template: `$set` (that name), `$mesh` (the mesh without its suffix), `$material`, and any prefix or suffix around them (`Props_$set`). The padding around the UV islands takes the islands of every mesh of the set, so each mesh keeps its own colours. A channel without a paint image uses the shader's value, and
 the colors are written in linear light in EXR files. The Normal is the combined one (the layers' normal on top of the baked normal map, as the 3D view shows it); the baked AO is
 never in the exported Base Color.
 
@@ -1026,7 +1027,7 @@ tweak mode on a layer, Done Editing leaves it, and the layer grows to keys set p
 
 **Playblast.** Renders the viewport (the camera view when the workspace has one) for review, into a **Movie** (H.264 .mp4 with
 the scene's sound, the default) or **Images** (a PNG per frame), and opens it in the player. The Playback tab sets the range
-(the playback range, i.e. the preview range when it is on, or the scene range), the folder (default a temporary one; the folder
+(the playback range, i.e. the preview range when it is on, or the scene range), the folder (default the project's playblasts folder, without a project a temporary one; the folder
 button beside the frame range opens it), the size as a percentage, **Meshes Only** (no bones, controls, grid or other overlays;
 on by default) and **Burn-in** (the frame, camera, file name and date on the pictures). Each playblast is a new version named
 after the file (`shot_v001.mp4`, `shot_v002.mp4` ...), never replacing an earlier one. Esc cancels images (a movie is written in
@@ -1098,6 +1099,54 @@ camera; **Match Camera to View** moves the scene camera to the view instead.
 
 Keys: **Shift+F12** renders the frame, **Ctrl+Shift+F12** the animation, **Alt+F12** shows the last render (F12 itself is the
 UV workspace in Modeling). Esc cancels a render.
+
+## Pipeline: projects, import, references, export
+
+**Projects.** **File > New Project...** picks (or makes) a folder and puts `scenes`, `sourceimages`, `images`, `playblasts`, `export`
+and `cache` in it; **Set Project...** uses a folder as it is; **Recent Projects** switches back (No Project goes without one). The
+project is kept in `m3d_user.json` with the recent ones, so it is there the next time. With a project, Open Scene, Save Scene (a
+scene not saved yet), Import and Create Reference start in `scenes`; a new scene renders into `images` and exports its textures
+into `export`; playblasts go into `playblasts` and Export to Engine into `export`. The tooltips of Open and Save in the Status
+Line name the project; Ctrl+O, Ctrl+S and Ctrl+Shift+S do the same.
+
+**Import.** **File > Import...** is one file picker for FBX, OBJ, glTF / GLB, USD (usd, usda, usdc, usdz), Alembic and scene files
+(.blend: their objects come in a collection named after the file); the importer follows the extension. OBJ and Alembic files carry
+no units: **Studio (centimetres, Y up)** in the picker's side bar reads them as centimetres (a 100-unit cube comes in 1 m, not
+100 m), **Metres** as they are; the choice is remembered. FBX, glTF and USD say their units and axes themselves. **Import from
+Scene File (.blend)...** is Blender's Append (pick what to bring in), **Import Other Formats** the importers with all their
+options. The Sculpt start card's Import... is the same picker.
+
+**References.** **Create Reference...** (Ctrl+R) brings the collections of another scene file in, linked to it: an edit of that
+file shows up here on reload. Its skeletons are editable at once, so a referenced character can be posed and keyed right away; the
+rest follows the file. **Windows > Reference Editor** lists the referenced files: the path (red with "Missing" when the file is not
+there), **Reload**, **Replace** (another file; the same names are matched up), **Unload / Load** (out of the scene for now and back),
+**Remove**, **Make Editable** (every object of the reference; a collection linked with Blender's Link becomes one too), **Import
+Objects** (they become the scene's own and no longer follow the file) and **Make Relative / Make Absolute**. Reload and Replace say
+when keyed bones are gone in the new file ("keys of bones that are gone: Arm").
+
+**Export to Engine.** **File > Export to Engine...** (also in the Texturing Export menu, the Export Textures dialog, F6's Key menu
+and the Animation Playback tab) writes what a game engine needs in one pass. Pick the **Engine**: **Unreal Engine** (FBX in
+centimetres, the skeleton named Armature so Unreal adds no extra root bone, textures with the Unreal template), **Unity** (FBX with
+the scale and, without a skeleton, the axes applied, so the object comes in at scale 1 without a rotation; Unity URP or HDRP
+textures) or **glTF** (a .glb with the meshes, materials and textures). **Meshes**, **Textures** and **Animation** turn each
+part on or off.
+
+- **Meshes:** the low polys and the plain meshes that are visible (parked low polys too), or the selected ones (**Selected Only**);
+  a high poly or a cage is never written. A file for each mesh, or for each skeleton with the meshes it deforms (**One File**: all
+  in one). A mesh is named after its group without the role suffix (Crate_low: Crate), after the **Prefix** (SM_, SK_), and so is
+  its file. Modifiers are applied with Smooth Preview off, smoothing groups written, **Triangulate** on by default, **Move to
+  Origin** puts each file's skeleton (else first mesh) at the world origin; exploded groups are written where they belong.
+- **Textures:** the texture sets of those meshes, with the file type, size and padding of Export Textures and the engine's
+  template (a Unity project on HDRP keeps HDRP), into the same folder.
+- **Animation** (Unreal, Unity): the skeletons of the meshes. **Clips**: **What Plays** (every layer, over the playback range, the
+  scene range or the keys) or **Each Action** (the skeleton's action and its layers' actions, each over its keys), in one file with a
+  take for each clip or **A File per Clip** (`Hero_Walk.fbx`). Each clip is baked to a key on every frame as it plays (constraints
+  and layers included), deforming bones only, no leaf bones, in the engine's units. **Root Motion** moves the hips' motion over the
+  ground to the root bone above them (it needs one); **In Place** takes it out. The dialog runs Check Rig first and lists its
+  problems, with the root bone's.
+
+The folder is the project's `export` (else an `export` folder next to the saved scene, or one you pick). The settings are kept
+with the scene; **Repeat Last Export** (File and Export menus, the Repeat button) writes everything again in one click.
 
 ## Customising the interface
 

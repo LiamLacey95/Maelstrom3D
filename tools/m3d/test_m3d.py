@@ -1157,7 +1157,7 @@ def phase1c():
     log = []
     S.PROPERTIES_PT_m3d_sc_start.draw(type("Inst", (), {"layout": Rec(log)})(), SCtx('RIGHT'))
     check([r.values().get("kind") for r in log if r._kind == "operator" and r._args[0] == "m3d.sculpt_add_mesh"] == ['SPHERE', 'CUBE', 'PLANE']
-          and any(r._kind == "menu" and r._args[0] == "TOPBAR_MT_file_import" for r in log)
+          and any(r._kind == "operator" and r._args[0] == "m3d.import_file" for r in log)
           and any(r._kind == "operator" and r._args[0] == "m3d.workspace" and r.values().get("kind") == 'MODEL' for r in log)
           and any(r._kind == "operator" and r.values().get("action") == 'START' and r.values().get("name") == ob.name for r in log),
           "start card: Sphere / Cube / Plane, Import, Use a mesh from F1 Modeling, the meshes")
@@ -15619,6 +15619,356 @@ check(bpy.ops.m3d.sculpt_object(action='SHOW_ALL') == {'FINISHED'} and not o["P2
 p2_n = len(bpy.data.objects)
 check(bpy.ops.m3d.sculpt_object(name=p2_join.name, action='MERGE') == {'FINISHED'} and len(bpy.data.objects) == 1,
       "Merge Visible: one mesh (%d before)" % p2_n)
+clean_scene()
+
+# --- P7 Pipeline I/O: Export to Engine (low polys only, the engine's axes / units / names / triangles, origin, textures, baked
+# animation with root motion, takes or files, Check Rig, repeat), File > Import (one picker, studio units), references (Create
+# Reference with a poseable skeleton, the Reference Editor) and projects (folders, recent projects, where outputs go). Temp folders.
+import m3d_io as IO
+import m3d_rig as RG
+from io_scene_fbx import parse_fbx
+from mathutils import Matrix
+p7_tmp = tempfile.mkdtemp(prefix="m3d_p7_")
+
+
+def p7_dir():
+    return tempfile.mkdtemp(dir=p7_tmp)
+
+
+def p7_globals(path):
+    """{name: value} of the GlobalSettings of an FBX file (UpAxis, UnitScaleFactor...)."""
+    root_, _ver = parse_fbx.parse(path)
+    gs_ = next(c for c in root_.elems if c.id == b"GlobalSettings")
+    return {c.props[0].decode(): c.props[-1] for c in next(c for c in gs_.elems if c.id == b"Properties70").elems}
+
+
+def p7_read(path):
+    """Import a file into the scene and return what came in (removed again by p7_drop)."""
+    before_ = set(bpy.data.objects)
+    (bpy.ops.import_scene.fbx if path.endswith(".fbx") else bpy.ops.import_scene.gltf)(filepath=path)
+    return [o for o in bpy.data.objects if o not in before_]
+
+
+def p7_drop(obs):
+    for o in obs:
+        bpy.data.objects.remove(o)
+
+
+# Menus, keys, the Status Line, the Sculpt start card.
+p7_file = {e.get("label"): e for e in m3d_ui.MENUS["M3D_MT_file"][1]}
+check(p7_file["Import..."]["idname"] == "m3d.import_file" and p7_file["Import from Scene File (.blend)..."]["idname"] == "wm.append"
+      and p7_file["Create Reference..."]["idname"] == "m3d.create_reference" and p7_file["Import Other Formats"]["idname"] == "TOPBAR_MT_file_import"
+      and p7_file["Export to Engine..."]["idname"] == "m3d.export_engine" and p7_file["Repeat Last Export"]["props"] == {"repeat": True}
+      and p7_file["Export Other Formats"]["idname"] == "TOPBAR_MT_file_export", "File: Import..., Import from Scene File, Create Reference, Export to Engine")
+check(p7_file["Set Project..."]["idname"] == p7_file["New Project..."]["idname"] == "m3d.project_set" and p7_file["New Project..."]["props"] == {"create": True}
+      and p7_file["Recent Projects"]["idname"] == "M3D_MT_recent_projects" and p7_file["Open Scene..."]["idname"] == "m3d.open_scene"
+      and p7_file["Save Scene As..."]["props"] == {"as_new": True}, "File: Set Project, New Project, Recent Projects; Open / Save start in the project")
+check(any(e.get("idname") == "m3d.export_engine" for e in m3d_ui.MENUS["M3D_MT_export"][1])
+      and any(e.get("idname") == "m3d.export_engine" for e in m3d_ui.MENUS["M3D_MT_key"][1])
+      and any(e.get("idname") == "wm.call_panel" and e["props"].get("name") == "M3D_PT_reference_editor" for e in m3d_ui.MENUS["M3D_MT_windows"][1]),
+      "Export to Engine in Texturing's Export menu and F6's Key menu; Windows > Reference Editor")
+p7_log = []
+m3d_ui.draw_file_buttons(Rec(p7_log))
+check([r._args[0] for r in p7_log if r._kind == "operator"][1:] == ["m3d.open_scene", "m3d.save_scene"], "Status Line: Open / Save name the project")
+kc = bpy.context.window_manager.keyconfigs["Maelstrom3D"]
+p7_keys = {(k.idname, k.type, k.ctrl, k.shift, getattr(k.properties, "as_new", None)) for k in kc.keymaps["Window"].keymap_items if k.active}
+check({("m3d.create_reference", 'R', True, False, None), ("m3d.open_scene", 'O', True, False, None), ("m3d.save_scene", 'S', True, False, False),
+       ("m3d.save_scene", 'S', True, True, True)} <= p7_keys and ("wm.open_mainfile", 'O', True, False, None) not in p7_keys,
+      "Ctrl+R: Create Reference; Ctrl+O / Ctrl+S / Ctrl+Shift+S start in the project")
+p7_log = []
+bpy.context.scene.m3d_export.last_files = ""
+m3d_ui.draw_entries(Rec(p7_log), bpy.context, m3d_ui.MENUS["M3D_MT_file"][1])
+check(not [r for r in p7_log if r._kind == "operator" and r.values().get("repeat")], "Repeat Last Export only after an export (hidden before)")
+
+# Export to Engine, meshes for Unreal: low polys only (no high poly, no cage), parked ones too, named after the group with the prefix,
+# Smooth Preview off, triangles, at the origin, centimetres with Y up in the file. The scene is left as it was.
+p7_o = hp_scene(("P7Crate_low", 'LOW', "P7Crate"), ("P7Crate_high", 'HIGH', "P7Crate"), ("P7Prop", 'NONE', ""))
+p7_low, p7_prop = p7_o["P7Crate_low"], p7_o["P7Prop"]
+p7_low.location.x = 5
+p7_low.modifiers.new(m3d_mode.SMOOTH_MOD, 'SUBSURF').levels = 2
+p7_cage = hp_cube("P7Cage")
+p7_group = bpy.context.scene.m3d_bake_groups.add()
+p7_group.name, p7_group.cage = "P7Crate", p7_cage
+p7_prop.m3d_pair.parked = True
+p7_prop.hide_set(True)
+p7_s = bpy.context.scene.m3d_export
+p7_s.engine, p7_s.prefix, p7_s.to_origin, p7_s.triangulate, p7_s.textures, p7_s.animation = 'UNREAL', "SM_", True, True, False, False
+p7_s.selected_only = p7_s.one_file = False
+p7_s.folder = p7_out = p7_dir()
+p7_files, _rigs, p7_highs = IO.export_plan(bpy.context)
+check([(n, [o.name for o in obs]) for n, obs, _r in p7_files] == [("SM_P7Crate", ["P7Crate_low"]), ("SM_P7Prop", ["P7Prop"])]
+      and p7_highs == [p7_o["P7Crate_high"]], "the plan: a file for each low poly, named after its group; the high poly and the cage left out")
+check(bpy.ops.m3d.export_engine() == {'FINISHED'} and sorted(os.listdir(p7_out)) == ["SM_P7Crate.fbx", "SM_P7Prop.fbx"],
+      "Export to Engine writes them: %s" % sorted(os.listdir(p7_out)))
+p7_g = p7_globals(os.path.join(p7_out, "SM_P7Crate.fbx"))
+check(p7_g["UpAxis"] == 1 and p7_g["UnitScaleFactor"] == 1.0, "Unreal: Y up, centimetres in the file (%s)" % p7_g)
+p7_in = p7_read(os.path.join(p7_out, "SM_P7Crate.fbx"))
+check([o.name for o in p7_in] == ["SM_P7Crate"] and len(p7_in[0].data.polygons) == 12 and all(len(p.vertices) == 3 for p in p7_in[0].data.polygons)
+      and p7_in[0].matrix_world.translation.length < 1e-4 and abs(p7_in[0].dimensions.x - 2.0) < 1e-3,
+      "...one mesh, 12 triangles (Smooth Preview off), at the origin, the same size: %s" % [(o.name, len(o.data.polygons), o.location[:]) for o in p7_in])
+p7_drop(p7_in)
+check(p7_low.name == "P7Crate_low" and p7_low.location.x == 5 and p7_low.modifiers[m3d_mode.SMOOTH_MOD].show_viewport
+      and p7_prop.hide_get() and p7_prop.name == "P7Prop", "...and the scene is as it was (names, place, Smooth Preview, the parked mesh)")
+check(p7_s.last_files.split("|") == [os.path.join(p7_out, f) for f in ("SM_P7Crate.fbx", "SM_P7Prop.fbx")], "the files are remembered")
+os.remove(os.path.join(p7_out, "SM_P7Crate.fbx"))
+check(bpy.ops.m3d.export_engine(repeat=True) == {'FINISHED'} and os.path.isfile(os.path.join(p7_out, "SM_P7Crate.fbx"))
+      and "2 files" in IO.M3D_OT_export_engine.description(bpy.context, NS(repeat=True)), "Repeat Last Export writes them again in one click")
+# Unity: the scale applied (metres, scale 1 in Unity), the axes on the data; glTF: one .glb.
+p7_s.engine, p7_s.prefix, p7_s.to_origin, p7_s.folder = 'UNITY', "", False, p7_dir()
+check(bpy.ops.m3d.export_engine() == {'FINISHED'} and p7_globals(os.path.join(p7_s.folder, "P7Crate.fbx"))["UnitScaleFactor"] == 100.0,
+      "Unity: the file is in metres")
+p7_in = p7_read(os.path.join(p7_s.folder, "P7Crate.fbx"))
+check(len(p7_in) == 1 and abs(p7_in[0].matrix_world.translation.x - 5) < 1e-3 and abs(max(p7_in[0].dimensions) - 2.0) < 1e-3,
+      "...where it is, the same size (no Move to Origin, no prefix)")
+p7_drop(p7_in)
+p7_s.engine, p7_s.folder = 'GLTF', p7_dir()
+check(bpy.ops.m3d.export_engine() == {'FINISHED'} and sorted(os.listdir(p7_s.folder)) == ["P7Crate.glb", "P7Prop.glb"], "glTF: a .glb for each")
+p7_s.engine, p7_s.selected_only, p7_s.one_file, p7_s.folder = 'UNREAL', True, True, p7_dir()
+hp_select(p7_low)
+check(bpy.ops.m3d.export_engine() == {'FINISHED'} and len(os.listdir(p7_s.folder)) == 1, "Selected Only, One File")
+p7_s.selected_only = p7_s.one_file = False
+# Textures in the same pass, with the engine's template, into the same folder; Export Textures keeps its own settings.
+clean_scene()
+bpy.ops.mesh.primitive_plane_add()
+p7_tile = bpy.context.active_object
+p7_tile.name, p7_tile.m3d_pair.role, p7_tile.m3d_pair.group = "P7Tile_low", 'LOW', "P7Tile"
+bpy.ops.m3d.tex_project('EXEC_DEFAULT', resolution='128', template='MINIMAL', unwrap=False, bake_after=False)
+p7_tx = bpy.context.scene.m3d_tex
+p7_tx.export_preset, p7_old_folder = 'BLENDER', p7_tx.export_folder
+p7_s.textures, p7_s.folder = True, p7_dir()
+check(bpy.ops.m3d.export_engine() == {'FINISHED'} and {"P7Tile.fbx", "T_P7Tile_BC.png", "T_P7Tile_ORM.png"} <= set(os.listdir(p7_s.folder))
+      and p7_tx.export_preset == 'BLENDER' and p7_tx.export_folder == p7_old_folder,
+      "textures with the Unreal template next to the mesh: %s" % sorted(os.listdir(p7_s.folder)))
+p7_s.textures = False
+
+# Animation: a skeleton with a root, hips, spine and a control; Walk moves the hips 2 m forward, Idle (a layer) bends the spine.
+clean_scene()
+p7_arm = bpy.data.armatures.new("P7Rig")
+p7_rig = bpy.data.objects.new("P7Rig", p7_arm)
+bpy.context.scene.collection.objects.link(p7_rig)
+bpy.context.view_layer.update()
+bpy.context.view_layer.objects.active = p7_rig
+bpy.ops.object.mode_set(mode='EDIT')
+for n_, head_, tail_, parent_, deform_ in (("root", (0, 0, 0), (0, 0.5, 0), None, False), ("Hips", (0, 0, 1), (0, 0, 1.3), "root", True),
+                                           ("Spine", (0, 0, 1.3), (0, 0, 1.8), "Hips", True), ("ctrl", (1, 0, 0), (1, 0.3, 0), None, False)):
+    eb_ = p7_arm.edit_bones.new(n_)
+    eb_.head, eb_.tail, eb_.use_deform = head_, tail_, deform_
+    eb_.parent = p7_arm.edit_bones.get(parent_) if parent_ else None
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.ops.mesh.primitive_cube_add(size=0.5, location=(0, 0, 1.4))
+p7_body = bpy.context.active_object
+p7_body.name = "P7Hero_low"
+p7_body.modifiers.new("Armature", 'ARMATURE').object = p7_rig
+p7_body.vertex_groups.new(name="Hips").add(range(8), 1.0, 'REPLACE')
+for pb_ in p7_rig.pose.bones:
+    pb_.rotation_mode = 'XYZ'
+p7_con = p7_rig.pose.bones["Spine"].constraints.new('LIMIT_SCALE')
+p7_scene = bpy.context.scene
+p7_scene.frame_start, p7_scene.frame_end, p7_scene.use_preview_range = 1, 10, False
+
+
+def p7_action(name, pose):
+    act_ = bpy.data.actions.new(name)
+    p7_rig.animation_data_create().action = act_
+    for f_ in (1, 10):
+        p7_scene.frame_set(f_)
+        pose(f_)
+        for pb_ in p7_rig.pose.bones:
+            pb_.keyframe_insert("location", frame=f_)
+            pb_.keyframe_insert("rotation_euler", frame=f_)
+    for pb_ in p7_rig.pose.bones:
+        pb_.matrix_basis = Matrix()
+    return act_
+
+
+def p7_walk(f_):
+    pb_ = p7_rig.pose.bones["Hips"]
+    pb_.matrix_basis = Matrix()
+    bpy.context.view_layer.update()
+    pb_.matrix = Matrix.Translation((0, 2.0 * (f_ - 1) / 9, 1.0)) @ pb_.matrix.to_3x3().to_4x4()
+
+
+p7_idle = p7_action("P7Idle", lambda f_: setattr(p7_rig.pose.bones["Spine"], "rotation_euler", (0.3 * (f_ == 10), 0, 0)))
+p7_walk_act = p7_action("P7Walk", p7_walk)
+p7_track = p7_rig.animation_data.nla_tracks.new()
+p7_track.strips.new("P7Idle", 1, p7_idle)
+p7_track.mute = True
+p7_s.engine, p7_s.prefix, p7_s.clips, p7_s.clip_files, p7_s.anim_range, p7_s.animation = 'UNREAL', "SK_", 'CURRENT', False, 'SCENE', True
+check(IO.hips_and_root(p7_rig) == (p7_arm.bones["Hips"], p7_arm.bones["root"]), "the hips and the root bone are found")
+p7_files, p7_rigs, _h = IO.export_plan(bpy.context)
+check([(n, [o.name for o in obs], [r.name for r in rr]) for n, obs, rr in p7_files] == [("SK_P7Rig", ["P7Hero_low"], ["P7Rig"])] and p7_rigs == [p7_rig],
+      "a skinned mesh goes with its skeleton into one file named after it")
+
+
+def p7_motion(motion):
+    """{bone: world position} at the first and the last frame of the clip the export wrote with `motion`."""
+    p7_s.root_motion, p7_s.folder = motion, p7_dir()
+    res_ = bpy.ops.m3d.export_engine()
+    files_ = sorted(os.listdir(p7_s.folder))
+    in_ = p7_read(os.path.join(p7_s.folder, "P7Rig_P7Walk.fbx"))
+    rig_ = next(o for o in in_ if o.type == 'ARMATURE')
+    first_, last_ = rig_.animation_data.action.frame_range
+    found_ = []
+    for f_ in (first_, last_):
+        p7_scene.frame_set(int(f_))
+        found_.append({pb.name: (rig_.matrix_world @ pb.matrix).translation.copy() for pb in rig_.pose.bones})
+    names_, rig_name_ = [b.name for b in rig_.data.bones], rig_.name
+    p7_drop(in_)
+    return res_, files_, names_, rig_name_, found_
+
+
+res, p7_names_, bones, p7_rig_name, (p7_a, p7_b) = p7_motion('NONE')
+check(res == {'FINISHED'} and p7_names_ == ["P7Rig_P7Walk.fbx", "SK_P7Rig.fbx"], "the mesh file and a file for the clip: %s" % p7_names_)
+check(bones == ["root", "Hips", "Spine"] and p7_rig_name == "Armature",
+      "deforming bones only (and the root above them), no leaf bones; the skeleton is Armature for Unreal: %s %s" % (bones, p7_rig_name))
+check((p7_b["Hips"] - p7_a["Hips"] - Vector((0, 2, 0))).length < 1e-3 and (p7_b["root"] - p7_a["root"]).length < 1e-3,
+      "As Animated: the hips walk 2 m, the root stays")
+res, _f, _b, _n, (p7_a, p7_b) = p7_motion('ROOT')
+check((p7_b["root"] - p7_a["root"] - Vector((0, 2, 0))).length < 1e-3 and (p7_b["Hips"] - p7_a["Hips"] - Vector((0, 2, 0))).length < 1e-3,
+      "Root Motion: the root carries the ground motion (the hips go with it)")
+res, _f, _b, _n, (p7_a, p7_b) = p7_motion('IN_PLACE')
+check((p7_b["Hips"] - p7_a["Hips"]).length < 1e-3 and (p7_b["root"] - p7_a["root"]).length < 1e-3, "In Place: the hips stay over the root")
+check(p7_rig.name == "P7Rig" and p7_rig.animation_data.action == p7_walk_act and len(p7_rig.animation_data.nla_tracks) == 1 and p7_track.mute
+      and not p7_con.mute and {a.name for a in bpy.data.actions} >= {"P7Walk", "P7Idle"}
+      and not [a for a in bpy.data.actions if a.name.startswith("P7Rig_")], "...and the skeleton is left as it was (no baked actions left over)")
+p7_s.clips, p7_s.root_motion, p7_s.meshes, p7_s.folder = 'ACTIONS', 'NONE', False, p7_dir()
+check(bpy.ops.m3d.export_engine() == {'FINISHED'} and os.listdir(p7_s.folder) == ["P7Rig_Animations.fbx"], "Each Action: one file")
+p7_acts = set(bpy.data.actions)
+p7_in = p7_read(os.path.join(p7_s.folder, "P7Rig_Animations.fbx"))
+p7_takes = sorted(re.sub(r"\.\d+$", "", a.name.split("|")[-1]) for a in bpy.data.actions if a not in p7_acts)
+check(p7_takes == ["P7Idle", "P7Walk"], "...with a take for each action: %s" % p7_takes)
+p7_drop(p7_in)
+p7_s.clip_files, p7_s.folder = True, p7_dir()
+check(bpy.ops.m3d.export_engine() == {'FINISHED'} and sorted(os.listdir(p7_s.folder)) == ["P7Rig_P7Idle.fbx", "P7Rig_P7Walk.fbx"],
+      "A File per Clip: one each")
+# Root motion needs a root bone; Check Rig's problems and the root's show in the dialog.
+p7_rig.data.bones["Hips"].name = "pelvis"
+check(IO.root_problem(p7_rig, 'ROOT') == "" and IO.root_problem(p7_rig, 'IN_PLACE') == "", "pelvis is a hips bone too")
+p7_rig.data.bones["pelvis"].name = "Hips"
+p7_rig.rotation_euler.x = 0.3
+IO._checked[p7_rig.name] = RG.check_rig(bpy.context, p7_rig)
+p7_s.root_motion = 'ROOT'
+p7_log = []
+IO.draw_export(Rec(p7_log), bpy.context, 600)
+p7_texts = [r._kw.get("text", "") for r in p7_log]
+check(any("Rotation or scale not applied" in t for t in p7_texts) and any("1 clip" in t or "2 clip" in t for t in p7_texts),
+      "the dialog shows Check Rig's problems and the clips")
+check_calls("Export to Engine dialog", p7_log)
+p7_rig.rotation_euler.x = 0
+bpy.context.view_layer.objects.active = p7_rig
+bpy.ops.object.mode_set(mode='EDIT')
+p7_arm.edit_bones["Hips"].parent = None
+bpy.ops.object.mode_set(mode='OBJECT')
+check("needs a root bone" in IO.root_problem(p7_rig, 'ROOT') and isinstance(bg_try(bpy.ops.m3d.export_engine), RuntimeError), "Root Motion without a root bone: says why")
+p7_s.root_motion, p7_s.meshes, p7_s.clips, p7_s.clip_files, p7_s.prefix = 'NONE', True, 'CURRENT', False, ""
+IO._checked.clear()
+
+# File > Import...: one picker; OBJ / Alembic in studio centimetres come in at the right size; the choice is remembered.
+clean_scene()
+bpy.ops.mesh.primitive_cube_add(size=100)
+p7_src = p7_dir()
+bpy.ops.wm.obj_export(filepath=os.path.join(p7_src, "cm.obj"))
+bpy.ops.wm.alembic_export(filepath=os.path.join(p7_src, "cm.abc"))
+bpy.ops.wm.save_as_mainfile(filepath=os.path.join(p7_src, "props.blend"), copy=True)
+clean_scene()
+for f_, units_, size_ in (("cm.obj", 'STUDIO', 1.0), ("cm.obj", 'FILE', 100.0), ("cm.abc", 'STUDIO', 1.0), ("props.blend", 'FILE', 100.0)):
+    before_ = set(bpy.data.objects)
+    res = bpy.ops.m3d.import_file(filepath=os.path.join(p7_src, f_), units=units_)
+    new_ = [o for o in bpy.data.objects if o not in before_]
+    check(res == {'FINISHED'} and len(new_) == 1 and abs(new_[0].dimensions.x - size_) < 1e-3 and m3d_user.data().get("import_units") == units_,
+          "Import %s as %s: %s" % (f_, units_, [(o.name, o.dimensions[:]) for o in new_]))
+check(bpy.data.collections.get("props") is not None and isinstance(bg_try(bpy.ops.m3d.import_file, filepath=os.path.join(p7_src, "x.txt")), RuntimeError),
+      "a scene file's objects come in a collection named after it; another file type is refused")
+check(bpy.ops.m3d.import_file.get_rna_type().properties["units"].enum_items["STUDIO"].name == "Studio (centimetres, Y up)", "the studio units choice")
+clean_scene()
+
+# References: Create Reference links a file's collection with its skeleton editable (posed and keyed at once); the Reference Editor
+# reloads (reports keys of bones that are gone), replaces, unloads / loads, makes paths relative, imports the objects, removes.
+p7_coll = bpy.data.collections.new("P7Char")
+bpy.context.scene.collection.children.link(p7_coll)
+p7_carm = bpy.data.armatures.new("P7CharRig")
+p7_crig = bpy.data.objects.new("P7CharRig", p7_carm)
+p7_coll.objects.link(p7_crig)
+bpy.context.view_layer.update()
+bpy.context.view_layer.objects.active = p7_crig
+bpy.ops.object.mode_set(mode='EDIT')
+for n_, z_ in (("Body", 0), ("Arm", 1)):
+    eb_ = p7_carm.edit_bones.new(n_)
+    eb_.head, eb_.tail = (0, 0, z_), (0, 0, z_ + 1)
+bpy.ops.object.mode_set(mode='OBJECT')
+p7_lib1 = os.path.join(p7_src, "char.blend")
+bpy.ops.wm.save_as_mainfile(filepath=p7_lib1, copy=True)
+bpy.ops.object.mode_set(mode='EDIT')
+p7_carm.edit_bones.remove(p7_carm.edit_bones["Arm"])
+bpy.ops.object.mode_set(mode='OBJECT')
+p7_lib2 = os.path.join(p7_src, "char_v2.blend")
+bpy.ops.wm.save_as_mainfile(filepath=p7_lib2, copy=True)
+clean_scene()
+bpy.data.collections.remove(p7_coll)
+bpy.data.armatures.remove(p7_carm)
+check(bpy.ops.m3d.create_reference(filepath=p7_lib1) == {'FINISHED'}, "Create Reference")
+p7_ref = next((o for o in bpy.context.scene.objects if o.type == 'ARMATURE' and o.override_library is not None), None)
+check(p7_ref is not None and not p7_ref.override_library.is_system_override and p7_ref.is_editable, "...its skeleton is editable at once")
+p7_lib = IO.reference_libraries()
+check(len(p7_lib) == 1 and os.path.basename(p7_lib[0].filepath) == "char.blend", "...and the file is a reference: %s" % p7_lib)
+p7_lib = p7_lib[0]
+p7_ref.pose.bones["Arm"].rotation_mode = 'XYZ'
+p7_ref.pose.bones["Arm"].rotation_euler.x = 0.5
+p7_ref.pose.bones["Arm"].keyframe_insert("rotation_euler", frame=1)
+check(IO.keyed_bones(p7_lib) == {p7_ref.name: {"Arm"}}, "the keyed bones of the reference")
+check(bpy.ops.m3d.reference(action='RELOAD', library=p7_lib.name) == {'FINISHED'} and p7_ref.pose.bones["Arm"].rotation_euler.x == 0.5,
+      "Reload keeps the pose and keys")
+check(bpy.ops.m3d.reference(action='UNLOAD', library=p7_lib.name) == {'FINISHED'} and not IO.is_loaded(bpy.context, p7_lib)
+      and bpy.ops.m3d.reference(action='LOAD', library=p7_lib.name) == {'FINISHED'} and IO.is_loaded(bpy.context, p7_lib), "Unload / Load")
+p7_log = []
+IO.M3D_PT_reference_editor.draw(NS(layout=Rec(p7_log)), bpy.context)
+check({r.values().get("action") for r in p7_log if r._kind == "operator" and r._args[0] == "m3d.reference"}
+      == {'RELOAD', 'REPLACE', 'UNLOAD', 'REMOVE', 'EDITABLE', 'LOCAL', 'PATH'}, "the Reference Editor's buttons")
+check_calls("Reference Editor", p7_log)
+p7_report = []
+p7_res = bpy.ops.m3d.reference(action='REPLACE', library=p7_lib.name, filepath=p7_lib2)
+check(p7_res == {'FINISHED'} and p7_lib.filepath.endswith("char_v2.blend") and "Arm" not in p7_ref.pose.bones
+      and "keys of bones that are gone: Arm" in IO.gone_bones({p7_ref.name: {"Arm"}}), "Replace with a file without the arm: the gone keys are named")
+p7_rel = p7_lib.filepath.startswith("//")
+p7_res = bg_try(bpy.ops.m3d.reference, action='PATH', library=p7_lib.name)
+check(p7_res == {'FINISHED'} and p7_lib.filepath.startswith("//") != p7_rel if bpy.data.filepath else isinstance(p7_res, RuntimeError),
+      "Relative / Absolute (a scene not saved yet says so)")
+check(bpy.ops.m3d.reference(action='LOCAL', library=p7_lib.name) == {'FINISHED'} and not IO.reference_libraries()
+      and all(o.library is None and o.override_library is None for o in bpy.context.scene.objects), "Import Objects: they are the scene's own")
+check(bpy.ops.m3d.create_reference(filepath=p7_lib1) == {'FINISHED'} and bpy.ops.m3d.reference(action='REMOVE', library=IO.reference_libraries()[0].name)
+      == {'FINISHED'} and not IO.reference_libraries() and not [o for o in bpy.data.objects if o.override_library is not None], "Remove")
+bpy.ops.wm.link(filepath=p7_lib1 + "/Collection/P7Char", directory=p7_lib1 + "/Collection/", filename="P7Char")
+p7_lib = IO.reference_libraries()[0]
+check(bpy.ops.m3d.reference(action='EDITABLE', library=p7_lib.name) == {'FINISHED'}
+      and any(o.override_library is not None and not o.override_library.is_system_override for o in bpy.context.scene.objects)
+      and not [o for o in bpy.context.scene.objects if o.instance_type == 'COLLECTION'], "Make Editable on a Blender link: an override")
+bpy.ops.m3d.reference(action='REMOVE', library=p7_lib.name)
+clean_scene()
+
+# Projects: New Project makes its folders; the project is remembered with the recent ones; a new file renders and exports into it,
+# playblasts go into it; Open / Save say it in their tooltip; No Project goes back.
+import m3d_anim as AN
+p7_proj = os.path.join(p7_tmp, "P7Project")
+check(bpy.ops.m3d.project_set(directory=p7_proj, create=True) == {'FINISHED'} and sorted(os.listdir(p7_proj)) == sorted(IO.FOLDERS)
+      and IO.project() == p7_proj and IO.recent_projects()[0] == p7_proj, "New Project: its folders, remembered with the recent ones")
+p7_sc = bpy.data.scenes.new("P7Scene")
+p7_sc.render.filepath = "//render/"
+IO.scene_defaults(p7_sc)
+check(p7_sc.render.filepath == os.path.join(p7_proj, "images") + os.sep and p7_sc.m3d_tex.export_folder == os.path.join(p7_proj, "export") + os.sep,
+      "a new file renders into images/ and exports into export/")
+check(AN.playblast_folder(p7_sc) == os.path.join(p7_proj, "playblasts") and "P7Project" in IO.M3D_OT_open_scene.description(bpy.context, None)
+      and "P7Project" in IO.M3D_OT_save_scene.description(bpy.context, NS(as_new=False)), "playblasts in the project; the tooltips name it")
+p7_s.folder = ""
+check(IO.export_dir(bpy.context) == os.path.join(p7_proj, "export") + os.sep, "Export to Engine defaults to the project's export folder")
+p7_log = []
+IO.M3D_MT_recent_projects.draw(NS(layout=Rec(p7_log)), bpy.context)
+check([r.values().get("directory") for r in p7_log if r._kind == "operator"][:1] == [p7_proj], "Recent Projects")
+check(bpy.ops.m3d.project_set(directory="") == {'FINISHED'} and IO.project() == "" and AN.playblast_folder(p7_sc).endswith("m3d_playblast"),
+      "No Project")
+bpy.data.scenes.remove(p7_sc)
+m3d_user.data().pop("recent_projects", None)
+m3d_user.save()
+shutil.rmtree(p7_tmp, ignore_errors=True)
 clean_scene()
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
