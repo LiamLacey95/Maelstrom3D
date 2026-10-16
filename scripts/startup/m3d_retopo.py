@@ -11,7 +11,8 @@ Make Not Live puts all that back. What was set before is kept in Scene.m3d_live_
 opens live with the same settings, and a surface that is deleted gives them back.
 
 New Low Poly starts an empty mesh paired with the surface and enters Quad Draw (the Poly Build tool). Auto Low Poly makes
-the low poly from a copy of the high poly with QuadriFlow (quads) or Decimate (triangles).
+the low poly from a copy of the high poly with QuadriFlow (quads) or Decimate (triangles). Project Detail gives the low poly
+the detail of the high poly as Multires levels (a subdivided copy projected onto the high poly, then Multires Reshape).
 """
 
 import json
@@ -456,7 +457,7 @@ class M3D_OT_hp_auto_low(Operator):
             return {'CANCELLED'}
         set_role(surface, 'HIGH', group)
         finish_low(context, copy, group)
-        self.report({'INFO'}, "%s: %s faces in %.1f s%s. Unwrap it in the UV workspace (F3)" % (
+        self.report({'INFO'}, "%s: %s faces in %.1f s%s. Next: Project Detail onto Low Poly (Retopology), or unwrap it (F3)" % (
             copy.name, format(len(copy.data.polygons), ","), time.perf_counter() - t0, note))
         return {'FINISHED'}
 
@@ -502,6 +503,122 @@ class M3D_OT_hp_conform(Operator):
         return {'FINISHED'}
 
 
+def project_pair(context):
+    """(low poly, high poly) that Project Detail works on for the active mesh (a low or a high poly of a pair), else None."""
+    ob = context.view_layer.objects.active
+    lows, highs = pair_of(context, ob)
+    if not lows or not highs:
+        return None
+    low = ob if ob.m3d_pair.role == 'LOW' else lows[0]
+    return low, ob if ob.m3d_pair.role == 'HIGH' else m3d_pair.pick_high(highs, ob.m3d_pair.group)
+
+
+class M3D_OT_hp_project(Operator):
+    """Give the low poly the detail of its high poly as Multires levels: it is subdivided and every new point is moved onto
+    the high poly. The low poly itself (the base level) stays as it is; Bake Multires bakes the levels into maps"""
+    bl_idname = "m3d.hp_project"
+    bl_label = "Project Detail onto Low Poly"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    levels: IntProperty(name="Levels", description="Multires levels that carry the detail: each one has 4 times the faces of "
+                        "the last", default=3, min=1, max=6)
+
+    @classmethod
+    def poll(cls, context):
+        return project_pair(context) is not None
+
+    def top(self, low):
+        """The level the detail goes onto: `levels`, or the top one of the Multires the low poly has."""
+        from m3d_sculpt import multires_of
+        mod = multires_of(low)
+        return max(self.levels, mod.total_levels if mod is not None else 0)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "levels", slider=True)
+        pair = project_pair(context)
+        if pair is not None:
+            faces = m3d_pair.level_faces(pair[0], self.top(pair[0]))
+            layout.label(text="%s: %s faces at level %d" % (pair[0].name, format_count(faces), self.top(pair[0])),
+                         icon='ERROR' if m3d_pair.heavy(faces) else 'INFO')
+
+    def invoke(self, context, event):
+        pair = project_pair(context)
+        faces = m3d_pair.level_faces(pair[0], self.top(pair[0])) if pair is not None else 0
+        return m3d_pair.heavy_guard(self, context, event, faces, "Project Detail")
+
+    def execute(self, context):
+        from m3d_sculpt import multires_of
+        pair = project_pair(context)
+        if pair is None:
+            self.report({'WARNING'}, "Select a low poly that has a high poly")
+            return {'CANCELLED'}
+        low, high = pair
+        top = self.top(low)
+        problem = m3d_pair.heavy_problem(m3d_pair.level_faces(low, top), "Project Detail")
+        if problem or low.data.shape_keys is not None:
+            self.report({'ERROR'}, problem or "%s has layers: Apply Layers first (Sculpt, Geometry tab)" % low.name)
+            return {'CANCELLED'}
+        t0 = time.perf_counter()
+        sculpting = context.view_layer.objects.active if context.mode == 'SCULPT' else None
+        m3d_pair.leave_modes(context)
+        made = multires_of(low) is None
+        mod = multires_of(low) or low.modifiers.new("Multires", 'MULTIRES')
+        cage = None
+        others = [(m, m.show_viewport) for m in low.modifiers if m != mod]
+        high_mod = multires_of(high)
+        high_level = high_mod.levels if high_mod is not None else 0
+        hidden = low.hide_get()   # (in Sculpt the low poly is put away: a hidden mesh is not evaluated)
+        try:
+            low.hide_set(False)
+            with m3d_pair._on(context, low):
+                bpy.ops.object.modifier_move_to_index(modifier=mod.name, index=0)   # (Multires works on the mesh itself)
+                for _ in range(top - mod.total_levels):
+                    bpy.ops.object.multires_subdivide(modifier=mod.name, mode='CATMULL_CLARK')
+            # A copy of the low poly at the top level (nothing else of its stack), its points projected onto the high poly
+            # (along their normals, both ways: the nearest hit), is the shape the levels take.
+            for m, _shown in others:
+                m.show_viewport = False
+            mod.levels = mod.total_levels
+            if high_mod is not None:
+                high_mod.levels = high_mod.total_levels   # (all its detail: outside Sculpt it shows a lower level)
+            mesh = bpy.data.meshes.new_from_object(low.evaluated_get(context.evaluated_depsgraph_get()))
+            cage = bpy.data.objects.new(low.name + "_projected", mesh)
+            context.scene.collection.objects.link(cage)
+            cage.matrix_world = low.matrix_world
+            wrap = cage.modifiers.new("Project", 'SHRINKWRAP')
+            wrap.target, wrap.wrap_method = high, 'PROJECT'
+            wrap.use_negative_direction = wrap.use_positive_direction = True
+            with m3d_pair._on(context, cage):
+                bpy.ops.object.modifier_apply(modifier=wrap.name)
+            with context.temp_override(active_object=low, object=low, selected_objects=[low, cage],
+                                       selected_editable_objects=[low, cage]):
+                bpy.ops.object.multires_reshape(modifier=mod.name)
+        except RuntimeError as err:
+            if made:
+                low.modifiers.remove(mod)
+            self.report({'ERROR'}, "Project Detail failed on %s: %s" % (low.name, str(err).replace("Error: ", "").strip()))
+            return {'CANCELLED'}
+        finally:
+            low.hide_set(hidden)
+            for m, shown in others:
+                m.show_viewport = shown
+            if high_mod is not None:
+                high_mod.levels = high_level
+            if cage is not None:
+                discard(cage)
+        mod.levels = mod.sculpt_levels = mod.render_levels = mod.total_levels
+        context.view_layer.update()   # (the view layer lets go of the copy)
+        if current_kind(context) != 'SCULPT':
+            m3d_pair.lower_levels(context)   # (a level of millions of faces is not drawn outside Sculpt)
+        if sculpting is not None:
+            m3d_pair.sculpt_soon(sculpting.name)
+        self.report({'INFO'}, "%s: the detail of %s on %d Multires levels (%s faces) in %.1f s. Bake it: Bake Multires" % (
+            low.name, high.name, mod.total_levels, format_count(m3d_pair.level_faces(low, mod.total_levels)),
+            time.perf_counter() - t0))
+        return {'FINISHED'}
+
+
 class M3D_OT_retopo_quads(Operator):
     """Rebuild this mesh as even quads, in place: the target face count, ratio or edge length below. UVs and Face Sets
     are lost; a mesh of more than 300,000 faces is reduced first. Auto Low Poly makes a paired copy instead"""
@@ -512,7 +629,8 @@ class M3D_OT_retopo_quads(Operator):
     @classmethod
     def poll(cls, context):
         ob = context.view_layer.objects.active
-        return is_mesh(ob) and not any(m.type == 'MULTIRES' for m in ob.modifiers) and not ob.use_dynamic_topology_sculpting
+        return (is_mesh(ob) and not any(m.type == 'MULTIRES' for m in ob.modifiers) and not ob.use_dynamic_topology_sculpting
+                and ob.data.shape_keys is None)   # (it would drop the detail layers)
 
     @staticmethod
     def estimate(context, ob):
@@ -641,6 +759,7 @@ classes = (
     M3D_OT_hp_new_low,
     M3D_OT_hp_auto_low,
     M3D_OT_hp_conform,
+    M3D_OT_hp_project,
     M3D_OT_retopo_quads,
     M3D_OT_quad_add,
 )

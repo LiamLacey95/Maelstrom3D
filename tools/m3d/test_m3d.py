@@ -7540,9 +7540,11 @@ hp_ops = [(r._args[0], r.values().get("role"), r.values().get("idname")) for r i
 check(hp_ops == [("m3d.tool", None, "m3d.hp_create"), ("m3d.hp_edit", None, None), ("m3d.hp_park", None, None),
                  ("m3d.hp_make_live", None, None), ("m3d.hp_make_not_live", None, None), ("m3d.hp_new_low", None, None),
                  ("m3d.hp_new_low", None, None), ("m3d.hp_conform", None, None), ("m3d.tool", None, "m3d.hp_auto_low"),
+                 ("m3d.tool", None, "m3d.hp_project"),
                  ("m3d.hp_mark", 'HIGH', None), ("m3d.hp_mark", 'LOW', None), ("m3d.hp_mark", 'NONE', None), ("m3d.hp_pair", None, None),
                  ("m3d.hp_auto_pair", None, None)],
-      "the submenu: Create, Edit, Park, Make Live, Make Not Live, New Low Poly (and Symmetric), Conform to Surface, Auto Low Poly, Mark as High / Low, "
+      "the submenu: Create, Edit, Park, Make Live, Make Not Live, New Low Poly (and Symmetric), Conform to Surface, Auto Low Poly, "
+      "Project Detail, Mark as High / Low, "
       "Clear Role, Pair Selected, Auto-Pair by Name: %s" % hp_ops)
 check(any(r._kind == "operator_menu_enum" and r._args[0] == "m3d.hp_rename" for r in hp_log), "...and Rename to Suffixes")
 hp_labels = [r._kw.get("text") or "" for r in hp_log if r._kind == "operator"] + [
@@ -9365,14 +9367,25 @@ check(mr.modifiers[0].levels == 3, "(the viewport level of the modifier is back)
 mr.m3d_bake.multires_level = 0
 bpy.ops.m3d.tex_bake_multires()
 
-# Errors put everything back: another modifier after Multires is not allowed by the baker
+# A modifier after Multires (the baker wants Multires last, as Project Detail leaves a game mesh's own modifiers after it) is off for
+# the bake only
 mr.modifiers.new("Subsurf", 'SUBSURF')
 mr_before = mr_snapshot(mr)
-mr_res = bg_try(bpy.ops.m3d.tex_bake_multires)
-check(isinstance(mr_res, RuntimeError) or mr_res == {'CANCELLED'}, "a Multires that is not the last modifier is refused: %s" % (mr_res,))
-check(isinstance(mr_res, RuntimeError) and "multi-resolution" in str(mr_res), "...with the message of Blender: %s" % str(mr_res).strip()[:90])
-check(mr_snapshot(mr) == mr_before and not [m for m in bpy.data.materials if m.name.startswith("m3dBake")], "...and nothing is left changed, no temporary material either")
+check(bpy.ops.m3d.tex_bake_multires() == {'FINISHED'} and mr.modifiers["Subsurf"].show_viewport and mr_snapshot(mr) == mr_before,
+      "a modifier after Multires is off for the bake only")
 mr.modifiers.remove(mr.modifiers["Subsurf"])
+# Errors put everything back: the baker refuses a mesh without UVs
+mr_nouv = mr_cube("MrNoUV")
+mr_nouv.data.uv_layers.remove(mr_nouv.data.uv_layers[0])
+mr_nouv.modifiers.new("Subsurf", 'SUBSURF')
+mr_before = mr_snapshot(mr_nouv)
+mr_res = bg_try(bpy.ops.m3d.tex_bake_multires)
+check(isinstance(mr_res, RuntimeError) or mr_res == {'CANCELLED'}, "a mesh without UVs is refused: %s" % (mr_res,))
+check(isinstance(mr_res, RuntimeError) and "unwrapped" in str(mr_res), "...with the message of Blender: %s" % str(mr_res).strip()[:90])
+check(mr_snapshot(mr_nouv) == mr_before and mr_nouv.modifiers["Subsurf"].show_viewport
+      and not [m for m in bpy.data.materials if m.name.startswith("m3dBake")], "...and nothing is left changed, no temporary material either")
+bpy.data.objects.remove(mr_nouv)
+bpy.context.view_layer.objects.active = mr
 mr.m3d_bake.use_multires_normal = mr.m3d_bake.use_multires_displacement = False
 check(bpy.ops.m3d.tex_bake_multires() == {'CANCELLED'}, "nothing ticked: cancelled")
 mr.m3d_bake.use_multires_normal = True
@@ -9387,7 +9400,7 @@ check(not T.multires_ready(mr), "...nor on a high poly")
 mr.m3d_pair.role = 'LOW'
 check(T.multires_ready(mr), "a low poly of a group without a high poly is")
 mr_hp.m3d_pair.role, mr_hp.m3d_pair.group = 'HIGH', "Mr"
-check(not T.multires_ready(mr), "...not once its group has one")
+check(T.multires_ready(mr), "...and once its group has one (Project Detail put the detail on its levels)")
 mr_hp.m3d_pair.role, mr_hp.m3d_pair.group = 'NONE', ""
 bpy.data.objects.remove(mr_hp)
 check(not T.multires_ready(bg_plate("PlainNoMr")), "a mesh without a Multires modifier is not")
@@ -16190,6 +16203,276 @@ bpy.ops.wm.save_as_mainfile(filepath=p8_path)
 bpy.ops.wm.open_mainfile(filepath=p8_path)
 check(len(bpy.data.workspaces) == p8_count, "saved with them, the file is not changed again")
 HP.show_note("", seconds=0)
+
+# --- P11a: Project Detail onto Low Poly, the brush tray's own brushes, detail layers and Store / Restore Morph.
+import numpy as np
+from mathutils import Vector
+from mathutils.bvhtree import BVHTree
+if bpy.context.mode != 'OBJECT':
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+
+def p11_co(ob):
+    """The points of the mesh as it shows (shape keys and modifiers), object space."""
+    ev = ob.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    me = ev.to_mesh()
+    co = np.empty(len(me.vertices) * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    ev.to_mesh_clear()
+    return co.reshape(-1, 3)
+
+
+def p11_close(a, b, tol=1e-5):
+    return a.shape == b.shape and float(np.abs(a - b).max()) < tol
+
+
+class P11Ctx:
+    """The real context with a few things set (a right-clicked button, ...)."""
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+    def __getattr__(self, name):
+        return getattr(bpy.context, name)
+
+
+def p11_ops(log):
+    return [(r._args[0], r.values().get("idname") or r.values().get("action")) for r in log if r._kind == "operator"]
+
+
+# A high poly (a sphere with a bump on top) and its low poly (a cube with a Triangulate after it); the high poly parked.
+bpy.ops.mesh.primitive_uv_sphere_add(segments=48, ring_count=24, radius=1.0)
+p11_high = bpy.context.active_object
+p11_high.name = p11_high.data.name = "P11Ball_high"
+for v in p11_high.data.vertices:
+    if v.co.z > 0.8:
+        v.co *= 1.15
+bpy.ops.mesh.primitive_cube_add(size=1.6)
+p11_low = bpy.context.active_object
+p11_low.name = "P11Ball_low"
+p11_low.modifiers.new("Triangulate", 'TRIANGULATE')
+m3d_pair.set_role(p11_high, 'HIGH', "P11Ball")
+m3d_pair.set_role(p11_low, 'LOW', "P11Ball")
+m3d_pair.park(p11_high)
+check(m3d_retopo.project_pair(bpy.context) == (p11_low, p11_high), "Project Detail: the pair of the active low poly")
+p11_tree = BVHTree.FromPolygons([p11_high.matrix_world @ v.co for v in p11_high.data.vertices], [p.vertices[:] for p in p11_high.data.polygons])
+
+
+def p11_far(ob):
+    """How far the shown points of `ob` are from the high poly's surface, at most."""
+    return max(p11_tree.find_nearest(ob.matrix_world @ Vector(c))[3] for c in p11_co(ob))
+
+
+check(p11_far(p11_low) > 0.2, "the cube is far from the ball before")
+# The guard: a level over the limit is refused, nothing changes.
+p11_max = m3d_pair.MAX_FACES
+m3d_pair.MAX_FACES = 100
+try:
+    bpy.ops.m3d.hp_project('EXEC_DEFAULT', levels=3)
+    p11_res = None
+except RuntimeError as err:
+    p11_res = str(err)
+m3d_pair.MAX_FACES = p11_max
+check(p11_res and "too many" in p11_res and S.multires_of(p11_low) is None, "Project Detail over the face limit is refused: %s" % p11_res)
+p11_meshes = len(bpy.data.meshes)
+check(bpy.ops.m3d.hp_project('EXEC_DEFAULT', levels=3) == {'FINISHED'}, "Project Detail runs")
+p11_mod = S.multires_of(p11_low)
+check(p11_mod is not None and p11_mod.total_levels == 3 and p11_low.modifiers[0] == p11_mod and "Triangulate" in p11_low.modifiers
+      and p11_low.modifiers["Triangulate"].show_viewport and p11_mod.levels == p11_mod.sculpt_levels == p11_mod.render_levels == 3,
+      "the low poly has 3 Multires levels, first in its stack, the rest kept")
+check(len(p11_low.data.polygons) == 6 and p11_high.hide_get() and len(bpy.data.meshes) == p11_meshes
+      and not [o for o in bpy.data.objects if o.name.endswith("_projected")], "the low poly itself is unchanged, no copy left, the high poly parked")
+check(p11_far(p11_low) < 1e-3, "the top level lies on the high poly: %s" % p11_far(p11_low))
+check(T.multires_ready(p11_low), "Bake Multires is offered on the projected low poly")
+with T.plain_lows([p11_low, p11_high]):
+    check(not p11_mod.show_viewport and not p11_mod.show_render, "a bake / export reads the low poly without its levels")
+check(p11_mod.show_viewport and p11_mod.show_render, "...and they are back after")
+# Reachable: the High / Low Poly menu, the Retopology panel (from the high poly too), the Remesh menu.
+p11_log = []
+m3d_pair.M3D_MT_hplp.draw(type("Inst", (), {"layout": Rec(p11_log)})(), bpy.context)
+check(("m3d.tool", "m3d.hp_project") in p11_ops(p11_log), "Project Detail in the High / Low Poly menu")
+m3d_pair.restore(p11_high)
+bpy.context.view_layer.objects.active = p11_high
+check(m3d_retopo.project_pair(bpy.context) == (p11_low, p11_high), "...the same pair from the high poly")
+p11_log = []
+S.draw_quadriflow(RecP(p11_log), bpy.context)
+check(("m3d.tool", "m3d.hp_project") in p11_ops(p11_log), "Project Detail in the Retopology panel: %s" % p11_ops(p11_log))
+check(any(e.get("idname") == "m3d.hp_project" for e in m3d_ui.MENUS["M3D_MT_remesh"][1]), "...and in the Remesh menu")
+# From the high poly, as in Sculpt: the low poly put away (hidden) stays so, and gets the detail all the same.
+p11_low.modifiers.remove(p11_mod)
+m3d_pair.park(p11_low)
+check(bpy.ops.m3d.hp_project('EXEC_DEFAULT', levels=2) == {'FINISHED'} and p11_low.hide_get()
+      and S.multires_of(p11_low).total_levels == 2, "Project Detail from the high poly onto a hidden low poly")
+m3d_pair.restore(p11_low)
+check(p11_far(p11_low) < 1e-3, "...its top level lies on the high poly: %s" % p11_far(p11_low))
+for p11_ob in (p11_low, p11_high):
+    bpy.data.objects.remove(p11_ob)
+
+# The brush tray: Add to Tray / Remove from Tray (the brush menu, a tile's right-click), kept in m3d_user.json (the temp config).
+m3d_user.reset_cache()
+check(os.path.normcase(m3d_user._path(create=True)).startswith(os.path.normcase(TEST_CONFIG)), "the tray is written to the temp config")
+bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=3)
+p11_ob = bpy.context.active_object
+bpy.ops.object.mode_set(mode='SCULPT')
+p11_name = sorted(asset_names - {n for _l, n in S.BRUSHES})[0]
+bpy.ops.brush.asset_activate(**S.brush_props(p11_name))
+p11_ref = S.brush_ref(bpy.context)
+check(p11_ref == {"type": 'ESSENTIALS', "library": "", "id": S.BRUSH_ASSET + p11_name}, "the active brush as a tray entry: %s" % p11_ref)
+check(S.in_tray(p11_ref) is None and S.M3D_OT_tray_add.poll(bpy.context), "a brush that is not in the tray can be added")
+p11_log = []
+S.brush_menu_tray(type("Inst", (), {"layout": Rec(p11_log)})(), bpy.context)
+check([op for op, _a in p11_ops(p11_log)] == ["m3d.tray_add"], "the brush menu has Add to Tray")
+check(bpy.ops.m3d.tray_add() == {'FINISHED'}, "Add to Tray")
+m3d_user.reset_cache()   # (read back from the file: it survives a restart)
+check(m3d_user.tray_brushes() == [p11_ref] and S.in_tray(p11_ref) == 'USER', "Add to Tray is kept in m3d_user.json")
+p11_log = []
+S.PROPERTIES_PT_m3d_sc_grid.draw(type("Inst", (), {"layout": Rec(p11_log)})(), bpy.context)
+p11_tiles = [r for r in p11_log if r._kind == "operator" and r._args[0] == "m3d.brush_pick"]
+check(len(p11_tiles) == len(S.BRUSHES) + 1 and p11_tiles[-1].values()["identifier"] == p11_ref["id"]
+      and p11_tiles[-1].values()["library_type"] == 'ESSENTIALS' and p11_tiles[-1]._kw.get("depress"),
+      "the tray: the stock tiles, then the added brush (pressed: it is active)")
+p11_log = []
+S.brush_menu_tray(type("Inst", (), {"layout": Rec(p11_log)})(), bpy.context)
+check([op for op, _a in p11_ops(p11_log)] == ["m3d.tray_remove"], "...then the brush menu has Remove from Tray")
+bpy.ops.brush.asset_activate(**S.brush_props("Draw"))
+check(not S.M3D_OT_tray_add.poll(bpy.context) and S.in_tray(S.brush_ref(bpy.context)) == 'STOCK', "a stock brush is always in the tray")
+p11_log = []
+S.brush_menu_tray(type("Inst", (), {"layout": Rec(p11_log)})(), bpy.context)
+check(p11_log == [], "...so the brush menu offers neither")
+check(bpy.ops.m3d.brush_pick(identifier=p11_ref["id"], library_type='ESSENTIALS', library="") == {'FINISHED'}
+      and S.brush_ref(bpy.context) == p11_ref, "a tile of the tray picks its brush")
+check(bpy.ops.m3d.brush_pick(identifier=S.BRUSH_ASSET + "No Such Brush", library_type='ESSENTIALS', library="") == {'CANCELLED'},
+      "a tray brush that is gone is a warning, not an error")
+p11_tile = NS(bl_rna=NS(identifier="M3D_OT_brush_pick"), identifier=p11_ref["id"], library_type='ESSENTIALS', library="")
+p11_log = []
+S.tile_menu_tray(type("Inst", (), {"layout": Rec(p11_log)})(), P11Ctx(button_operator=p11_tile))
+check([op for op, _a in p11_ops(p11_log)] == ["m3d.tray_remove"], "a tile's right-click: Remove from Tray")
+bpy.ops.m3d.tray_remove(identifier=p11_ref["id"], library_type='ESSENTIALS', library="")
+m3d_user.reset_cache()
+check(m3d_user.tray_brushes() == [] and S.in_tray(p11_ref) is None, "Remove from Tray is kept too")
+p11_log = []
+S.tile_menu_tray(type("Inst", (), {"layout": Rec(p11_log)})(), P11Ctx(button_operator=p11_tile))
+check([op for op, _a in p11_ops(p11_log)] == ["m3d.tray_add"], "...and the active brush, out of the tray, can be added from there")
+m3d_user.data()["brush_tray"] = [p11_ref, {"type": 'NOPE', "id": 1}, "junk"]
+check(m3d_user.tray_brushes() == [p11_ref], "damaged tray entries are left out")
+m3d_user.tray_remove(p11_ref)
+bpy.ops.brush.asset_activate(**S.brush_props("Draw"))
+
+# Detail layers: shape keys sculpted one over the other.
+p11_base = p11_co(p11_ob)
+check(S.M3D_OT_sculpt_layer.poll(bpy.context) and p11_ob.data.shape_keys is None, "layers on a mesh without Multires")
+p11_log = []
+S.draw_layers(RecP(p11_log), bpy.context)
+check(p11_ops(p11_log)[0] == ("m3d.sculpt_layer", 'ADD'), "no layers yet: Add Layer")
+check(bpy.ops.m3d.sculpt_layer(action='ADD') == {'FINISHED'} and bpy.context.mode == 'SCULPT', "Add Layer (Sculpt Mode stays)")
+bpy.ops.object.mode_set(mode='OBJECT')
+p11_keys = p11_ob.data.shape_keys
+p11_l1 = p11_keys.key_blocks[-1]
+check([k.name for k in p11_keys.key_blocks] == ["Base", "Layer 1"] and p11_ob.active_shape_key == p11_l1 and p11_l1.value == 1.0
+      and p11_close(p11_co(p11_ob), p11_base), "a new layer is active, at full strength, and adds nothing yet")
+p11_d1 = np.zeros_like(p11_base)
+p11_d1[p11_base[:, 2] > 0.5, 2] = 0.3
+p11_l1.data.foreach_set("co", (p11_base + p11_d1).ravel())   # (a stroke into Layer 1)
+p11_ob.data.update()
+check(p11_close(p11_co(p11_ob), p11_base + p11_d1), "the layer's detail shows")
+p11_l1.value = 0.0
+check(p11_close(p11_co(p11_ob), p11_base), "strength 0: the mesh as it was")
+p11_l1.value, p11_l1.mute = 1.0, True
+check(p11_close(p11_co(p11_ob), p11_base), "hidden: the mesh as it was")
+p11_l1.mute = False
+bpy.ops.m3d.sculpt_layer(action='ADD')
+p11_l2 = p11_keys.key_blocks[-1]
+check(p11_l2.name == "Layer 2" and p11_l2.relative_key == p11_l1 and p11_close(S.key_co(p11_l2), p11_base + p11_d1),
+      "Layer 2 starts at the shape below it: a stroke on it lands where the mesh shows")
+p11_d2 = np.zeros_like(p11_base)
+p11_d2[p11_base[:, 0] > 0.5, 0] = 0.2
+S.move_key(p11_ob, p11_l2, S.key_co(p11_l2) + p11_d2)
+check(p11_close(p11_co(p11_ob), p11_base + p11_d1 + p11_d2), "both layers show")
+p11_d1b = np.zeros_like(p11_base)
+p11_d1b[:, 1] = 0.05
+S.move_key(p11_ob, p11_l1, S.key_co(p11_l1) + p11_d1b)   # (a stroke on the lower layer)
+p11_d1 = p11_d1 + p11_d1b
+check(p11_close(S.key_co(p11_l2) - S.key_co(p11_l1), p11_d2) and p11_close(p11_co(p11_ob), p11_base + p11_d1 + p11_d2),
+      "a stroke on a lower layer: the layer above keeps what it adds")
+p11_l2.value = 0.5
+p11_ob.active_shape_key_index = 2
+check(bpy.ops.m3d.sculpt_layer(action='MERGE') == {'FINISHED'}, "Merge Down")
+check([k.name for k in p11_keys.key_blocks] == ["Base", "Layer 1"] and p11_ob.active_shape_key == p11_l1
+      and p11_close(S.key_co(p11_l1) - S.key_co(p11_keys.reference_key), p11_d1 + 0.5 * p11_d2)
+      and p11_close(p11_co(p11_ob), p11_base + p11_d1 + 0.5 * p11_d2), "Merge Down: the layer at its strength is in the one below")
+bpy.ops.m3d.sculpt_layer(action='ADD')
+p11_l2 = p11_keys.key_blocks[-1]
+p11_d3 = np.zeros_like(p11_base)
+p11_d3[p11_base[:, 2] < -0.5, 2] = -0.25
+S.move_key(p11_ob, p11_l2, S.key_co(p11_l2) + p11_d3)
+p11_ob.active_shape_key_index = 1
+check(bpy.ops.m3d.sculpt_layer(action='DELETE') == {'FINISHED'} and [k.name for k in p11_keys.key_blocks] == ["Base", "Layer 2"]
+      and p11_keys.key_blocks[1].relative_key == p11_keys.reference_key and p11_close(p11_co(p11_ob), p11_base + p11_d3),
+      "Delete Layer under another: gone, the one above keeps what it adds")
+p11_ob.active_shape_key_index = 0
+try:
+    bpy.ops.m3d.sculpt_layer(action='DELETE')
+except RuntimeError:
+    pass
+check(len(p11_keys.key_blocks) == 2, "the base can't be deleted")
+# With layers, Voxel Remesh, Dynamic Detail and Multires say so (one line and Apply Layers), and refuse.
+for p11_draw in (S.draw_voxel, S.draw_dyntopo, S.draw_multires):
+    p11_log = []
+    p11_draw(Rec(p11_log), bpy.context)
+    check(p11_ops(p11_log) == [("m3d.sculpt_layer", 'APPLY')] and not [r for r in p11_log if r._kind == "prop"],
+          "%s with layers: one line and Apply Layers: %s" % (p11_draw.__name__, p11_ops(p11_log)))
+for p11_run in (lambda: bpy.ops.m3d.voxel_remesh(), lambda: bpy.ops.m3d.multires_subdivide(mode='CATMULL_CLARK'),
+                lambda: bpy.ops.m3d.sculpt_level(level=2)):
+    try:
+        p11_run()
+    except RuntimeError:
+        pass
+check(p11_ob.data.shape_keys is not None and S.multires_of(p11_ob) is None and len(p11_ob.data.vertices) == len(p11_base),
+      "...and Voxel Remesh, Subdivide, Ctrl+2 refuse")
+check(not m3d_retopo.M3D_OT_retopo_quads.poll(bpy.context), "Rebuild as Quads is not offered with layers")
+p11_log = []
+S.draw_layers(RecP(p11_log), bpy.context)
+check(any(r._kind == "template_list" and r._args[0] == "M3D_UL_sculpt_layers" for r in p11_log)
+      and ("m3d.sculpt_layer", 'APPLY') in p11_ops(p11_log) and ("m3d.sculpt_morph", 'STORE') in p11_ops(p11_log)
+      and ("m3d.sculpt_morph", 'MASKED') not in p11_ops(p11_log), "the Layers panel: the list, Apply Layers, Store Morph (no Restore yet)")
+p11_keys.key_blocks[1].value = 0.25
+bpy.ops.m3d.sculpt_layer(action='APPLY')
+check(p11_ob.data.shape_keys is None and p11_close(p11_co(p11_ob), p11_base + 0.25 * p11_d3), "Apply Layers: the mesh as it showed, no layers")
+bpy.ops.m3d.sculpt_layer(action='ADD')
+bpy.ops.m3d.sculpt_layer(action='DELETE')
+check(p11_ob.data.shape_keys is None, "deleting the last layer leaves no shape keys")
+# Store / Restore Morph: the positions in an attribute, back where masked, unmasked or everywhere.
+p11_p0 = p11_co(p11_ob)
+check(bpy.ops.m3d.sculpt_morph(action='STORE') == {'FINISHED'} and S.MORPH in p11_ob.data.attributes
+      and S.MORPH.startswith("."), "Store Morph: a hidden attribute")
+p11_ob.data.vertices.foreach_set("co", (p11_p0 + 0.1).ravel())
+p11_mask = (p11_p0[:, 0] > 0).astype(np.float32)
+(p11_ob.data.attributes.get(".sculpt_mask") or p11_ob.data.attributes.new(".sculpt_mask", 'FLOAT', 'POINT')).data.foreach_set("value", p11_mask)
+p11_ob.data.update()
+bpy.ops.m3d.sculpt_morph(action='MASKED')
+p11_now = p11_co(p11_ob)
+check(p11_close(p11_now[p11_mask == 1], p11_p0[p11_mask == 1]) and p11_close(p11_now[p11_mask == 0], p11_p0[p11_mask == 0] + 0.1),
+      "Restore Morph Masked: only the masked points are back")
+bpy.ops.m3d.sculpt_morph(action='UNMASKED')
+check(p11_close(p11_co(p11_ob), p11_p0), "...Unmasked: the rest too")
+p11_ob.data.vertices.foreach_set("co", (p11_p0 - 0.2).ravel())
+p11_ob.data.update()
+bpy.ops.m3d.sculpt_morph(action='ALL')
+check(p11_close(p11_co(p11_ob), p11_p0), "...All: everything")
+bpy.ops.m3d.sculpt_layer(action='ADD')
+p11_l = p11_ob.data.shape_keys.key_blocks[-1]
+S.move_key(p11_ob, p11_l, S.key_co(p11_l) + 0.3)
+bpy.ops.m3d.sculpt_morph(action='ALL')
+check(p11_close(p11_co(p11_ob), p11_p0) and p11_close(S.key_co(p11_l), S.key_co(p11_ob.data.shape_keys.reference_key)),
+      "Restore Morph on a layer: the layer is set back (it adds nothing)")
+p11_log = []
+S.draw_layers(RecP(p11_log), bpy.context)
+check({("m3d.sculpt_morph", a) for a in ('MASKED', 'UNMASKED', 'ALL')} <= set(p11_ops(p11_log)), "Restore Masked / Unmasked / All once stored")
+p11_ob.modifiers.new("Multires", 'MULTIRES')
+p11_log = []
+S.draw_layers(RecP(p11_log), bpy.context)
+check(p11_ops(p11_log) == [("m3d.multires_apply", None)] and not S.M3D_OT_sculpt_layer.poll(bpy.context),
+      "not on Multires levels: one line and Apply Multires")
+bpy.data.objects.remove(p11_ob)
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

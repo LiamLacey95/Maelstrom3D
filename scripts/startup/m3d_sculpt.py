@@ -4,7 +4,8 @@
 
 """
 Sculpt workspace (F2) for Maelstrom3D: the brush tray (left), the dock pages (Geometry, Objects, Mask, Face Sets,
-Deform, Paint, Display), the Sculpt Status Line, shelf items and the operators behind them.
+Deform, Paint, Display), the Sculpt Status Line, shelf items and the operators behind them. The tray's own brushes (Add to
+Tray) are kept in m3d_user.json; detail layers are shape keys (Geometry tab, Layers).
 
 The layout is built by tools/m3d/build_startup.py (phase1_sculpt), the tabs are DOCK_TABS['SCULPT'] in
 m3d_workspace.py, the menus and shelves in m3d_ui.py. Controls that stock Blender already draws (brush settings,
@@ -22,6 +23,7 @@ from bl_ui.properties_paint_common import (
     UnifiedPaintPanel, brush_settings, brush_settings_advanced, brush_texture_settings)
 
 import m3d_pair
+import m3d_user
 from m3d_mode import _button
 from m3d_workspace import HEADERS, PAGE_SETS, _PagePanel, current_kind, draw_tab_row, side_of
 
@@ -87,17 +89,19 @@ def _collection():
     return _previews
 
 
-def brush_icons(asset, names):
+def brush_icons(asset, names, root=None):
     """{name: icon id} of the thumbnails of the brushes `names` in the library file named by `asset`
-    (BRUSH_ASSET). A file is read once for the brushes not loaded yet: the thumbnails are copied into a
-    preview collection and the brushes unlinked again, so the .blend file gains no data. A brush without a
-    thumbnail is left out."""
-    todo = [n for n in names if asset + n not in (_previews or ()) and asset + n not in _missing]
+    (BRUSH_ASSET), relative to the folder `root` of its asset library (default: the essentials'). A file is read
+    once for the brushes not loaded yet: the thumbnails are copied into a preview collection and the brushes
+    unlinked again, so the .blend file gains no data. A brush without a thumbnail is left out."""
+    import os
+    tag = asset if root is None else root + "|" + asset   # (the key of a thumbnail: the same path in two libraries differs)
+    todo = [n for n in names if tag + n not in (_previews or ()) and tag + n not in _missing]
     if todo:
         import array
-        import os
         _collection()
-        path = os.path.join(bpy.utils.system_resource('DATAFILES'), "assets", asset.partition(".blend/")[0] + ".blend")
+        folder = root or os.path.join(bpy.utils.system_resource('DATAFILES'), "assets")
+        path = os.path.join(folder, asset.partition(".blend/")[0] + ".blend")
         data = bpy.data
         had_brushes, had_libs = {b.as_pointer() for b in data.brushes}, {lib.as_pointer() for lib in data.libraries}
         loaded = []
@@ -112,14 +116,14 @@ def brush_icons(asset, names):
             if w and h:
                 pixels = array.array('f', bytes(16 * w * h))
                 brush.preview.image_pixels_float.foreach_get(pixels)
-                thumb = _previews.new(asset + brush.name)
+                thumb = _previews.new(tag + brush.name)
                 thumb.image_size = (w, h)
                 thumb.image_pixels_float.foreach_set(pixels)
         data.batch_remove([b for b in loaded if b.as_pointer() not in had_brushes])
         for lib in [lib for lib in data.libraries if lib.as_pointer() not in had_libs]:
             data.libraries.remove(lib)
-        _missing.update(asset + n for n in todo if asset + n not in _previews)
-    return {n: _previews[asset + n].icon_id for n in names if _previews and asset + n in _previews}
+        _missing.update(tag + n for n in todo if tag + n not in _previews)
+    return {n: _previews[tag + n].icon_id for n in names if _previews and tag + n in _previews}
 
 
 class M3D_OT_brush_pick(Operator):
@@ -129,6 +133,8 @@ class M3D_OT_brush_pick(Operator):
     bl_options = {'INTERNAL'}
 
     identifier: bpy.props.StringProperty()   # relative asset identifier, "brushes/<file>.blend/Brush/<name>"
+    library_type: bpy.props.StringProperty(default='ESSENTIALS')   # (a brush of the tray: 'LOCAL' or 'CUSTOM' too)
+    library: bpy.props.StringProperty()   # (the name of a custom asset library)
 
     @classmethod
     def description(cls, context, props):
@@ -140,7 +146,115 @@ class M3D_OT_brush_pick(Operator):
         return "%s (%s)" % (name, key) if key else name
 
     def execute(self, _context):
-        return bpy.ops.brush.asset_activate(asset_library_type='ESSENTIALS', relative_asset_identifier=self.identifier)
+        try:
+            return bpy.ops.brush.asset_activate(asset_library_type=self.library_type, asset_library_identifier=self.library,
+                                                relative_asset_identifier=self.identifier)
+        except RuntimeError:   # (a brush of the tray that was deleted, or whose library is gone)
+            self.report({'WARNING'}, "Can't find the brush %s: right-click it, Remove from Tray" % self.identifier.rpartition("/")[2])
+            return {'CANCELLED'}
+
+
+# --- The tray's own brushes (Add to Tray in the brush menu): stored in m3d_user.json, tiles after the stock ones
+
+def brush_ref(context):
+    """The active sculpt brush as a tray entry ({"type", "library", "id"}), None without one."""
+    sculpt = context.tool_settings.sculpt
+    ref = sculpt.brush_asset_reference if sculpt else None
+    if ref is None or not ref.relative_asset_identifier:
+        return None
+    return {"type": ref.asset_library_type, "library": ref.asset_library_identifier, "id": ref.relative_asset_identifier}
+
+
+def in_tray(ref):
+    """'STOCK' for a brush of the stock tiles, 'USER' for one added to the tray, else None."""
+    if ref["type"] == 'ESSENTIALS' and ref["id"] in {BRUSH_ASSET + name for _label, name in BRUSHES}:
+        return 'STOCK'
+    return 'USER' if ref in m3d_user.tray_brushes() else None
+
+
+def tray_icon(context, ref):
+    """The thumbnail of a brush of the tray (0: none, its tile shows the name)."""
+    import os
+    asset, _sep, name = ref["id"].rpartition("/")
+    if ref["type"] == 'LOCAL':
+        brush = next((b for b in bpy.data.brushes if b.name == name and b.library is None), None)
+        return brush.preview.icon_id if brush is not None and brush.preview else 0
+    root = None
+    if ref["type"] == 'CUSTOM':
+        lib = context.preferences.filepaths.asset_libraries.get(ref["library"])
+        if lib is None or not os.path.isdir(lib.path):
+            return 0
+        root = lib.path
+    return brush_icons(asset + "/", [name], root).get(name, 0)
+
+
+def tray_ref(props):
+    """The tray entry of a tile's m3d.brush_pick properties."""
+    return {"type": props.library_type, "library": props.library, "id": props.identifier}
+
+
+class M3D_OT_tray_add(Operator):
+    """Add the active brush to the brush tray, after the brushes that are always there (for every file)"""
+    bl_idname = "m3d.tray_add"
+    bl_label = "Add to Tray"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        ref = brush_ref(context) if context.mode == 'SCULPT' else None
+        return ref is not None and in_tray(ref) is None
+
+    def execute(self, context):
+        if not m3d_user.tray_add(brush_ref(context)):
+            self.report({'WARNING'}, "Could not save m3d_user.json; the brush stays in the tray until you quit")
+        return {'FINISHED'}
+
+
+class M3D_OT_tray_remove(Operator):
+    """Take this brush out of the brush tray (the brush itself is kept)"""
+    bl_idname = "m3d.tray_remove"
+    bl_label = "Remove from Tray"
+    bl_options = {'INTERNAL'}
+
+    identifier: bpy.props.StringProperty(options={'SKIP_SAVE'}, description="The brush (empty: the active one)")
+    library_type: bpy.props.StringProperty(default='ESSENTIALS', options={'SKIP_SAVE'})
+    library: bpy.props.StringProperty(options={'SKIP_SAVE'})
+
+    def execute(self, context):
+        ref = tray_ref(self) if self.identifier else brush_ref(context)
+        if ref is None or in_tray(ref) != 'USER':
+            return {'CANCELLED'}
+        if not m3d_user.tray_remove(ref):
+            self.report({'WARNING'}, "Could not save m3d_user.json")
+        return {'FINISHED'}
+
+
+def brush_menu_tray(self, context):
+    """The brush menu (the arrow beside the brush's name), in Sculpt Mode: Add to Tray, or Remove from Tray."""
+    ref = brush_ref(context) if context.mode == 'SCULPT' else None
+    where = in_tray(ref) if ref is not None else 'STOCK'
+    if where != 'STOCK':
+        layout = self.layout
+        if where == 'USER':
+            layout.operator("m3d.tray_remove", icon='REMOVE')
+        else:
+            layout.operator("m3d.tray_add", icon='ADD')
+        layout.separator()
+
+
+def tile_menu_tray(self, context):
+    """The right-click menu of a brush tile of the tray: Remove from Tray (a brush added to it), Add to Tray (the active brush,
+    when it is not there yet)."""
+    op = getattr(context, "button_operator", None)
+    if op is None or op.bl_rna.identifier != "M3D_OT_brush_pick" or context.mode != 'SCULPT':
+        return
+    layout = self.layout
+    layout.separator()
+    if in_tray(tray_ref(op)) == 'USER':
+        o = layout.operator("m3d.tray_remove", icon='REMOVE')
+        o.identifier, o.library_type, o.library = op.identifier, op.library_type, op.library
+    if M3D_OT_tray_add.poll(context):
+        layout.operator("m3d.tray_add", text="Add %s to Tray" % brush_ref(context)["id"].rpartition("/")[2], icon='ADD')
 
 
 def tile_grid(layout, context, units_x=0, min_px=46, columns=0, most=8):
@@ -158,7 +272,7 @@ def tile_grid(layout, context, units_x=0, min_px=46, columns=0, most=8):
 
 def brush_tiles(layout, context, asset, brushes):
     """Grid of small brush tiles: each is the brush's thumbnail, the name is the tooltip and the active brush is
-    pressed. `brushes` are (label, name) pairs of the library file `asset`."""
+    pressed. `brushes` are (label, name) pairs of the library file `asset`. Returns the grid (for more tiles)."""
     icons = brush_icons(asset, [name for _label, name in brushes])
     flow = tile_grid(layout, context)
     active = active_brush_id(context)
@@ -166,6 +280,7 @@ def brush_tiles(layout, context, asset, brushes):
         icon = icons.get(name, 0)
         o = flow.operator("m3d.brush_pick", text="" if icon else label, icon_value=icon, depress=asset + name == active)
         o.identifier = asset + name
+    return flow
 
 
 # Stroke types (Brush.stroke_method): (identifier, label, what it does)
@@ -787,7 +902,8 @@ class M3D_OT_multires_subdivide(Operator):
         if ob.use_dynamic_topology_sculpting:
             self.report({'WARNING'}, "Turn off Dynamic Detail to subdivide")
             return {'CANCELLED'}
-        problem = m3d_pair.heavy_problem(next_level_faces(ob), "Subdivide")
+        problem = m3d_pair.heavy_problem(next_level_faces(ob), "Subdivide") or (
+            layers_problem(ob, "Multires") if multires_of(ob) is None else None)
         if problem:
             self.report({'ERROR'}, problem)
             return {'CANCELLED'}
@@ -824,7 +940,8 @@ class M3D_OT_sculpt_level(Operator):
 
     def execute(self, context):
         ob = mesh_of(context)
-        problem = m3d_pair.heavy_problem(self.faces(ob), "Level %d" % self.level)
+        problem = m3d_pair.heavy_problem(self.faces(ob), "Level %d" % self.level) or (
+            layers_problem(ob, "Multires") if multires_of(ob) is None and self.level else None)
         if problem:
             self.report({'ERROR'}, problem)
             return {'CANCELLED'}
@@ -879,6 +996,10 @@ class M3D_OT_voxel_remesh(Operator):
         problem = m3d_pair.heavy_problem(self.estimate(mesh), "Voxel Remesh")
         if problem:
             self.report({'ERROR'}, problem + " (raise the voxel size)")
+            return {'CANCELLED'}
+        problem = layers_problem(mesh_of(context), "Voxel Remesh")
+        if problem:
+            self.report({'ERROR'}, problem)
             return {'CANCELLED'}
         if self.faces:
             area = surface_area(mesh, grid=True)
@@ -1307,6 +1428,9 @@ class M3D_MT_sculpt_add_detail(bpy.types.Menu):
         layout = self.layout
         ob = mesh_of(context)
         if ob is None:
+            return
+        if ob.data.shape_keys is not None:
+            layers_line(layout, context)
             return
         layout.operator("m3d.voxel_remesh", text="Voxel Remesh (~%s faces)" % short_count(DETAIL_REMESH),
                         icon='MOD_REMESH').faces = DETAIL_REMESH
@@ -1775,7 +1899,13 @@ class PROPERTIES_PT_m3d_sc_grid(_Page, Panel):
             row.operator("wm.call_asset_shelf_popover", text=name, icon_value=brush.preview.icon_id if brush.preview else 0,
                          ).name = "VIEW3D_AST_brush_sculpt"
             row.menu("VIEW3D_MT_brush_context_menu", icon='DOWNARROW_HLT', text="")
-        brush_tiles(layout, context, BRUSH_ASSET, BRUSHES)
+        flow = brush_tiles(layout, context, BRUSH_ASSET, BRUSHES)
+        active = active_brush_id(context)
+        for ref in m3d_user.tray_brushes():   # (the user's own, after the stock tiles: Add to Tray in the brush menu)
+            icon = tray_icon(context, ref)
+            o = flow.operator("m3d.brush_pick", text="" if icon else ref["id"].rpartition("/")[2], icon_value=icon,
+                              depress=ref["id"] == active)
+            o.identifier, o.library_type, o.library = ref["id"], ref["type"], ref["library"]
 
 
 class PROPERTIES_PT_m3d_sc_tuning(_Page, Panel):
@@ -1914,9 +2044,10 @@ class _Geometry(_Page):
     need = 'MESH'
 
 
-def blocked(layout, context, ob, dyntopo=True):
+def blocked(layout, context, ob, dyntopo=True, layers=True):
     """A block that can't be used on this mesh draws one line instead: why, and the button that changes it. True when
-    it is blocked: by Multires levels, or (`dyntopo`) by Dynamic Detail being on."""
+    it is blocked: by Multires levels, (`dyntopo`) by Dynamic Detail being on, or (`layers`) by detail layers (it would
+    drop them)."""
     if multires_of(ob) is not None:
         row = layout.row(align=True)
         row.label(text="Not with Multires levels", icon='INFO')
@@ -1925,7 +2056,23 @@ def blocked(layout, context, ob, dyntopo=True):
     if dyntopo and ob.use_dynamic_topology_sculpting:
         dyntopo_off(layout, context)
         return True
+    if layers and ob.data.shape_keys is not None:
+        layers_line(layout, context)
+        return True
     return False
+
+
+def layers_line(layout, context):
+    row = layout.row(align=True)
+    row.label(text="Not with Layers", icon='INFO')
+    _button(row, context, "Apply Layers", "m3d.sculpt_layer", 'NONE', {"action": 'APPLY'})
+
+
+def layers_problem(ob, what):
+    """Why `what` can't run on a mesh with detail layers (it would drop them, or sculpt under them), else None."""
+    if ob.data.shape_keys is None:
+        return None
+    return "%s does not keep the layers of %s: Apply Layers first (Geometry tab, Layers)" % (what, ob.name)
 
 
 def dyntopo_off(layout, context):
@@ -1942,6 +2089,9 @@ def draw_multires(layout, context):
     mod = multires_of(ob)
     if ob.use_dynamic_topology_sculpting:
         dyntopo_off(layout, context)
+        return
+    if mod is None and ob.data.shape_keys is not None:
+        layers_line(layout, context)
         return
     row = layout.row(align=True)
     faces = short_count(next_level_faces(ob))
@@ -2011,7 +2161,10 @@ def draw_quadriflow(layout, context):
     ob = mesh_of(context)
     lows, highs = m3d_pair.pair_of(context, ob)
     if lows and highs:
-        reason(layout, "This mesh has a low poly: %s" % lows[0].name)
+        reason(layout, "This is the low poly of %s" % highs[0].name if ob in lows else "This mesh has a low poly: %s" % lows[0].name)
+        from m3d_mode import tool_button
+        tool_button(layout, context, "Project Detail onto Low Poly", "m3d.hp_project", 'MOD_MULTIRES', {})
+        reason(layout, "The low poly gets the detail of the sculpt as Multires levels (Bake Multires bakes them)")
     else:
         col = layout.column(align=True)
         m3d_pair.draw_make_low(col, context)
@@ -2065,6 +2218,285 @@ def draw_dyntopo(layout, context):
     col.prop(sculpt, "detail_type_method", text="Detailing")
     if method in {'CONSTANT', 'MANUAL'}:
         _button(col, context, "Flood Fill Detail", "sculpt.detail_flood_fill", 'NONE', {})
+
+
+# --- Detail layers: shape keys sculpted one over the other (Blender sculpts the active shape key). Each new layer is relative
+# to the one below it, so a stroke on the top layer lands where the mesh shows (with every layer at full strength), and a
+# stroke on a lower one moves the ones above along (Blender does that for the keys relative to it). Store Morph keeps the
+# positions in an attribute; Restore Morph brings them back, where masked, unmasked or everywhere.
+
+MORPH = ".m3d_morph"   # (a dot: an attribute of our own, not listed with the user's)
+
+
+def key_co(key):
+    import numpy as np
+    co = np.empty(len(key.data) * 3, np.float32)
+    key.data.foreach_get("co", co)
+    return co.reshape(-1, 3)
+
+
+def dependents(ob, key):
+    """The shape keys whose Relative To chain goes through `key`: a change of `key` moves them along, so that what they add
+    to it stays the same."""
+    ref, out = ob.data.shape_keys.reference_key, []
+    for k in ob.data.shape_keys.key_blocks:
+        rel, seen = k, {k.name}
+        while rel != ref:
+            rel = rel.relative_key
+            if rel == key:
+                out.append(k)
+                break
+            if rel.name in seen:   # (a loop of Relative To)
+                break
+            seen.add(rel.name)
+    return out
+
+
+def move_key(ob, key, co):
+    """Give the shape key `key` the positions `co` as a stroke on it would: the keys that depend on it move along, and the
+    base also moves the mesh's own points."""
+    offset = co - key_co(key)
+    key.data.foreach_set("co", co.ravel())
+    for k in dependents(ob, key):
+        k.data.foreach_set("co", (key_co(k) + offset).ravel())
+    if key == ob.data.shape_keys.reference_key:
+        ob.data.vertices.foreach_set("co", co.ravel())
+    ob.data.update()
+
+
+def drop_layer(ob, key, strength):
+    """Take the layer `key` out: what it adds goes `strength` times into the layer below it (0: deleted, 1: merged down),
+    and the layers above keep what they add. The last layer out takes the base with it (the mesh has no shape keys)."""
+    below = key.relative_key
+    delta = key_co(key) - key_co(below)
+    if strength:
+        move_key(ob, below, key_co(below) + strength * delta)   # (`key` and the layers above it move along)
+    for k in dependents(ob, key):
+        k.data.foreach_set("co", (key_co(k) - delta).ravel())
+    for k in ob.data.shape_keys.key_blocks:
+        if k.relative_key == key:
+            k.relative_key = below
+    ob.shape_key_remove(key)
+    if len(ob.data.shape_keys.key_blocks) == 1:
+        ob.shape_key_clear()   # (the base alone: the mesh's points are already its)
+    else:
+        ob.active_shape_key_index = list(ob.data.shape_keys.key_blocks).index(below)
+    ob.data.update()
+
+
+def apply_layers(ob):
+    """The mesh as it shows (every shown layer at its strength) becomes the mesh itself, without layers."""
+    co = key_co(ob.shape_key_add(name="Applied", from_mix=True))
+    ob.shape_key_clear()
+    ob.data.vertices.foreach_set("co", co.ravel())
+    ob.data.update()
+
+
+def add_layer(ob):
+    """A new layer on top, adding nothing yet, and active (the strokes go into it)."""
+    if ob.data.shape_keys is None:
+        ob.shape_key_add(name="Base", from_mix=False)
+    blocks = ob.data.shape_keys.key_blocks
+    top = blocks[-1]
+    layer = ob.shape_key_add(name="Layer %d" % len(blocks), from_mix=False)
+    layer.relative_key = top
+    layer.data.foreach_set("co", key_co(top).ravel())
+    layer.value = 1.0
+    ob.active_shape_key_index = len(blocks) - 1
+    ob.data.update()
+    return layer
+
+
+def sculpted_co(ob):
+    """The points strokes move: the active shape key's (Blender sculpts it), else the mesh's."""
+    keys = ob.data.shape_keys
+    if keys is not None:
+        return key_co(ob.active_shape_key or keys.reference_key)
+    import numpy as np
+    co = np.empty(len(ob.data.vertices) * 3, np.float32)
+    ob.data.vertices.foreach_get("co", co)
+    return co.reshape(-1, 3)
+
+
+def mask_of(mesh):
+    """The sculpt mask per point (0: none), None when the mesh has no mask."""
+    import numpy as np
+    attr = mesh.attributes.get(".sculpt_mask")
+    if attr is None or attr.domain != 'POINT':
+        return None
+    mask = np.empty(len(mesh.vertices), np.float32)
+    attr.data.foreach_get("value", mask)
+    return mask
+
+
+LAYER_ACTIONS = (
+    ('ADD', "Add Layer", "Add a layer on top: the strokes go into it, and it can be turned down, hidden, merged or deleted later"),
+    ('DELETE', "Delete Layer", "Delete the selected layer and what was sculpted into it"),
+    ('MERGE', "Merge Down", "Merge the selected layer, at its strength, into the layer below it (the first one: into the base)"),
+    ('APPLY', "Apply Layers", "Make the mesh as it shows, every shown layer at its strength, the mesh itself (no layers)"),
+)
+MORPH_ACTIONS = (
+    ('STORE', "Store Morph", "Remember the shape of the mesh now, to bring it back with Restore later"),
+    ('MASKED', "Masked", "Bring back the stored shape where the mesh is masked (as far as it is masked)"),
+    ('UNMASKED', "Unmasked", "Bring back the stored shape where the mesh is not masked"),
+    ('ALL', "All", "Bring back the stored shape everywhere"),
+)
+
+
+class _ObjectModeEdit:
+    """An edit of the mesh's points or shape keys: made in Object Mode (Sculpt Mode holds them while it is on), then the
+    mode comes back. Not on Multires levels or with Dynamic Detail on (the points are not the ones sculpted then)."""
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = mesh_of(context)
+        return ob is not None and multires_of(ob) is None and not ob.use_dynamic_topology_sculpting
+
+    def execute(self, context):
+        ob = mesh_of(context)
+        mode = ob.mode
+        if mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        try:
+            return self.edit(ob)
+        finally:
+            if mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode=mode)
+
+
+class M3D_OT_sculpt_layer(_ObjectModeEdit, Operator):
+    """Detail layers: add, delete, merge down, apply"""
+    bl_idname = "m3d.sculpt_layer"
+    bl_label = "Sculpt Layer"
+
+    action: bpy.props.EnumProperty(items=LAYER_ACTIONS)
+
+    @classmethod
+    def description(cls, _context, props):
+        return next(desc for ident, _label, desc in LAYER_ACTIONS if ident == props.action)
+
+    def edit(self, ob):
+        keys = ob.data.shape_keys
+        layer = ob.active_shape_key if keys is not None else None
+        if self.action == 'ADD':
+            add_layer(ob)
+        elif keys is None:
+            return {'CANCELLED'}
+        elif self.action == 'APPLY':
+            apply_layers(ob)
+        elif layer is None or layer == keys.reference_key:
+            self.report({'WARNING'}, "Select a layer (the base can't be %s)" % ("deleted" if self.action == 'DELETE' else "merged"))
+            return {'CANCELLED'}
+        elif self.action == 'MERGE' and layer.mute:
+            self.report({'WARNING'}, "Show %s first: a hidden layer adds nothing to merge" % layer.name)
+            return {'CANCELLED'}
+        else:
+            drop_layer(ob, layer, layer.value if self.action == 'MERGE' else 0.0)
+        return {'FINISHED'}
+
+
+class M3D_OT_sculpt_morph(_ObjectModeEdit, Operator):
+    """Store Morph and Restore Morph"""
+    bl_idname = "m3d.sculpt_morph"
+    bl_label = "Morph"
+
+    action: bpy.props.EnumProperty(items=MORPH_ACTIONS)
+
+    @classmethod
+    def description(cls, _context, props):
+        return next(desc for ident, _label, desc in MORPH_ACTIONS if ident == props.action)
+
+    def edit(self, ob):
+        import numpy as np
+        mesh = ob.data
+        co = sculpted_co(ob)
+        if self.action == 'STORE':
+            attr = mesh.attributes.get(MORPH)
+            if attr is not None and (attr.domain != 'POINT' or attr.data_type != 'FLOAT_VECTOR'):
+                mesh.attributes.remove(attr)
+                attr = None
+            attr = attr or mesh.attributes.new(MORPH, 'FLOAT_VECTOR', 'POINT')
+            attr.data.foreach_set("vector", co.ravel())
+            self.report({'INFO'}, "Stored the shape of %s" % ob.name)
+            return {'FINISHED'}
+        attr = mesh.attributes.get(MORPH)
+        if attr is None:
+            self.report({'WARNING'}, "Store Morph first")
+            return {'CANCELLED'}
+        stored = np.empty(len(mesh.vertices) * 3, np.float32)
+        attr.data.foreach_get("vector", stored)
+        mask = mask_of(mesh)
+        if self.action != 'ALL' and mask is None:
+            mask = np.zeros(len(mesh.vertices), np.float32)   # (no mask: nothing is masked)
+        weight = np.ones(len(co), np.float32) if self.action == 'ALL' else mask if self.action == 'MASKED' else 1.0 - mask
+        co = co + weight[:, None] * (stored.reshape(-1, 3) - co)
+        if mesh.shape_keys is not None:
+            move_key(ob, ob.active_shape_key or mesh.shape_keys.reference_key, co)
+        else:
+            mesh.vertices.foreach_set("co", co.ravel())
+            mesh.update()
+        return {'FINISHED'}
+
+
+class M3D_UL_sculpt_layers(bpy.types.UIList):
+    """Detail layers: the base, then each layer with its strength and whether it shows"""
+
+    def draw_item(self, _context, layout, data, item, _icon, _active_data, _active_prop, _index):
+        if item == data.reference_key:
+            layout.label(text="Base", icon='MESH_DATA')
+            return
+        row = layout.row(align=True)
+        row.prop(item, "name", text="", emboss=False, icon='SCULPTMODE_HLT')
+        sub = row.row(align=True)
+        sub.active = not item.mute
+        sub.prop(item, "value", text="Strength", slider=True)
+        row.prop(item, "mute", text="", icon='HIDE_OFF', emboss=False)   # (a set toggle draws the next icon: the closed eye)
+
+
+def draw_layers(layout, context):
+    """Detail Layers (the list, + / - / Merge Down, Apply Layers) and Store / Restore Morph, on a mesh without Multires
+    levels or Dynamic Detail."""
+    ob = mesh_of(context)
+    if blocked(layout, context, ob, layers=False):
+        return
+    keys = ob.data.shape_keys
+    if keys is None:
+        reason(layout, "Sculpt into a layer of its own: turn it down, hide it, merge or delete it later")
+        _button(layout, context, "Add Layer", "m3d.sculpt_layer", 'ADD', {"action": 'ADD'})
+    else:
+        row = layout.row()
+        row.template_list("M3D_UL_sculpt_layers", "", keys, "key_blocks", ob, "active_shape_key_index",
+                          rows=min(max(len(keys.key_blocks), 2), 6), show_handles=False)
+        col = row.column(align=True)
+        col.operator("m3d.sculpt_layer", text="", icon='ADD').action = 'ADD'
+        layer = ob.active_shape_key
+        if layer is not None and layer != keys.reference_key:
+            col.operator("m3d.sculpt_layer", text="", icon='REMOVE').action = 'DELETE'
+            if not layer.mute:
+                col.operator("m3d.sculpt_layer", text="", icon='TRIA_DOWN_BAR').action = 'MERGE'
+        _button(layout, context, "Apply Layers", "m3d.sculpt_layer", 'CHECKMARK', {"action": 'APPLY'})
+        reason(layout, "Strokes go into the selected layer. Voxel Remesh, Dynamic Detail and Multires drop or block "
+                       "layers: Apply Layers first")
+    header, body = layout.panel("m3d_morph", default_closed=False)
+    header.label(text="Morph")
+    if body:
+        _button(body, context, "Store Morph", "m3d.sculpt_morph", 'FILE_TICK', {"action": 'STORE'})
+        if MORPH in ob.data.attributes:
+            row = body.row(align=True)
+            row.label(text="Restore:")
+            for action, label, _desc in MORPH_ACTIONS[1:]:
+                _button(row, context, label, "m3d.sculpt_morph", 'NONE', {"action": action})
+        else:
+            reason(body, "Store the shape now, sculpt on, then bring the stored shape back where masked")
+
+
+class PROPERTIES_PT_m3d_sc_layers(_Geometry, Panel):
+    bl_label = "Layers"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        draw_layers(self.layout, context)
 
 
 class PROPERTIES_PT_m3d_sc_multires(_Geometry, Panel):
@@ -2687,6 +3119,7 @@ def draw_status_line(layout, context):
         return
     mesh, mod = ob.data, multires_of(ob)
     dyntopo = ob.use_dynamic_topology_sculpting
+    layers = mesh.shape_keys is not None   # (Voxel Remesh and Dynamic Detail would drop them: not offered here)
     sculpting = context.mode == 'SCULPT'
     brush = sculpt_brush(context) if sculpting else None
     if brush is not None:
@@ -2694,7 +3127,7 @@ def draw_status_line(layout, context):
         draw_brush_controls(layout, context, brush, tier)
     layout.separator()
     layout.popover("M3D_PT_sculpt_remesh", text="Remesh" if tier else "", icon='MOD_REMESH')
-    if tier == 2 and mod is None and not dyntopo:
+    if tier == 2 and mod is None and not dyntopo and not layers:
         # Voxel Remesh in place (the popover has the options, Auto Retopology, Multires and Dynamic Detail).
         row = layout.row(align=True)
         sub = row.row(align=True)
@@ -2726,7 +3159,7 @@ def draw_status_line(layout, context):
         row.operator("m3d.multires_level", text="", icon='TRIA_LEFT').delta = -1
         row.label(text="Lv %d/%d" % (mod.sculpt_levels, mod.total_levels))
         row.operator("m3d.multires_level", text="", icon='TRIA_RIGHT').delta = 1
-    if sculpting and mod is None:
+    if sculpting and mod is None and not layers:
         _call(layout.row(align=True), "sculpt.dynamic_topology_toggle", 'CHECKBOX_HLT' if dyntopo else 'CHECKBOX_DEHLT',
               "Dynamic Detail: strokes add and remove faces as they go", depress=dyntopo)
     layout.separator()
@@ -2807,6 +3240,10 @@ classes = (
     M3D_OT_sculpt_add_mesh,
     M3D_OT_sculpt_ctrl,
     M3D_OT_brush_pick,
+    M3D_OT_tray_add,
+    M3D_OT_tray_remove,
+    M3D_OT_sculpt_layer,
+    M3D_OT_sculpt_morph,
     M3D_OT_stroke_pick,
     M3D_OT_alpha_pick,
     M3D_OT_alpha_load,
@@ -2830,6 +3267,8 @@ classes = (
     PROPERTIES_PT_m3d_sc_voxel,
     PROPERTIES_PT_m3d_sc_quadriflow,
     PROPERTIES_PT_m3d_sc_dyntopo,
+    M3D_UL_sculpt_layers,
+    PROPERTIES_PT_m3d_sc_layers,
     PROPERTIES_PT_m3d_sc_mask,
     PROPERTIES_PT_m3d_sc_mask_filter,
     PROPERTIES_PT_m3d_sc_mask_create,
@@ -2865,10 +3304,14 @@ def register():
         options=set(),
         description="How fine Voxel Remesh makes the mesh: the voxel size as the number of faces it gives (an estimate "
                     "from the surface area; the size itself is under Advanced)")
+    bpy.types.VIEW3D_MT_brush_context_menu.prepend(brush_menu_tray)
+    bpy.types.UI_MT_button_context_menu.append(tile_menu_tray)
 
 
 def unregister():
     global _previews
+    bpy.types.UI_MT_button_context_menu.remove(tile_menu_tray)
+    bpy.types.VIEW3D_MT_brush_context_menu.remove(brush_menu_tray)
     if _previews is not None:
         bpy.utils.previews.remove(_previews)
         _previews = None

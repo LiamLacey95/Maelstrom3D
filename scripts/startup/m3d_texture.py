@@ -1435,9 +1435,11 @@ def smooth_preview(ob):
 
 @contextmanager
 def plain_lows(obs):
-    """Smooth Preview is off meanwhile on the meshes `obs` that are not high polys: a bake reads the low poly, an export writes
-    it, as it is and not smoothed (a high poly keeps it: Create High Poly gives it one on purpose). It comes back after."""
-    saved = [(mod, mod.show_viewport, mod.show_render) for o in obs if o.m3d_pair.role != 'HIGH' for mod in [smooth_preview(o)] if mod]
+    """Smooth Preview is off meanwhile on the meshes `obs` that are not high polys, and the Multires levels of a low poly
+    (Project Detail): a bake reads the low poly, an export writes it, as it is and not smoothed (a high poly keeps it: Create
+    High Poly gives it one on purpose). It comes back after."""
+    saved = [(mod, mod.show_viewport, mod.show_render) for o in obs if o.m3d_pair.role != 'HIGH'
+             for mod in (smooth_preview(o), multires_of(o) if o.m3d_pair.role == 'LOW' else None) if mod]
     try:
         for mod, _v, _r in saved:
             mod.show_viewport = mod.show_render = False
@@ -1642,13 +1644,12 @@ def ensure_maps(context, ob, keys, force=False):
 
 
 def multires_ready(ob):
-    """A low poly, or a mesh without a role, that has Multires levels and no high poly: the Bake tab offers to bake from them."""
+    """A low poly that has Multires levels (Project Detail puts the detail of its high poly there), or a mesh without a role
+    that has them and no high poly: the Bake tab offers to bake from them."""
     mod = multires_of(ob) if m3d_pair.is_mesh(ob) else None
     if mod is None or mod.total_levels < 1 or ob.m3d_pair.role == 'HIGH':
         return False
-    if m3d_pair.grouped(ob):
-        return not m3d_pair.group_of(bpy.context, ob.m3d_pair.group)[1]
-    return ob.m3d_bake.high is None
+    return m3d_pair.grouped(ob) or ob.m3d_bake.high is None
 
 
 MULTIRES_MAPS = (   # (id, label, type of Blender's multires baker, flag in M3D_BakeSettings)
@@ -1678,10 +1679,14 @@ def bake_multires(context, ob, s, kinds, name, others=()):
     also after an error. Returns the images."""
     mod, size, images = multires_of(ob), map_size(s), []
     level = mod.levels
+    after = [m for m in ob.modifiers[list(ob.modifiers).index(mod) + 1:] if m.show_viewport]   # (the baker wants Multires last)
     try:
+        for m in after:
+            m.show_viewport = False
         with bake_scene(context, ob, cycles=False), multires_settings(
                 context.scene.render.bake, use_multires=True, type='NORMALS', margin=s.margin, use_clear=True,
                 use_lores_mesh=False) as bake:
+            mod.show_viewport = mod.show_render = True   # (bake_scene turns a low poly's levels off: here they are what is baked)
             mod.levels = min(ob.m3d_bake.multires_level, mod.total_levels - 1)
             for key, label, bake_type, _flag in kinds:
                 image = bake_image(name, label, size, key == 'DISPLACEMENT')
@@ -1697,13 +1702,15 @@ def bake_multires(context, ob, s, kinds, name, others=()):
                 images.append(image)
     finally:
         mod.levels = level
+        for m in after:
+            m.show_viewport = True
     return images
 
 
 class M3D_OT_tex_bake_multires(Operator):
     """Bake the detail of the Multires levels of the active mesh above its Low Level into a normal map and / or a displacement
-    map, with Blender's own Multires baker (no high poly needed). The mesh needs UVs, and the Multires modifier has to be the
-    last modifier"""
+    map, with Blender's own Multires baker (no high poly needed). The mesh needs UVs; the modifiers after Multires are off
+    meanwhile"""
     bl_idname = "m3d.tex_bake_multires"
     bl_label = "Bake Multires"
     bl_options = {'REGISTER', 'UNDO'}
@@ -4638,6 +4645,8 @@ class PROPERTIES_PT_m3d_tx_bake_high(_Bake, Panel):
         for low in texture_set(bake_owner(ob))[1] if ob.m3d_pair.role != 'HIGH' else ():
             if smooth_preview(low) is not None:   # (key 3: the bake turns it off for the time, see plain_lows)
                 reason(layout, "%s has Smooth Preview on: the bake uses the plain mesh" % low.name)
+            if low.m3d_pair.role == 'LOW' and multires_of(low) is not None:
+                reason(layout, "%s has Multires levels: the bake uses its base (Advanced > Multires bakes the levels)" % low.name)
         if (highs if grouped else ob.m3d_bake.high) in (None, []):
             reason(layout, "No high poly: the mesh bakes its own detail")
             if not grouped:

@@ -488,6 +488,7 @@ MENUS = {
         op("Draw Low Poly (Quad Draw)", "m3d.hp_new_low", 'GREASEPENCIL'),
         op("Draw Low Poly, Symmetric (X)", "m3d.hp_new_low", 'MOD_MIRROR', symmetric=True),
         op("Rebuild as Quads (in place)", "m3d.retopo_quads", 'MOD_REMESH'),
+        op("Project Detail onto Low Poly", "m3d.hp_project", 'MOD_MULTIRES'),
         SEP,
         op("Dynamic Detail", "sculpt.dynamic_topology_toggle", 'MOD_DYNAMICPAINT', modes={'SCULPT'}),
         op("Symmetrize", "sculpt.symmetrize", 'MOD_MIRROR', modes={'SCULPT'}),
