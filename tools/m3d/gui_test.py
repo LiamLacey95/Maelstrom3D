@@ -13576,6 +13576,10 @@ def p11_layer_add():
     press_ok("brush.asset_activate", **m3d_sculpt.brush_props("Draw"))
     brush = bpy.context.tool_settings.sculpt.brush
     brush.size, brush.strength, brush.direction = 150, 1.0, 'ADD'
+    brush.texture, brush.stroke_method, brush.use_smooth_stroke, brush.use_frontface = None, 'SPACE', False, False
+    # (Sculpt's own view, set at once: earlier steps leave it elsewhere, and View All animates)
+    r3d = area.spaces.active.region_3d
+    r3d.view_location, r3d.view_distance = bpy.context.active_object.matrix_world.translation, 4.0
 
 
 @step
