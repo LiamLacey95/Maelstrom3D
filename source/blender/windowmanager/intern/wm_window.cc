@@ -47,6 +47,7 @@
 
 #include "BLT_translation.hh"
 
+#include "BKE_appdir.hh"
 #include "BKE_blender_version.h"
 #include "BKE_context.hh"
 #include "BKE_global.hh"
@@ -594,6 +595,32 @@ void wm_window_close(bContext *C, wmWindowManager *wm, wmWindow *win)
  * \param window_filepath_fn: When non `nullopt` the title text does not need to contain
  * the file-path (typically based on #WM_CAPABILITY_WINDOW_PATH).
  */
+/** Maelstrom3D: "Maelstrom3D alpha <tag> (Blender 5.2.2)", the tag read once from `datafiles/m3d_version.txt` ("dev" without
+ * it); the status bar, About and bug reports show the same (`m3d_help.py`). */
+static const std::string &m3d_version_label()
+{
+  static std::string label;
+  if (label.empty()) {
+    std::string tag = "dev";
+    if (const std::optional<std::string> dir = BKE_appdir_folder_id(BLENDER_DATAFILES, nullptr)) {
+      char path[FILE_MAX];
+      BLI_path_join(path, sizeof(path), dir->c_str(), "m3d_version.txt");
+      if (FILE *fp = BLI_fopen(path, "r")) {
+        char buf[64] = {0};
+        if (fgets(buf, sizeof(buf), fp)) {
+          BLI_str_rstrip(buf);
+          if (buf[0]) {
+            tag = buf;
+          }
+        }
+        fclose(fp);
+      }
+    }
+    label = fmt::format("Maelstrom3D alpha {} (Blender {})", tag, BKE_blender_version_string_compact());
+  }
+  return label;
+}
+
 static std::string wm_window_title_text(
     wmWindowManager *wm,
     wmWindow *win,
@@ -690,7 +717,7 @@ static std::string wm_window_title_text(
     }
   }
 
-  win_title.append(fmt::format(" - Maelstrom3D {}", BKE_blender_version_string()));
+  win_title.append(" - " + m3d_version_label());
 
   return win_title;
 }

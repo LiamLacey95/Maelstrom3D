@@ -609,8 +609,9 @@ void BLI_windows_exception_show_dialog(const char *filepath_crashlog,
                                          nullptr;
 
   std::wstring full_message_16 =
-      L"A problem has caused the program to stop functioning correctly. If you know the steps to "
-      L"reproduce this issue, please submit a bug report.\n"
+      L"A problem has caused Maelstrom3D to stop working. If you know the steps to reproduce it, "
+      L"please report it: Help > Report a Bug in Maelstrom3D, or "
+      L"https://github.com/LiamLacey95/Maelstrom3D/issues (attach the crash log).\n"
       "\n"
       L"The crash log can be found at:\n" +
       std::wstring(filepath_crashlog_utf16);
@@ -631,8 +632,8 @@ void BLI_windows_exception_show_dialog(const char *filepath_crashlog,
   config.hInstance = 0;
   config.dwCommonButtons = 0;
   config.pszMainIcon = TD_ERROR_ICON;
-  config.pszWindowTitle = L"Blender";
-  config.pszMainInstruction = L"Blender has stopped working";
+  config.pszWindowTitle = L"Maelstrom3D";
+  config.pszMainInstruction = L"Maelstrom3D has stopped working";
   config.pszContent = full_message_16.c_str();
   config.pButtons = buttons;
   config.cButtons = ARRAY_SIZE(buttons);

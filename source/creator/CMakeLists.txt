@@ -584,6 +584,11 @@ install(
   DESTINATION ${TARGETDIR_VER}/datafiles
   RENAME m3d_factory_layout.blend
 )
+# Maelstrom3D: the alpha tag shown in the title, status bar, About and bug reports (`m3d_help.py`); packaging overwrites it.
+install(
+  FILES ${CMAKE_SOURCE_DIR}/release/datafiles/m3d_version.txt
+  DESTINATION ${TARGETDIR_VER}/datafiles
+)
 # Maelstrom3D: the thumbnails of the Library's starter items (tools/m3d/library_thumbs.py), looked for by `m3d_library.py` first.
 if(EXISTS ${CMAKE_SOURCE_DIR}/release/datafiles/m3d_library_thumbs)
   install(

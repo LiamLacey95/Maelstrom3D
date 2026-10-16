@@ -15648,5 +15648,10 @@ check(bpy.ops.wm.open_mainfile(filepath=al_path) == {'FINISHED'}, "...and so doe
 shutil.rmtree(al_dir, ignore_errors=True)
 
 print("FAILS:", fails or "none")
-sys.exit(1 if fails else 0)
+# os._exit, not sys.exit: SystemExit inside a --python script finalizes Python while Blender is still running, and the garbage
+# collection of this script's thousands of references to data from the files opened above could crash then (twice seen, after
+# "FAILS: none"). A normal quit goes through Blender's own exit (gui_test.py covers it).
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(1 if fails else 0)
 
