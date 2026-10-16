@@ -110,8 +110,11 @@ class M3D_OT_workspace(Operator):
     def execute(self, context):
         ws = find_workspace(self.kind)
         if ws is None:
-            self.report({'WARNING'}, "No %s workspace in this file" % KINDS[self.kind][0])
-            return {'CANCELLED'}
+            ws = restore_workspace(KINDS[self.kind][0])   # (deleted: its factory layout comes back)
+            if ws is None:
+                self.report({'WARNING'}, "No %s workspace in this file" % KINDS[self.kind][0])
+                return {'CANCELLED'}
+            self.report({'INFO'}, "Restored %s (its factory layout)" % ws.name)
         wm = context.window_manager
         win = context.window or (wm.windows[0] if wm.windows else None)
         if KINDS[self.kind][2] in MESH_MODES:
@@ -658,8 +661,9 @@ class M3D_PT_workspace_settings(Panel):
             layout.label(text=m3d_bakeq.device_note(bpy.context), icon='INFO', translate=False)   # (a hint: the normal text colour)
         layout.separator()
         layout.operator("screen.userpref_show", text="Keyboard Shortcuts...", icon='KEYINGSET').section = 'KEYMAP'
-        layout.operator("wm.save_homefile", text="Save Layouts as Default", icon='FILE_TICK')
+        layout.operator("m3d.save_layouts_default", icon='FILE_TICK')
         layout.label(text="All workspaces, for new files")
+        layout.operator("m3d.workspace_delete", icon='TRASH')
 
 
 # -----------------------------------------------------------------------------
@@ -687,23 +691,63 @@ class M3D_OT_workspace_reset(Operator):
         if not os.path.exists(path):
             self.report({'ERROR'}, "Factory layouts file not found: " + path)
             return {'CANCELLED'}
-        with bpy.data.libraries.load(path) as (src, _dst):
-            known = name in src.workspaces
-        if not known:
+        try:
+            fresh = append_factory(name)
+        except RuntimeError as err:
+            self.report({'ERROR'}, "Could not load the factory layout: " + str(err).strip().split(": ", 1)[-1])
+            return {'CANCELLED'}
+        if fresh is None:
             self.report({'WARNING'}, "\"%s\" has no factory layout" % ws.name)
             return {'CANCELLED'}
-        before = {w.name for w in bpy.data.workspaces}
-        try:
-            bpy.ops.workspace.append_activate(idname=name, filepath=path)
-        except RuntimeError as err:
-            self.report({'ERROR'}, str(err).strip())
-            return {'CANCELLED'}
-        fresh = [w for w in bpy.data.workspaces if w.name not in before]
-        if not fresh:
-            return {'CANCELLED'}
         # The window switches to the appended workspace on the next event; then the old one can go.
-        bpy.app.timers.register(lambda: _finish_reset(ws.name, fresh[0].name, name), first_interval=0.3)
+        bpy.app.timers.register(lambda: _finish_reset(ws.name, fresh.name, name), first_interval=0.3)
         return {'FINISHED'}
+
+
+def append_factory(name):
+    """Append the factory layout of the workspace `name` (the window shows it from the next event on): the new workspace,
+    or None without the factory layouts file or that layout in it. RuntimeError when appending fails."""
+    path = factory_file()
+    if not os.path.exists(path):
+        return None
+    with bpy.data.libraries.load(path) as (src, _dst):
+        if name not in src.workspaces:
+            return None
+    before = {w.name for w in bpy.data.workspaces}
+    bpy.ops.workspace.append_activate(idname=name, filepath=path)
+    return next((w for w in bpy.data.workspaces if w.name not in before), None)
+
+
+def restore_workspace(name):
+    """A task workspace the file lacks (it was deleted) from its factory layout, set up as at startup; None when it can't."""
+    try:
+        ws = append_factory(name)
+    except RuntimeError:
+        return None
+    if ws is not None:
+        from m3d_mode import m3d_startup_layout
+        m3d_startup_layout(screens=list(ws.screens))
+    return ws
+
+
+class M3D_OT_workspace_delete(Operator):
+    """Delete this workspace (a task workspace comes back from its factory layout with its F-key)"""
+    bl_idname = "m3d.workspace_delete"
+    bl_label = "Delete Workspace"
+
+    @classmethod
+    def poll(cls, context):
+        return len(bpy.data.workspaces) > 1
+
+    def invoke(self, context, event):
+        ws = context.workspace
+        kind = workspace_kind(ws)
+        back = "%s brings back its factory layout" % KINDS[kind][1] if kind else "this can't be undone"
+        return context.window_manager.invoke_confirm(self, event, title="Delete Workspace", confirm_text="Delete",
+                                                     message="Delete \"%s\"? (%s)" % (ws.name, back))
+
+    def execute(self, _context):
+        return bpy.ops.workspace.delete()
 
 
 def _finish_reset(old_name, new_name, name):
@@ -733,6 +777,7 @@ classes = (
     M3D_MT_dock_tabs,
     M3D_PT_workspace_settings,
     M3D_OT_workspace_reset,
+    M3D_OT_workspace_delete,
 )
 
 

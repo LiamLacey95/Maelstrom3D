@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Maelstrom3D Guide
+    url: https://github.com/LiamLacey95/Maelstrom3D/blob/maelstrom3d/MAELSTROM3D.md
+    about: How the workspaces, menus, shelves and tools work.

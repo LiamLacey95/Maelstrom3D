@@ -14,6 +14,7 @@ from bpy.types import Menu, Panel
 
 import m3d_anim
 import m3d_render
+from m3d_help import DOCS, REPO
 import m3d_retopo
 import m3d_rig
 import m3d_sculpt
@@ -129,6 +130,8 @@ def draw_entries(layout, context, entries):
             continue
         if e.get("sets") and context.window_manager.m3d_menu_set not in e["sets"]:
             continue
+        if e.get("when") and not e["when"](context):
+            continue
         kind = e["kind"]
         if kind == 'SEP':
             layout.separator()
@@ -182,6 +185,8 @@ MENUS = {
         op("Save Scene As...", "wm.save_as_mainfile"),
         op("Increment and Save", "wm.save_mainfile", incremental=True),
         {**op("Save All Images", "m3d.tex_save_all", 'FILE_TICK'), "sets": {'TEXTURING'}},   # (the painted images, on their own)
+        {**op("Revert", "wm.revert_mainfile", 'FILE_REFRESH'), "when": lambda _context: bpy.data.is_saved},   # (a saved file only)
+        sub("Recover", "TOPBAR_MT_file_recover", 'RECOVER_LAST'),
         SEP,
         op("Import...", "wm.append", 'IMPORT'),
         op("Create Reference...", "wm.link", 'LINK_BLEND'),
@@ -190,8 +195,20 @@ MENUS = {
         SEP,
         sub("External Data", "TOPBAR_MT_file_external_data"),
         sub("Clean Up", "TOPBAR_MT_file_cleanup"),
+        sub("Defaults", "M3D_MT_file_defaults", 'PREFERENCES'),
         SEP,
         op("Exit", "wm.quit_blender", 'QUIT'),
+    ]),
+    "M3D_MT_file_defaults": ("Defaults", [
+        op("Save Layouts as Default", "m3d.save_layouts_default", 'FILE_TICK'),
+        op("Load Factory Layouts", "wm.read_homefile", 'LOOP_BACK', use_factory_startup=True, app_template=""),
+        SEP,
+        op("Reset Preferences", "m3d.reset_settings", what='PREFS'),
+        op("Reset Shelves & Docks", "m3d.reset_settings", what='SHELVES'),
+        op("Reset Everything", "m3d.reset_settings", 'ERROR', what='ALL'),
+        SEP,
+        op("Export Settings...", "m3d.settings_export", 'EXPORT'),
+        op("Import Settings...", "m3d.settings_import", 'IMPORT'),
     ]),
     "M3D_MT_edit": ("Edit", [
         op("Undo", "ed.undo", 'LOOP_BACK'),
@@ -315,13 +332,23 @@ MENUS = {
         editor("UV Editor", 'UV', 'UV'),
         editor("Script Editor", 'TEXT_EDITOR', 'TEXT'),
         SEP,
+        op("Command Line", "m3d.command_line", 'CONSOLE'),
         op("Command Line: MEL", "m3d.command_language", 'CONSOLE', language='mel'),
         op("Command Line: Python", "m3d.command_language", 'CONSOLE', language='python'),
         op("Toggle Full Screen", "wm.window_fullscreen_toggle", 'FULLSCREEN_ENTER'),
     ]),
     "M3D_MT_help": ("Help", [
-        sub("Help", "TOPBAR_MT_help", 'HELP'),
-        op("Hotkey Editor", "screen.userpref_show", 'KEYINGSET', section='KEYMAP'),
+        op("Maelstrom3D Guide", "wm.url_open", 'HELP', url=DOCS + "MAELSTROM3D.md"),
+        op("Keyboard Shortcuts", "wm.url_open", 'KEYINGSET', url=DOCS + "SHORTCUTS.md"),
+        op("Hotkey Editor", "screen.userpref_show", 'PREFERENCES', section='KEYMAP'),
+        op("What's New in This Alpha", "wm.url_open", 'TEXT', url=REPO + "/releases"),
+        SEP,
+        op("Report a Bug...", "m3d.report_bug", 'URL'),
+        op("Open Crash Log", "m3d.open_log", 'FILE_TEXT', what='CRASH'),
+        op("Open Log Folder", "m3d.open_log", 'FILE_FOLDER', what='FOLDER'),
+        SEP,
+        op("About Maelstrom3D", "m3d.about", 'INFO'),
+        op("Blender Manual (reference)", "wm.url_open_preset", 'URL', type='MANUAL'),
     ]),
 
     # Modeling menu set.
@@ -957,7 +984,8 @@ def draw_workspace_picker(layout, context, extra=None):
         extra(layout)
     if not status_narrow(context, 1500):
         layout.label(text="Workspace:")
-    layout.template_ID(context.window, "workspace", new="workspace.add", unlink="workspace.delete")
+    # (template_search: template_ID always draws a delete button, greyed out without one; Workspace Settings has Delete)
+    layout.template_search(context.window, "workspace", bpy.data, "workspaces", new="workspace.add")
     layout.popover("M3D_PT_workspace_settings", text="", icon='PREFERENCES')   # (its tooltip: Workspace settings...)
 
 

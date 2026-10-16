@@ -21,6 +21,9 @@ class STATUSBAR_HT_header(Header):
 
         # Messages
         layout.template_reports_banner()
+        # Maelstrom3D: a command line result, or a note about a Python error.
+        import m3d_help
+        m3d_help.draw_status(layout)
 
         # Progress Bar
         layout.template_running_jobs()
@@ -32,6 +35,8 @@ class STATUSBAR_HT_header(Header):
 
         # Stats & Info
         layout.template_status_info()
+        # Maelstrom3D: the version (Blender's own is off in the Maelstrom3D preferences).
+        m3d_help.draw_version(layout, context)
 
 
 classes = (

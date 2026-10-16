@@ -5,7 +5,7 @@
 """
 Personalization for Maelstrom3D: the Custom shelf ("Add to Shelf" in a button's right-click menu), the dock tabs
 a user hides, and the dock layout (user tabs, moved and hidden panels; edited by m3d_edit.py). Everything lives in `m3d_user.json` in the user config folder; a missing or damaged
-file never breaks the UI (it reads as empty).
+file never breaks the UI (it reads as empty; a damaged one is kept as m3d_user.json.bak).
 """
 
 import json
@@ -27,17 +27,27 @@ def _path(create=False):
 
 
 def data():
-    """The settings dict, read once (damaged or missing file: empty)."""
+    """The settings dict, read once (damaged or missing file: empty; a damaged one is kept as m3d_user.json.bak first, as
+    the next save replaces it)."""
     global _cache
     if _cache is None:
         _cache = {}
+        path = _path()
         try:
-            with open(_path(), encoding="utf-8") as fh:
+            with open(path, encoding="utf-8") as fh:
                 loaded = json.load(fh)
-            if isinstance(loaded, dict):
-                _cache = loaded
-        except (OSError, ValueError):
-            pass
+        except OSError:
+            return _cache
+        except ValueError:
+            loaded = None
+        if isinstance(loaded, dict):
+            _cache = loaded
+        else:
+            try:
+                import shutil
+                shutil.copy2(path, path + ".bak")
+            except OSError:
+                pass
     return _cache
 
 

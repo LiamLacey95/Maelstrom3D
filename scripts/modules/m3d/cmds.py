@@ -432,6 +432,9 @@ def setKeyframe(*args, **kw):
 # Files and misc
 
 def file(path=None, **kw):
+    discards = _flag(kw, "new", "new", False) or _flag(kw, "open", "o", False)
+    if discards and bpy.data.is_dirty and not _flag(kw, "force", "f", False):
+        raise RuntimeError("Unsaved changes: save them first (file -s), or add -f to discard them")
     if _flag(kw, "new", "new", False):
         bpy.ops.wm.read_homefile(app_template="")
     elif _flag(kw, "open", "o", False):
