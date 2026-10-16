@@ -16198,6 +16198,8 @@ import m3d_render as RN
 from bpy_extras.object_utils import world_to_camera_view
 p9_dir = tempfile.mkdtemp(prefix="m3d_p9_")
 clean_scene()
+# (blocks above open other files: the workspaces of the session are found again by name)
+sculpt_ws, uv_ws, rig_ws, anim_ws, render_ws = (bpy.data.workspaces[n] for n in ("Sculpt", "UV", "Rigging", "Animation", "Rendering"))
 for coll_ in list(bpy.data.collections):
     bpy.data.collections.remove(coll_)
 scn = bpy.context.scene

@@ -1286,7 +1286,8 @@ def draw_panel_toolbar(layout, context, short=False):
         row.prop(overlay, "show_floor", text="", icon='GRID')
     row = layout.row(align=True)
     # (Blender offers no Material Preview with the Workbench engine: asking for it prints a warning on every redraw)
-    workbench = context.scene.render.engine == 'BLENDER_WORKBENCH'
+    scene = getattr(context, "scene", None)
+    workbench = scene is not None and scene.render.engine == 'BLENDER_WORKBENCH'
     for value, icon in (('WIREFRAME', 'SHADING_WIRE'), ('SOLID', 'SHADING_SOLID'), ('MATERIAL', 'SHADING_TEXTURE'),
                         ('RENDERED', 'SHADING_RENDERED')):
         if not (workbench and value == 'MATERIAL'):
