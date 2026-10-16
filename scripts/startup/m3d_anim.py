@@ -746,7 +746,8 @@ class M3D_AnimSettings(PropertyGroup):
     convert_scope: EnumProperty(name="Convert", default='CHARACTER', description="Whose keys Blocking / Polish convert",
                                 items=[(k, label, d, icon, i) for i, (k, label, d, icon) in enumerate(CONVERT_SCOPES)])
     playblast_dir: StringProperty(name="Folder", subtype='DIR_PATH', default="",
-                                  description="Where the playblasts go (empty: a folder in the temporary directory)")
+                                  description="Where the playblasts go (empty: the project's playblasts folder, else a folder in the "
+                                              "temporary directory)")
     playblast_percent: IntProperty(name="Size", default=50, min=10, max=100, subtype='PERCENTAGE',
                                    description="Playblast size as a percentage of the render resolution")
     playblast_play: BoolProperty(name="Play When Done", default=True, description="Open the player on the playblast")
@@ -1288,8 +1289,12 @@ class M3D_OT_anim_layer(Operator):
 # Playblast: the viewport rendered into a movie (with the scene's sound) or a picture per frame, for review
 
 def playblast_folder(scene):
+    """The Folder of the playblasts, else the project's playblasts folder, else one in the temporary directory."""
+    from m3d_io import project_folder
     s = scene.m3d_anim
-    return bpy.path.abspath(s.playblast_dir) if s.playblast_dir else os.path.join(tempfile.gettempdir(), "m3d_playblast")
+    if s.playblast_dir:
+        return bpy.path.abspath(s.playblast_dir)
+    return project_folder("playblasts") or os.path.join(tempfile.gettempdir(), "m3d_playblast")
 
 
 def playblast_frames(scene, kind='PLAYBACK'):
@@ -1940,7 +1945,9 @@ class PROPERTIES_PT_m3d_an_playblast(_Playback, Panel):
         sub.scale_y = 1.3
         sub.operator("m3d.playblast", icon='RENDER_ANIMATION').play = s.playblast_play
         row = layout.row()
-        row.label(text="Frames %d - %d, %s" % (first, last, "in the folder" if s.playblast_dir else "in a temp folder"))
+        from m3d_io import project
+        row.label(text="Frames %d - %d, %s" % (first, last, "in the folder" if s.playblast_dir else "in the project" if project()
+                                                else "in a temp folder"))
         folder = playblast_folder(context.scene)
         if os.path.isdir(folder):   # (the folder in the file browser of the system: its full path)
             row.operator("wm.path_open", text="", icon='FILEBROWSER', emboss=False).filepath = folder

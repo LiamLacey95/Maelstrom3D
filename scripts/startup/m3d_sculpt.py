@@ -1737,7 +1737,7 @@ class PROPERTIES_PT_m3d_sc_start(_PagePanel, Panel):
         for label, kind, icon in START_MESHES:
             row.operator("m3d.sculpt_add_mesh", text=label, icon=icon).kind = kind
         sub = col.column(align=True)
-        sub.menu("TOPBAR_MT_file_import", text="Import...", icon='IMPORT')
+        sub.operator("m3d.import_file", text="Import...", icon='IMPORT')
         sub.operator("m3d.workspace", text="Use a mesh from F1 Modeling", icon='EDITMODE_HLT').kind = 'MODEL'
         meshes = [o for o in context.view_layer.objects if o.type == 'MESH']
         if meshes:

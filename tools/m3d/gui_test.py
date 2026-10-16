@@ -12800,6 +12800,96 @@ def p5_done():
     check(not tracebacks(), "Python error in the P5 steps")
 
 
+# --- P7 Pipeline I/O: the Export to Engine dialog opens and its Export writes the files, the Reference Editor and the Import picker
+# open; everything in temp folders.
+
+P7 = {}
+
+
+@step
+def p7_setup():
+    import tempfile
+    if not GIZMO.get("cfg"):   # (a run of this segment alone: the settings still go to a temp folder)
+        GIZMO["cfg"] = tempfile.mkdtemp(prefix="m3d_gui_")
+        m3d_user._path = lambda create=False: os.path.join(GIZMO["cfg"], "m3d_user.json")
+        m3d_user.reset_cache()
+    bpy.ops.m3d.workspace(kind='MODEL')
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        if bpy.context.object is not None and bpy.context.object.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        for name, role in (("P7Box_low", 'LOW'), ("P7Box_high", 'HIGH')):
+            bpy.ops.mesh.primitive_cube_add()
+            ob = bpy.context.object
+            ob.name, ob.m3d_pair.role, ob.m3d_pair.group = name, role, "P7Box"
+            P7.setdefault("obs", []).append(ob)
+    s = bpy.context.scene.m3d_export
+    s.folder = P7["out"] = tempfile.mkdtemp(prefix="m3d_gui_p7_")
+    s.engine, s.prefix, s.selected_only, s.meshes, s.textures, s.animation = 'UNREAL', "SM_", True, True, False, False
+    for ob in bpy.context.view_layer.objects:   # (the low and the high poly selected: the high poly is left out)
+        ob.select_set(ob in P7["obs"])
+    ws_event('MOUSEMOVE')   # (the dialog opens under the pointer: the middle of the window)
+
+
+@step
+def p7_export_open():
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        P7["res"] = bpy.ops.m3d.export_engine('INVOKE_DEFAULT')
+
+
+@step
+def p7_export_confirm():
+    check(P7["res"] == {'RUNNING_MODAL'} and not tracebacks(), "Export to Engine: the dialog opens (%s)" % P7["res"])
+    ws_event('RET', 'PRESS')
+    ws_event('RET', 'RELEASE')
+
+
+step(wait_until(lambda: os.path.isdir(P7["out"]) and os.listdir(P7["out"]), "the Export to Engine dialog's Export"))
+
+
+@step
+def p7_export_check():
+    check(sorted(os.listdir(P7["out"])) == ["SM_P7Box.fbx"], "Export writes the low poly only: %s" % sorted(os.listdir(P7["out"])))
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        P7["ref"] = bpy.ops.wm.call_panel('INVOKE_DEFAULT', name="M3D_PT_reference_editor", keep_open=True)
+
+
+@step
+def p7_ref_close():
+    check(P7["ref"] <= {'FINISHED', 'RUNNING_MODAL', 'INTERFACE'} and not tracebacks(), "the Reference Editor opens (%s)" % P7["ref"])
+    event('ESC', 'PRESS')
+    event('ESC', 'RELEASE')
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        P7["imp"] = bpy.ops.m3d.import_file('INVOKE_DEFAULT')
+
+
+step(wait_until(lambda: any(a.type == 'FILE_BROWSER' for w in bpy.context.window_manager.windows for a in w.screen.areas),
+                "the Import file picker"))
+
+
+@step
+def p7_import_close():
+    check(P7["imp"] == {'RUNNING_MODAL'} and not tracebacks(), "File > Import... opens one picker (%s)" % P7["imp"])
+    browser = next(w for w in bpy.context.window_manager.windows for a in w.screen.areas if a.type == 'FILE_BROWSER')
+    area = next(a for a in browser.screen.areas if a.type == 'FILE_BROWSER')
+    with bpy.context.temp_override(window=browser, area=area, region=next(r for r in area.regions if r.type == 'WINDOW')):
+        bpy.ops.file.cancel()
+
+
+step(wait_until(lambda: len(bpy.context.window_manager.windows) == 1, "the picker to close"))
+
+
+@step
+def p7_done():
+    import shutil
+    for ob in P7["obs"]:
+        bpy.data.objects.remove(ob)
+    bpy.context.scene.m3d_export.last_files = ""
+    shutil.rmtree(P7["out"], ignore_errors=True)
+    check(not tracebacks(), "Python error in the P7 steps")
+
+
 @step
 def finish():
     errors = "".join(stderr_tee.buf + sys.stdout.buf)

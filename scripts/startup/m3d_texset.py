@@ -380,7 +380,10 @@ class M3D_OT_tex_export_dialog(Operator):
         ticked = export_sets_of(context)
         T.draw_stale(layout, context, ticked)
         maps = len([1 for om in template[2] if om.key not in T.export_skipped(tex)])
-        layout.label(text="%d texture sets, %d maps each" % (len(ticked), maps) if template[2] else "%d texture sets" % len(ticked))
+        row = layout.row()
+        row.label(text="%d texture sets, %d maps each" % (len(ticked), maps) if template[2] else "%d texture sets" % len(ticked))
+        row.label(text="The meshes and animation too:")
+        row.operator("m3d.export_engine", text="Export to Engine...", icon='EXPORT')
 
     def execute(self, context):
         sets, tex = export_sets_of(context), context.scene.m3d_tex
