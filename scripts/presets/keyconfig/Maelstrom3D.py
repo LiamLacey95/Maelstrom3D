@@ -139,6 +139,12 @@ OVERRIDES = {
             ('HIDE_INSIDE', {"shift": True, "alt": True}))),
         _kmi("wm.context_toggle_enum", 'N', props={"data_path": "tool_settings.sculpt.brush.direction",
                                                     "value_1": 'ADD', "value_2": 'SUBTRACT'}),
+        # Ctrl+D duplicates as everywhere (it was Voxel Remesh, now Ctrl+R; Detail Flood Fill is on the Geometry tab), and
+        # Ctrl+0-5 go to a Multires level through the heavy-operation guard (a level of millions of faces asks first).
+        _kmi("m3d.duplicate", 'D', ctrl=True),
+        _kmi("m3d.voxel_remesh", 'R', ctrl=True),
+        *(_kmi("m3d.sculpt_level", k, props={"level": i}, ctrl=True)
+          for i, k in enumerate(('ZERO', 'ONE', 'TWO', 'THREE', 'FOUR', 'FIVE'))),
     ],
     # Texture paint (3D view and 2D view), the keys of a dedicated painting app: 1-6 the tools of the tool strip (Paint, Eraser,
     # Projection, Polygon Fill, Smudge, Clone), P the picker; M the material, C / Shift+C the next / previous channel and

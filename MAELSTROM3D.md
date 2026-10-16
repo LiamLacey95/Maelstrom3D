@@ -70,7 +70,7 @@ named here only to describe compatibility.*
 | Ctrl+F9 / F10 / F11 | Convert selection to vertices / edges / faces |
 | 1 / 2 / 3, Page Up / Down | Smooth preview off / cage / smooth, more / fewer divisions |
 | 4 / 5 / 6 / 7 | Wireframe / Shaded / Textured / Lighting |
-| Ctrl+D, Shift+D, Ctrl+Shift+D | Duplicate in place, duplicate with transform, duplicate as instance |
+| Ctrl+D, Shift+D, Ctrl+Shift+D | Duplicate in place, duplicate with transform, duplicate as instance (Ctrl+D in Sculpt: the mesh being sculpted, which you then sculpt) |
 | Ctrl+G, P, Shift+P | Group, parent, unparent |
 | Ctrl+H, Alt+H, Ctrl+Shift+H | Hide selected, hide unselected, show hidden |
 | Ctrl+1, Shift+L | Isolate select |
@@ -139,23 +139,27 @@ Difference from Maya: Blender stores cuts as seams, and shells split when you Un
 
 F2 opens the Sculpt workspace and enters Sculpt Mode on the active mesh. With no mesh to sculpt the dock shows one start
 card (Sphere, Cube, Plane, Import..., **Use a mesh from F1 Modeling**, and the meshes of the scene to pick), the tray stays
-empty and the tabs show once there is a mesh. The viewport has no tool settings row: the Status Line, the tray and the tabs
+empty and the tabs show once there is a mesh. The **Sphere** is made of even quads (a divided cube pushed out to a sphere:
+6,144 faces, no poles where a UV sphere pinches). A game mesh without a high poly (a low poly, or a painted mesh without a
+role) opens in Object Mode, and the tray asks: **This is a game mesh**: **Create High Poly** (sculpt a copy, bake onto the
+game mesh) or **Sculpt this mesh**. A workspace switch that takes a moment (the first Texture or Rendering of the session,
+or a mode on a mesh of more than 500,000 faces) shows the wait cursor and "Opening Sculpt..." in the status bar. The viewport has no tool settings row: the Status Line, the tray and the tabs
 have its controls, and the toolbar beside the viewport has only the tools the tray does not (masking, hiding, face set,
 trim, filter, transform and annotate tools; the brushes are the tray's tiles).
 
 | Part | Contents |
 |---|---|
 | Brush tray (left) | Open panels, essentials first: **Brushes**: the active brush on one line (click it for every brush of the library, the arrow for its menu: save, revert, duplicate...) and a grid of 15 small brush tiles showing each brush's thumbnail (the tooltip is the name and, for the seven that have one, the key Shift+1-7; the active brush is highlighted: Draw, Clay Strips, Clay, Smooth, Grab, Elastic Grab, Snake Hook, Inflate/Deflate, Pinch/Magnify, Crease Sharp, Flatten/Contrast, Scrape/Fill, Layer, Mask, Face Set Paint); **Size and Strength** (Size, Strength, Hardness, then **Add** | **Subtract**: icons with tooltips on a narrow tray); **Lazy Mouse** (toggle; **Distance** and **Smoothing** while it is on: Blender's Stabilize Stroke); **Stroke Type** (a tile with a little picture for each of Dots, Drag Dot, Space, Airbrush, Anchored, Line, Curve); **Alpha** (the alpha's picture and name, or "No alpha: a round dab", **Load Alpha...**, then a tile for None, the eight starter alphas and every alpha you loaded). These are drawn by the same code as Texture's Properties - Paint (Brush, Alpha, Advanced), so both have the same order, labels and tiles. **More Brush Settings** (closed) holds the rest, one closed section each: Alpha Settings (mapping, size, angle), Brush Options, Falloff, Stroke Options, Cursor, Advanced, Custom Shelf (the Custom shelf; arrows to move / remove buttons while editing the interface) |
-| Status Line | Object / Sculpt Mode; the brush controls (see below); the **Remesh** popover; face count, Multires level with Lower / Higher arrows, Dynamic Detail, Mirror X/Y/Z (the only place for symmetry), Auto-Masking, Mask and Face Set overlays, the **Matcap** popover; the gear at the right end is Workspace Settings |
+| Status Line | Object / Sculpt Mode; the brush controls (see below); the **Remesh** popover; face count (under 5,000 faces without Multires or Dynamic Detail it is a red **Too few faces: Add Detail** menu: Voxel Remesh to about 100k faces, or Subdivide with the face count it gives; over 2 million faces in Sculpt Mode a **Fast Navigation** button turns on Low Resolution While Navigating), **Create High Poly** / **Make Low Poly** / **Show Low Poly** (see High poly and low poly), Multires level with Lower / Higher arrows, Dynamic Detail, Mirror X/Y/Z (the only place for symmetry; a red **Off-centre: Center Pivot** when the mesh is not centred on its pivot along a mirror axis, so strokes would land beside the other side: it moves the pivot to the middle of the mesh), Auto-Masking, Mask and Face Set overlays, the **Matcap** popover; the gear at the right end is Workspace Settings |
 | Top bar | Only the menu bar and the Status Line: the shelf rows (Sculpt / Remesh / Mask / Custom tabs and the brush buttons) are off in this workspace because the tray and tabs have all of it, and the viewport gets the space. Turn **Show Shelf** on in Workspace Settings to bring them back |
-| Status bar (bottom) | The keys of the active brush, read from the keymap (so they follow your own keys): LMB Sculpt, Shift Smooth, Ctrl Mask, Ctrl+Alt Unmask, Ctrl+Shift Hide, S Size, U Strength, N Add / Subtract, Shift+1-7 Brushes. While a tool or gesture runs, the bar shows that tool's keys instead |
-| Geometry tab | Multires: **Subdivide (smooth)** and **Subdivide (keep shape)**, the level with Lower / Higher, **Display level** and **Sculpt level**, **Delete higher levels**, **Rebuild lower levels** (for a mesh that came in dense), **Apply base shape**; Subdivide (linear), the render level and Apply Multires under Advanced. Voxel Remesh: the **Detail** slider shows the face count the remesh gives ("~240k faces", estimated from the surface area and the voxel size) and the button; the voxel size, its eyedropper and the options are under Advanced. **Auto Retopology (quads)** (rebuilds the mesh as even quads). **Dynamic Detail** (strokes add and remove faces as they go; its detail settings show while it is on). A block that cannot work on this mesh is one line saying why with the button that changes it: **Apply Multires** while the mesh has Multires levels, **Turn Off** while Dynamic Detail is on |
+| Status bar (bottom) | The keys of the active brush, read from the keymap (so they follow your own keys): LMB Sculpt, Shift Smooth, Ctrl Mask, Ctrl+Alt Unmask, Ctrl+Shift Hide, S Size, U Strength, N Add / Subtract, D / Shift+D Level Up / Down (Multires), ` Sculpt Mesh Under Pointer, Shift+1-7 Brushes. While a tool or gesture runs, the bar shows that tool's keys instead |
+| Geometry tab | Multires: **Subdivide (smooth)** and **Subdivide (keep shape)** with the face count of the level they add ("Subdivide (smooth) → 98k"), the level with Lower / Higher, **Display level** and **Sculpt level**, **Delete higher levels** (asks first, naming the levels it deletes), **Rebuild lower levels** (for a mesh that came in dense), **Apply base shape**; Subdivide (linear), the render level and Apply Multires under Advanced. Voxel Remesh: the **Detail** slider shows the face count the remesh gives ("~240k faces", estimated from the surface area and the voxel size) and the button; the voxel size, its eyedropper and the options are under Advanced. **Retopology**: the low poly of this sculpt as a new mesh paired with it (the sculpt stays): **Auto Low Poly**, **Draw Low Poly (Quad Draw)** and **Draw Low Poly, Symmetric (X)** (see Retopology); under Advanced, **Rebuild as Quads** rebuilds this mesh itself as even quads (target face count, ratio or edge length, symmetry, sharp edges, boundary, normals; a mesh over 300,000 faces is reduced first). **Dynamic Detail** (strokes add and remove faces as they go; its detail settings show while it is on). A block that cannot work on this mesh is one line saying why with the button that changes it: **Apply Multires** while the mesh has Multires levels, **Turn Off** while Dynamic Detail is on |
 | Mask tab | A big **Invert Mask** button, Clear, Fill, the Ctrl gestures (Ctrl+drag mask, Ctrl+Alt+drag unmask; off the mesh Ctrl+drag clears and Ctrl+click inverts), **Show Mask** with the mask's **color** (black, the default, darkens the surface; any other color tints it) and **Opacity**; filters (Smooth, Sharpen, Grow, Shrink, Contrast), From Cavity / Boundary, Box / Lasso / Line / Polyline Mask, Mask by Color, Hide Masked / Show (with the Ctrl+Shift gestures listed) |
 | Face Sets tab | **Make Face Sets** from [Loose Parts, Materials, Normals, UV Seams, Edge Creases, Sharp Edges, ...] with **Make**, Create from Mask / Visible / Selection, Grow, Shrink, Fair, Delete Geometry, Show All, Randomize Colors |
 | Deform tab | Mesh filters (Smooth, Inflate, Relax, Surface Smooth, Sharpen, Enhance Details, Sphere, Random, Scale), Symmetrize (the merge distance under Advanced), Set Pivot, trim tools |
 | Paint tab | Color brushes (they paint vertex colors; textures are painted in F4 Texture), color picker, palette, **Add Vertex Colors** when the mesh has none, color filters |
 | Display tab | Matcap / studio light as a grid of thumbnails, color, cavity, Face Set and wireframe overlays (their opacity while they are on), low resolution and delayed updates |
-| Objects tab | The scene's meshes with their face counts: show / hide, pick, solo, append a duplicate; add a sphere, cube or cylinder |
+| Objects tab | Second in the tab row, so it stays in sight on a narrow dock. The scene's meshes with their face counts and a Low Poly / High Poly badge: show / hide, pick, solo, append a duplicate, delete; the active mesh's name is a field (click to rename it); **Show All** (when a mesh is hidden), **Merge Visible** (the shown meshes become the active one), **Split Loose Parts** and **Split Face Sets** (each part a mesh of its own); add a sphere, cube or cylinder |
 
 On the Mask, Face Sets, Deform and Paint tabs, **Tool Settings** shows the settings of the active tool when it is one of
 that tab's tools (a mask or hide shape, a trim, a filter, Face Set Edit...). The face count is the same everywhere: with
@@ -166,9 +170,8 @@ Size / Strength is on), **Hardness** (how far from the centre the brush stays at
 the rest), **Add / Subtract** (Brush.direction), **Lazy Mouse**
 (toggle, and its Distance while it is on), and for a color brush the two colors and swap. The **Brush** popover has all of
 them plus Lazy Mouse Distance and Smoothing, the stroke type tiles and the Falloff curve and shape. The **Remesh** popover has
-Voxel Remesh (Detail, button, size and options under Advanced), Auto Retopology (target face count, ratio or edge length,
-symmetry, sharp edges, boundary, normals), Multires (as on the Geometry tab) and Dynamic Detail (switch, detail size and
-method). On a window wider than about 2200 px the Hardness slider, the Lazy Mouse toggle with its Distance, and Voxel
+Voxel Remesh (Detail, button, size and options under Advanced), Retopology (as on the Geometry tab), Multires (as on the
+Geometry tab) and Dynamic Detail (switch, detail size and method). On a window wider than about 2200 px the Hardness slider, the Lazy Mouse toggle with its Distance, and Voxel
 Remesh's Detail with a **Remesh** button sit in the Status Line itself (not while the mesh has Multires or Dynamic Detail is
 on); on a narrower one (down to about 1500 px) only the sliders and the Add / Subtract buttons do and the popovers have the
 rest. The **Matcap** popover is the thumbnail grid of the matcaps (Studio and Flat are the other lights), plus color and
@@ -191,7 +194,8 @@ by what is under the cursor when you press and by whether you click or drag (mor
 
 To subtract, switch the brush to Subtract: the buttons in the tray and the Status Line, or **N** in the viewport (a
 sticky toggle). Esc or right-click cancels a gesture. The other Ctrl keys are as before: Ctrl+I invert mask, Ctrl+Shift+A
-fill mask, Ctrl+H hide masked, Ctrl+A mask pie, Ctrl+W face sets pie, Ctrl+0-5 subdivision level, Ctrl+D voxel remesh,
+fill mask, Ctrl+H hide masked, Ctrl+A mask pie, Ctrl+W face sets pie, Ctrl+0-5 Multires level (a level the mesh does not
+have yet is added), Ctrl+D duplicate (as everywhere), Ctrl+R Voxel Remesh, D / Shift+D one Multires level up / down,
 Ctrl+RMB stencil; H / Shift+H / Alt+H hide the face set, isolate / show it, show all. Alphas: Blender's essentials
 brushes are linked asset data, which can only use linked textures, so every alpha lives in the **alpha library** (one
 .blend with its thumbnail per alpha, in the user data folder `datafiles/m3d_alphas`); the starter set is made the first
@@ -200,7 +204,14 @@ at its edge). Blender 5.2 ships no image alphas of its own.
 
 Tool buttons (mesh filters, trims, Grow / Shrink face set, color filters, Mask by Color) pick the tool: drag in the
 viewport afterwards. Shift+1 ... Shift+7 pick Draw, Clay Strips, Smooth, Grab, Inflate/Deflate, Pinch/Magnify, Crease
-Sharp. Expand stays on Shift+A (mask) and Shift+W (face sets) over the mesh. Space (hold) lists the brushes first.
+Sharp. Expand stays on Shift+A (mask) and Shift+W (face sets) over the mesh.
+
+**Heavy operations ask first.** Everything that can make millions of faces estimates the result before it runs (from the
+face count, without reading the mesh): Ctrl+0-5 and Subdivide, Smooth Preview (key 3), Voxel Remesh (also with a tiny
+voxel size typed under Advanced), Create High Poly and Rebuild as Quads. Over 5 million faces it asks ("... makes about
+19M faces. That can take minutes and slow the viewport down"), over 50 million it refuses and says why. **Apply Multires**
+on a lower level than the top asks too: "Keep level 2 of 5 (130k faces)? Levels 3-5 are lost", with **Use highest level**
+(and its face count) to keep all the detail instead. Space (hold) lists the brushes first.
 "All Settings" at the end of each tab row is Blender's stock Properties tabs (symmetry locks, radial symmetry, tiling,
 gravity, the active tool's settings, ...); the column of stock tabs beside a dock shows only then. Files
 saved with the earlier Sculpt layout keep their Outliner and tool settings row until Reset Workspace.
@@ -211,10 +222,16 @@ A game model has two meshes: the **low poly**, the light mesh you unwrap, paint 
 detailed copy you sculpt and bake the detail from. Maelstrom3D keeps the two as a pair, and keeps a mesh of millions of
 faces from slowing the other workspaces down.
 
-- **Create High Poly** copies the selected mesh into `<name>_high` (a full copy; the original keeps its name) and pairs the two. A copy with a non-uniform
-  scale gets it applied, since Sculpt Mode wants a uniform one; the original keeps its own. The options (the box that opens on the click, or Adjust Last
-  Operation) are **Detail**: None, **Multires** (levels, 2 by default) or **Voxel Remesh** (voxel size). It is on the Sculpt Status Line (on a mesh without a
-  high poly), on the Objects tab of Sculpt, and in the right-click menu in Object Mode under **High / Low Poly**. If the mesh already has a high poly, you get that one selected instead of another.
+- **Create High Poly** copies the selected mesh into `<name>_high` (a full copy; the original keeps its name) and pairs the two. The copy is the mesh as it shows, but
+  without what only a game mesh needs (Triangulate, Weighted Normal and Subdivision modifiers are left out; a Mirror is applied, so both halves can be sculpted). A copy
+  with a non-uniform scale gets it applied, since Sculpt Mode wants a uniform one; the original keeps its own. The options (the box that opens on the click, or Adjust
+  Last Operation) are **Detail**: **Multires** (the default: **Levels**, 2 at first, each with 4 times the faces of the last, and **Keep Hard Edges**, on at first: edges
+  marked sharp or folded more than 30° are creased, so the levels keep a box a box instead of rounding it), **Voxel Remesh** (voxel size) or None, and the face count of
+  the new high poly. Under 100,000 faces it says the high poly is light for fine detail. It is on the Sculpt Status Line (on a game mesh), on the Objects tab of Sculpt,
+  in the right-click menu in Object Mode and the **Mesh** menu of Modeling under **High / Low Poly**, in the **Bake** menu of Texture, and on the **Poly Modeling** shelf
+  (with Auto-Pair by Name). If the mesh already has a high poly, you get that one selected instead of another.
+- **Make Low Poly** is what the Sculpt Status Line offers instead on a sculpt that has no low poly yet (a mesh without a role of more than 50,000 faces or with Multires,
+  or a high poly alone): Auto Low Poly or Draw Low Poly (see Retopology).
 - **Roles and groups.** Every mesh has a role (None, Low, High) and a group name; meshes with the same group belong together. **Mark as High Poly**,
   **Mark as Low Poly**, **Clear Role** and **Pair Selected** (the active mesh is the low poly, the other selected meshes are its high poly) are in the same submenu. The group is the name
   without its suffix: `Sword_low` and `Sword_high` are group `Sword`. The suffixes `_low` / `_high`, `_lp` / `_hp`, `_lo` / `_hi` and `_lowpoly` / `_highpoly` are known, in any case, with or
@@ -230,6 +247,11 @@ faces from slowing the other workspaces down.
   instead of a fifth of a second or more. **Show Low Poly** on the Sculpt Status Line draws the low poly as a wire, which cannot be selected, while you sculpt.
 - **Only what Maelstrom3D hid is shown again.** A mesh you hid yourself stays hidden, a mesh without a role is never touched, and a high poly without a low poly (sculpting first, retopology later)
   is never hidden. Marking or pairing does not hide anything by itself: the high poly is hidden at the next switch of workspace.
+- **Renders show each pair once.** A parked high poly is left out of renders as well (its render toggle is off while it is parked), so F12 does not render
+  the high poly inside its low poly. **Render: Low Poly | High Poly** (Render tab of F7, shown when the scene has pairs) picks which one renders; the other is
+  left out. A mesh whose render toggle you turned off yourself stays off, and a mesh that leaves its pair renders again. Bakes are not affected.
+- **Multires outside Sculpt.** Leaving Sculpt lowers the display level of a Multires sculpt to the highest level under 500,000 faces, so F1 and F7 stay
+  fast; entering Sculpt puts it back (the sculpt level and the render level are not touched).
 - **Edit High Poly** (the submenu, on a low poly whose high poly is hidden) asks first ("Sword_high has 2,996,586 faces. Showing it takes a moment"), then shows, selects and activates the high poly. It stays shown
   until the next switch of workspace hides it again, or until **Park High Poly** (same submenu) does.
 - **Face limit.** Entering Edit Mode (UV, F3) or Texture Paint Mode (Texture, F4) on a mesh of millions of faces takes seconds, and is rarely what you want. A mesh with more faces than the **Face Limit** (500,000; in
@@ -239,7 +261,7 @@ faces from slowing the other workspaces down.
 
 ### Retopology
 
-Retopology builds the low poly from a high poly you already have, either by drawing it over the high poly or by letting Maelstrom3D make it. All of it is in the **High / Low Poly** submenu (right-click in Object Mode).
+Retopology builds the low poly from a high poly you already have, either by drawing it over the high poly or by letting Maelstrom3D make it. All of it is in the **High / Low Poly** submenu (right-click in Object Mode, Mesh menu of Modeling); Auto Low Poly and Draw Low Poly are also in Sculpt: **Make Low Poly** on the Status Line, the Retopology section of the Geometry tab and the Remesh popover, and the **Remesh** menu (with Rebuild as Quads, in place).
 
 - **Make Live** turns the high poly of the selected mesh (or the mesh itself, when it has no role) into a **live surface**: new points snap onto it. A high poly Maelstrom3D hid asks first
   ("Sword_high has 2,996,586 faces. Showing it takes a moment"), then shows. It cannot be selected while it is live, so clicks go to the mesh you draw, and it stays shown when you switch workspace
@@ -250,8 +272,11 @@ Retopology builds the low poly from a high poly you already have, either by draw
   Edit Mode and picks the **Quad Draw** tool. **Shift+click** on the surface adds the first point. **Shift+drag** from a point adds the next point and an edge to it; from the middle point of two edges it adds a
   quad. A plain **drag** on a point moves it, **Ctrl+click** on a point deletes it. Points always land on the surface, also when you move them. The Modeling Toolkit says "Make Live first" under its tools until a surface is live.
   (Poly Build's own Ctrl+click is changed to Shift+click: with Ctrl held, a move snaps the other way round, which would leave the new point off the surface.)
+  **New Low Poly, Symmetric (X)** (Draw Low Poly, Symmetric in Sculpt) does the same with a Mirror modifier on the new mesh: draw one half, the other follows (points on the
+  middle stay there). **Conform to Surface** (the submenu, and under the Modeling Toolkit's tools while a surface is live) moves every point of the low poly onto the live
+  surface (or its shown high poly) along its normal, for a low poly that was moved or edited off it.
 - **Auto Low Poly** makes the low poly for you from a copy of the high poly: `<group>_low`, paired with it, with the high poly untouched. **Method**: **Auto Retopology** (quads) or **Decimate** (triangles), **Faces**
-  (2,000 by default; the result is about that many), and for Auto Retopology **Preserve Sharp** and **Preserve Boundary**. A high poly over 300,000 faces is voxel remeshed to about that first (decimated instead with Preserve
+  (2,000 by default; the result is about that many), **Symmetry (X)** (on at first when the high poly's Mirror X is on: the low poly is the same on both sides), and for Auto Retopology **Preserve Sharp** and **Preserve Boundary**. A high poly over 300,000 faces is voxel remeshed to about that first (decimated instead with Preserve
   Boundary, since a voxel remesh closes open borders), since Auto Retopology on millions of faces takes very long. A Multires high poly is copied as it shows in the viewport. Auto Retopology needs a closed mesh without loose edges or flipped faces; when it cannot remesh, nothing is
   added and the message suggests Voxel Remesh on the high poly first, or Decimate. The new low poly has no UVs: unwrap it in the UV workspace (F3).
 
@@ -1026,7 +1051,7 @@ how to render, Shift+F12). Right: the dock.
 | Camera tab | Scene camera, **New Camera from View**, Match Camera to View, Look Through Camera; focal length (or ortho scale), clip range; depth of field (focus object or distance, f-stop, blades); resolution X / Y / %; safe areas and composition guides; render border (Set / Clear) |
 | Lighting tab | Add Light buttons, the **Light Editor** (one row per light: viewport eye, render toggle, name, color, power, shadow, shared-data button, select), **HDRI Sky** (Blender's studio HDRIs, or your own file; rotation, strength), exposure and gamma |
 | Materials tab | The active object's material slots (Assign New Material for an object without one; with a camera, a light or nothing selected, the objects that can have one) and the Principled inputs (base color, metallic, roughness, emission color / strength, normal strength when a Normal Map or Bump node feeds it); a button to the Shading workspace |
-| Render tab | Engine and quality presets with **Your Presets** (the menu beside them), then the engine's settings: Cycles device (with "GPU found: ... **Use GPU**" while it renders on the CPU), samples, noise threshold, time limit, denoising; EEVEE samples, ray tracing, shadows |
+| Render tab | Engine and quality presets with **Your Presets** (the menu beside them), then the engine's settings: Cycles device (with "GPU found: ... **Use GPU**" while it renders on the CPU), samples, noise threshold, time limit, denoising; EEVEE samples, ray tracing, shadows. With high poly / low poly pairs in the scene, **High / Low Poly**: **Low Poly** or **High Poly**, which mesh of each pair renders (see High poly and low poly) |
 | Output tab | Path (`//render/` in a new file: a render folder next to the saved file), **Type**: **Image Sequence** (format, color mode and depth), **Multilayer EXR** (every pass and render layer in one file per frame; depth, compression) or **Video** (container, codec, quality), Overwrite Existing Frames, frame range, FPS, Render / Render Animation, **Open Render Folder**, color management (view transform, look, exposure, gamma) |
 | Passes & Layers tab | **Render Layers** (picker, Render This Layer, **New Render Layer from Selection**), passes (data, light, Cryptomatte, shadow catcher), AOVs, light groups, **Collections in This Render Layer** (**In Layer**, **holdout** and **indirect only** per collection), light linking and shadow linking for the active object, shadow catcher and holdout flags |
 | Advanced tab | Light paths (Cycles bounces and clamping; EEVEE fast GI), film (transparent background, filter, motion blur), performance, simplify |

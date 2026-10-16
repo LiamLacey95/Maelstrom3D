@@ -367,6 +367,8 @@ MENUS = {
         SEP,
         op("Fill Hole", "m3d.fill_hole"),
         op("Cleanup (Merge by Distance)", "mesh.remove_doubles", modes=EDIT),
+        SEP,
+        sub("High / Low Poly", "M3D_MT_hplp", 'DUPLICATE'),
     ]),
     "M3D_MT_edit_mesh": ("Edit Mesh", [
         op("Add Divisions", "mesh.subdivide"),
@@ -468,9 +470,13 @@ MENUS = {
     "M3D_MT_mask": ("Mask", [stock("VIEW3D_MT_mask")]),
     "M3D_MT_face_sets": ("Face Sets", [stock("VIEW3D_MT_face_sets")]),
     "M3D_MT_remesh": ("Remesh", [
-        op("Voxel Remesh", "object.voxel_remesh", 'MOD_REMESH', modes={'SCULPT', 'OBJECT'}),
-        op("Auto Retopology (quads)", "object.quadriflow_remesh", 'MOD_REMESH'),
+        op("Voxel Remesh", "m3d.voxel_remesh", 'MOD_REMESH', modes={'SCULPT', 'OBJECT'}),
         modifier("Multires", 'MULTIRES', 'MOD_MULTIRES'),
+        SEP,
+        op("Auto Low Poly", "m3d.hp_auto_low", 'MOD_DECIM'),
+        op("Draw Low Poly (Quad Draw)", "m3d.hp_new_low", 'GREASEPENCIL'),
+        op("Draw Low Poly, Symmetric (X)", "m3d.hp_new_low", 'MOD_MIRROR', symmetric=True),
+        op("Rebuild as Quads (in place)", "m3d.retopo_quads", 'MOD_REMESH'),
         SEP,
         op("Dynamic Detail", "sculpt.dynamic_topology_toggle", 'MOD_DYNAMICPAINT', modes={'SCULPT'}),
         op("Symmetrize", "sculpt.symmetrize", 'MOD_MIRROR', modes={'SCULPT'}),
@@ -538,6 +544,7 @@ MENUS = {
         op("Bake All Groups", "m3d.bg_bake_all", 'RENDER_ANIMATION'),
         op("Auto-Pair by Name", "m3d.hp_auto_pair", 'LINKED'),
         op("Use Selected as High Poly", "m3d.tex_bake_pick", 'EYEDROPPER'),
+        sub("High / Low Poly", "M3D_MT_hplp", 'DUPLICATE'),
     ]),
     "M3D_MT_export": ("Export", [
         op("Export Textures... (Ctrl+Shift+E)", "m3d.tex_export_dialog", 'EXPORT'),
@@ -1037,8 +1044,9 @@ def _texture_tool_label(context):
     return m3d_texture.TOOL_BY_ID[tool][1] if tool in m3d_texture.TOOL_BY_ID else "Paint"
 
 
-# kind -> (mode, keymap, hints, (idname of the numbered items, their label)). A hint is (label, operator, options): the
-# keymap's own item for it is drawn, so the hints follow the keys the user set; a label can be a function of the context.
+# kind -> (mode, keymap, hints, (idname of the numbered items, their label)). A hint is (label, operator, options[, keymap
+# when not the mode's]): the keymap's own item for it is drawn, so the hints follow the keys the user set; a label can be a
+# function of the context.
 STATUS_HINTS = {
     'SCULPT': ('SCULPT', "Sculpt", (
         ("Sculpt", "sculpt.brush_stroke", {"mode": 'NORMAL', "brush_toggle": 'None'}),
@@ -1049,6 +1057,9 @@ STATUS_HINTS = {
         ("Size", "wm.radial_control", {"data_path_primary": "tool_settings.sculpt.brush.size"}),
         ("Strength", "wm.radial_control", {"data_path_primary": "tool_settings.sculpt.brush.strength"}),
         ("Add / Subtract", "wm.context_toggle_enum", {"data_path": "tool_settings.sculpt.brush.direction"}),
+        ("Level Up", "object.subdivision_set", {"level": 1, "relative": True}),
+        ("Level Down", "object.subdivision_set", {"level": -1, "relative": True}),
+        ("Sculpt Mesh Under Pointer", "object.transfer_mode", {}, "Object Non-modal"),
     ), ("brush.asset_activate", "Brushes")),
     'TEXTURE': ('PAINT_TEXTURE', "Image Paint", (
         (_texture_tool_label, "paint.image_paint", {"mode": 'NORMAL'}),
@@ -1159,7 +1170,8 @@ def status_hints(context):
     brush = STATUS_HINTS.get(kind)
     if brush is not None and mode == brush[0]:
         _mode, km_name, items, (range_idname, range_label) = brush
-        return [(label, km_name, idname, props) for label, idname, props in items], (km_name, range_idname, range_label)
+        return ([(label, (km or [km_name])[0], idname, props) for label, idname, props, *km in items],
+                (km_name, range_idname, range_label))
     hints = KIND_MODE_HINTS.get((kind, mode)) or MODE_HINTS.get(mode)
     return (hints, None) if hints else None
 
@@ -1295,6 +1307,8 @@ SHELVES = {
         ("m3d.boolean", 'SELECT_INTERSECT', {"operation": 'INTERSECT'}),
         ("object.subdivision_set", 'MOD_SUBSURF', {"level": 1, "relative": False}),
         ("object.modifier_add", 'MOD_MIRROR', {"type": 'MIRROR'}),
+        ("m3d.hp_create", 'DUPLICATE', {}),
+        ("m3d.hp_auto_pair", 'LINKED', {}),
         None,
         ("view3d.edit_mesh_extrude_move_normal", 'FACESEL', {}),
         ("mesh.bridge_edge_loops", 'MOD_LATTICE', {}),

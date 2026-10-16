@@ -25,10 +25,9 @@ from contextlib import contextmanager
 import bpy
 from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty, PointerProperty,
                        StringProperty)
-from bpy.types import Menu, Operator, PropertyGroup
+from bpy.types import Menu, Operator, Panel, PropertyGroup
 
-import m3d_inputs
-from m3d_workspace import current_kind, workspace_kind
+from m3d_workspace import _PagePanel, current_kind, workspace_kind
 
 ROLES = (
     ('NONE', "None", "A plain mesh"),
@@ -80,6 +79,10 @@ class M3D_Pair(PropertyGroup):
                        description="Low poly: the mesh you unwrap, paint and export. High poly: the sculpt it is baked from")
     group: StringProperty(name="Group", description="Meshes with the same group belong together (one bake group)")
     parked: BoolProperty(options={'HIDDEN'}, description="Hidden by Maelstrom3D, to be shown again by it")
+    render_parked: BoolProperty(options={'HIDDEN'}, description="Left out of renders by Maelstrom3D (the other mesh of its "
+                                "pair renders), to be rendered again by it")
+    display_level: IntProperty(options={'HIDDEN'}, description="Multires display level before leaving Sculpt lowered it "
+                               "(0: not lowered)")
     ghost: StringProperty(options={'HIDDEN'}, description="Display type before Show Low Poly drew this mesh as a wire")
     explode_from: FloatVectorProperty(size=3, options={'HIDDEN'}, description="Location of the mesh before Explode moved it")
     explode_offset: FloatVectorProperty(size=3, options={'HIDDEN'}, description="What Explode added to the world position of the mesh (zero: not moved)")
@@ -139,6 +142,7 @@ def set_role(ob, role, group=None):
     p = ob.m3d_pair
     if p.role != role:
         restore(ob)
+        unpark_render(ob)
     p.role = role
     p.group = "" if role == 'NONE' else (group or p.group or split_role(ob.name)[0])
 
@@ -150,13 +154,49 @@ def meshes(context):
     return obs or ([ob] if is_mesh(ob) else [])
 
 
+def level_faces(ob, level):
+    """Faces of the mesh at Multires level `level` (O(1): each base corner becomes 4^(level - 1) faces)."""
+    return len(ob.data.loops) * 4 ** (level - 1) if level > 0 else len(ob.data.polygons)
+
+
 def face_count(ob):
     """Faces the mesh has: a Multires mesh counts the level the viewport shows. No per-face work."""
-    mesh = ob.data
     mod = next((m for m in ob.modifiers if m.type == 'MULTIRES'), None)
-    if mod is not None and mod.levels > 0:
-        return len(mesh.loops) * 4 ** (mod.levels - 1)
-    return len(mesh.polygons)
+    return level_faces(ob, mod.levels if mod is not None else 0)
+
+
+# -----------------------------------------------------------------------------
+# Heavy operations: one guard for everything that can make millions of faces (Multires levels, Smooth Preview, Voxel
+# Remesh, Create High Poly). The estimate is the caller's, an O(1) formula like `level_faces`.
+
+ASK_FACES = 5_000_000    # an operation that makes more faces than this asks first (it can take minutes, the view slows down)
+MAX_FACES = 50_000_000   # ...and one that makes more than this is refused (it would run out of memory first)
+
+
+def heavy(faces):
+    """'REFUSE', 'ASK' or None (it just runs) for an operation that makes about `faces` faces."""
+    return 'REFUSE' if faces > MAX_FACES else 'ASK' if faces > ASK_FACES else None
+
+
+def heavy_problem(faces, what):
+    """Why an operation that makes about `faces` faces is refused, else None."""
+    if heavy(faces) == 'REFUSE':
+        return "%s would make about %s faces: far too many to work with" % (what, format_count(int(faces)))
+    return None
+
+
+def heavy_guard(op, context, event, faces, what):
+    """The invoke of an operator that makes about `faces` faces: refused above MAX_FACES, asks above ASK_FACES, else it
+    runs. (Its execute refuses with `heavy_problem` too: a script or Adjust Last Operation has no invoke.)"""
+    problem = heavy_problem(faces, what)
+    if problem:
+        op.report({'ERROR'}, problem)
+        return {'CANCELLED'}
+    if heavy(faces) == 'ASK':
+        return context.window_manager.invoke_confirm(
+            op, event, title=op.bl_label, confirm_text="Go Ahead", icon='QUESTION',
+            message="%s makes about %s faces. That can take minutes and slow the viewport down" % (what, format_count(int(faces))))
+    return op.execute(context)
 
 
 # -----------------------------------------------------------------------------
@@ -199,6 +239,61 @@ def put_away(ob):
     if ob.m3d_pair.ghost:
         restore(ob)
     park(ob)
+
+
+def park_render(ob):
+    """Leave a mesh out of renders and remember that we did (one the user left out is left alone)."""
+    if not ob.hide_render:
+        ob.hide_render = True
+        ob.m3d_pair.render_parked = True
+
+
+def unpark_render(ob):
+    """Render a mesh again if we left it out."""
+    p = ob.m3d_pair
+    if p.render_parked:
+        ob.hide_render = p.render_parked = False
+
+
+def render_todo(context):
+    """[(mesh, leave out)] that `sync_render` changes: of a group with a low and a high poly only one role renders (the
+    low polys, or with Render: High Poly the high polys); any other mesh we left out renders again."""
+    high = context.scene.m3d_render_pair == 'HIGH'
+    full = {g for g, (lows, highs) in all_groups(context).items() if lows and highs}
+    todo = []
+    for ob in context.view_layer.objects:
+        if ob.type == 'MESH':
+            p = ob.m3d_pair
+            out = p.role != 'NONE' and p.group in full and (p.role == 'HIGH') != high
+            if out and not ob.hide_render or not out and p.render_parked:
+                todo.append((ob, out))
+    return todo
+
+
+def sync_render(context):
+    """A render shows each pair once: parked high polys are left out of it (hide_render), unless the scene renders
+    the high polys (the Render: Low Poly | High Poly switch of the Rendering workspace), which leaves the low polys out.
+    Done at each switch of workspace, nothing changes when nothing has to."""
+    todo = render_todo(context)
+    if todo:
+        with quiet(context):   # (no edit of the meshes)
+            for ob, out in todo:
+                (park_render if out else unpark_render)(ob)
+
+
+@contextmanager
+def rendered(keep_out=()):
+    """Inside: the meshes `sync_render` left out are rendered again, but `keep_out` (a bake renders the scene as it is,
+    the meshes it hides itself aside)."""
+    keep_out = set(keep_out)
+    back = [ob for ob in bpy.context.view_layer.objects if ob.m3d_pair.render_parked and ob.hide_render and ob not in keep_out]
+    try:
+        for ob in back:
+            ob.hide_render = False
+        yield
+    finally:
+        for ob in back:
+            ob.hide_render = True
 
 
 _quiet = [0]   # > 0 while something changes the meshes without editing them: the stale marks of the bake groups ignore it
@@ -318,6 +413,39 @@ def leave_sculpt(context):
     park_all(context)
 
 
+DISPLAY_CAP = 500_000   # outside Sculpt a Multires mesh shows at most this many faces (its display level is lowered)
+
+
+def lower_levels(context):
+    """Leaving Sculpt: a Multires sculpt shows its top level in every workspace, millions of faces that slow down F1 and F7
+    for nothing; its display level goes down to the highest one under DISPLAY_CAP (Sculpt puts it back)."""
+    todo = []
+    for ob in context.view_layer.objects:
+        mod = next((m for m in ob.modifiers if m.type == 'MULTIRES'), None) if ob.type == 'MESH' else None
+        if mod is not None and level_faces(ob, mod.levels) > DISPLAY_CAP:
+            level = mod.levels
+            while level > 0 and level_faces(ob, level) > DISPLAY_CAP:
+                level -= 1
+            todo.append((ob, mod, level))
+    if todo:
+        with quiet(context):
+            for ob, mod, level in todo:
+                ob.m3d_pair.display_level = max(ob.m3d_pair.display_level, mod.levels)
+                mod.levels = level
+
+
+def raise_levels(context):
+    """Entering Sculpt: the display levels `lower_levels` lowered are back."""
+    todo = [ob for ob in context.view_layer.objects if ob.type == 'MESH' and ob.m3d_pair.display_level]
+    if todo:
+        with quiet(context):
+            for ob in todo:
+                mod = next((m for m in ob.modifiers if m.type == 'MULTIRES'), None)
+                if mod is not None:
+                    mod.levels = min(ob.m3d_pair.display_level, mod.total_levels)
+                ob.m3d_pair.display_level = 0
+
+
 def switch(context, old_ws, new_ws, set_mode=False):
     """Parking for the window going from workspace `old_ws` to `new_ws`: Sculpt shows the pair's high poly, leaving
     it parks the high poly, any other switch parks one that Edit High Poly showed."""
@@ -325,11 +453,14 @@ def switch(context, old_ws, new_ws, set_mode=False):
         return
     entering, leaving = workspace_kind(new_ws) == 'SCULPT', workspace_kind(old_ws) == 'SCULPT'
     if entering:
+        raise_levels(context)
         enter_sculpt(context, set_mode)
     elif leaving:
         leave_sculpt(context)
+        lower_levels(context)
     else:
         park_all(context)
+    sync_render(context)
     _state["ws"] = new_ws.name
 
 
@@ -390,8 +521,43 @@ def too_big(ws, ob):
 
 def keeps_object_mode(context, ws):
     """True when `ws` would put the active mesh in Edit or Texture Paint Mode and the mesh has more faces than the
-    workspace's limit (opening a mode on a huge mesh takes seconds)."""
-    return ws.object_mode in {'EDIT', 'TEXTURE_PAINT'} and too_big(ws, context.view_layer.objects.active)
+    workspace's limit (opening a mode on a huge mesh takes seconds), or Sculpt would sculpt a game mesh that has no
+    high poly (its card asks first: Create High Poly or Sculpt this mesh)."""
+    ob = context.view_layer.objects.active
+    if ws.object_mode == 'SCULPT' and workspace_kind(ws) == 'SCULPT':
+        return game_mesh(context, ob)
+    return ws.object_mode in {'EDIT', 'TEXTURE_PAINT'} and too_big(ws, ob)
+
+
+def game_mesh(context, ob):
+    """A mesh made for a game engine that has no high poly yet: a low poly without one, or a mesh without a role that is
+    painted (a material with texture layers). Sculpting it would change the mesh that is exported."""
+    if not is_mesh(ob):
+        return False
+    p = ob.m3d_pair
+    if p.role == 'LOW':
+        return not pair_of(context, ob)[1]
+    return p.role == 'NONE' and any(s.material is not None and len(getattr(s.material, "m3d_layers", ())) for s in ob.material_slots)
+
+
+HEAVY_SWITCH = 500_000   # faces of the mesh a workspace opens in a mode above which the switch shows the wait cursor
+_opened = set()          # workspace kinds opened in this session (the first Texture or Rendering compiles its shaders)
+
+
+def slow_switch(context, kind, ws):
+    """True when switching to the workspace `ws` (of `kind`) takes a moment: it opens a mode on a mesh of more than
+    HEAVY_SWITCH faces (in Sculpt the high poly of the pair), or it is the first Texture or Rendering of the session."""
+    first = kind in {'TEXTURE', 'RENDER'} and kind not in _opened
+    _opened.add(kind)
+    if first:
+        return True
+    ob = context.view_layer.objects.active
+    if not is_mesh(ob) or ws.object_mode == 'OBJECT' or keeps_object_mode(context, ws):
+        return False
+    lows, highs = pair_of(context, ob)
+    if kind == 'SCULPT' and lows and highs and ob.m3d_pair.role == 'LOW':
+        ob = pick_high(highs, ob.m3d_pair.group)
+    return face_count(ob) > HEAVY_SWITCH
 
 
 _holds = {}   # workspace name -> its entry mode, while a switch holds it in Object Mode
@@ -463,6 +629,27 @@ def surface_area(mesh):
 
 
 MAX_VOXEL_FACES = 6_000_000   # Voxel Remesh has no limit of its own: a tiny size would run for minutes
+HARD_ANGLE = 30.0             # degrees: Create High Poly keeps edges folded more than this hard (and the ones marked sharp)
+LIGHT_FACES = 100_000         # a high poly with fewer faces than this is too light for fine detail: Create High Poly says so
+GAME_ONLY = {'TRIANGULATE', 'WEIGHTED_NORMAL', 'SUBSURF'}   # modifiers of a game mesh its high poly leaves out
+
+
+def crease_hard_edges(mesh, angle=HARD_ANGLE):
+    """Crease the hard edges of a game mesh (marked sharp, or folded more than `angle` degrees): Multires levels keep
+    them hard instead of rounding the whole shape. Returns how many it creased."""
+    import bmesh
+    from math import radians
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    layer = bm.edges.layers.float.get("crease_edge") or bm.edges.layers.float.new("crease_edge")
+    limit, n = radians(angle), 0
+    for e in bm.edges:
+        if not e.smooth or (e.is_manifold and e.calc_face_angle(0.0) > limit):
+            e[layer] = 1.0
+            n += 1
+    bm.to_mesh(mesh)
+    bm.free()
+    return n
 
 
 class M3D_OT_hp_create(Operator):
@@ -471,11 +658,15 @@ class M3D_OT_hp_create(Operator):
     bl_label = "Create High Poly"
     bl_options = {'REGISTER', 'UNDO'}
 
-    detail: EnumProperty(name="Detail", default='NONE', items=(
+    detail: EnumProperty(name="Detail", default='MULTIRES', items=(
         ('NONE', "None", "Sculpt the copy as it is"),
         ('MULTIRES', "Multires", "Add Multires levels to the copy (the low poly shape stays in the base)"),
         ('VOXEL', "Voxel Remesh", "Rebuild the copy as an even mesh of small faces")))
-    levels: IntProperty(name="Levels", description="Multires levels to add", default=2, min=1, max=6)
+    levels: IntProperty(name="Levels", description="Multires levels to add: each one has 4 times the faces of the last",
+                        default=2, min=1, max=6)
+    hard_edges: BoolProperty(name="Keep Hard Edges", default=True,
+                             description="Edges marked sharp or folded more than 30° stay hard on the levels (creased); "
+                                         "off: the whole shape rounds")
     voxel_size: FloatProperty(name="Voxel Size", description="Size of the faces of the remeshed copy", default=0.01,
                               min=0.0001, soft_max=1.0, step=1, precision=4, subtype='DISTANCE', unit='LENGTH')
 
@@ -483,28 +674,49 @@ class M3D_OT_hp_create(Operator):
     def poll(cls, context):
         return bool(meshes(context))
 
-    def draw(self, _context):
+    def draw(self, context):
         layout = self.layout
         layout.prop(self, "detail")
         if self.detail == 'MULTIRES':
-            layout.prop(self, "levels")
+            layout.prop(self, "levels", slider=True)
+            layout.prop(self, "hard_edges")
         elif self.detail == 'VOXEL':
             layout.prop(self, "voxel_size")
+        highs = [o for o in meshes(context) if o.m3d_pair.role == 'HIGH']   # (what the last run made: selected now)
+        if highs:
+            faces = sum(face_count(h) for h in highs)
+            layout.label(text="%s faces%s" % (format(faces, ","), ": light for fine detail" if faces < LIGHT_FACES else ""),
+                         icon='ERROR' if faces < LIGHT_FACES else 'INFO')
+
+    def estimate(self, src):
+        """About how many faces the high poly of `src` gets (O(1) but for Voxel Remesh, which reads the face areas)."""
+        if self.detail == 'MULTIRES':
+            return level_faces(src, self.levels)
+        if self.detail == 'VOXEL':
+            from m3d_sculpt import uniform_scale
+            scale = 1.0 if uniform_scale(src) else max(abs(s) for s in src.scale) ** 2
+            return surface_area(src.data) * scale / self.voxel_size ** 2
+        return len(src.data.polygons)
+
+    def invoke(self, context, event):
+        sources = [o for o in meshes(context) if o.m3d_pair.role != 'HIGH' and not all(pair_of(context, o))]
+        return heavy_guard(self, context, event, sum(self.estimate(o) for o in sources), "Create High Poly")
 
     def execute(self, context):
-        from m3d_sculpt import uniform_scale
         sources = [o for o in meshes(context) if o.m3d_pair.role != 'HIGH']
         if not sources:
             self.report({'WARNING'}, "Select the mesh to make a high poly of")
             return {'CANCELLED'}
-        if self.detail == 'VOXEL':
-            for src in sources:
-                scale = 1.0 if uniform_scale(src) else max(abs(s) for s in src.scale) ** 2
-                faces = surface_area(src.data) * scale / self.voxel_size ** 2
-                if faces > MAX_VOXEL_FACES:
-                    self.report({'ERROR'}, "Voxel size %g would make about %s faces on %s: use a bigger size" % (
-                        self.voxel_size, format_count(int(faces)), src.name))
-                    return {'CANCELLED'}
+        for src in sources:
+            faces = self.estimate(src)
+            if self.detail == 'VOXEL' and faces > MAX_VOXEL_FACES:
+                self.report({'ERROR'}, "Voxel size %g would make about %s faces on %s: use a bigger size" % (
+                    self.voxel_size, format_count(int(faces)), src.name))
+                return {'CANCELLED'}
+            problem = heavy_problem(faces, "A high poly of %s" % src.name)
+            if problem:
+                self.report({'ERROR'}, problem)
+                return {'CANCELLED'}
         vl = context.view_layer
         active = vl.objects.active
         sculpting = current_kind(context) == 'SCULPT'
@@ -527,7 +739,10 @@ class M3D_OT_hp_create(Operator):
         return {'FINISHED'}
 
     def _high_for(self, context, src):
-        """The high poly of `src`: the one its group has, else a new copy of it (None when it can't be made)."""
+        """The high poly of `src`: the one its group has, else a new copy of it (None when it can't be made). The copy is
+        the mesh as it shows, but without what only a game mesh needs (Triangulate, Weighted Normal, Subdivision: Multires
+        replaces it): a Mirror is applied, so both halves can be sculpted."""
+        from m3d_retopo import copy_of
         from m3d_sculpt import uniform_scale, multires_of
         base = split_role(src.name)[0]
         p = src.m3d_pair
@@ -538,23 +753,19 @@ class M3D_OT_hp_create(Operator):
             self.report({'INFO'}, "%s already has a high poly: %s" % (src.name, highs[0].name) + (
                 " (hidden: Edit High Poly shows it)" if highs[0].hide_get() else ""))
             return highs[0]
-        copy = src.copy()
-        copy.data = src.data.copy()
-        copy.name = base + "_high"
-        copy.data.name = copy.name
-        for collection in src.users_collection:
-            collection.objects.link(copy)
-        m3d_inputs.clear(copy)
-        cp = copy.m3d_pair
-        if cp.ghost:   # (the original is a wire right now)
-            copy.display_type, copy.hide_select = cp.ghost, False
-        cp.role, cp.group, cp.parked, cp.ghost = 'HIGH', group, False, ""
+        copy = copy_of(context, src, base + "_high", drop=GAME_ONLY)
+        if p.ghost:   # (the original is a wire right now)
+            copy.display_type = p.ghost
+        copy.m3d_pair.role, copy.m3d_pair.group = 'HIGH', group
         if not uniform_scale(copy):   # Sculpt mode wants a uniform scale: applied on the copy, the low poly keeps its own
             with _on(context, copy):
                 bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
         try:
             if self.detail == 'MULTIRES':
+                if self.hard_edges:
+                    crease_hard_edges(copy.data)
                 mod = multires_of(copy) or copy.modifiers.new("Multires", 'MULTIRES')
+                mod.use_creases = True
                 with _on(context, copy):
                     for _ in range(self.levels):
                         bpy.ops.object.multires_subdivide(modifier=mod.name, mode='CATMULL_CLARK')
@@ -564,7 +775,12 @@ class M3D_OT_hp_create(Operator):
                     bpy.ops.object.voxel_remesh()
         except RuntimeError as err:
             self.report({'WARNING'}, "%s: %s" % (copy.name, str(err).replace("Error: ", "").strip()))
-        self.report({'INFO'}, "Created %s" % copy.name)
+        faces = face_count(copy)
+        if faces < LIGHT_FACES:
+            self.report({'WARNING'}, "Created %s: %s faces, light for fine detail (more Levels in the options, or Voxel "
+                        "Remesh on the Geometry tab of Sculpt)" % (copy.name, format(faces, ",")))
+        else:
+            self.report({'INFO'}, "Created %s (%s faces)" % (copy.name, format(faces, ",")))
         return copy
 
 
@@ -627,6 +843,7 @@ class M3D_OT_hp_park(Operator):
     def execute(self, context):
         leave_modes(context)
         park_all(context)
+        sync_render(context)
         return {'FINISHED'}
 
 
@@ -853,14 +1070,48 @@ def draw_create(layout, context, label=True):
         o.idname, o.props, o.label = "m3d.hp_create", "{}", "Create High Poly"
 
 
+DENSE_FACES = 50_000   # a mesh without a role and with more faces than this (or with Multires) is a sculpt, not a game mesh
+
+
+def needs_low(ob):
+    """A sculpt that has no low poly yet: a high poly alone, or a mesh without a role that is dense or has Multires
+    (Make Low Poly, not Create High Poly, is its next step)."""
+    p = ob.m3d_pair
+    if p.role == 'HIGH':
+        return True
+    return p.role == 'NONE' and (len(ob.data.polygons) > DENSE_FACES or any(m.type == 'MULTIRES' for m in ob.modifiers))
+
+
 def draw_sculpt_status(layout, context, ob, label=True):
-    """Sculpt Status Line: Show Low Poly on a mesh with a pair, Create High Poly on a low poly without a high poly or on
-    a mesh without a role."""
+    """Sculpt Status Line: Show Low Poly on a mesh with a pair, Make Low Poly on a sculpt without a low poly (a dense or
+    Multires mesh, a high poly alone), Create High Poly on a game mesh (a low poly without a high poly, a light mesh)."""
     lows, highs = pair_of(context, ob)
     if lows and highs:
         layout.prop(context.scene, "m3d_show_low", text="Show Low Poly" if label else "", icon='MOD_WIREFRAME', toggle=True)
-    elif ob.m3d_pair.role != 'HIGH':
+    elif needs_low(ob):
+        row = layout.row(align=True)
+        if label:
+            row.ui_units_x = 7   # (a header sizes a menu button for its text poorly)
+        row.menu("M3D_MT_make_low", text="Make Low Poly" if label else "", icon='MOD_DECIM')
+    else:
         draw_create(layout, context, label)
+
+
+def draw_make_low(layout, context):
+    """The ways to make the low poly of a sculpt: Auto Low Poly (its options box), drawing it (Quad Draw), symmetric or
+    not, and Make Live."""
+    from m3d_mode import tool_button
+    tool_button(layout, context, "Auto Low Poly", "m3d.hp_auto_low", 'MOD_DECIM', {})
+    layout.operator("m3d.hp_new_low", text="Draw Low Poly (Quad Draw)", icon='GREASEPENCIL')
+    layout.operator("m3d.hp_new_low", text="Draw Low Poly, Symmetric (X)", icon='MOD_MIRROR').symmetric = True
+
+
+class M3D_MT_make_low(Menu):
+    """Make the low poly of this sculpt: made for you, or drawn over it"""
+    bl_label = "Make Low Poly"
+
+    def draw(self, context):
+        draw_make_low(self.layout, context)
 
 
 def draw_channel(layout, ob):
@@ -889,6 +1140,8 @@ class M3D_MT_hplp(Menu):
         layout.operator("m3d.hp_make_live", icon='SNAP_FACE')
         layout.operator("m3d.hp_make_not_live", icon='X')
         layout.operator("m3d.hp_new_low", text="New Low Poly (Quad Draw)", icon='GREASEPENCIL')
+        layout.operator("m3d.hp_new_low", text="New Low Poly, Symmetric (X)", icon='MOD_MIRROR').symmetric = True
+        layout.operator("m3d.hp_conform", icon='MOD_SHRINKWRAP')
         tool_button(layout, context, "Auto Low Poly", "m3d.hp_auto_low", 'MOD_DECIM', {})
         layout.separator()
         layout.operator("m3d.hp_mark", text="Mark as High Poly").role = 'HIGH'
@@ -897,6 +1150,23 @@ class M3D_MT_hplp(Menu):
         layout.operator("m3d.hp_pair", icon='LINKED')
         layout.operator("m3d.hp_auto_pair", icon='LINKED')
         layout.operator_menu_enum("m3d.hp_rename", "style", text="Rename to Suffixes")
+
+
+class PROPERTIES_PT_m3d_rn_pairs(_PagePanel, Panel):
+    """Rendering's Render tab, with high poly / low poly pairs in the scene: which mesh of each pair renders"""
+    page = "render_render"
+    bl_label = "High / Low Poly"
+    bl_order = 1   # (after Engine and Quality)
+
+    @classmethod
+    def page_poll(cls, context):
+        return any(lows and highs for lows, highs in all_groups(context).values())
+
+    def draw(self, context):
+        from m3d_sculpt import reason
+        layout = self.layout
+        layout.row().prop(context.scene, "m3d_render_pair", expand=True)
+        reason(layout, "Renders show one mesh of each pair, the other is left out")
 
 
 classes = (
@@ -910,6 +1180,8 @@ classes = (
     M3D_OT_hp_rename,
     M3D_OT_hp_make_pair,
     M3D_MT_hplp,
+    M3D_MT_make_low,
+    PROPERTIES_PT_m3d_rn_pairs,
 )
 
 
@@ -920,6 +1192,10 @@ def register():
     bpy.types.Scene.m3d_show_low = BoolProperty(
         name="Show Low Poly", update=_show_low_changed,
         description="Show the low poly as a wire while you sculpt its high poly (it cannot be selected)")
+    bpy.types.Scene.m3d_render_pair = EnumProperty(
+        name="Render", update=lambda _self, context: sync_render(context), items=(
+            ('LOW', "Low Poly", "Renders show the low poly of each pair; the high polys are left out"),
+            ('HIGH', "High Poly", "Renders show the high poly of each pair; the low polys are left out")))
     bpy.app.handlers.load_post.append(_load_post)
     bpy.app.handlers.save_pre.append(_save_pre)
 
@@ -927,6 +1203,7 @@ def register():
 def unregister():
     bpy.app.handlers.save_pre.remove(_save_pre)
     bpy.app.handlers.load_post.remove(_load_post)
+    del bpy.types.Scene.m3d_render_pair
     del bpy.types.Scene.m3d_show_low
     del bpy.types.Object.m3d_pair
     for cls in reversed(classes):

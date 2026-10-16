@@ -633,8 +633,8 @@ from bl_ui.space_toolsystem_common import ToolSelectPanelHelper
 bpy.utils.keyconfig_set(bpy.utils.preset_find("Maelstrom3D", "keyconfig"))
 sculpt_ws = bpy.data.workspaces["Sculpt"]
 sc_tabs = W.DOCK_TABS['SCULPT']
-check([t.label for t in sc_tabs['RIGHT']] == ["Geometry", "Mask", "Face Sets", "Deform", "Paint", "Display", "Objects"],
-      "Sculpt dock tabs")
+check([t.label for t in sc_tabs['RIGHT']] == ["Geometry", "Objects", "Mask", "Face Sets", "Deform", "Paint", "Display"],
+      "Sculpt dock tabs (Objects second: it stays in the row on a narrow dock)")
 check([t.label for t in sc_tabs['LEFT']] == ["Brushes"], "Sculpt left tray tab")
 check(W.dock_tabs('SCULPT', 'LEFT') == sc_tabs['LEFT'] and W.dock_tabs('SCULPT', 'RIGHT') == sc_tabs['RIGHT'], "dock_tabs")
 for tab in (*sc_tabs['RIGHT'], *sc_tabs['LEFT']):
@@ -1198,20 +1198,33 @@ def phase1c():
     log = []
     S.draw_multires(RecP(log), ctx)
     words = texts(log)
-    check({"Subdivide (smooth)", "Subdivide (keep shape)", "Display level", "Sculpt level", "Delete higher levels",
+    nxt = S.short_count(S.next_level_faces(ob))
+    wide = S.fits(ctx, ["Subdivide (smooth) → " + nxt, "Subdivide (keep shape) → " + nxt])
+    check(wide or "The next level has %s faces" % nxt in words, "a narrow dock: the next level's faces on a line of their own")
+    arrow = (" → " + nxt) if wide else ""
+    check({"Subdivide (smooth)" + arrow, "Subdivide (keep shape)" + arrow, "Display level", "Sculpt level", "Delete higher levels",
            "Rebuild lower levels", "Apply base shape"} <= set(words) and not any("modifier" in w for w in words), "Multires words: %s" % words)
+    check(S.next_level_faces(ob) == len(me.loops) * 4 == m3d_pair.level_faces(ob, 2), "the Subdivide buttons show the next level's faces")
     check(any(getattr(r, "idname", "") == "m3d_multires_advanced" for r in log), "Linear and the render level under Advanced")
-    for draw in (S.draw_voxel, S.draw_quadriflow, S.draw_dyntopo):
+    for draw in (S.draw_voxel, S.draw_dyntopo):
         log = []
         draw(Rec(log), ctx)
         check([r._args[0] for r in log if r._kind == "operator"] == ["m3d.multires_apply"] and not [r for r in log if r._kind == "prop"],
               "%s with Multires: one line and Apply Multires" % draw.__name__)
+    log = []
+    S.draw_quadriflow(RecP(log), ctx)
+    ops = [(r._args[0], r.values().get("idname")) for r in log if r._kind == "operator"]
+    check(ops == [("m3d.tool", "m3d.hp_auto_low"), ("m3d.hp_new_low", None), ("m3d.hp_new_low", None), ("m3d.multires_apply", None)]
+          and not [r for r in log if r._kind == "prop"],
+          "Retopology with Multires: Auto Low Poly, Draw Low Poly (a paired copy: the sculpt stays); in place under Advanced "
+          "only Apply Multires: %s" % ops)
     mod.sculpt_levels = 1
     faces = S.face_count(ob)
     check(bpy.ops.m3d.multires_apply() == {'FINISHED'} and S.multires_of(ob) is None and len(ob.data.polygons) == faces,
           "Apply Multires keeps the level being sculpted (%d faces, %d)" % (len(ob.data.polygons), faces))
-    check(S.PROPERTIES_PT_m3d_sc_quadriflow.bl_label == "Auto Retopology (quads)" and S.PROPERTIES_PT_m3d_sc_dyntopo.bl_label == "Dynamic Detail"
-          and {"Auto Retopology (quads)", "Dynamic Detail"} <= {e.get("label") for e in m3d_ui.MENUS["M3D_MT_remesh"][1]}, "plain names for QuadriFlow and Dyntopo")
+    check(S.PROPERTIES_PT_m3d_sc_quadriflow.bl_label == "Retopology" and S.PROPERTIES_PT_m3d_sc_dyntopo.bl_label == "Dynamic Detail"
+          and {"Auto Low Poly", "Draw Low Poly (Quad Draw)", "Rebuild as Quads (in place)", "Dynamic Detail"}
+          <= {e.get("label") for e in m3d_ui.MENUS["M3D_MT_remesh"][1]}, "plain names for QuadriFlow and Dyntopo; retopology in the Remesh menu")
 
     bpy.ops.object.mode_set(mode='SCULPT')
     bpy.ops.brush.asset_activate(**S.brush_props("Draw"))
@@ -1238,7 +1251,8 @@ def phase1c():
     # Status bar: the keys of the active brush tool, from the keymap.
     tool = NS(use_brushes=True)
     ws_ = NS(m3d_kind='SCULPT', name="Sculpt", tools=NS(from_space_view3d_mode=lambda mode: tool))
-    for kind, mode, want in (('SCULPT', 'SCULPT', ["Sculpt", "Smooth", "Mask", "Unmask", "Hide", "Size", "Strength", "Add / Subtract"]),
+    for kind, mode, want in (('SCULPT', 'SCULPT', ["Sculpt", "Smooth", "Mask", "Unmask", "Hide", "Size", "Strength", "Add / Subtract",
+                                                   "Level Up", "Level Down", "Sculpt Mesh Under Pointer"]),
                              ('TEXTURE', 'PAINT_TEXTURE', ["Paint", "Size / Hardness", "Flow / Angle", "Turn Environment", "Picker", "Swap Colors"])):
         ws_.m3d_kind = kind
         sctx = NS(window=NS(modal_operators=[]), mode=mode, workspace=ws_, window_manager=bpy.context.window_manager,
@@ -7524,10 +7538,11 @@ check_calls("High / Low Poly menu", hp_log)
 hp_ops = [(r._args[0], r.values().get("role"), r.values().get("idname")) for r in hp_log if r._kind == "operator"]
 check(hp_ops == [("m3d.tool", None, "m3d.hp_create"), ("m3d.hp_edit", None, None), ("m3d.hp_park", None, None),
                  ("m3d.hp_make_live", None, None), ("m3d.hp_make_not_live", None, None), ("m3d.hp_new_low", None, None),
-                 ("m3d.tool", None, "m3d.hp_auto_low"),
+                 ("m3d.hp_new_low", None, None), ("m3d.hp_conform", None, None), ("m3d.tool", None, "m3d.hp_auto_low"),
                  ("m3d.hp_mark", 'HIGH', None), ("m3d.hp_mark", 'LOW', None), ("m3d.hp_mark", 'NONE', None), ("m3d.hp_pair", None, None),
                  ("m3d.hp_auto_pair", None, None)],
-      "the submenu: Create, Edit, Park, Make Live, Make Not Live, New Low Poly, Auto Low Poly, Mark as High / Low, Clear Role, Pair Selected, Auto-Pair by Name: %s" % hp_ops)
+      "the submenu: Create, Edit, Park, Make Live, Make Not Live, New Low Poly (and Symmetric), Conform to Surface, Auto Low Poly, Mark as High / Low, "
+      "Clear Role, Pair Selected, Auto-Pair by Name: %s" % hp_ops)
 check(any(r._kind == "operator_menu_enum" and r._args[0] == "m3d.hp_rename" for r in hp_log), "...and Rename to Suffixes")
 hp_labels = [r._kw.get("text") or "" for r in hp_log if r._kind == "operator"] + [
     cls.bl_label + " " + (cls.__doc__ or "") + " " + " ".join(str(getattr(p, "description", "")) for p in cls.bl_rna.properties)
@@ -15273,6 +15288,338 @@ check(p5_notes == [("Result: p5box polyCube1", 'INFO'), ("Error: 'nope' isn't su
 clean_scene()
 shutil.rmtree(p5_tmp, ignore_errors=True)
 shutil.rmtree(p5_base, ignore_errors=True)
+
+# --- UX pass 2, P2: sculpt safety and high / low poly.
+import m3d_retopo as RT
+import m3d_mode as MO
+from mathutils import Vector as P2V
+p2_ws = {name: bpy.data.workspaces[name] for name in ("Modeling", "Sculpt", "UV", "Texture", "Rendering")}
+p2_ctx = bpy.context
+
+
+def p2_sym(ob, tol=1e-3):
+    """Every point of `ob` has a mirror point across X (object space)."""
+    pts = [v.co.copy() for v in ob.data.vertices]
+    return all(min((P2V((-p.x, p.y, p.z)) - q).length for q in pts) < tol for p in pts)
+
+
+# Item 4: parked high polys are left out of renders, and back when they render again; Render: Low Poly | High Poly.
+o = hp_scene(("P2Axe_low", 'LOW', "P2Axe"), ("P2Axe_high", 'HIGH', "P2Axe"), ("P2Rock", 'NONE', ""), ("P2Solo_high", 'HIGH', "P2Solo"))
+p2_low, p2_high = o["P2Axe_low"], o["P2Axe_high"]
+o["P2Rock"].hide_render = True   # (the user's own: never touched)
+hp_select(p2_low)
+bpy.context.view_layer.update()
+BG._stale.clear()
+PR.switch(p2_ctx, p2_ws["Sculpt"], p2_ws["Modeling"])
+check(p2_high.hide_get() and p2_high.hide_render and p2_high.m3d_pair.render_parked and not p2_low.hide_render,
+      "a parked high poly is left out of renders too (hide_render), the low poly renders")
+check(not o["P2Solo_high"].hide_render and o["P2Rock"].hide_render and not o["P2Rock"].m3d_pair.render_parked,
+      "...a high poly without a low poly renders; the user's own render flag stays")
+check("P2Axe" not in BG._stale, "...and that is no edit of the group (its bake does not go stale)")
+p2_ctx.scene.m3d_render_pair = 'HIGH'
+check(not p2_high.hide_render and p2_low.hide_render and p2_low.m3d_pair.render_parked and p2_high.hide_get(),
+      "Render: High Poly renders the high poly (still hidden in the view) and leaves the low poly out")
+p2_ctx.scene.m3d_render_pair = 'LOW'
+check(p2_high.hide_render and not p2_low.hide_render and not p2_low.m3d_pair.render_parked, "...and Low Poly gives it back")
+with PR.rendered():
+    check(not p2_high.hide_render, "a bake renders the scene as it is (m3d_pair.rendered)")
+check(p2_high.hide_render, "...and leaves the high poly out again after")
+PR.set_role(p2_high, 'NONE')
+check(not p2_high.hide_render and not p2_high.m3d_pair.render_parked, "a mesh that leaves its pair renders again")
+p2_log = []
+PR.PROPERTIES_PT_m3d_rn_pairs.draw(type("Inst", (), {"layout": Rec(p2_log)})(), p2_ctx)
+check(any(r._kind == "prop" and r._args[1] == "m3d_render_pair" for r in p2_log), "the Render tab of F7 has the Low Poly | High Poly switch")
+PR.set_role(p2_high, 'HIGH')
+check(PR.PROPERTIES_PT_m3d_rn_pairs.page_poll(p2_ctx) and not (hp_scene(("P2Lone", 'NONE', "")) and PR.PROPERTIES_PT_m3d_rn_pairs.page_poll(p2_ctx)),
+      "...only with pairs in the scene")
+
+# Item 5: Ctrl+D in Sculpt duplicates (Voxel Remesh is Ctrl+R); Ctrl+0-5 go through the guard.
+check(find("Sculpt", "m3d.duplicate", "D", ctrl=True, shift=False) and not find("Sculpt", "object.voxel_remesh", "D", ctrl=True)
+      and not find("Sculpt", "sculpt.detail_flood_fill", "D", ctrl=True), "Sculpt Ctrl+D duplicates")
+check(find("Sculpt", "m3d.voxel_remesh", "R", ctrl=True), "Sculpt Ctrl+R Voxel Remesh")
+check([k.properties.level for k in kc.keymaps["Sculpt"].keymap_items if k.idname == "m3d.sculpt_level" and k.ctrl] == list(range(6))
+      and not [k for k in kc.keymaps["Sculpt"].keymap_items if k.idname == "object.subdivision_set" and k.ctrl],
+      "Sculpt Ctrl+0-5: m3d.sculpt_level (the guard), not Blender's subdivision_set")
+clean_scene()
+bpy.ops.m3d.sculpt_add_mesh(kind='CUBE')
+p2_n = len(bpy.data.objects)
+check(bpy.context.mode == 'SCULPT' and bpy.ops.m3d.duplicate() == {'FINISHED'} and len(bpy.data.objects) == p2_n + 1
+      and bpy.context.mode == 'SCULPT' and bpy.context.active_object.name != "Cube", "Ctrl+D in Sculpt: a copy, sculpted")
+bpy.ops.object.mode_set(mode='OBJECT')
+
+# Item 14: one guard (estimate, ask, refuse) for everything that can make millions of faces.
+check(PR.heavy(1_000) is None and PR.heavy(PR.ASK_FACES + 1) == 'ASK' and PR.heavy(PR.MAX_FACES + 1) == 'REFUSE', "heavy(): run, ask, refuse")
+clean_scene()
+bpy.ops.mesh.primitive_grid_add(x_subdivisions=549, y_subdivisions=549, size=2)
+p2_big = bpy.context.active_object
+check(299_000 < len(p2_big.data.polygons) < 302_000, "(a 300k mesh: %d)" % len(p2_big.data.polygons))
+bpy.ops.object.mode_set(mode='SCULPT')
+p2_op = NS(level=5)
+p2_faces5 = S.M3D_OT_sculpt_level.faces(p2_op, p2_big)
+p2_op.level = 3
+p2_faces3 = S.M3D_OT_sculpt_level.faces(p2_op, p2_big)
+check(PR.heavy(p2_faces5) == 'REFUSE' and PR.heavy(p2_faces3) == 'ASK', "Ctrl+5 on 300k faces is refused (%s), Ctrl+3 asks (%s)" % (
+      PR.format_count(p2_faces5), PR.format_count(p2_faces3)))
+try:
+    p2_res = bpy.ops.m3d.sculpt_level(level=5)
+except RuntimeError as err:
+    p2_res = "refused: " + str(err)
+check(p2_res != {'FINISHED'} and S.multires_of(p2_big) is None, "...Ctrl+5 runs nothing: %s" % p2_res)
+check(S.next_level_faces(p2_big) == len(p2_big.data.loops) and PR.heavy(S.next_level_faces(p2_big)) is None,
+      "Subdivide (the buttons show it): the next level's 1.2M faces just run")
+bpy.ops.object.mode_set(mode='OBJECT')
+p2_big.modifiers.clear()
+hp_select(p2_big)
+p2_sp = NS(level='SMOOTH', meshes=lambda c: {p2_big})
+check(MO.M3D_OT_smooth_preview.faces(p2_sp, p2_ctx) == 4 * len(p2_big.data.loops), "Smooth Preview (key 3): level 2 = 4 faces per corner")
+p2_big.data.remesh_voxel_size = 0.0001
+try:
+    p2_res = bpy.ops.m3d.voxel_remesh()
+except RuntimeError:
+    p2_res = {'CANCELLED'}
+check(p2_res == {'CANCELLED'} and len(p2_big.data.polygons) > 299_000, "a tiny Advanced voxel size is refused before Voxel Remesh runs")
+p2_op = NS(detail='MULTIRES', levels=6)
+check(PR.heavy(PR.M3D_OT_hp_create.estimate(p2_op, p2_big)) == 'REFUSE', "Create High Poly with 6 levels on 300k faces: refused")
+clean_scene()
+bpy.ops.mesh.primitive_cube_add(size=2)
+p2_cube = bpy.context.active_object
+check(bpy.ops.m3d.voxel_remesh(faces=3000) == {'FINISHED'} and 2000 < len(p2_cube.data.polygons) < 4500,
+      "Voxel Remesh to about 3,000 faces (Add Detail): %d" % len(p2_cube.data.polygons))
+clean_scene()
+bpy.ops.mesh.primitive_cube_add(size=2)
+bpy.ops.object.mode_set(mode='SCULPT')
+p2_cube = bpy.context.active_object
+check(bpy.ops.m3d.sculpt_level(level=2) == {'FINISHED'} and S.multires_of(p2_cube).total_levels == 2
+      and S.multires_of(p2_cube).sculpt_levels == 2, "Ctrl+2: Multires with 2 levels")
+check(bpy.ops.m3d.sculpt_level(level=1) == {'FINISHED'} and S.multires_of(p2_cube).total_levels == 2
+      and S.multires_of(p2_cube).sculpt_levels == 1, "...Ctrl+1: down a level, none deleted")
+
+# Item 13: Apply Multires and Delete higher levels say what is lost; Use highest level keeps it all.
+bpy.ops.m3d.sculpt_level(level=3)
+p2_mod = S.multires_of(p2_cube)
+p2_mod.sculpt_levels = p2_mod.levels = 1
+check(S.apply_message(p2_cube, p2_mod) == "Keep level 1 of 3 (24 faces)? Levels 2-3 are lost",
+      "Apply Multires names the lost levels: %s" % S.apply_message(p2_cube, p2_mod))
+check(S.apply_message(p2_cube, p2_mod, True).startswith("Keep level 3 of 3 (384 faces)"), "...and what Use highest level keeps")
+check(S.delete_message(p2_cube, p2_mod) == "Delete levels 2-3 of %s? The detail sculpted on them is lost" % p2_cube.name,
+      "Delete higher levels names them: %s" % S.delete_message(p2_cube, p2_mod))
+p2_mod.sculpt_levels = p2_mod.levels = 3
+check(S.delete_message(p2_cube, p2_mod) is None, "...nothing to ask at the top level")
+p2_mod.sculpt_levels = p2_mod.levels = 1
+check(bpy.ops.m3d.multires_apply(highest=True) == {'FINISHED'} and S.multires_of(p2_cube) is None
+      and len(p2_cube.data.polygons) == 384, "Apply Multires with Use highest level keeps level 3: %d" % len(p2_cube.data.polygons))
+bpy.ops.object.mode_set(mode='OBJECT')
+
+# Item 26: a dense sculpt without a role offers Make Low Poly, a light mesh Create High Poly; retopology everywhere.
+clean_scene()
+bpy.ops.mesh.primitive_uv_sphere_add(segments=256, ring_count=256)
+p2_dense = bpy.context.active_object
+p2_light = hp_cube("P2Light")
+check(PR.needs_low(p2_dense) and not PR.needs_low(p2_light), "a dense sculpt needs a low poly, a light mesh a high poly")
+for p2_ob, p2_want in ((p2_dense, "M3D_MT_make_low"), (p2_light, None)):
+    p2_log = []
+    PR.draw_sculpt_status(Rec(p2_log), p2_ctx, p2_ob)
+    p2_menus = [r._args[0] for r in p2_log if r._kind == "menu"]
+    p2_create = [r for r in p2_log if r._kind == "operator" and r.values().get("idname") == "m3d.hp_create"]
+    check(p2_menus == ([p2_want] if p2_want else []) and bool(p2_create) == (p2_want is None),
+          "Status Line on %s: %s" % (p2_ob.name, "Make Low Poly" if p2_want else "Create High Poly"))
+p2_log = []
+PR.M3D_MT_make_low.draw(type("Inst", (), {"layout": Rec(p2_log)})(), p2_ctx)
+check([(r._args[0], r.values().get("idname"), r.values().get("symmetric")) for r in p2_log if r._kind == "operator"]
+      == [("m3d.tool", "m3d.hp_auto_low", None), ("m3d.hp_new_low", None, None), ("m3d.hp_new_low", None, True)],
+      "Make Low Poly: Auto Low Poly, Draw Low Poly, Draw Low Poly symmetric")
+check(any(e.get("idname") == "m3d.retopo_quads" for e in m3d_ui.MENUS["M3D_MT_remesh"][1])
+      and not any(e.get("idname") == "object.quadriflow_remesh" for e in m3d_ui.MENUS["M3D_MT_remesh"][1]),
+      "the Remesh menu: in-place Auto Retopology only through the guard")
+# Auto Low Poly passes symmetry (on at first with Mirror X), Decimate too.
+clean_scene()
+bpy.ops.mesh.primitive_uv_sphere_add(segments=32, ring_count=16)
+p2_hp = bpy.context.active_object
+p2_hp.name = "P2Sym"
+p2_hp.data.use_mirror_x = True
+p2_dec, p2_calls = RT.decimate, []
+RT.decimate = lambda context, ob, target, symmetry=False: p2_calls.append(symmetry) or p2_dec(context, ob, target, symmetry)
+check(bpy.ops.m3d.hp_auto_low(method='DECIMATE', faces=200) == {'FINISHED'}, "Auto Low Poly (Decimate) runs")
+RT.decimate = p2_dec
+p2_lp = bpy.data.objects["P2Sym_low"]
+check(p2_calls == [True], "...with Decimate's symmetry, as the high poly's Mirror X asks: %s" % p2_calls)
+bpy.data.objects.remove(p2_lp)
+bpy.context.view_layer.update()
+p2_hp.m3d_pair.role, p2_hp.m3d_pair.group = 'NONE', ""
+hp_select(p2_hp)
+check(bpy.ops.m3d.hp_auto_low(method='QUADRIFLOW', faces=300, symmetry=True) == {'FINISHED'}, "Auto Low Poly (quads) runs symmetric")
+p2_lp = bpy.data.objects["P2Sym_low"]
+check(p2_lp.data.use_mirror_x and p2_sym(p2_lp, 0.02), "...QuadriFlow gets the symmetry: the low poly is symmetric in X")
+# New Low Poly symmetric: a Mirror modifier; Conform to Surface.
+clean_scene()
+bpy.ops.mesh.primitive_uv_sphere_add(radius=1.0)
+p2_surf = bpy.context.active_object
+p2_surf.name = "P2Ball"
+check(bpy.ops.m3d.hp_new_low(symmetric=True) == {'FINISHED'}, "New Low Poly, Symmetric runs")
+p2_new = bpy.data.objects["P2Ball_low"]
+p2_mm = p2_new.modifiers.get("Mirror")
+check(p2_mm is not None and p2_mm.use_axis[0] and p2_mm.use_clip and p2_mm.use_mirror_merge, "...a Mirror modifier (X, clipped, merged)")
+if bpy.context.mode != 'OBJECT':
+    bpy.ops.object.mode_set(mode='OBJECT')
+import bmesh as p2_bmesh
+p2_bm = p2_bmesh.new()
+p2_bmesh.ops.create_icosphere(p2_bm, subdivisions=2, radius=1.4)
+p2_bm.to_mesh(p2_new.data)
+p2_bm.free()
+p2_new.modifiers.clear()
+hp_select(p2_new)
+check(bpy.ops.m3d.hp_conform.poll() and bpy.ops.m3d.hp_conform() == {'FINISHED'}, "Conform to Surface runs on the low poly")
+check(all(abs(v.co.length - 1.0) < 0.03 for v in p2_new.data.vertices) and not p2_new.modifiers,
+      "...every point is on the live surface: %.3f-%.3f" % (min(v.co.length for v in p2_new.data.vertices), max(v.co.length for v in p2_new.data.vertices)))
+RT.stop_live(bpy.context.scene)
+
+# Item 49: Create High Poly keeps the hard edges of a game mesh, leaves its game-only modifiers out, applies its Mirror.
+clean_scene()
+bpy.ops.mesh.primitive_cube_add(size=2)
+p2_box = bpy.context.active_object
+p2_box.name = "P2Box"
+p2_box.modifiers.new("Triangulate", 'TRIANGULATE')
+p2_box.modifiers.new("WN", 'WEIGHTED_NORMAL')
+check(bpy.ops.m3d.hp_create() == {'FINISHED'}, "Create High Poly (the defaults)")
+p2_bh = bpy.data.objects["P2Box_high"]
+p2_mod = S.multires_of(p2_bh)
+check(p2_mod is not None and p2_mod.total_levels == 2 and {m.type for m in p2_bh.modifiers} == {'MULTIRES'},
+      "...Multires, 2 levels, no Triangulate or Weighted Normal: %s" % [m.type for m in p2_bh.modifiers])
+p2_ev = p2_bh.evaluated_get(bpy.context.evaluated_depsgraph_get()).data
+p2_xs = [v.co.x for v in p2_ev.vertices]
+p2_flat = sum(1 for f in p2_ev.polygons if max(abs(c) for c in f.normal) > 0.999) / len(p2_ev.polygons)
+check(max(p2_xs) > 0.999 and min(p2_xs) < -0.999 and p2_flat > 0.99,
+      "...the cube keeps its hard edges: bbox %.3f..%.3f, %.0f%% flat faces" % (min(p2_xs), max(p2_xs), 100 * p2_flat))
+clean_scene()
+bpy.ops.mesh.primitive_cube_add(size=2)
+p2_box = bpy.context.active_object
+check(bpy.ops.m3d.hp_create(hard_edges=False) == {'FINISHED'}, "Create High Poly without Keep Hard Edges")
+p2_ev = bpy.data.objects[p2_box.name + "_high"].evaluated_get(bpy.context.evaluated_depsgraph_get()).data
+check(max(v.co.x for v in p2_ev.vertices) < 0.95, "...rounds the cube")
+clean_scene()
+bpy.ops.mesh.primitive_cube_add(size=1, location=(0.5, 0, 0))
+p2_half = bpy.context.active_object
+bpy.ops.object.transform_apply(location=True)
+p2_half.name = "P2Half"
+p2_half.modifiers.new("Mirror", 'MIRROR')
+check(bpy.ops.m3d.hp_create(detail='NONE') == {'FINISHED'}, "Create High Poly of a mirrored half")
+p2_hh = bpy.data.objects["P2Half_high"]
+check(not p2_hh.modifiers and min(v.co.x for v in p2_hh.data.vertices) < -0.99 and max(v.co.x for v in p2_hh.data.vertices) > 0.99,
+      "...the Mirror is applied: both halves to sculpt")
+p2_draw_log = []
+PR.M3D_OT_hp_create.draw(type("Inst", (), {"layout": Rec(p2_draw_log), "detail": 'MULTIRES', "levels": 2, "hard_edges": True})(), p2_ctx)
+check(any(r._kind == "label" and "faces: light for fine detail" in r._kw.get("text", "") for r in p2_draw_log),
+      "the options show the face count of the high poly and say when it is light: %s" % [r._kw.get("text") for r in p2_draw_log if r._kind == "label"])
+
+# Item 50: High / Low Poly in the Mesh menu, the Bake menu and the Poly Modeling shelf; F2 on a game mesh asks.
+check(any(e.get("idname") == "M3D_MT_hplp" for e in m3d_ui.MENUS["M3D_MT_mesh"][1])
+      and any(e.get("idname") == "M3D_MT_hplp" for e in m3d_ui.MENUS["M3D_MT_bake"][1]), "High / Low Poly in the Mesh and Bake menus")
+check({"m3d.hp_create", "m3d.hp_auto_pair"} <= {it[0] for it in m3d_ui.SHELVES['POLY'][1] if it and not callable(it)},
+      "Create High Poly and Auto-Pair on the Poly Modeling shelf")
+o = hp_scene(("P2Crate_low", 'LOW', "P2Crate"), ("P2Plain", 'NONE', ""))
+check(PR.game_mesh(p2_ctx, o["P2Crate_low"]) and not PR.game_mesh(p2_ctx, o["P2Plain"]), "a low poly without a high poly is a game mesh")
+hp_select(o["P2Crate_low"])
+check(PR.keeps_object_mode(p2_ctx, p2_ws["Sculpt"]) and not PR.keeps_object_mode(p2_ctx, p2_ws["Modeling"]),
+      "...F2 opens it in Object Mode (its card asks first)")
+hp_select(o["P2Plain"])
+check(not PR.keeps_object_mode(p2_ctx, p2_ws["Sculpt"]), "...a plain mesh is sculpted straight away")
+hp_select(o["P2Crate_low"])
+p2_gate = next(c for c in S.PAGE_GATES if c.page == "sculpt_brushes")
+p2_log = []
+p2_gate.draw(type("Inst", (), {"layout": Rec(p2_log)})(), p2_ctx)
+check(any(r.values().get("idname") == "m3d.hp_create" for r in p2_log if r._kind == "operator")
+      and any(r._kw.get("text") == "Sculpt this mesh" for r in p2_log if r._kind == "operator"),
+      "the card: This is a game mesh: Create High Poly / Sculpt this mesh")
+
+# Item 48: the switches that take a moment.
+PR._opened.clear()
+check(PR.slow_switch(p2_ctx, 'TEXTURE', p2_ws["Texture"]) and not PR.slow_switch(p2_ctx, 'TEXTURE', p2_ws["Texture"]),
+      "the first Texture of the session waits (shaders), the next one does not")
+hp_select(o["P2Plain"])
+p2_heavy = PR.HEAVY_SWITCH
+PR.HEAVY_SWITCH = 3
+check(PR.slow_switch(p2_ctx, 'SCULPT', p2_ws["Sculpt"]) and not PR.slow_switch(p2_ctx, 'MODEL', p2_ws["Modeling"]),
+      "a mesh over the limit: Sculpt waits, Object Mode in F1 does not")
+PR.HEAVY_SWITCH = p2_heavy
+
+# Item 77: quad sphere, too few faces, off-centre mirror, display level outside Sculpt, Objects tab.
+clean_scene()
+check(bpy.ops.m3d.sculpt_add_mesh(kind='SPHERE') == {'FINISHED'} and bpy.context.mode == 'SCULPT', "Sculpt's Sphere")
+p2_qs = bpy.context.active_object
+check(len(p2_qs.data.polygons) == 6 * (S.QUAD_SPHERE_CUTS + 1) ** 2 == 6144 and all(len(f.vertices) == 4 for f in p2_qs.data.polygons)
+      and all(abs(v.co.length - 1.0) < 1e-4 for v in p2_qs.data.vertices) and p2_qs.data.uv_layers,
+      "...a sphere of 6,144 even quads (no poles), UVs: %d" % len(p2_qs.data.polygons))
+bpy.ops.object.mode_set(mode='OBJECT')
+clean_scene()
+bpy.ops.mesh.primitive_cube_add(size=2)
+p2_c = bpy.context.active_object
+c = SCtx()
+c.region, c.space_data = NS(type='TOOL_HEADER', width=1800), NS(type='TOPBAR')
+p2_log = []
+S.draw_status_line(Rec(p2_log), c)
+check(any(r._kind == "menu" and r._args[0] == "M3D_MT_sculpt_add_detail" and r._kw.get("text") == "Too few faces: Add Detail" for r in p2_log),
+      "6 faces: the Status Line says Too few faces: Add Detail")
+p2_log = []
+S.M3D_MT_sculpt_add_detail.draw(type("Inst", (), {"layout": Rec(p2_log)})(), p2_ctx)
+check([(r._args[0], r.values().get("faces"), r.values().get("mode")) for r in p2_log if r._kind == "operator"]
+      == [("m3d.voxel_remesh", S.DETAIL_REMESH, None), ("m3d.multires_subdivide", None, 'CATMULL_CLARK'), ("m3d.multires_subdivide", None, 'SIMPLE')],
+      "Add Detail: Voxel Remesh (~100k) or Subdivide")
+p2_c.data.use_mirror_x = True
+check(S.off_centre(p2_c) == [], "a centred mesh is fine")
+for v in p2_c.data.vertices:
+    v.co.x += 0.5
+p2_c.data.update()
+bpy.context.view_layer.update()
+check(S.off_centre(p2_c) == ['X'], "a mesh off its pivot in X with Mirror X is off-centre")
+p2_log = []
+S.draw_status_line(Rec(p2_log), c)
+check(any(r._kind == "operator" and r._args[0] == "m3d.sculpt_center_pivot" for r in p2_log), "...the Status Line says so, with Center Pivot")
+check(bpy.ops.m3d.sculpt_center_pivot() == {'FINISHED'}, "Center Pivot runs")
+bpy.context.view_layer.update()
+check(S.off_centre(p2_c) == [] and abs(p2_c.location.x - 0.5) < 1e-4, "...the pivot is in the middle, the mesh where it was")
+p2_c.data.use_mirror_x = False
+# Display level: leaving Sculpt lowers it under the cap, entering puts it back.
+check(bpy.ops.m3d.sculpt_level(level=4) == {'FINISHED'}, "(a Multires sculpt of 4 levels)")
+p2_cap = PR.DISPLAY_CAP
+PR.DISPLAY_CAP = 1000
+PR.switch(p2_ctx, p2_ws["Sculpt"], p2_ws["Modeling"])
+p2_mod = S.multires_of(p2_c)
+check(p2_mod.levels == 3 and p2_mod.sculpt_levels == 4 and p2_c.m3d_pair.display_level == 4,
+      "leaving Sculpt: the display level goes under the cap (level 3: 384 faces), the sculpt level stays")
+PR.switch(p2_ctx, p2_ws["Modeling"], p2_ws["Sculpt"])
+check(p2_mod.levels == 4 and p2_c.m3d_pair.display_level == 0, "...entering Sculpt puts it back")
+PR.switch(p2_ctx, p2_ws["Sculpt"], p2_ws["Modeling"])
+PR.DISPLAY_CAP = p2_cap
+if bpy.context.mode != 'OBJECT':
+    bpy.ops.object.mode_set(mode='OBJECT')
+# Hints: D / Shift+D levels and ` (the mesh under the pointer) are in the keymaps the hints read.
+check(find("Sculpt", "object.subdivision_set", "D") and find("Object Non-modal", "object.transfer_mode", "ACCENT_GRAVE"),
+      "D / Shift+D and ` are keys the status bar can show")
+# Objects tab: delete, split, merge, show all; the active mesh's name is a field; badges.
+clean_scene()
+o = hp_scene(("P2A_low", 'LOW', "P2A"), ("P2B", 'NONE', ""))
+p2_join = hp_cube("P2Parts")
+p2_other = hp_cube("P2Other")
+p2_other.location.x = 4
+hp_select(p2_join, p2_other, active=p2_join)
+bpy.ops.object.join()
+hp_select(p2_join)
+p2_log = []
+S.PROPERTIES_PT_m3d_sc_objects.draw(type("Inst", (), {"layout": Rec(p2_log)})(), p2_ctx)
+check(any(r._kind == "prop" and r._args[0] == p2_join and r._args[1] == "name" for r in p2_log), "the active mesh's name is a field (rename)")
+check(any(r._kind == "operator" and "· Low Poly" in r._kw.get("text", "") for r in p2_log), "a low poly has its badge")
+check({r.values().get("action") for r in p2_log if r._kind == "operator" and r._args[0] == "m3d.sculpt_object"}
+      >= {'DELETE', 'MERGE', 'SPLIT_LOOSE', 'SPLIT_FACE_SETS', 'SOLO', 'DUPLICATE', 'VISIBLE'}, "Objects tab: delete, merge, split")
+p2_n = len(bpy.data.objects)
+check(bpy.ops.m3d.sculpt_object(name=p2_join.name, action='SPLIT_LOOSE') == {'FINISHED'} and len(bpy.data.objects) == p2_n + 1,
+      "Split Loose Parts: two meshes")
+check(bpy.ops.m3d.sculpt_object(name="P2B", action='DELETE') == {'FINISHED'} and "P2B" not in bpy.data.objects, "Delete")
+o["P2A_low"].hide_set(True)
+check(bpy.ops.m3d.sculpt_object(action='SHOW_ALL') == {'FINISHED'} and not o["P2A_low"].hide_get(), "Show All")
+p2_n = len(bpy.data.objects)
+check(bpy.ops.m3d.sculpt_object(name=p2_join.name, action='MERGE') == {'FINISHED'} and len(bpy.data.objects) == 1,
+      "Merge Visible: one mesh (%d before)" % p2_n)
+clean_scene()
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

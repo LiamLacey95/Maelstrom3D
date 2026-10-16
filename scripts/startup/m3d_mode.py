@@ -33,11 +33,28 @@ class M3D_OT_smooth_preview(Operator):
         ('SMOOTH', "Smooth", "Smoothed mesh"),
     ))
 
-    def execute(self, context):
+    @staticmethod
+    def meshes(context):
         obs = {ob for ob in context.selected_objects if ob.type == 'MESH'}
         if context.edit_object:
             obs.add(context.edit_object)
-        for ob in obs:
+        return obs
+
+    def faces(self, context):
+        """Faces the new Smooth Previews make (level 2: 4 for each corner of the mesh; O(1))."""
+        if self.level == 'OFF':
+            return 0
+        return sum(m3d_pair.level_faces(ob, 2) for ob in self.meshes(context) if ob.modifiers.get(SMOOTH_MOD) is None)
+
+    def invoke(self, context, event):
+        return m3d_pair.heavy_guard(self, context, event, self.faces(context), "Smooth Preview")
+
+    def execute(self, context):
+        problem = m3d_pair.heavy_problem(self.faces(context), "Smooth Preview")
+        if problem:
+            self.report({'ERROR'}, problem)
+            return {'CANCELLED'}
+        for ob in self.meshes(context):
             mod = ob.modifiers.get(SMOOTH_MOD)
             if self.level == 'OFF':
                 if mod:
@@ -922,7 +939,8 @@ class M3D_OT_pivot_hold(Operator):
 
 
 class M3D_OT_duplicate(Operator):
-    """Duplicate: Ctrl+D copies in place, Shift+D also repeats the last duplicate's move/rotate/scale"""
+    """Duplicate: Ctrl+D copies in place, Shift+D also repeats the last duplicate's move/rotate/scale. In Sculpt Ctrl+D
+    copies the mesh being sculpted and sculpts the copy"""
     bl_idname = "m3d.duplicate"
     bl_label = "Duplicate"
     bl_options = {'REGISTER', 'UNDO'}
@@ -931,9 +949,18 @@ class M3D_OT_duplicate(Operator):
 
     @classmethod
     def poll(cls, context):
+        if context.mode == 'SCULPT':
+            return context.active_object is not None
         return context.mode == 'OBJECT' and context.selected_objects
 
     def execute(self, context):
+        sculpt = context.mode == 'SCULPT'
+        if sculpt:   # (only the mesh being sculpted, in Object Mode)
+            ob = context.active_object
+            bpy.ops.object.mode_set(mode='OBJECT')
+            for other in context.selected_objects:
+                other.select_set(other == ob)
+            ob.select_set(True)
         sources = list(context.selected_objects)
         bpy.ops.object.duplicate()
         for src, new in zip(sources, context.selected_objects):
@@ -941,6 +968,8 @@ class M3D_OT_duplicate(Operator):
             if self.with_transform and prev is not None:
                 new.matrix_world = src.matrix_world @ prev.matrix_world.inverted() @ src.matrix_world
             new["m3d_duplicate_of"] = src.name
+        if sculpt:
+            bpy.ops.object.mode_set(mode='SCULPT')
         return {'FINISHED'}
 
 
