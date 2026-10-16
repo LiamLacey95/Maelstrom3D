@@ -12,8 +12,7 @@ your own keys).
 | Space Bar | Hotbox / four views |
 | Z | Undo |
 | Shift+Z | Redo |
-| Ctrl+S | Save Scene |
-| Ctrl+O | Open Scene |
+| Ctrl+Alt+S | Save Scene |
 | Ctrl+Space Bar | Maximize panel |
 
 ## View and Select
@@ -333,7 +332,10 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 | F5 | — | Switch Workspace (kind='RIG') |
 | F6 | — | Switch Workspace (kind='ANIM') |
 | F7 | — | Switch Workspace (kind='RENDER') |
-| Ctrl+R | — | Link |
+| Ctrl+R | — | Create Reference |
+| Ctrl+O | Open | Open Scene |
+| Ctrl+S | Save Blender File (show_save_modified_images_dialog=True) | Save Scene |
+| Ctrl+Shift+S | Save As (show_save_modified_images_dialog=True) | Save Scene (as_new=True) |
 | Ctrl+Y | — | Redo |
 | Z | — | Undo |
 | Shift+Z | — | Redo |
