@@ -1143,6 +1143,7 @@ class M3D_MT_hplp(Menu):
         layout.operator("m3d.hp_new_low", text="New Low Poly, Symmetric (X)", icon='MOD_MIRROR').symmetric = True
         layout.operator("m3d.hp_conform", icon='MOD_SHRINKWRAP')
         tool_button(layout, context, "Auto Low Poly", "m3d.hp_auto_low", 'MOD_DECIM', {})
+        tool_button(layout, context, "Project Detail onto Low Poly", "m3d.hp_project", 'MOD_MULTIRES', {})
         layout.separator()
         layout.operator("m3d.hp_mark", text="Mark as High Poly").role = 'HIGH'
         layout.operator("m3d.hp_mark", text="Mark as Low Poly").role = 'LOW'

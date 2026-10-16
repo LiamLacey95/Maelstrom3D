@@ -13473,6 +13473,179 @@ def p10_done():
     check(not tracebacks(), "Python error in the P10 steps")
 
 
+# --- P11a: Project Detail onto Low Poly is one undo step; detail layers in Sculpt (a stroke goes into the layer, Undo); the
+# brush tray's own brushes (the brush menu draws, the tile is added and removed).
+P11 = GIZMO.setdefault("p11", {})
+
+
+def p11_override():
+    return bpy.context.temp_override(window=window(), screen=window().screen)
+
+
+def p11_delta():
+    """How far the top layer of the P11 sphere is from its base (0: the layer adds nothing)."""
+    import numpy as np
+    keys = bpy.data.objects["P11_layers"].data.shape_keys
+    if keys is None:
+        return -1.0
+    co = [np.empty(len(k.data) * 3, np.float32) for k in (keys.key_blocks[-1], keys.reference_key)]
+    keys.key_blocks[-1].data.foreach_get("co", co[0])
+    keys.reference_key.data.foreach_get("co", co[1])
+    return float(abs(co[0] - co[1]).max())
+
+
+@step
+def p11_setup():
+    import tempfile
+    if not GIZMO.get("cfg"):   # (a run of this segment alone: the settings still go to a temp folder)
+        GIZMO["cfg"] = tempfile.mkdtemp(prefix="m3d_gui_")
+        m3d_user._path = lambda create=False: os.path.join(GIZMO["cfg"], "m3d_user.json")
+        m3d_user.reset_cache()
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
+step(wait_until(lambda: window().workspace.name == "Modeling", "Modeling for the P11 steps"))
+
+
+@step
+def p11_project():
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        if bpy.context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        for ob in list(bpy.data.objects):
+            bpy.data.objects.remove(ob)
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=32, ring_count=16)
+        high = bpy.context.active_object
+        high.name = "P11_high"
+        for v in high.data.vertices:
+            if v.co.z > 0.8:
+                v.co *= 1.15
+        bpy.ops.mesh.primitive_cube_add(size=1.6)
+        low = bpy.context.active_object
+        low.name = "P11_low"
+        HPR.set_role(high, 'HIGH', "P11")
+        HPR.set_role(low, 'LOW', "P11")
+        HPR.park(high)
+        bpy.ops.view3d.view_all(center=True)
+    with p11_override():
+        bpy.ops.ed.undo_push(message="Before Project Detail")
+        res = bpy.ops.m3d.tool('INVOKE_DEFAULT', True, idname="m3d.hp_project", props="{'levels': 2}", label="Project Detail onto Low Poly")
+    mod = next((m for m in low.modifiers if m.type == 'MULTIRES'), None)
+    check(res == {'FINISHED'} and mod is not None and mod.total_levels == 2, "Project Detail from its button: %s" % res)
+    with p11_override():
+        bpy.ops.ed.undo()
+
+
+@step
+def p11_project_undo():
+    low = bpy.data.objects["P11_low"]
+    check(not low.modifiers and len(low.data.polygons) == 6 and not [o for o in bpy.data.objects if o.name.endswith("_projected")],
+          "one Ctrl+Z takes Project Detail back: %s" % [m.type for m in low.modifiers])
+    with p11_override():
+        bpy.ops.ed.redo()
+
+
+@step
+def p11_project_redo():
+    low = bpy.data.objects["P11_low"]
+    check([m.type for m in low.modifiers] == ['MULTIRES'] and low.modifiers[0].total_levels == 2, "...and Redo projects again")
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        for ob in list(bpy.data.objects):
+            bpy.data.objects.remove(ob)
+        bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=4)
+        bpy.context.active_object.name = "P11_layers"
+        bpy.ops.view3d.view_all(center=True)
+    bpy.ops.m3d.workspace(kind='SCULPT')
+
+
+step(wait_until(lambda: window().workspace.name == "Sculpt" and bpy.context.mode == 'SCULPT', "F2 to Sculpt for the layers"))
+
+
+@step
+def p11_layer_add():
+    window().workspace.m3d_page_right = "sculpt_geometry"
+    with p11_override():
+        bpy.ops.ed.undo_push(message="Before Add Layer")
+        res = bpy.ops.m3d.sculpt_layer('EXEC_DEFAULT', True, action='ADD')
+    check(res == {'FINISHED'} and bpy.context.mode == 'SCULPT' and p11_delta() == 0.0, "Add Layer in Sculpt Mode: %s" % res)
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.wm.tool_set_by_id(name="builtin.brush")
+    press_ok("brush.asset_activate", **m3d_sculpt.brush_props("Draw"))
+    brush = bpy.context.tool_settings.sculpt.brush
+    brush.size, brush.strength, brush.direction = 150, 1.0, 'ADD'
+
+
+@step
+def p11_stroke():
+    _win, _area, region = view3d()
+    x, y = region.x + region.width // 2, region.y + region.height // 2
+    event('MOUSEMOVE', xy=(x - 40, y))
+    event('LEFTMOUSE', 'PRESS', (x - 40, y))
+    for i in range(1, 11):
+        event('MOUSEMOVE', xy=(x - 40 + 8 * i, y))
+    event('LEFTMOUSE', 'RELEASE', (x + 40, y))
+
+
+step(wait_until(lambda: p11_delta() > 1e-4, "the stroke to go into the layer", tries=50))
+step(p8_key('Z', ctrl=True))
+step(wait_until(lambda: p11_delta() < 1e-6, "Ctrl+Z to take the stroke back", tries=40))
+
+
+@step
+def p11_stroke_undo():
+    check(p11_delta() == 0.0 and bpy.context.mode == 'SCULPT', "Ctrl+Z: the stroke out of the layer, the layer kept (%s)" % p11_delta())
+
+
+step(p8_key('Z', ctrl=True))
+step(wait_until(lambda: p11_delta() == -1.0, "Ctrl+Z to take Add Layer back", tries=40))
+
+
+@step
+def p11_layer_undo():
+    check(p11_delta() == -1.0, "the second Ctrl+Z takes Add Layer back (%s, %s)" % (p11_delta(), bpy.context.mode))
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.object.mode_set(mode='SCULPT')   # (the brush menu below is Sculpt Mode's)
+    name = next(n for n in ("Blob", "Draw Sharp", "Crease Polish") if n not in {b for _l, b in m3d_sculpt.BRUSHES})
+    press_ok("brush.asset_activate", **m3d_sculpt.brush_props(name))
+    P11["ref"] = m3d_sculpt.brush_ref(bpy.context)
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.wm.call_menu(name="VIEW3D_MT_brush_context_menu")
+
+
+step(p8_key('ESC'))
+
+
+@step
+def p11_tray():
+    check(not tracebacks(), "Python error in the brush menu")
+    check(bpy.ops.m3d.tray_add() == {'FINISHED'} and m3d_user.tray_brushes() == [P11["ref"]], "Add to Tray: %s" % m3d_user.tray_brushes())
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def p11_tray_drawn():
+    check(not tracebacks(), "Python error drawing the tray with its own brush")
+    bpy.ops.m3d.tray_remove()
+    check(m3d_user.tray_brushes() == [], "Remove from Tray")
+    press_ok("brush.asset_activate", **m3d_sculpt.brush_props("Draw"))
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def p11_done():
+    check(not tracebacks(), "Python error in the P11 steps")
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
 @step
 def finish():
     errors = "".join(stderr_tee.buf + sys.stdout.buf)

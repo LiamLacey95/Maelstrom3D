@@ -4,7 +4,7 @@
 
 """
 Personalization for Maelstrom3D: the Custom shelf ("Add to Shelf" in a button's right-click menu), the dock tabs
-a user hides, and the dock layout (user tabs, moved and hidden panels; edited by m3d_edit.py). Everything lives in `m3d_user.json` in the user config folder; a missing or damaged
+a user hides, the brushes added to the Sculpt tray, and the dock layout (user tabs, moved and hidden panels; edited by m3d_edit.py). Everything lives in `m3d_user.json` in the user config folder; a missing or damaged
 file never breaks the UI (it reads as empty; a damaged one is kept as m3d_user.json.bak).
 """
 
@@ -195,6 +195,33 @@ def shelf_items(kind):
     items = _section("shelf", kind)
     items[:] = [i for i in items if isinstance(i, dict)]
     return items
+
+
+# -----------------------------------------------------------------------------
+# Brush tray: the user's own brushes after the stock tiles of the Sculpt tray, as asset references
+# {"type": 'ESSENTIALS' / 'LOCAL' / 'CUSTOM', "library": name of a custom library, "id": relative asset identifier}
+
+def tray_brushes():
+    root = data()
+    if not isinstance(root.get("brush_tray"), list):
+        root["brush_tray"] = []
+    items = root["brush_tray"]
+    items[:] = [b for b in items if isinstance(b, dict) and isinstance(b.get("id"), str) and isinstance(b.get("library"), str)
+                and b.get("type") in {'ESSENTIALS', 'LOCAL', 'CUSTOM'}]
+    return items
+
+
+def tray_add(ref):
+    """Add the brush `ref` ({"type", "library", "id"}) to the tray once. False when it could not be saved."""
+    items = tray_brushes()
+    if ref not in items:
+        items.append(ref)
+    return save()
+
+
+def tray_remove(ref):
+    tray_brushes()[:] = [b for b in tray_brushes() if b != ref]
+    return save()
 
 
 def _op_exists(idname):
