@@ -1068,7 +1068,7 @@ the selected objects) and **Show Motion Trails**.
 
 **Retarget** (Layers tab) moves the animation of one skeleton onto another. Pick the animated **Source** and the **Target**,
 press **Match by Name**: the bone map pairs the bones by name in the usual schemes (Hips / Spine / LeftArm / LeftForeArm,
-mixamorig:..., left / right, .L / .R, _L / _R, spine_01 / neck_01, Rigify DEF- / ORG- names and FK controls); edit a row
+prefixed names like rig:LeftArm, left / right, .L / .R, _L / _R, spine_01 / neck_01, Rigify DEF- / ORG- names and FK controls); edit a row
 (target bone, then the source bone it follows) or add one with +. **Save** keeps the map as a preset under its name, **Load**
 brings one back (they are kept with your settings, for every file). **Retarget** keys every frame of the range (the source's
 action, or the scene range) on the target: each mapped bone turns as its source bone turns from its rest pose, in the world,

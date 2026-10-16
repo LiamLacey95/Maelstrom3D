@@ -1580,7 +1580,7 @@ _SIDE_START = re.compile(r"^(?:(Left|Right|left|right)[._\- ]?|(L|R|l|r)[._\- ])
 
 def bone_part(name, rigify=False):
     """(body part, side 'L' / 'R' / '', preference) of a bone name in the usual naming schemes: Hips / LeftForeArm,
-    mixamorig:LeftForeArm, forearm.L, DEF-forearm.L, Forearm_L. ('', '', 0) for a name it does not know."""
+    a prefixed rig:LeftForeArm, forearm.L, DEF-forearm.L, Forearm_L. ('', '', 0) for a name it does not know."""
     base = name.split(":")[-1]
     prefix = re.match(r"^(DEF|ORG|MCH)[-_.]", base)
     if prefix:
@@ -1716,7 +1716,7 @@ class M3D_OT_retarget_map(Operator):
     @classmethod
     def description(cls, _context, props):
         return {'AUTO': "Fill the map: bones matched by their names (Hips / Spine / LeftArm ..., left / right, .L / .R, "
-                        "_L / _R, mixamorig:, Rigify DEF- / ORG-)",
+                        "_L / _R, prefixed names like rig:LeftArm, Rigify DEF- / ORG-)",
                 'ADD': "Add a row to the map", 'REMOVE': "Remove the selected row",
                 'SAVE': "Save the map as a preset (under the Preset name), for the next character with these names",
                 'LOAD': "Load a saved bone map", 'DELETE': "Delete the saved preset of this name"}[props.action]
