@@ -11414,8 +11414,9 @@ def t4_bake_page():
     with bpy.context.temp_override(window=window(), screen=window().screen, area=roles["dock"], region=next(r for r in roles["dock"].regions if r.type == 'WINDOW'),
                                    space_data=roles["dock"].spaces.active):
         shown = [c.__name__ for c in (*m3d_texture.classes, *LIB.classes) if hasattr(c, "poll") and getattr(c, "page", "") == "tex_bake" and c.poll(bpy.context)]
-    check(set(shown) == {"PROPERTIES_PT_m3d_tx_bake_high", "PROPERTIES_PT_m3d_tx_bake_maps", "PROPERTIES_PT_m3d_tx_bake_settings"},
-          "Bake Mesh Maps shows Size and Bake, High Poly and Maps: %s" % shown)
+    check(set(shown) == {"PROPERTIES_PT_m3d_tx_bake_check", "PROPERTIES_PT_m3d_tx_bake_high", "PROPERTIES_PT_m3d_tx_bake_maps",
+                         "PROPERTIES_PT_m3d_tx_bake_settings"},
+          "Bake Mesh Maps shows the Low Poly Check, Size and Bake, High Poly and Maps: %s" % shown)
     for role, want in (("assets", {"PROPERTIES_PT_m3d_tx_baked"}), ("props", {"PROPERTIES_PT_m3d_tx_bake_view", "PROPERTIES_PT_m3d_tx_bake_advanced"})):
         area = roles[role]
         with bpy.context.temp_override(window=window(), screen=window().screen, area=area, region=next(r for r in area.regions if r.type == 'WINDOW'),
@@ -13344,6 +13345,132 @@ def p9_done():
     r.engine, r.resolution_x, r.resolution_y, r.resolution_percentage, r.filepath, scene.frame_start, scene.frame_end = GIZMO["p9_start"]
     scene.eevee.taa_render_samples = GIZMO["p9_samples"]
     shutil.rmtree(GIZMO["p9_dir"], ignore_errors=True)
+
+# --- P10 Texturing / UV advanced: the Low Poly Check (UV Check tab, above Bake), UV Sets, the UVs-changed card from real mode changes
+# (the depsgraph handler and its timer), Texture Set Settings with a working size, the Cleanup dialog; drawn in a real window.
+
+P10 = {}
+import m3d_texture as T10
+
+
+def p10_redraw(page=None):
+    if page is not None:
+        window().workspace.m3d_page_right = page
+    for a in window().screen.areas:
+        a.tag_redraw()
+
+
+@step
+def p10_setup():
+    import m3d_meshcheck as MC
+    real = P10["real"] = MC.draw_lowpoly
+
+    def spy(layout, context, ob, compact=False):   # (which Low Poly Check blocks were drawn: the UV tab's, the Bake page's)
+        P10.setdefault("drawn", set()).add(compact)
+        return real(layout, context, ob, compact)
+    MC.draw_lowpoly = spy
+    bpy.ops.m3d.workspace(kind='MODEL')
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        if bpy.context.object is not None and bpy.context.object.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.ops.m3d.add_primitive(kind='CUBE')
+        ob = P10["ob"] = bpy.context.object
+        ob.name = "P10Cube"
+        ob.data.materials.append(bpy.data.materials.new("P10GuiMat"))
+        for o in bpy.context.view_layer.objects:
+            o.select_set(o == ob)
+        bpy.ops.m3d.tex_project('EXEC_DEFAULT', resolution='64', template='MINIMAL', unwrap=False, bake_after=False)
+
+
+step(wait_until(lambda: window().workspace.name == "Texture" and bpy.context.mode == 'PAINT_TEXTURE', "the new texture project in F4"))
+
+
+@step
+def p10_f3():
+    bpy.ops.m3d.workspace(kind='UV')
+
+
+step(wait_until(lambda: window().workspace.name == "UV" and bpy.context.mode == 'EDIT_MESH'
+                and P10["ob"].data.uv_layers.get(T10.PAINTED_UV) is not None, "F3: Edit Mode keeps the painted UVs"))
+
+
+@step
+def p10_uv_check():
+    p10_redraw("uv_check")
+
+
+@step
+def p10_uv_sets():
+    check(False in P10.get("drawn", set()) and not tracebacks(), "the UV Check tab draws the Low Poly Check")
+    p10_redraw("uv_create")
+
+
+@step
+def p10_move_uvs():
+    check(not tracebacks(), "the Create tab draws UV Sets")
+    ob = bpy.context.edit_object
+    bm = bmesh.from_edit_mesh(ob.data)
+    uv = bm.loops.layers.uv[0]
+    for f in bm.faces:
+        for loop in f.loops:
+            loop[uv].uv.x += 0.25
+    bmesh.update_edit_mesh(ob.data)
+    bpy.ops.m3d.workspace(kind='TEXTURE')
+
+
+step(wait_until(lambda: window().workspace.name == "Texture" and bpy.context.mode == 'PAINT_TEXTURE', "F4 again"))
+step(wait_until(lambda: T10.uv_moved(P10["ob"]), "the UVs changed card"))
+
+
+@step
+def p10_card():
+    p10_redraw("tex_layers")
+
+
+@step
+def p10_transfer():
+    check(not tracebacks(), "the Layers tab draws the UVs changed card")
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        check(bpy.ops.m3d.tex_uv_transfer() == {'FINISHED'} and not T10.uv_moved(P10["ob"]), "Transfer Layers to New UVs")
+        check(bpy.ops.m3d.tex_working_size(work='2') == {'FINISHED'}, "Working Size 1/2")
+    p10_redraw("tex_settings")
+
+
+@step
+def p10_settings():
+    check(not tracebacks(), "Texture Set Settings draws the working size")
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.m3d.tex_working_size(work='1')
+        bpy.ops.m3d.tex_bake_mode(on=True)
+    p10_redraw()
+
+
+@step
+def p10_bake():
+    check(True in P10.get("drawn", set()) and not tracebacks(), "the Bake page draws the Low Poly Check above the Bake button")
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.m3d.tex_bake_mode(on=False)
+        P10["cleanup"] = bpy.ops.m3d.mesh_cleanup('INVOKE_DEFAULT')
+
+
+@step
+def p10_cleanup_close():
+    check(P10["cleanup"] <= {'FINISHED', 'RUNNING_MODAL', 'INTERFACE'} and not tracebacks(), "Mesh > Cleanup... opens (%s)" % P10["cleanup"])
+    ws_event('ESC', 'PRESS')
+    ws_event('ESC', 'RELEASE')
+
+
+@step
+def p10_done():
+    import m3d_meshcheck as MC
+    MC.draw_lowpoly = P10["real"]
+    if bpy.context.object is not None and bpy.context.object.mode != 'OBJECT':
+        with bpy.context.temp_override(window=window(), screen=window().screen):
+            bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.data.objects.remove(P10["ob"])
+    bpy.ops.m3d.workspace(kind='MODEL')
+    check(not tracebacks(), "Python error in the P10 steps")
 
 
 @step

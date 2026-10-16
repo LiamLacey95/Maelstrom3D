@@ -105,7 +105,8 @@ TAG = "m3d_layer"   # Custom property (value: channel id) and name prefix of eve
 # The baked mesh maps the shader of a texture set uses, in the viewport only (Export, Merge Down and Flatten read the layers' pixels):
 # the Normal map is the base of the Normal channel (the layers' normal goes on top of it as detail), the AO map darkens the Base
 # Color. Material.<property> holds each map; link_maps sets them.
-BAKED_PROPS = {"Normal": "m3d_baked_normal", "AO": "m3d_baked_ao"}
+BAKED_PROPS = {"Normal": "m3d_baked_normal", "AO": "m3d_baked_ao", "Position": "m3d_baked_position",
+               "WorldNormal": "m3d_baked_worldnormal"}   # (the last two: what tri-planar fills project with)
 AO_MUL, AO_TEX = "%s.view.ao" % TAG, "%s.view.aotex" % TAG   # the nodes of the AO multiply (tagged "VIEW")
 FILL_TEXTURE = "m3d_fill_texture"   # Custom property of an image file picked as a fill's texture (value: the channel it was first picked for).
 MEMORY_WARN = 12    # Warn from this many 4K images (8 bit RGBA) on.
@@ -292,6 +293,15 @@ class M3D_LayerChannel(PropertyGroup):
     opacity_pct: MK.percent_of("opacity", "How strongly the layer applies in this channel")   # (the list rows: "50%")
 
 
+def _projection_changed(self, context):
+    """Tri-planar picked: the texture set takes the baked Position and World Normal maps of the mesh, if it has them (link_maps)."""
+    mat = self.id_data
+    ob = mesh_of(context) if context is not None else None
+    if self.projection == 'TRIPLANAR' and ob is not None and any(s.material == mat for s in ob.material_slots):
+        link_maps(mat, ob)
+    _changed(self, context)
+
+
 def _expanded_changed(self, context):
     """Closing a folder that holds the active layer makes the folder active (the list would show nothing selected)."""
     mat = self.id_data
@@ -341,6 +351,15 @@ class M3D_Layer(PropertyGroup):
                                description="Turn the texture around the middle of the UV map")
     uv_offset: FloatVectorProperty(name="Offset", size=2, default=(0.0, 0.0), soft_min=-1.0, soft_max=1.0, update=_changed,
                                    description="Slide the texture across the UV map (1 is the width of the UV map)")
+    # How a fill layer's textures meet the mesh: the UV map, or tri-planar (see triplanar).
+    projection: EnumProperty(name="Projection", default='UV', update=_projection_changed, items=(
+        ('UV', "UV", "The textures follow the UV map (they break where UV shells meet)"),
+        ('TRIPLANAR', "Tri-planar", "The textures are projected from the three axes and blended where the surface turns: no seams, "
+                                    "no stretching. Needs the baked Position and World Normal maps")))
+    tri_scale: FloatProperty(name="Scale", default=1.0, min=0.001, soft_max=100.0, update=_changed,
+                             description="How many times the texture repeats per unit (meter) of the mesh")
+    tri_sharpness: FloatProperty(name="Blend Sharpness", default=4.0, min=1.0, soft_max=32.0, update=_changed,
+                                 description="How quickly the projections hand over where the surface turns: higher is a narrower blend")
     # Before mask stacks a layer had one mask image (and Invert Mask): upgrade() turns them into effects.
     mask: PointerProperty(type=bpy.types.Image, update=_changed)
     mask_invert: BoolProperty(name="Invert Mask", default=False, update=_changed)
@@ -566,6 +585,39 @@ def fill_mapping(layer):
     return (float(loc[0]), float(loc[1]), 0.0), (0.0, 0.0, layer.uv_rotation), (layer.uv_tiling[0], layer.uv_tiling[1], 1.0)
 
 
+TRI_AXES = ((1, 2), (0, 2), (0, 1))   # the texture's plane seen along x (y, z), along y (x, z) and along z (x, y)
+
+
+def triplanar(layer):
+    """(Position map, World Normal map) a fill layer projects its textures with: set to Tri-planar and the texture set has both baked
+    maps (link_maps). None: by the UV map (a Tri-planar fill without the maps shows as UV until they are baked). The shader and numpy
+    read the same two images, so what the 3D view shows is what Export writes."""
+    if layer.kind != 'FILL' or layer.projection != 'TRIPLANAR':
+        return None
+    mat = layer.id_data
+    pos, nrm = mat.m3d_baked_position, mat.m3d_baked_worldnormal
+    return (pos, nrm) if pos is not None and nrm is not None else None
+
+
+def tri_values(layer, pos):
+    """(multiply, add) that turn the Position map's 0-1 values into points of the projection: the world position at the bake (the
+    bounds the bake scaled to, kept with the image) x Scale."""
+    bounds = pos.get("m3d_bounds")
+    lo, hi = (np.array(bounds[:3], np.float32), np.array(bounds[3:], np.float32)) if bounds is not None else (np.zeros(3), np.ones(3))
+    span = np.maximum(hi - lo, 1e-6)
+    return (span * layer.tri_scale).astype(np.float32), (lo * layer.tri_scale).astype(np.float32)
+
+
+def triplanar_planes(layer, tri, size):
+    """(points, weights), (size, size, 3) each, of the tri-planar projection at the texels of a size x size image: the points (see
+    tri_values) and the share of each axis, |world normal| ^ Blend Sharpness adding up to 1."""
+    pos, nrm = tri
+    mul, add = tri_values(layer, pos)
+    p = (pixels_of(pos, size)[..., :3] * mul + add).astype(np.float32)
+    n = np.abs(pixels_of(nrm, size)[..., :3] * 2.0 - 1.0) ** np.float32(layer.tri_sharpness)
+    return p, (n / np.maximum(n.sum(axis=-1, keepdims=True), 1e-6)).astype(np.float32)
+
+
 def layer_images(layer):
     return [e.image for e in layer.channels if e.image] + MK.owned_images(layer) + ([layer.mask] if layer.mask else [])
 
@@ -587,8 +639,14 @@ def memory_equivalent(mat):
 
 
 def stack_size(mat):
-    """Largest side of the stack's channel images (0: none yet)."""
-    return max((max(image_size(e.image)) for l in mat.m3d_layers for e in l.channels if e.image), default=0)
+    """Side of the texture set as its channel images say (0: none yet): the largest, at full size when they are painted at a
+    working size (work_factor)."""
+    return max((max(image_size(e.image)) for l in mat.m3d_layers for e in l.channels if e.image), default=0) * work_factor(mat)
+
+
+def work_factor(mat):
+    """How much smaller than the set's size its images are painted (Texture Set Settings > Working Size): 1, 2 or 4."""
+    return int(mat.m3d_work) if mat is not None and mat.m3d_work else 1
 
 
 def image_in_use(image):
@@ -616,10 +674,13 @@ def remove_image(image):
 
 
 def release(images):
-    """Remove images nothing uses any more (call after the layers and nodes using them are gone)."""
+    """Remove images nothing uses any more (call after the layers and nodes using them are gone), with their full size originals."""
     for image in {i.name: i for i in images if i is not None}.values():
         if not image_in_use(image):
+            full = image.get(MK.FULL)
             remove_image(image)
+            if isinstance(full, bpy.types.Image):
+                bpy.data.images.remove(full)
 
 
 # -----------------------------------------------------------------------------
@@ -856,7 +917,9 @@ def signature(tree, ch_id, top=True):
     return repr([(l.uid, l.kind, entry_of(l, ch_id).image.name if uses_image(l) else "", bool(l.mask_stack), l.use_alpha,
                   *(("replace",) if replaces(l, ch_id) else ()), *(("two",) if top and two_step(l, ch_id) else ()),
                   *((signature(inside, ch_id, False),) if inside else ()),
-                  *(("texture", entry_of(l, ch_id).texture.name) if has_texture(l, ch_id) else ())) for l, inside in tree])
+                  *(("texture", entry_of(l, ch_id).texture.name) if has_texture(l, ch_id) else ()),
+                  *(("tri",) + tuple(i.name for i in triplanar(l)) if has_texture(l, ch_id) and triplanar(l) else ()))
+                 for l, inside in tree])
 
 
 def set_values(nt, layer, ch_id):
@@ -882,10 +945,18 @@ def set_values(nt, layer, ch_id):
         target = fill.outputs[0] if fill is not None else place.inputs[7] if place is not None else None
         if target is not None:
             _set(target, fill_rgba(layer, ch_id))
-    mapping = nt.nodes.get(part(ch_id, layer.uid, "map"))   # (the UV transform of a fill's texture)
-    if mapping is not None:
-        for name, value in zip(("Location", "Rotation", "Scale"), fill_mapping(layer)):
-            _set(mapping.inputs[name], value)
+    for key in ("map", "map1", "map2"):   # (the UV transform of a fill's texture: one Mapping node, three when tri-planar)
+        mapping = nt.nodes.get(part(ch_id, layer.uid, key))
+        if mapping is not None:
+            for name, value in zip(("Location", "Rotation", "Scale"), fill_mapping(layer)):
+                _set(mapping.inputs[name], value)
+    points, power = nt.nodes.get(part(ch_id, layer.uid, "tp")), nt.nodes.get(part(ch_id, layer.uid, "tw"))
+    tri = triplanar(layer) if points is not None else None
+    if tri is not None:
+        mul, add = tri_values(layer, tri[0])
+        _set(points.inputs[1], tuple(float(v) for v in mul))
+        _set(points.inputs[2], tuple(float(v) for v in add))
+        _set(power.inputs[1], (layer.tri_sharpness,) * 3)
     for key in ("mix", "tex", "fill"):
         node = nt.nodes.get(part(ch_id, layer.uid, key))
         if node is not None and node.label != layer.name:
@@ -1101,7 +1172,10 @@ def build_channel(mat, ch, tree, sig, base=None):
                 opv.inputs[0].default_value = 1.0
         else:
             opv.inputs[0].default_value = 1.0
-            if has_texture(layer, ch.id):   # a fill's texture: UV map -> Mapping (the layer's UV transform) -> image; opaque
+            tri = triplanar(layer) if has_texture(layer, ch.id) else None
+            if tri is not None:
+                color = triplanar_nodes(new, links, ch.id, uid, tri, entry_of(layer, ch.id).texture, x, y_)
+            elif has_texture(layer, ch.id):   # a fill's texture: UV map -> Mapping (the layer's UV transform) -> image; opaque
                 coord = new("ShaderNodeTexCoord", part(ch.id, uid, "coord"), x - 400, y_ + 250)
                 mapping = new("ShaderNodeMapping", part(ch.id, uid, "map"), x - 200, y_ + 250)
                 tex = new("ShaderNodeTexImage", part(ch.id, uid, "tex"), x, y_)
@@ -1187,6 +1261,62 @@ def build_channel(mat, ch, tree, sig, base=None):
     else:
         node = new("ShaderNodeBump", "%s.HEIGHT.bump" % TAG, bsdf.location.x - 300, y)
         links.new(top, node.inputs["Height"])
+
+
+def triplanar_nodes(new, links, ch_id, uid, tri, image, x, y):
+    """The nodes of a tri-planar fill texture (what triplanar_planes and texture_planes compute): the Position map -> points, the
+    World Normal map -> weights; the texture read three times (the points' yz, xz and xy through the layer's Mapping) and mixed by
+    the weights. -> the color socket. The values (Scale, Sharpness, the Mapping) are set by set_values."""
+    def node(idname, key, dx, dy, **props):
+        n = new(idname, part(ch_id, uid, key), x + dx, y + dy)
+        for k, v in props.items():
+            setattr(n, k, v)
+        return n
+    pos = node("ShaderNodeTexImage", "tpos", -1400, 500, image=tri[0])
+    nrm = node("ShaderNodeTexImage", "tnrm", -1400, 200, image=tri[1])
+    points = node("ShaderNodeVectorMath", "tp", -1150, 500, operation='MULTIPLY_ADD')
+    links.new(pos.outputs["Color"], points.inputs[0])
+    signed = node("ShaderNodeVectorMath", "tn", -1150, 200, operation='MULTIPLY_ADD')   # (the map stores n * 0.5 + 0.5)
+    signed.inputs[1].default_value, signed.inputs[2].default_value = (2.0, 2.0, 2.0), (-1.0, -1.0, -1.0)
+    links.new(nrm.outputs["Color"], signed.inputs[0])
+    size = node("ShaderNodeVectorMath", "ta", -1000, 200, operation='ABSOLUTE')
+    links.new(signed.outputs[0], size.inputs[0])
+    power = node("ShaderNodeVectorMath", "tw", -850, 200, operation='POWER')
+    links.new(size.outputs[0], power.inputs[0])
+    total = node("ShaderNodeVectorMath", "ts", -700, 100, operation='DOT_PRODUCT')
+    total.inputs[1].default_value = (1.0, 1.0, 1.0)
+    links.new(power.outputs[0], total.inputs[0])
+    inverse = node("ShaderNodeMath", "ti", -550, 100, operation='DIVIDE')
+    inverse.inputs[0].default_value = 1.0
+    links.new(total.outputs["Value"], inverse.inputs[1])
+    share = node("ShaderNodeVectorMath", "tsh", -400, 200, operation='SCALE')
+    links.new(power.outputs[0], share.inputs[0])
+    links.new(inverse.outputs[0], share.inputs["Scale"])
+    weights = node("ShaderNodeSeparateXYZ", "tsw", -250, 200)
+    links.new(share.outputs[0], weights.inputs[0])
+    axes = node("ShaderNodeSeparateXYZ", "tpa", -1000, 500)
+    links.new(points.outputs[0], axes.inputs[0])
+    out = None
+    for i, (a, b) in enumerate(TRI_AXES):
+        suffix = str(i) if i else ""
+        plane = node("ShaderNodeCombineXYZ", "tc" + suffix, -800, 700 - i * 250)
+        links.new(axes.outputs[a], plane.inputs[0])
+        links.new(axes.outputs[b], plane.inputs[1])
+        mapping = node("ShaderNodeMapping", "map" + suffix, -600, 700 - i * 250)
+        links.new(plane.outputs[0], mapping.inputs["Vector"])
+        tex = node("ShaderNodeTexImage", "tex" + suffix, -350, 700 - i * 250, image=image)
+        links.new(mapping.outputs["Vector"], tex.inputs["Vector"])
+        scaled = node("ShaderNodeVectorMath", "tm" + suffix, -50, 600 - i * 200, operation='SCALE')
+        links.new(tex.outputs["Color"], scaled.inputs[0])
+        links.new(weights.outputs[i], scaled.inputs["Scale"])
+        if out is None:
+            out = scaled.outputs[0]
+        else:
+            add = node("ShaderNodeVectorMath", "tadd" + suffix, 100, 500 - i * 150, operation='ADD')
+            links.new(out, add.inputs[0])
+            links.new(scaled.outputs[0], add.inputs[1])
+            out = add.outputs[0]
+    return out
 
 
 def link_normal(mat):
@@ -1493,6 +1623,8 @@ def prepare(context, mat):
     """Before the stack is flattened: bake the maps its mask effects still miss, bring the blur caches up to date."""
     ob = mesh_of(context)
     missing = {key for layer in mat.m3d_layers for _e, key in MK.missing_maps(layer)}
+    if any(l.kind == 'FILL' and l.projection == 'TRIPLANAR' and triplanar(l) is None for l in mat.m3d_layers):
+        missing |= {'POSITION', 'WORLDNORMAL'}   # (a tri-planar fill without its maps)
     if missing and ob is not None and ob.active_material == mat and ob.data.uv_layers:
         import m3d_texture
         m3d_texture.ensure_maps(context, ob, sorted(missing))
@@ -1545,8 +1677,10 @@ def copy_image(image, name, half=None):
 
 
 def new_size(context, mat=None):
-    """Side of a new image: the size chosen for the material's texture set, else the new slot size of the Texture settings."""
-    return mat.m3d_size if mat is not None and mat.m3d_size else int(context.scene.m3d_tex.resolution)
+    """Side of a new image: the size chosen for the material's texture set, else the new slot size of the Texture settings (at the
+    working size when the set is painted at one)."""
+    size = mat.m3d_size if mat is not None and mat.m3d_size else int(context.scene.m3d_tex.resolution)
+    return size // work_factor(mat)
 
 
 SIZES = (64, 128, 256, 512, 1024, 2048, 4096)   # the sides a texture set can have (always square: the layer math works on squares)
@@ -1614,20 +1748,97 @@ def set_depth(context, mat, ch_id, bits):
     return len(done)
 
 
+def set_images(mat):
+    """The images of the texture set that hold pixels of their own (the blur caches are made from the masks)."""
+    caches = {e.image for l in mat.m3d_layers for e in l.mask_stack if e.kind == 'BLUR'}
+    return [img for img in dict.fromkeys(img for l in mat.m3d_layers for img in layer_images(l)) if img not in caches]
+
+
 def resize_set(context, mat, size):
-    """Scale every image of the texture set to size x size: the channel images, the masks' paint images, frozen folders'. A
-    generated image that was never painted is only told its new size. Returns how many images changed."""
-    count = 0
-    caches = {e.image for l in mat.m3d_layers for e in l.mask_stack if e.kind == 'BLUR'}   # (the blur caches follow their masks)
-    for image in dict.fromkeys(img for l in mat.m3d_layers for img in layer_images(l) if img not in caches):
-        if image_size(image) == (size, size):
+    """Scale every image of the texture set to size x size (at a working size: to that share of it, and their originals to the size):
+    the channel images, the masks' paint images, frozen folders'. A generated image that was never painted is only told its new
+    size. Returns how many images changed."""
+    count, factor, old = 0, work_factor(mat), set_size(context, mat)
+    work = size // factor
+    for image in set_images(mat):
+        if image.get(MK.FULL) is not None:   # (painted at a working size: the original is scaled, the working image made from it)
+            px = pixels_of(image, old)
+            store_working(image, MK.box_down(px, size) if size < old else MK.linear_up(px, size), work)
+            count += 1
+            continue
+        if image_size(image) == (work, work):
             continue
         if image.source == 'GENERATED' and not image.has_data:
-            image.generated_width = image.generated_height = size
+            image.generated_width = image.generated_height = work
         else:
-            image.scale(size, size)
+            image.scale(work, work)
         count += 1
     mat.m3d_size = size
+    refresh(context, mat)
+    return count
+
+
+def store_working(image, full_px, size):
+    """Keep `full_px` (the pixels at full size) as the image's original (an image of its own, kept with the file) and make the
+    image itself those pixels scaled down to `size`: what is painted on. full_pixels puts them together again."""
+    side = full_px.shape[0]
+    full = image.get(MK.FULL)
+    if isinstance(full, bpy.types.Image) and tuple(full.size) != (side, side):
+        full.scale(side, side)
+    elif not isinstance(full, bpy.types.Image):
+        full = bpy.data.images.new((image.name + " (full)")[:60], side, side, alpha=True, float_buffer=image.is_float,
+                                   is_data=image.colorspace_settings.is_data)
+        if image.is_float:
+            full.use_half_precision = image.use_half_precision
+        full.colorspace_settings.name = image.colorspace_settings.name
+        full.use_fake_user = True   # (nothing else uses it: the file keeps it)
+        image[MK.FULL] = full
+    write_pixels(full, full_px)
+    if image_size(image) != (size, size):
+        image.scale(size, size)
+    write_pixels(image, MK.box_down(full_px, size))
+
+
+def put_pixels(image, px):
+    """Write pixels made at full size into a layer image: as they are, or (an image smaller than them: painted at a working size)
+    as its original and scaled down."""
+    if px.shape[0] > image_size(image)[0]:
+        store_working(image, px, image_size(image)[0])
+    else:
+        write_pixels(image, px)
+
+
+WORK_ITEMS = (('1', "Full", "Paint at the texture set's size"),
+              ('2', "1/2", "Paint at half the size (a quarter of the memory); Export and Bake write the full size"),
+              ('4', "1/4", "Paint at a quarter of the size; Export and Bake write the full size"))
+
+
+def set_working(context, mat, factor):
+    """Paint the texture set at 1 / `factor` of its size: every image of it is made that size, its full size pixels kept as its
+    original (store_working); what was painted at the old working size goes into the original first, so nothing is lost but the
+    detail painted at the lower size. Back to Full the image is the original again, with what was painted (scaled up) where it was
+    painted. Export, Bake and Flatten read the full size (pixels_of). Returns how many images changed."""
+    full = set_size(context, mat)
+    mat.m3d_size = full
+    work, count = full // factor, 0
+    for image in set_images(mat):
+        if image.source == 'GENERATED' and not image.has_data:   # (never painted: only its size)
+            image.generated_width = image.generated_height = work
+            continue
+        side, orig = image_size(image)[0], image.get(MK.FULL)
+        px = pixels_of(image, full) if orig is not None or side >= full else MK.linear_up(pixels_of(image, side), full)
+        if factor == 1:
+            if side != full:
+                image.scale(full, full)
+            write_pixels(image, px)
+            if orig is not None:
+                del image[MK.FULL]
+                if isinstance(orig, bpy.types.Image):
+                    bpy.data.images.remove(orig)
+        else:
+            store_working(image, px, work)
+        count += 1
+    mat.m3d_work = str(factor)
     refresh(context, mat)
     return count
 
@@ -1830,12 +2041,27 @@ def texture_planes(layer, ch, size):
     px = px.reshape(h, w, 4)[..., :3]
     if ch.srgb:
         px = to_linear(px)
-    ys, xs = np.mgrid[0:size, 0:size]
     m, loc = fill_matrix(layer)
-    uv = np.stack(((xs + 0.5) / size, (ys + 0.5) / size), -1) @ m.T + loc
-    fx, fy = uv[..., 0] * w, uv[..., 1] * h   # (texel i is centered at i + 0.5)
     node = layer.id_data.node_tree.nodes.get(part(ch.id, layer.uid, "tex")) if layer.id_data.node_tree else None
-    if node is not None and node.interpolation == 'Closest':
+    closest = node is not None and node.interpolation == 'Closest'
+    tri = triplanar(layer)
+    if tri is None:
+        ys, xs = np.mgrid[0:size, 0:size]
+        uv = np.stack(((xs + 0.5) / size, (ys + 0.5) / size), -1) @ m.T + loc
+        return lookup(px, uv[..., 0] * w, uv[..., 1] * h, closest)   # (texel i is centered at i + 0.5)
+    p, weights = triplanar_planes(layer, tri, size)
+    out = np.zeros((size, size, 3), np.float32)
+    for axis, (i, j) in enumerate(TRI_AXES):   # (the texture seen along x, y and z, mixed by how much the surface faces each way)
+        uv = np.stack((p[..., i], p[..., j]), -1) @ m.T + loc
+        out += lookup(px, uv[..., 0] * w, uv[..., 1] * h, closest) * weights[..., axis:axis + 1]
+    return out
+
+
+def lookup(px, fx, fy, closest=False):
+    """An image's pixels `px` (h, w, n) read at the points (fx, fy) in pixels (texel i centered at i + 0.5), repeating, as an Image
+    Texture node reads them: Closest, else Linear."""
+    h, w = px.shape[:2]
+    if closest:
         return px[np.floor(fy).astype(int) % h, np.floor(fx).astype(int) % w]
     fx, fy = fx - 0.5, fy - 0.5
     x0, y0 = np.floor(fx), np.floor(fy)
@@ -2193,6 +2419,7 @@ def copy_layer(mat, uid, source=None):
         new.visible, new.use_alpha, new.use_mask = src.visible, src.use_alpha, src.use_mask
         new.paint_mask, new.expanded, new.frozen = src.paint_mask, src.expanded, src.frozen
         new.uv_tiling, new.uv_rotation, new.uv_offset = src.uv_tiling, src.uv_rotation, src.uv_offset
+        new.projection, new.tri_scale, new.tri_sharpness = src.projection, src.tri_scale, src.tri_sharpness
         for ch in CHANNELS:
             a, b = entry_of(src, ch.id), entry_of(new, ch.id)
             b.use, b.color, b.value, b.texture = a.use, a.color, a.value, a.texture
@@ -2267,18 +2494,19 @@ def merge_down(mat, index, default_size):
         chans = [ch for ch in CHANNELS if has_content(top, ch.id) or has_content(low, ch.id)]
         sizes = [max(image_size(e.image)) for l in (*group, low) for e in l.channels if e.image]
         size = max(sizes, default=default_size)
+        full = size * work_factor(mat)   # (at a working size the layers are merged at full size: the originals keep the detail)
         with muted():
             for ch in chans:
-                zero = (np.zeros((size, size, 3), np.float32), np.zeros((size, size), np.float32))
-                rgb, alpha = layer_planes(low, ch, size) if has_content(low, ch.id) else zero
-                top_rgb, top_alpha = layer_planes(top, ch, size) if has_content(top, ch.id) else zero
+                zero = (np.zeros((full, full, 3), np.float32), np.zeros((full, full), np.float32))
+                rgb, alpha = layer_planes(low, ch, full) if has_content(low, ch.id) else zero
+                top_rgb, top_alpha = layer_planes(top, ch, full) if has_content(top, ch.id) else zero
                 rgb, alpha = over(rgb, alpha, top_rgb, top_alpha, mode_of(top, ch.id))
                 e = entry_of(low, ch.id)
                 if e.image is None:
                     e.image = make_channel_image(mat, low, ch, size, opaque=False)
                 elif max(image_size(e.image)) != size:
                     e.image.scale(size, size)
-                write_pixels(e.image, encode(ch, rgb, alpha))
+                put_pixels(e.image, encode(ch, rgb, alpha))
                 e.use = True
                 if e.blend == 'PASSTHROUGH':   # (the lower layer showed nothing here: the pixels blend as the upper layer's did)
                     e.blend = entry_of(top, ch.id).blend
@@ -2370,7 +2598,7 @@ def merge_folder(mat, index, default_size):
 def flatten_all(mat, default_size):
     """Replace the stack by one opaque "Base" layer holding what it looks like (hidden layers are dropped)."""
     chans = content_channels(mat)
-    size = stack_size(mat) or default_size
+    size = stack_size(mat) or default_size   # (at a working size: the full size, kept as the originals)
     flat = {c: flatten_channel(mat, c, size) for c in chans}
     old = stack_images(mat)
     with muted():
@@ -2380,8 +2608,8 @@ def flatten_all(mat, default_size):
             e = entry_of(base, ch.id)
             e.use = ch.id in flat
             if ch.id in flat:
-                e.image = make_channel_image(mat, base, ch, size, opaque=True)
-                write_pixels(e.image, flat[ch.id])
+                e.image = make_channel_image(mat, base, ch, size // work_factor(mat), opaque=True)
+                put_pixels(e.image, flat[ch.id])
         mat.m3d_layer_index = 0
     rebuild_all(mat)
     release(old)
@@ -4124,6 +4352,13 @@ def register():
                                "take the size of the Texture settings)")
     mat.m3d_baked_normal = PointerProperty(type=bpy.types.Image, name="Baked Normal", description="The baked normal map the shader of the "
                                            "texture set uses as its base normal (the mesh's Normal mesh map)")
+    mat.m3d_work = EnumProperty(name="Working Size", default='1', items=WORK_ITEMS,
+                                description="Paint the texture set's images at a share of its size: less memory and faster strokes; "
+                                            "Export and Bake still write the full size (m3d.tex_working_size changes it)")
+    mat.m3d_baked_position = PointerProperty(type=bpy.types.Image, name="Baked Position", description="The baked Position map "
+                                             "tri-planar fills project with (link_maps)")
+    mat.m3d_baked_worldnormal = PointerProperty(type=bpy.types.Image, name="Baked World Normal", description="The baked World Normal "
+                                                "map tri-planar fills blend with (link_maps)")
     mat.m3d_baked_ao = PointerProperty(type=bpy.types.Image, name="Baked AO", description="The baked AO map that darkens the Base Color "
                                        "in the viewport (the mesh's AO mesh map)")
     mat.m3d_unlit = BoolProperty(name="Unlit", default=False, update=_show_mask_changed,
@@ -4148,6 +4383,7 @@ def unregister():
     bpy.app.handlers.load_post.remove(load_post)
     bpy.types.UI_MT_button_context_menu.remove(draw_list_menu)
     del bpy.types.Material.m3d_unlit, bpy.types.Material.m3d_baked_ao, bpy.types.Material.m3d_baked_normal
+    del bpy.types.Material.m3d_baked_position, bpy.types.Material.m3d_baked_worldnormal, bpy.types.Material.m3d_work
     del bpy.types.Material.m3d_size, bpy.types.Material.m3d_depth, bpy.types.Material.m3d_off
     thumbs_clear()
     if _thumbs["coll"] is not None:

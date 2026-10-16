@@ -35,15 +35,60 @@ LUMA = np.array([0.2126391, 0.7151691, 0.0721928], np.float32)   # The nodes' co
 # (Rec.709 of the default colour config; measured against a Cycles bake, error 1e-7).
 
 
+FULL = "m3d_full"   # Custom property of an image painted at a working size (Texture Set Settings): its full size original.
+
+
 def pixels_of(image, size):
-    """The image's pixels as a (size, size, 4) array (resampled when it has another size)."""
+    """The image's pixels as a (size, size, 4) array (resampled when it has another size). An image painted at a working size is
+    read at its full size when more than its own size is asked for (Export, Bake, Flatten): see full_pixels."""
     px = np.empty(len(image.pixels), np.float32)
     image.pixels.foreach_get(px)
     w, h = image.size
     px = px.reshape(h, w, 4)
+    full = image.get(FULL) if size > w else None
+    if isinstance(full, bpy.types.Image) and full.size[0] > w:
+        px = full_pixels(image, px, full)
+        h = w = px.shape[0]
     if (w, h) != (size, size):
         px = px[np.ix_(np.arange(size) * h // size, np.arange(size) * w // size)]
     return px
+
+
+def box_down(px, size):
+    """(size, size, n): the average of each block of pixels (the sides are powers of two: whole blocks)."""
+    h, w = px.shape[:2]
+    if h % size or w % size:
+        return px[np.ix_(np.arange(size) * h // size, np.arange(size) * w // size)]
+    return px.reshape(size, h // size, size, w // size, -1).mean(axis=(1, 3)).astype(np.float32)
+
+
+def linear_up(px, size):
+    """(size, size, n): `px` scaled up with linear filtering (the border pixels repeat)."""
+    def axis(n):
+        c = np.clip((np.arange(size, dtype=np.float32) + 0.5) * n / size - 0.5, 0, n - 1)
+        i0 = np.floor(c).astype(int)
+        return i0, np.minimum(i0 + 1, n - 1), (c - i0).astype(np.float32)
+    y0, y1, ty = axis(px.shape[0])
+    x0, x1, tx = axis(px.shape[1])
+    tx, ty = tx[None, :, None], ty[:, None, None]
+    rows = px[y0] * (1 - ty) + px[y1] * ty
+    return (rows[:, x0] * (1 - tx) + rows[:, x1] * tx).astype(np.float32)
+
+
+def full_pixels(image, px, full):
+    """The full size pixels of an image painted at a working size, `px` its own pixels: the original where the working image still
+    holds the original scaled down (as it was stored: 8 bit images round), the working image scaled up where it was painted."""
+    big = np.empty(len(full.pixels), np.float32)
+    full.pixels.foreach_get(big)
+    side = full.size[0]
+    big = big.reshape(full.size[1], side, 4)
+    ref = box_down(big, px.shape[0])
+    if not image.is_float:
+        ref = np.floor(ref * 255.0 + 0.5) / 255.0   # (as Blender rounds a float to a byte: halves up)
+    changed = (np.abs(px - ref) > (2e-3 if image.is_float else 0.6 / 255.0)).any(axis=-1)
+    k = side // px.shape[0]
+    painted = np.repeat(np.repeat(changed, k, axis=0), k, axis=1)[..., None]
+    return np.where(painted, linear_up(px, side), big)
 
 
 def write_pixels(image, array):

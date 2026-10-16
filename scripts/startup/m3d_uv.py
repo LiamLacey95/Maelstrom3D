@@ -17,10 +17,11 @@ import math
 import bmesh
 import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, PointerProperty
-from bpy.types import Menu, Operator, Panel, PropertyGroup
+from bpy.types import Menu, Operator, Panel, PropertyGroup, UIList
 from mathutils import Vector
 
 import m3d_layers as L
+import m3d_meshcheck as MC
 import m3d_pair
 from m3d_mode import _button
 from m3d_sculpt import draw_object_picks, empty_state, grid, reason, split_props
@@ -505,6 +506,7 @@ UVTK_CUT_SEW = (
     ("Split", "uv.select_split", 'UNLINKED', {}),
     ("Merge", "uv.remove_doubles", 'AUTOMERGE_OFF', {}),
     ("Seams from Shells", "uv.seams_from_islands", 'UV_ISLANDSEL', {}),
+    ("Harden UV Borders", "m3d.uv_harden_borders", 'MOD_EDGESPLIT', {}),
 )
 UVTK_UNFOLD = (
     ("Unfold", "m3d.uv_unfold", 'UV', {}),
@@ -682,7 +684,7 @@ class PROPERTIES_PT_m3d_uv_cut(_Unwrap, Panel):
 
     def draw(self, context):
         grid(self.layout, context, UVTK_CUT_SEW[:4])
-        grid(self.layout, context, UVTK_CUT_SEW[4:], columns=1)   # (Seams from Shells: the whole width)
+        grid(self.layout, context, UVTK_CUT_SEW[4:], columns=1)   # (Seams from Shells, Harden UV Borders: the whole width)
 
 
 class PROPERTIES_PT_m3d_uv_unfold(_Unwrap, Panel):
@@ -806,6 +808,13 @@ class PROPERTIES_PT_m3d_uv_density(_Check, Panel):
         reason(layout, "Match uses the active face's shell")
 
 
+class PROPERTIES_PT_m3d_uv_lowpoly(_Check, Panel):
+    bl_label = "Low Poly Check"
+
+    def draw(self, context):
+        MC.draw_lowpoly(self.layout, context, mesh_object(context))
+
+
 # --- Create
 
 class _Create(_Page):
@@ -833,6 +842,140 @@ class PROPERTIES_PT_m3d_uv_projections(_Create, Panel):
     def draw(self, context):
         grid(self.layout, context, UVTK_CREATE)
         reason(self.layout, "Planar and Camera-Based use the 3D view")
+
+
+# UV sets: a mesh can have more than one UV map. The UV Editor edits the active one; painting, baking and export always use the
+# first (entering Texture Paint makes the first the active and the rendered one, m3d_texture.first_uv), so the list says so.
+
+def first_uv_name(me):
+    return me.uv_layers[0].name if me.uv_layers else ""
+
+
+class M3D_UL_uv_sets(UIList):
+    """The mesh's UV maps, without the hidden copy of the painted UVs (m3d_texture.PAINTED_UV)."""
+
+    def draw_item(self, _context, layout, _data, item, _icon, _active_data, _active_prop, index=0, _flt_flag=0):
+        row = layout.row(align=True)
+        row.prop(item, "name", text="", emboss=False, icon='GROUP_UVS')
+        if index == 0:
+            sub = row.row()
+            sub.active = False
+            sub.label(text="Painted")
+
+    def filter_items(self, _context, data, prop):
+        return [0 if item.name.startswith(".") else self.bitflag_filter_item for item in getattr(data, prop)], []
+
+
+class M3D_OT_uv_set_add(Operator):
+    """Add a UV map: a copy of the active one (painting, baking and export keep using the first)"""
+    bl_idname = "m3d.uv_set_add"
+    bl_label = "Add UV Map"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return mesh_object(context) is not None
+
+    def execute(self, context):
+        me = mesh_object(context).data
+        names = {l.name for l in me.uv_layers}
+        name = next(n for n in ("UVMap.%03d" % i for i in range(1, 1000)) if n not in names)
+        me.uv_layers.new(name=name)   # (in Edit Mode it gives no reference back: looked up by name)
+        if me.uv_layers.find(name) < 0:
+            self.report({'WARNING'}, "A mesh can have only 8 UV maps")
+            return {'CANCELLED'}
+        me.uv_layers.active_index = me.uv_layers.find(name)
+        return {'FINISHED'}
+
+
+class M3D_OT_uv_set_remove(Operator):
+    """Remove the active UV map"""
+    bl_idname = "m3d.uv_set_remove"
+    bl_label = "Remove UV Map"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = mesh_object(context)
+        return ob is not None and ob.data.uv_layers.active is not None and not ob.data.uv_layers.active.name.startswith(".")
+
+    def execute(self, context):
+        me = mesh_object(context).data
+        if me.uv_layers.active_index == 0 and len([l for l in me.uv_layers if not l.name.startswith(".")]) > 1:
+            self.report({'INFO'}, "The next UV map is the first now: painting, baking and export use it")
+        me.uv_layers.remove(me.uv_layers.active)
+        if me.uv_layers:
+            me.uv_layers.active_index = 0
+        return {'FINISHED'}
+
+
+class M3D_OT_uv_lightmap(Operator):
+    """Lightmap UV: a second UV map (made again when there is one) with the shells of the first, at one texel density and packed
+    without overlaps, for baked lighting in an engine"""
+    bl_idname = "m3d.uv_lightmap"
+    bl_label = "Lightmap UV"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = mesh_object(context)
+        return ob is not None and bool(ob.data.uv_layers)
+
+    def execute(self, context):
+        ob = mesh_object(context)
+        me, ts = ob.data, context.tool_settings
+        mode = ob.mode
+        if mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        old = me.uv_layers.get(LIGHTMAP)
+        if old is not None:
+            me.uv_layers.remove(old)
+        me.uv_layers.active_index = 0
+        layer = me.uv_layers.new(name=LIGHTMAP, do_init=True)   # (a copy of the first: its shells)
+        if layer is None:
+            self.report({'WARNING'}, "A mesh can have only 8 UV maps")
+            return {'CANCELLED'}
+        me.uv_layers.active = layer
+        sync, ts.use_uv_select_sync = ts.use_uv_select_sync, True
+        try:
+            with context.temp_override(active_object=ob, object=ob):
+                bpy.ops.object.mode_set(mode='EDIT')
+                saved = [f.select for f in bmesh.from_edit_mesh(me).faces]   # (the selection comes back after)
+                bpy.ops.mesh.select_all(action='SELECT')
+                bpy.ops.uv.average_islands_scale()
+                bpy.ops.uv.pack_islands(margin=max(context.scene.m3d_uv.margin, 0.005), rotate=True, merge_overlap=False)
+                for f, was in zip(bmesh.from_edit_mesh(me).faces, saved):
+                    f.select_set(was)
+                bpy.ops.object.mode_set(mode='OBJECT')
+        finally:
+            ts.use_uv_select_sync = sync
+            me.uv_layers.active_index = 0
+            if ob.mode != mode:
+                bpy.ops.object.mode_set(mode=mode)
+        self.report({'INFO'}, "Lightmap UV: the UV map %s, packed without overlaps" % LIGHTMAP)
+        return {'FINISHED'}
+
+
+LIGHTMAP = "Lightmap"
+
+
+class PROPERTIES_PT_m3d_uv_sets(_Create, Panel):
+    bl_label = "UV Sets"
+
+    def draw(self, context):
+        layout = self.layout
+        me = mesh_object(context).data
+        row = layout.row()
+        row.template_list("M3D_UL_uv_sets", "", me, "uv_layers", me.uv_layers, "active_index", rows=3, show_handles=False)
+        col = row.column(align=True)
+        col.operator("m3d.uv_set_add", text="", icon='ADD')
+        col.operator("m3d.uv_set_remove", text="", icon='REMOVE')
+        layout.operator("m3d.uv_lightmap", icon='LIGHT_SUN')
+        if me.uv_layers:
+            reason(layout, "Painting, baking and export use the first UV map (%s). The UV Editor edits the one picked here"
+                   % first_uv_name(me))
+        else:
+            reason(layout, "No UV map yet: Auto Unwrap makes one")
 
 
 # --- UDIM
@@ -968,6 +1111,12 @@ classes = (
     PROPERTIES_PT_m3d_uv_checker,
     PROPERTIES_PT_m3d_uv_distortion,
     PROPERTIES_PT_m3d_uv_density,
+    PROPERTIES_PT_m3d_uv_lowpoly,
+    M3D_UL_uv_sets,
+    M3D_OT_uv_set_add,
+    M3D_OT_uv_set_remove,
+    M3D_OT_uv_lightmap,
+    PROPERTIES_PT_m3d_uv_sets,
     PROPERTIES_PT_m3d_uv_auto,
     PROPERTIES_PT_m3d_uv_projections,
     PROPERTIES_PT_m3d_uv_image,

@@ -40,6 +40,7 @@ from mathutils import Vector
 import m3d_bakeq as Q
 import m3d_layers as L
 import m3d_masks as MK
+import m3d_meshcheck as MC
 import m3d_pair
 import m3d_sculpt as S
 import m3d_uv
@@ -1031,34 +1032,12 @@ class M3D_OT_tex_tool(Operator):
 
 
 def uv_island(mesh, start):
-    """Indices of the polygons in the UV island of polygon `start`: the ones reached over edges whose two ends have the same UV
-    coordinates on both sides."""
-    import bmesh
-    bm = bmesh.new()
-    try:
-        bm.from_mesh(mesh)
-        layer = bm.loops.layers.uv.active
-        if layer is None or not 0 <= start < len(bm.faces):
-            return [start]
-        bm.faces.ensure_lookup_table()
-        seen, stack = {start}, [bm.faces[start]]
-        while stack:
-            face = stack.pop()
-            for loop in face.loops:
-                for other in loop.edge.link_loops:
-                    if other.face.index in seen:
-                        continue
-                    a0, a1 = loop[layer].uv, loop.link_loop_next[layer].uv
-                    if other.vert == loop.vert:
-                        b0, b1 = other[layer].uv, other.link_loop_next[layer].uv
-                    else:
-                        b0, b1 = other.link_loop_next[layer].uv, other[layer].uv
-                    if (a0 - b0).length < 1e-5 and (a1 - b1).length < 1e-5:
-                        seen.add(other.face.index)
-                        stack.append(other.face)
-        return sorted(seen)
-    finally:
-        bm.free()
+    """Indices of the polygons in the UV island (of the first UV map) of polygon `start`: the ones reached over edges whose two ends
+    have the same UV coordinates on both sides."""
+    if not mesh.uv_layers or not 0 <= start < len(mesh.polygons):
+        return [start]
+    shell, _count = MC.shells(MC.arrays(mesh))
+    return np.nonzero(shell == shell[start])[0].tolist()
 
 
 def select_faces(mesh, indices):
@@ -1578,7 +1557,8 @@ def bake_maps_steps(context, ob, high, s, maps, name=None, extrusion=None, ray_d
                 max_ray_distance=s.ray_distance if ray_distance is None else ray_distance, normal_space='TANGENT',
                 normal_g='NEG_Y' if context.scene.m3d_tex.normal_format == 'DIRECTX' else 'POS_Y',
                 use_cage=cage is not None, cage_object=cage.name if cage is not None else "",
-                use_clear=not held, target='IMAGE_TEXTURES', save_mode='INTERNAL')
+                use_clear=not held, target='IMAGE_TEXTURES', save_mode='INTERNAL',
+                uv_layer=ob.data.uv_layers[0].name if ob.data.uv_layers else "")   # (the first UV map, whichever is active)
         image["m3d_parts"] = "|".join(sorted({*held, ob.name}))
         if ids is not None:   # (which colour is which, for the Color ID mask)
             prefix = ob.m3d_pair.group + ": " if m3d_pair.grouped(ob) else ""
@@ -1678,6 +1658,7 @@ def bake_multires(context, ob, s, kinds, name, others=()):
     also after an error. Returns the images."""
     mod, size, images = multires_of(ob), map_size(s), []
     level = mod.levels
+    first_uv(ob)   # (Blender's multires baker uses the active UV map: the first, as for every bake)
     try:
         with bake_scene(context, ob, cycles=False), multires_settings(
                 context.scene.render.bake, use_multires=True, type='NORMALS', margin=s.margin, use_clear=True,
@@ -2171,9 +2152,10 @@ def write_image(context, path, array, fmt='PNG', depth='8', alpha=False):
 
 
 def uv_coverage(ob, mat, size):
-    """(size, size) bool: the pixels of the UV map (rows from the bottom, like an image) that the faces of the mesh `ob` that use
-    the material `mat` cover. A small triangle is stamped, a bigger one is tested pixel by pixel in its bounding box."""
-    mesh, layer = ob.data, ob.data.uv_layers.active
+    """(size, size) bool: the pixels of the first UV map (rows from the bottom, like an image) that the faces of the mesh `ob` that
+    use the material `mat` cover. A small triangle is stamped, a bigger one is tested pixel by pixel in its bounding box."""
+    mesh = ob.data
+    layer = mesh.uv_layers[0] if mesh.uv_layers else None   # (the one painting and baking use, whichever is active)
     slots = [i for i, slot in enumerate(ob.material_slots) if slot.material == mat]
     mask = np.zeros((size, size), bool)
     if layer is None or not slots:
@@ -2192,19 +2174,10 @@ def uv_coverage(ob, mat, size):
         if 0 <= x < size and 0 <= y < size:
             mask[int(y), int(x)] = True
     for t in tris[~small]:
-        x0, y0 = np.maximum(np.floor(t.min(axis=0)), 0).astype(int)
-        x1, y1 = np.minimum(np.ceil(t.max(axis=0)), size).astype(int)
-        if x1 <= x0 or y1 <= y0:
-            continue
-        d = (t[1, 1] - t[2, 1]) * (t[0, 0] - t[2, 0]) + (t[2, 0] - t[1, 0]) * (t[0, 1] - t[2, 1])
-        if abs(d) < 1e-9:
-            continue
-        px = np.arange(x0, x1, dtype=np.float32) + 0.5
-        py = (np.arange(y0, y1, dtype=np.float32) + 0.5)[:, None]
-        a = ((t[1, 1] - t[2, 1]) * (px - t[2, 0]) + (t[2, 0] - t[1, 0]) * (py - t[2, 1])) / d
-        b = ((t[2, 1] - t[0, 1]) * (px - t[2, 0]) + (t[0, 0] - t[2, 0]) * (py - t[2, 1])) / d
-        inside = (a >= -1e-4) & (b >= -1e-4) & (1.0 - a - b >= -1e-4)
-        mask[y0:y1, x0:x1] |= inside
+        got = MC.triangle_pixels(t, size)
+        if got is not None:
+            y0, x0, inside = got[:3]
+            mask[y0:y0 + inside.shape[0], x0:x0 + inside.shape[1]] |= inside
     return mask
 
 
@@ -2245,6 +2218,277 @@ def nearest_covered(covered, limit=None):
                 best[dst] = np.where(better, dist, best[dst])
         step //= 2
     return np.where(best <= limit * limit, seed, -1) if limit else seed
+
+
+# -----------------------------------------------------------------------------
+# UVs changed after painting. Layer images are in UV space: moving the UVs moves the paint off its place. Going into Edit Mode with
+# a painted mesh keeps a copy of its first UV map (PAINTED_UV: a hidden UV map, which Edit Mode carries through added and removed
+# geometry like the other maps). Out of Edit Mode the copy goes again when the UVs are the same; when they differ, the Layers page
+# offers to move the paint along (Transfer Layers to New UVs: every layer image drawn again at the new UVs, triangle by triangle)
+# or to keep it where it is. The mode changes are seen by a depsgraph handler and handled by a timer (a handler may not write data).
+
+PAINTED_UV = ".m3d_uv_painted"
+
+
+def first_uv(ob):
+    """Make the first UV map the active and the rendered one: what painting and the shader use (the UV Sets panel may have picked
+    another one to edit)."""
+    uv = ob.data.uv_layers
+    if uv and uv[0].name != PAINTED_UV:
+        if uv.active_index != 0:
+            uv.active_index = 0
+        if not uv[0].active_render:
+            uv[0].active_render = True
+
+
+def painted(ob):
+    """Is a material of the mesh a texture set (it has layers)?"""
+    return any(slot.material is not None and len(slot.material.m3d_layers) for slot in ob.material_slots)
+
+
+def uv_moved(ob):
+    """Do the UVs of the mesh differ from the ones it was painted with (the card on the Layers page asks what to do)?"""
+    return ob is not None and ob.type == 'MESH' and ob.mode != 'EDIT' and ob.data.uv_layers.get(PAINTED_UV) is not None
+
+
+def keep_painted_uv(ob):
+    """In Edit Mode: keep a copy of the first UV map of a painted mesh (once: an earlier copy is still the painted UVs)."""
+    uv = ob.data.uv_layers
+    if not painted(ob) or not uv or uv.get(PAINTED_UV) is not None:
+        return
+    active = uv.active_index
+    uv.active_index = 0
+    uv.new(name=PAINTED_UV, do_init=True)   # (a copy of the active map; None when the mesh has 8 already: nothing to compare then)
+    uv.active_index = active
+
+
+def drop_same_uv(ob):
+    """Out of Edit Mode: the copy of the painted UVs goes when the first UV map is still the same."""
+    me = ob.data
+    old = me.uv_layers.get(PAINTED_UV)
+    if old is None:
+        return
+    new = MC.first_uv(me)
+    before = MC._get(old.uv, "vector", len(me.loops), np.float32, 2)
+    if new is None or np.abs(new - before).max(initial=0.0) < 1e-6:
+        me.uv_layers.remove(old)
+
+
+def mode_changed(ob, before, mode):
+    """A mesh went from `before` into `mode`."""
+    if mode == 'EDIT':
+        keep_painted_uv(ob)
+    elif before == 'EDIT':
+        drop_same_uv(ob)
+    if mode == 'TEXTURE_PAINT':
+        first_uv(ob)
+
+
+_modes = {}        # mesh object name -> its mode at the last update seen
+_mode_todo = []    # (name, before, mode) for the timer
+
+
+def _modes_follow():
+    for name, before, mode in _mode_todo:
+        ob = bpy.data.objects.get(name)
+        if ob is not None and ob.type == 'MESH' and ob.library is None and ob.mode == mode:
+            mode_changed(ob, before, mode)
+    _mode_todo.clear()
+
+
+@bpy.app.handlers.persistent
+def _depsgraph_modes(_scene, depsgraph):
+    """Note the meshes that changed their mode (Blender reports it as an update of the object)."""
+    for update in depsgraph.updates:
+        if isinstance(update.id, bpy.types.Object) and update.id.type == 'MESH':
+            ob = update.id.original
+            before = _modes.get(ob.name, 'OBJECT')
+            if ob.mode != before:
+                _modes[ob.name] = ob.mode
+                _mode_todo.append((ob.name, before, ob.mode))
+    if _mode_todo and not bpy.app.timers.is_registered(_modes_follow):
+        bpy.app.timers.register(_modes_follow, first_interval=0.0)
+
+
+@bpy.app.handlers.persistent
+def _load_modes(*_args):
+    _modes.clear()
+    _mode_todo.clear()
+    for ob in bpy.data.objects:
+        if ob.type == 'MESH':
+            _modes[ob.name] = ob.mode
+
+
+def uv_triangles(context, mat):
+    """(new, old): (n, 3, 2) UVs of the triangles of every mesh of the texture set `mat` (its faces with that material), now and as
+    painted (the copy, or now for a mesh without one)."""
+    new, old = [], []
+    for ob in meshes_with(context, mat) or []:
+        me = ob.data
+        uv = MC.first_uv(me)
+        slots = [i for i, slot in enumerate(ob.material_slots) if slot.material == mat]
+        if uv is None or not slots:
+            continue
+        copy = me.uv_layers.get(PAINTED_UV)
+        before = MC._get(copy.uv, "vector", len(me.loops), np.float32, 2) if copy is not None else uv
+        tris, faces = MC.loop_triangles(me)
+        index = np.empty(len(me.polygons), np.int32)
+        me.polygons.foreach_get("material_index", index)
+        tris = tris[np.isin(index[faces], slots)]
+        new.append(uv[tris])
+        old.append(before[tris])
+    if not new:
+        return np.zeros((0, 3, 2), np.float32), np.zeros((0, 3, 2), np.float32)
+    return np.concatenate(new), np.concatenate(old)
+
+
+def uv_remap(new, old, w, h):
+    """For every pixel of a w x h image (rows from the bottom): where its point of the mesh was before, in pixels of the image
+    ((h, w, 2)), and whether a triangle covers it now ((h, w) bool)."""
+    scale = np.array([w, h], np.float32)
+    tn, to = new * scale, old * scale
+    src, hit = np.zeros((h, w, 2), np.float32), np.zeros((h, w), bool)
+    small = ((tn.max(axis=1) - tn.min(axis=1)) <= 1.0).all(axis=1)
+    c = tn[small].mean(axis=1).astype(int)
+    ok = (c[:, 0] >= 0) & (c[:, 0] < w) & (c[:, 1] >= 0) & (c[:, 1] < h)
+    src[c[ok, 1], c[ok, 0]] = to[small][ok].mean(axis=1)
+    hit[c[ok, 1], c[ok, 0]] = True
+    for i in np.nonzero(~small)[0]:
+        got = MC.triangle_pixels(tn[i], (w, h))
+        if got is None:
+            continue
+        y0, x0, inside, a, b = got
+        box = (slice(y0, y0 + inside.shape[0]), slice(x0, x0 + inside.shape[1]))
+        a, b = np.broadcast_to(a, inside.shape)[inside][:, None], np.broadcast_to(b, inside.shape)[inside][:, None]
+        t = to[i]
+        src[box][inside] = a * t[0] + b * t[1] + (1.0 - a - b) * t[2]
+        hit[box][inside] = True
+    return src, hit
+
+
+def moved_pixels(image, src, hit):
+    """The image's pixels with the paint moved to the new UVs: each covered pixel takes the colour (all four channels, linear
+    filtering) its point had at the old UVs, and two pixels around the shells take their nearest one (no seam at the borders);
+    the rest stays as it was."""
+    w, h = image.size
+    px = np.empty(w * h * 4, np.float32)
+    image.pixels.foreach_get(px)
+    px = px.reshape(h, w, 4)
+    out = px.copy()
+    out[hit] = L.lookup(px, src[hit][:, 0], src[hit][:, 1])
+    near = nearest_covered(hit, 2).ravel()
+    grow = (near >= 0) & ~hit.ravel()
+    flat = out.reshape(-1, 4)
+    flat[grow] = flat[near[grow]]
+    return out
+
+
+def transfer_layers(context, ob):
+    """Move the paint of every texture set of `ob` from the painted UVs to the current ones: each image of the layers (content and
+    masks, every channel; not the fills' textures, which follow the UVs anyway) is copied with its pixels moved and takes the old
+    one's place and name. The old images are kept unused (Undo brings them back); the copy of the painted UVs goes. Returns how many
+    images moved."""
+    count, done = 0, set()
+    for slot in ob.material_slots:
+        mat = slot.material
+        if mat is None or mat in done or not len(mat.m3d_layers):
+            continue
+        done.add(mat)
+        new, old = uv_triangles(context, mat)
+        maps, swap = {}, {}
+        for image in L.set_images(mat):
+            w, h = image.size
+            if not w or not h:
+                continue
+            if (w, h) not in maps:
+                maps[w, h] = uv_remap(new, old, w, h)
+            copy = L.copy_image(image, image.name + "~")
+            L.write_pixels(copy, moved_pixels(image, *maps[w, h]))
+            swap[image] = copy
+        with MK.muted():
+            for layer in mat.m3d_layers:
+                for e in layer.channels:
+                    if e.image in swap:
+                        e.image = swap[e.image]
+                for e in layer.mask_stack:
+                    if e.image in swap:
+                        e.image = swap[e.image]
+                if layer.mask in swap:
+                    layer.mask = swap[layer.mask]
+        for node in mat.node_tree.nodes if mat.node_tree else ():
+            if node.type == 'TEX_IMAGE' and node.image in swap:
+                node.image = swap[node.image]
+        for image, copy in swap.items():
+            name = image.name
+            image.name = name + " (before the UV change)"
+            copy.name = name
+            full = image.get(MK.FULL)
+            if full is not None:   # (painted at a working size: the original moves the same way)
+                moved = L.copy_image(full, full.name + "~")
+                fw, fh = full.size
+                L.write_pixels(moved, moved_pixels(full, *uv_remap(new, old, fw, fh)))
+                moved.use_fake_user = True
+                copy[MK.FULL] = moved
+        if mat.node_tree is not None:
+            L.refresh_slots(mat)
+        L.refresh(context, mat)
+        L.refresh_thumbs({image.name for image in swap.values()})
+        preview_dirty(mat.name)
+        count += len(swap)
+    for o in {o for mat in done for o in meshes_with(context, mat)} | {ob}:
+        copy = o.data.uv_layers.get(PAINTED_UV)
+        if copy is not None:
+            o.data.uv_layers.remove(copy)
+    return count
+
+
+class M3D_OT_tex_uv_transfer(Operator):
+    """Transfer Layers to New UVs: move the paint of every layer (content and masks, every channel) from the UVs it was painted on to
+    the current ones. One Undo step: Undo brings the layers back as they were"""
+    bl_idname = "m3d.tex_uv_transfer"
+    bl_label = "Transfer Layers to New UVs"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return uv_moved(mesh_of(context))
+
+    def execute(self, context):
+        count = transfer_layers(context, mesh_of(context))
+        self.report({'INFO'}, "%d layer images moved to the new UVs" % count)
+        return {'FINISHED'}
+
+
+class M3D_OT_tex_uv_keep(Operator):
+    """Keep the layers as they are: the paint stays where the old UVs were"""
+    bl_idname = "m3d.tex_uv_keep"
+    bl_label = "Keep"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return uv_moved(mesh_of(context))
+
+    def execute(self, context):
+        me = mesh_of(context).data
+        me.uv_layers.remove(me.uv_layers[PAINTED_UV])
+        return {'FINISHED'}
+
+
+def draw_uv_moved(layout, ob):
+    """The card of a painted mesh whose UVs changed: Transfer Layers to New UVs or Keep."""
+    if not uv_moved(ob):
+        return
+    box = layout.box()
+    row = box.row()
+    row.alert = True
+    row.label(text="UVs changed since painting", icon='ERROR')
+    reason(box, "The paint is still where the old UVs were")
+    row = box.row(align=True)
+    row.operator("m3d.tex_uv_transfer", icon='UV_SYNC_SELECT')
+    sub = row.row(align=True)
+    sub.ui_units_x = 3.5
+    sub.operator("m3d.tex_uv_keep")
 
 
 def export_folder(context):
@@ -2405,6 +2649,7 @@ def export_gltf(context, obs, path):
         o.select_set(False)
     for o in obs:
         o.select_set(True)
+        first_uv(o)   # (the textures are read through the first UV map: the exporter takes the rendered one)
     layer.objects.active = obs[0]
     try:
         with m3d_pair.quiet(context), plain_lows(obs), ExitStack() as stack:
@@ -4093,6 +4338,7 @@ class PROPERTIES_PT_m3d_tx_stack(_Page, Panel):
             reason(layout, "Layers need a Principled BSDF in the material")
             return
         layer = active_layer(mat)
+        draw_uv_moved(layout, ob)
         draw_layers_header(layout, mat)
         if layer is None:
             n = len(paint_slots(mat))
@@ -4354,15 +4600,30 @@ EFFECT_TYPES = {'PAINT': "Paint", 'FILL': "Fill", 'EDGES': "Generator", 'CAVITY'
 
 
 def draw_fill(layout, layer):
-    """Fill: the projection (UV: a texture follows the UV map) and the UV transform of the layer's textures."""
+    """Fill: the projection (UV: a texture follows the UV map; Tri-planar: from the three axes, with its Scale and Blend Sharpness)
+    and the UV transform of the layer's textures."""
+    textured = any(L.has_texture(layer, ch.id) for ch in CHANNELS)
+    row = layout.row(align=True)
+    row.active = textured
+    row.prop(layer, "projection", expand=True)
+    tri = layer.projection == 'TRIPLANAR'
     col = layout.column(align=True)
-    col.active = any(L.has_texture(layer, ch.id) for ch in CHANNELS)
-    for prop, text in (("uv_tiling", "Tiling"), ("uv_rotation", "Rotation"), ("uv_offset", "Offset")):
+    col.active = textured
+    rows = (("tri_scale", "Scale"), ("tri_sharpness", "Sharpness")) if tri else ()
+    for prop, text in (*rows, ("uv_tiling", "Tiling"), ("uv_rotation", "Rotation"), ("uv_offset", "Offset")):
         split = col.split(factor=0.3, align=True)
         split.label(text=text)
         split.row(align=True).prop(layer, prop, text="")   # (the two numbers of Tiling and Offset side by side)
     layout.operator("m3d.layer_fill_reset", icon='LOOP_BACK')
-    reason(layout, "UV projection: textures follow the UV map")
+    if tri and L.triplanar(layer) is None:
+        row = layout.row(align=True)
+        row.alert = True
+        row.label(text="Needs Position and World Normal maps", icon='ERROR')
+        layout.operator("m3d.tex_bake_mode", text="Bake Mesh Maps", icon='RENDER_STILL').on = True
+        reason(layout, "Until then the textures follow the UV map")
+    else:
+        reason(layout, "Tri-planar: no seams, read from the baked Position and World Normal maps" if tri else
+               "UV projection: textures follow the UV map")
 
 
 def draw_fill_material(layout, layer):
@@ -4614,6 +4875,19 @@ class PROPERTIES_PT_m3d_tx_bake_progress(_PagePanel, Panel):
 
     def draw(self, context):
         Q.draw_progress(self.layout, context)
+
+
+class PROPERTIES_PT_m3d_tx_bake_check(_Bake, Panel):
+    bl_label = "Low Poly Check"
+    bl_order = -15   # (above the Bake button)
+
+    @classmethod
+    def page_poll(cls, context):
+        ob = mesh_of(context)
+        return super().page_poll(context) and ob is not None and ob.m3d_pair.role != 'HIGH'
+
+    def draw(self, context):
+        MC.draw_lowpoly(self.layout, context, mesh_of(context), compact=True)
 
 
 class PROPERTIES_PT_m3d_tx_bake_high(_Bake, Panel):
@@ -5672,6 +5946,8 @@ classes = (
     M3D_OT_tex_bake_tick,
     M3D_OT_tex_show_image,
     M3D_OT_tex_export,
+    M3D_OT_tex_uv_transfer,
+    M3D_OT_tex_uv_keep,
     *PAGE_GATES,
     PROPERTIES_PT_m3d_tx_tools,
     PROPERTIES_PT_m3d_tx_sets,
@@ -5720,6 +5996,7 @@ classes = (
     PROPERTIES_PT_m3d_tx_options,
     PROPERTIES_PT_m3d_tx_cursor,
     PROPERTIES_PT_m3d_tx_palette,
+    PROPERTIES_PT_m3d_tx_bake_check,
     PROPERTIES_PT_m3d_tx_bake_high,
     PROPERTIES_PT_m3d_tx_bake_progress,
     PROPERTIES_PT_m3d_tx_bake_maps,
@@ -5748,9 +6025,13 @@ def register():
                                                      "texture set (Export Textures)")
     bpy.types.UI_MT_list_item_context_menu.append(draw_sets_menu)
     bpy.app.handlers.save_pre.append(save_pre)
+    bpy.app.handlers.depsgraph_update_post.append(_depsgraph_modes)
+    bpy.app.handlers.load_post.append(_load_modes)
 
 
 def unregister():
+    bpy.app.handlers.load_post.remove(_load_modes)
+    bpy.app.handlers.depsgraph_update_post.remove(_depsgraph_modes)
     bpy.app.handlers.save_pre.remove(save_pre)
     bpy.types.UI_MT_list_item_context_menu.remove(draw_sets_menu)
     del bpy.types.Material.m3d_set_export, bpy.types.Material.m3d_set_bake
