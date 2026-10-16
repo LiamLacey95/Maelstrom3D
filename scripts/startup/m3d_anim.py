@@ -23,6 +23,7 @@ from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProp
                        StringProperty)
 from bpy.types import Operator, Panel, PropertyGroup, UIList
 from bpy_extras.anim_utils import animdata_get_channelbag_for_assigned_slot
+from mathutils import Euler, Matrix, Quaternion
 
 from m3d_mode import _button
 from m3d_rig import (draw_pose_library, draw_selection_sets, pose_assets, rig_of, selected_pose_bones)
@@ -107,6 +108,116 @@ def set_channel(owner_id, path, index, value):
         getattr(owner, name)[index] = value
     except TypeError:   # Not an array.
         setattr(owner, name, value)
+
+
+# -----------------------------------------------------------------------------
+# Set Key: one rule for S, the shelf, the Key menu and the marking menu
+
+def character_bones(rig):
+    """The controls of a character: the bones you can see and pick (hidden bones and bones in hidden collections are
+    the rig's own machinery)."""
+    return [pb for pb in rig.pose.bones if not pb.bone.hide
+            and (not pb.bone.collections or any(c.is_visible_effectively for c in pb.bone.collections))]
+
+
+def key_owners(context):
+    """What Set Key keys: the selected bones of the skeleton in Pose Mode (all its controls with Key: Character), else
+    the selected objects."""
+    rig = posed_rig(context)
+    if rig is not None:
+        return character_bones(rig) if context.scene.m3d_anim.key_scope == 'CHARACTER' else selected_pose_bones(rig)
+    return list(context.selected_objects) or ([context.active_object] if context.active_object is not None else [])
+
+
+KEY_CHANNELS = (('ALL', "Set Key", "the unlocked translate, rotate and scale channels and the custom properties"),
+                ('LOCATION', "Key Translate", "the unlocked translate channels"),
+                ('ROTATION', "Key Rotate", "the unlocked rotate channels"),
+                ('SCALE', "Key Scale", "the unlocked scale channels"))
+
+
+def key_channels(owner, channels='ALL'):
+    """[(data path, index)] of an object's or pose bone's channels to key: translate, rotate (in its rotation mode) and
+    scale without the locked ones, and with 'ALL' the numeric custom properties (index -1)."""
+    from m3d_mode import custom_properties, rotation_channel
+    rot = rotation_channel(owner)[0]
+    out = []
+    for kind, attr, lock in (('LOCATION', "location", owner.lock_location), ('ROTATION', rot, owner.lock_rotation),
+                             ('SCALE', "scale", owner.lock_scale)):
+        if channels not in {'ALL', kind}:
+            continue
+        first = 0
+        if attr in {"rotation_quaternion", "rotation_axis_angle"}:   # W is locked only with the 4D lock.
+            first = 1
+            if not (owner.lock_rotations_4d and owner.lock_rotation_w):
+                out.append((attr, 0))
+        out += [(attr, first + i) for i in range(3) if not lock[i]]
+    if channels == 'ALL':
+        out += [('["%s"]' % bpy.utils.escape_identifier(name), -1) for name in custom_properties(owner)]
+    return out
+
+
+def _fcurve(owner, path, index):
+    """The F-curve of an object's or pose bone's channel (`path` relative to the owner), or None."""
+    base = "" if isinstance(owner, bpy.types.ID) else owner.path_from_id()
+    full = base + ("" if not base or path.startswith("[") else ".") + path
+    return next((fc for fc in channel_fcurves(owner.id_data) if fc.data_path == full and fc.array_index == max(index, 0)),
+                None)
+
+
+def set_keys(owners, key_type='KEYFRAME', channels='ALL', frame=None):
+    """Key the channels of `owners` (objects or pose bones). Returns the number of channels keyed. A curve's first two
+    keys get the new key interpolation of the Preferences (keys from Python get Blender's defaults; later keys copy the
+    key next to them, as S does in stock Blender)."""
+    edit = bpy.context.preferences.edit
+    at = bpy.context.scene.frame_current if frame is None else frame
+    count = 0
+    for owner in owners:
+        for path, index in key_channels(owner, channels):
+            fc = _fcurve(owner, path, index)
+            before = len(fc.keyframe_points) if fc is not None else 0
+            try:
+                keyed = owner.keyframe_insert(path, index=index, keytype=key_type, frame=at)
+            except (RuntimeError, TypeError):
+                continue   # (a property that can't be animated, e.g. one a driver sets)
+            count += bool(keyed)
+            fc = fc or _fcurve(owner, path, index)
+            if keyed and fc is not None and before < len(fc.keyframe_points) <= 2:
+                key = min(fc.keyframe_points, key=lambda k: abs(k.co.x - at))
+                key.interpolation = edit.keyframe_new_interpolation_type
+                key.handle_left_type = key.handle_right_type = edit.keyframe_new_handle_type
+                fc.update()
+    return count
+
+
+class M3D_OT_set_key(Operator):
+    """Set Key: key the unlocked translate, rotate and scale channels and the custom properties of the selected bones
+(Pose Mode; Key: Character keys all the character's controls) or the selected objects. Locked channels are skipped"""
+    bl_idname = "m3d.set_key"
+    bl_label = "Set Key"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    channels: EnumProperty(name="Channels", items=[(k, label, "") for k, label, _d in KEY_CHANNELS], default='ALL')
+
+    @classmethod
+    def description(cls, _context, props):
+        return "Key %s of the selected bones (Pose Mode) or objects; locked channels are skipped" % next(
+            d for k, _l, d in KEY_CHANNELS if k == props.channels)
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode in {'OBJECT', 'POSE'} and context.active_object is not None
+
+    def execute(self, context):
+        from m3d_rig import is_bound
+        owners = key_owners(context)
+        if not set_keys(owners, context.tool_settings.keyframe_type, self.channels):
+            self.report({'WARNING'}, "Nothing to key: select bones or objects (locked channels are skipped)")
+            return {'CANCELLED'}
+        bound = [o.name for o in owners if isinstance(o, bpy.types.Object) and is_bound(o)]
+        if bound:   # The object's own transform moves the whole bound mesh away from its skeleton.
+            self.report({'WARNING'}, "Keyed the transform of the bound mesh %s: its skeleton's bones pose it "
+                                     "(F6 enters Pose Mode on the skeleton)" % ", ".join(bound))
+        return {'FINISHED'}
 
 
 # -----------------------------------------------------------------------------
@@ -333,6 +444,93 @@ class M3D_OT_anim_range(Operator):
 
 
 # -----------------------------------------------------------------------------
+# Frame rate: the common rates, keeping the timing of the keys or their frames
+
+# label -> (fps, fps_base)
+FRAME_RATES = {"23.976": (24, 1.001), "24": (24, 1.0), "25": (25, 1.0), "29.97": (30, 1.001), "30": (30, 1.0),
+               "48": (48, 1.0), "50": (50, 1.0), "60": (60, 1.0), "120": (120, 1.0)}
+
+
+def frame_rate_label(scene):
+    """"24 fps", "29.97 fps" ... for the scene's rate."""
+    r = scene.render
+    name = next((k for k, (fps, base) in FRAME_RATES.items() if r.fps == fps and abs(r.fps_base - base) < 1e-4),
+                "%.4g" % (r.fps / r.fps_base))
+    return name + " fps"
+
+
+def all_fcurves():
+    """Every F-curve of every action of the file."""
+    return [fc for action in bpy.data.actions for layer in action.layers for strip in layer.strips
+            for bag in strip.channelbags for fc in bag.fcurves]
+
+
+def retime(scene, factor):
+    """Stretch the animation by `factor` around the scene start (keys, NLA strips, scene and preview range, markers),
+    so it plays at the same speed at a new frame rate."""
+    pivot = scene.frame_start
+
+    def at(x):
+        return pivot + (x - pivot) * factor
+
+    def stretch(fc):
+        for key in fc.keyframe_points:
+            key.co.x, key.handle_left.x, key.handle_right.x = at(key.co.x), at(key.handle_left.x), at(key.handle_right.x)
+        fc.update()
+
+    for fc in all_fcurves():
+        stretch(fc)
+    for ob in bpy.data.objects:
+        ad = ob.animation_data
+        for track in (ad.nla_tracks if ad is not None else ()):
+            # Later strips move first when the strips grow (earlier ones first when they shrink): they never overlap.
+            for strip in sorted(track.strips, key=lambda s: s.frame_start, reverse=factor > 1):
+                start, end = at(strip.action_frame_start), at(strip.action_frame_end)
+                if factor > 1:
+                    strip.action_frame_end, strip.action_frame_start = end, start
+                else:
+                    strip.action_frame_start, strip.action_frame_end = start, end
+                strip.frame_start_ui = at(strip.frame_start)
+                for fc in strip.fcurves:   # (the layer's weight keys)
+                    stretch(fc)
+    for marker in scene.timeline_markers:
+        marker.frame = round(at(marker.frame))
+    scene.frame_end = max(pivot, round(at(scene.frame_end)))
+    scene.frame_preview_start, scene.frame_preview_end = round(at(scene.frame_preview_start)), round(at(scene.frame_preview_end))
+    scene.frame_set(round(at(scene.frame_current)))
+
+
+class M3D_OT_anim_fps(Operator):
+    """Frame rate of the scene. When there are keys: Keep Timing moves them so the animation plays at the same speed,
+Keep Frames leaves them on their frames (it plays faster or slower)"""
+    bl_idname = "m3d.anim_fps"
+    bl_label = "Frame Rate"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    rate: EnumProperty(name="Frame Rate", items=[(k, k + " fps", "") for k in FRAME_RATES], default="24")
+    keep: EnumProperty(name="Keys", default='TIMING', items=(
+        ('TIMING', "Keep Timing", "Move the keys so the animation plays at the same speed"),
+        ('FRAMES', "Keep Frames", "Leave the keys on their frames: the animation plays faster or slower")))
+
+    def invoke(self, context, _event):
+        if any(len(fc.keyframe_points) for fc in all_fcurves()):
+            return context.window_manager.invoke_props_dialog(self, title="%s fps: the keys" % self.rate)
+        return self.execute(context)
+
+    def draw(self, _context):
+        self.layout.prop(self, "keep", expand=True)
+
+    def execute(self, context):
+        scene = context.scene
+        r = scene.render
+        before = r.fps / r.fps_base
+        r.fps, r.fps_base = FRAME_RATES[self.rate]
+        if self.keep == 'TIMING' and abs(before - r.fps / r.fps_base) > 1e-6:
+            retime(scene, (r.fps / r.fps_base) / before)
+        return {'FINISHED'}
+
+
+# -----------------------------------------------------------------------------
 # New key defaults (preferences): Stepped / Spline / Linear / Clamped, Blocking and Polish presets
 
 # kind -> (interpolation, handle type or None = left alone)
@@ -363,12 +561,32 @@ def set_new_key_kind(context, kind):
         edit.keyframe_new_handle_type = handle
 
 
-def convert_keys(context, kind):
-    """Give the keys of the selection (bones in Pose Mode, else objects) the interpolation of `kind`: a new key on a curve
-    with several keys copies the key before it, so the preference alone would leave the old keys as they were."""
+CONVERT_SCOPES = (('SELECTION', "Selection", "The selected bones (Pose Mode) or objects", 'RESTRICT_SELECT_OFF'),
+                  ('CHARACTER', "Whole Character", "Every bone of the skeleton in Pose Mode; the selected objects and "
+                                                   "their skeletons in Object Mode", 'ARMATURE_DATA'),
+                  ('SCENE', "Scene", "Every animated object of the scene", 'SCENE_DATA'))
+
+
+def scope_curves(context, scope):
+    """[(id, fcurve)] of the unlocked, unmuted channels of `scope` (CONVERT_SCOPES)."""
+    if scope == 'SELECTION':
+        return target_curves(context)
+    if scope == 'SCENE':
+        owners = list(context.view_layer.objects)
+    else:
+        from m3d_rig import armature_of
+        rig = posed_rig(context)
+        owners = [rig] if rig is not None else list(context.selected_objects)
+        owners += [r for r in map(armature_of, owners) if r is not None and r not in owners]
+    return [(ob, fc) for ob in owners for fc in channel_fcurves(ob) if not (fc.lock or fc.mute)]
+
+
+def convert_keys(context, kind, scope='SELECTION'):
+    """Give the keys of `scope` (CONVERT_SCOPES) the interpolation of `kind`: a new key on a curve with several keys
+    copies the key before it, so the preference alone would leave the old keys as they were."""
     interp, handle = INTERP[kind]
     count = 0
-    for _id, fc in target_curves(context):
+    for _id, fc in scope_curves(context, scope):
         for key in fc.keyframe_points:
             key.interpolation = interp
             if handle is not None:
@@ -470,10 +688,12 @@ Graph Editor. Restore: your own new key defaults. The new key defaults are Prefe
 
     @classmethod
     def description(cls, _context, props):
-        return {'BLOCKING': "Blocking: new keys are stepped, the selection's keys become stepped, and the Dope Sheet "
-                            "shows (the new key default is a Preferences setting)",
-                'POLISH': "Polish: new keys are clamped splines, the selection's keys become clamped splines, and the "
-                          "Graph Editor shows (the new key default is a Preferences setting)",
+        return {'BLOCKING': "Blocking: new keys are stepped, the keys of the character (Blocking / Polish dropdown: "
+                            "selection, whole character or scene) become stepped, and the Dope Sheet shows (the new key "
+                            "default is a Preferences setting)",
+                'POLISH': "Polish: new keys are clamped splines, the keys of the character (Blocking / Polish dropdown: "
+                          "selection, whole character or scene) become clamped splines, and the Graph Editor shows (the "
+                          "new key default is a Preferences setting)",
                 'RESTORE': "Put the new key defaults back to what they were before Blocking / Polish"}[props.preset]
 
     def execute(self, context):
@@ -484,7 +704,7 @@ Graph Editor. Restore: your own new key defaults. The new key defaults are Prefe
         blocking = self.preset == 'BLOCKING'
         kind = 'STEPPED' if blocking else 'CLAMPED'
         set_new_key_kind(context, kind)
-        convert_keys(context, kind)
+        convert_keys(context, kind, context.scene.m3d_anim.convert_scope)
         show_editor(context.screen, 'DOPESHEET' if blocking else 'GRAPH')
         return {'FINISHED'}
 
@@ -513,11 +733,27 @@ class M3D_AnimSettings(PropertyGroup):
     path_range: EnumProperty(name="Range", default='KEYS_ALL', items=(
         ('KEYS_ALL', "All Keys", "From the first to the last key"), ('KEYS_SELECTED', "Selected Keys", ""),
         ('SCENE', "Scene Range", ""), ('MANUAL', "Manual", "The frames set below")))
+    key_scope: EnumProperty(name="Key", default='SELECTED', items=(
+        ('SELECTED', "Selected", "Set Key keys the selected bones", 'RESTRICT_SELECT_OFF', 0),
+        ('CHARACTER', "Character", "Set Key in Pose Mode keys every control of the character (the bones you can see)",
+         'ARMATURE_DATA', 1)))
+    convert_scope: EnumProperty(name="Convert", default='CHARACTER', description="Whose keys Blocking / Polish convert",
+                                items=[(k, label, d, icon, i) for i, (k, label, d, icon) in enumerate(CONVERT_SCOPES)])
     playblast_dir: StringProperty(name="Folder", subtype='DIR_PATH', default="",
-                                  description="Where the frames go (empty: a folder in the temporary directory)")
+                                  description="Where the playblasts go (empty: a folder in the temporary directory)")
     playblast_percent: IntProperty(name="Size", default=50, min=10, max=100, subtype='PERCENTAGE',
                                    description="Playblast size as a percentage of the render resolution")
-    playblast_play: BoolProperty(name="Play When Done", default=True, description="Open the player on the frames")
+    playblast_play: BoolProperty(name="Play When Done", default=True, description="Open the player on the playblast")
+    playblast_format: EnumProperty(name="Format", default='MOVIE', items=(
+        ('MOVIE', "Movie", "One H.264 movie (.mp4) with the scene's sound"),
+        ('IMAGES', "Images", "A PNG image per frame")))
+    playblast_range: EnumProperty(name="Range", default='PLAYBACK', items=(
+        ('PLAYBACK', "Playback Range", "The preview range when it is on, else the scene range"),
+        ('SCENE', "Scene Range", "From the scene start to the scene end")))
+    playblast_meshes: BoolProperty(name="Meshes Only", default=True,
+                                   description="Leave out bones, controls, the grid and the other overlays")
+    playblast_burn_in: BoolProperty(name="Burn-in", default=True,
+                                    description="Write the frame, camera, file name and date onto the pictures")
     playblast_note: StringProperty(description="Result of the last Playblast")
 
 
@@ -633,7 +869,242 @@ class M3D_OT_anim_pick_bones(Operator):
 
 
 # -----------------------------------------------------------------------------
-# Motion paths and ghost curves
+# Mirror Pose, Mirror Animation, Copy / Paste World Position
+
+# Rotation property -> indices that change sign in a pose mirrored left to right (as Blender's Paste Flipped does);
+# translate X does too, scale and custom properties keep theirs.
+_FLIP_SIGNS = {"location": {0}, "rotation_euler": {1, 2}, "rotation_quaternion": {2, 3}, "rotation_axis_angle": {2, 3}}
+
+
+def mirror_sign(path, index):
+    """-1 when the channel (a pose bone's data path and index) changes sign in the mirrored pose, else 1."""
+    prop = path.rpartition(".")[2]
+    return -1 if index in _FLIP_SIGNS.get(prop, ()) else 1
+
+
+def _pose_values(pb):
+    """{property: values} of a pose bone: translate, its rotation, scale and the numeric custom properties."""
+    from m3d_mode import custom_properties, rotation_channel
+    rot = rotation_channel(pb)[0]
+    values = {attr: list(getattr(pb, attr)) for attr in ("location", rot, "scale")}
+    values.update({'["%s"]' % bpy.utils.escape_identifier(n): pb[n] for n in custom_properties(pb)})
+    return values
+
+
+def _as_quaternion(attr, values, mode):
+    if attr == "rotation_quaternion":
+        return Quaternion(values)
+    if attr == "rotation_axis_angle":
+        return Quaternion(values[1:], values[0])
+    return Euler(values, mode).to_quaternion()
+
+
+def _set_rotation(pb, quat):
+    if pb.rotation_mode == 'QUATERNION':
+        pb.rotation_quaternion = quat
+    elif pb.rotation_mode == 'AXIS_ANGLE':
+        axis, angle = quat.to_axis_angle()
+        pb.rotation_axis_angle = (angle, *axis)
+    else:
+        pb.rotation_euler = quat.to_euler(pb.rotation_mode)
+
+
+def mirror_pose(rig, bones):
+    """Each of `bones` (pose bones) gives its pose, mirrored, to its other side (Arm.L -> Arm.R; a middle bone mirrors
+    itself). Bones of both sides swap. Returns the bones that changed."""
+    poses = [(pb.name, pb.rotation_mode, _pose_values(pb)) for pb in bones]   # (all read first: both sides swap)
+    changed = []
+    for name, mode, values in poses:
+        dest = rig.pose.bones.get(bpy.utils.flip_name(name))
+        if dest is None:
+            continue
+        for attr, value in values.items():
+            if attr.startswith("["):
+                dest[bpy.utils.unescape_identifier(attr[2:-2])] = value
+                continue
+            flipped = [v * mirror_sign(attr, i) for i, v in enumerate(value)]
+            if attr.startswith("rotation_") and dest.rotation_mode != mode:   # (the other side rotates another way)
+                _set_rotation(dest, _as_quaternion(attr, flipped, mode))
+            else:
+                setattr(dest, attr, flipped)
+        changed.append(dest)
+    return changed
+
+
+class M3D_OT_anim_mirror_pose(Operator):
+    """Mirror Pose: the selected bones' pose goes to the other side, mirrored (bones of both sides swap; a middle bone
+mirrors itself). Whole Character flips the whole pose. Auto Key keys the changed bones"""
+    bl_idname = "m3d.anim_mirror_pose"
+    bl_label = "Mirror Pose"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    whole: BoolProperty(name="Whole Character", default=False, description="Flip the pose of every control")
+
+    @classmethod
+    def description(cls, _context, props):
+        return ("Flip the whole pose left to right (every control)" if props.whole else
+                "Give the selected bones' pose, mirrored, to the bones of the other side (select both sides to swap them)")
+
+    @classmethod
+    def poll(cls, context):
+        return posed_rig(context) is not None
+
+    def execute(self, context):
+        rig = posed_rig(context)
+        changed = mirror_pose(rig, character_bones(rig) if self.whole else selected_pose_bones(rig))
+        if not changed:
+            self.report({'WARNING'}, "No bones to mirror: select bones named with a side (.L / .R, Left / Right)")
+            return {'CANCELLED'}
+        if context.tool_settings.use_keyframe_insert_auto:
+            set_keys(changed, context.tool_settings.keyframe_type)
+        context.view_layer.update()
+        return {'FINISHED'}
+
+
+def mirror_animation(rig, bones, offset):
+    """The keys of each of `bones` go, mirrored, onto its other side's channels (replacing their keys), `offset` frames
+    later; the keys that land past the end of the cycle (the action's frame range) wrap round to its start. Returns the
+    number of channels written."""
+    ad = rig.animation_data
+    bag = animdata_get_channelbag_for_assigned_slot(ad) if ad is not None and ad.action is not None else None
+    if bag is None:
+        return 0
+    start, end = ad.action.frame_range
+    length = end - start
+    # (source curve data read first: with both sides selected they swap)
+    sources = []
+    for pb in bones:
+        dest = bpy.utils.flip_name(pb.name)
+        if dest == pb.name or dest not in rig.pose.bones:
+            continue
+        prefix = 'pose.bones["%s"]' % bpy.utils.escape_identifier(pb.name)
+        for fc in bag.fcurves:
+            if len(fc.keyframe_points) and (fc.data_path.startswith(prefix + ".") or fc.data_path.startswith(prefix + "[")):
+                keys = [(k.co.x, k.co.y, k.interpolation, k.handle_left_type, k.handle_right_type)
+                        for k in fc.keyframe_points]
+                path = 'pose.bones["%s"]' % bpy.utils.escape_identifier(dest) + fc.data_path[len(prefix):]
+                sources.append((dest, path, fc.array_index, mirror_sign(fc.data_path, fc.array_index), fc, keys))
+    written = 0
+    for dest, path, index, sign, source, keys in sources:
+        if offset and length > 0:   # A cycle: keys move round it, the last key is the first one again.
+            shifted = [(start + (x - start + offset) % length, y, *rest) for x, y, *rest in keys if x < end]
+            first = source.evaluate(start + (-offset) % length)
+            shifted += [(start, first, *keys[0][2:]), (end, first, *keys[0][2:])]
+        else:
+            shifted = [(x + offset, y, *rest) for x, y, *rest in keys]
+        fc = bag.fcurves.find(path, index=index) or bag.fcurves.new(path, index=index)
+        fc.group = bag.groups.get(dest) or bag.groups.new(dest)
+        fc.keyframe_points.clear()
+        for x, y, interp, left, right in sorted({round(k[0], 4): k for k in shifted}.values()):
+            key = fc.keyframe_points.insert(x, y * sign, options={'FAST'})
+            key.interpolation, key.handle_left_type, key.handle_right_type = interp, left, right
+        fc.update()
+        written += 1
+    return written
+
+
+class M3D_OT_anim_mirror_animation(Operator):
+    """Mirror Animation: the selected bones' keys go, mirrored, onto the bones of the other side (their keys are
+replaced). For a cycle, Half a Cycle Later offsets them by half the action's length (a walk: the other leg)"""
+    bl_idname = "m3d.anim_mirror_animation"
+    bl_label = "Mirror Animation"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    half_cycle: BoolProperty(name="Half a Cycle Later", default=True,
+                             description="Offset the mirrored keys by half the action's length, wrapping round")
+
+    @classmethod
+    def poll(cls, context):
+        return posed_rig(context) is not None
+
+    def execute(self, context):
+        rig = posed_rig(context)
+        ad = rig.animation_data
+        offset = 0.0
+        if self.half_cycle and ad is not None and ad.action is not None:
+            start, end = ad.action.frame_range
+            offset = (end - start) / 2
+        if not mirror_animation(rig, selected_pose_bones(rig), offset):
+            self.report({'WARNING'}, "Nothing to mirror: select keyed bones named with a side (.L / .R, Left / Right)")
+            return {'CANCELLED'}
+        context.scene.frame_set(context.scene.frame_current)
+        return {'FINISHED'}
+
+
+_world_clip = {}   # frame -> world matrix of the bone or object copied
+
+
+def world_matrix(owner):
+    """World matrix of an object or pose bone."""
+    return owner.id_data.matrix_world @ owner.matrix if isinstance(owner, bpy.types.PoseBone) else owner.matrix_world
+
+
+def set_world_matrix(owner, matrix):
+    """Put an object or pose bone where `matrix` is (position and rotation; it keeps its own scale)."""
+    loc, rot, _scale = matrix.decompose()
+    matrix = Matrix.LocRotScale(loc, rot, world_matrix(owner).to_scale())
+    if isinstance(owner, bpy.types.PoseBone):
+        owner.matrix = owner.id_data.matrix_world.inverted() @ matrix
+    else:
+        owner.matrix_world = matrix
+
+
+class M3D_OT_anim_world_position(Operator):
+    """Copy / Paste World Position: copy where the active bone or object is in the world, then put the selected bones or
+objects there (over the playback range: frame by frame, keyed)"""
+    bl_idname = "m3d.anim_world_position"
+    bl_label = "World Position"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    action: EnumProperty(items=(('COPY', "Copy", ""), ('PASTE', "Paste", "")))
+    over_range: BoolProperty(name="Over the Playback Range", default=False,
+                             description="Every frame of the playback range (pasting keys each frame)")
+
+    @classmethod
+    def description(cls, _context, props):
+        what = "over the playback range" if props.over_range else "at this frame"
+        return ("Copy where the active bone or object is in the world " if props.action == 'COPY' else
+                "Put the selected bones or objects where the copied one was ") + what
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode in {'OBJECT', 'POSE'} and context.active_object is not None
+
+    def execute(self, context):
+        scene = context.scene
+        here = scene.frame_current
+        frames = range(playblast_frames(scene)[0], playblast_frames(scene)[1] + 1) if self.over_range else [here]
+        if self.action == 'COPY':
+            rig = posed_rig(context)
+            owner = context.active_pose_bone if rig is not None else context.active_object
+            if owner is None:
+                self.report({'WARNING'}, "Nothing to copy: make a bone active")
+                return {'CANCELLED'}
+            _world_clip.clear()
+            for frame in frames:
+                scene.frame_set(frame)
+                _world_clip[frame] = world_matrix(owner).copy()
+            scene.frame_set(here)
+            self.report({'INFO'}, "World position copied (%d frame%s)" % (len(frames), "s" * (len(frames) > 1)))
+            return {'FINISHED'}
+        if not _world_clip:
+            self.report({'WARNING'}, "Copy a world position first")
+            return {'CANCELLED'}
+        rig = posed_rig(context)
+        owners = selected_pose_bones(rig) if rig is not None else list(context.selected_objects)
+        auto = context.tool_settings.use_keyframe_insert_auto
+        for frame in (sorted(_world_clip) if len(_world_clip) > 1 else [here]):
+            scene.frame_set(frame)
+            matrix = _world_clip.get(frame, next(iter(_world_clip.values())))
+            for owner in owners:
+                set_world_matrix(owner, matrix)
+                context.view_layer.update()   # (a child bone after its parent)
+            if len(_world_clip) > 1 or auto:
+                set_keys(owners, context.tool_settings.keyframe_type, 'LOCATION', frame)
+                set_keys(owners, context.tool_settings.keyframe_type, 'ROTATION', frame)
+        if len(_world_clip) > 1:
+            scene.frame_set(here)
+        return {'FINISHED'}
 
 def _in_viewport(context):
     """Context override for operators that want a 3D Viewport (the dock has none)."""
@@ -718,16 +1189,27 @@ def layer_owner(context):
 
 
 def push_down(ob):
-    """The object's current action becomes a strip on a new NLA track. Returns the track, or None without an action."""
+    """The object's current action becomes a strip on a new NLA track. Returns the track, or None without an action.
+    The strip grows with keys set later while the layer is edited, and its influence is the layer's keyable weight."""
     ad = ob.animation_data
     if ad is None or ad.action is None:
         return None
     action = ad.action
     track = ad.nla_tracks.new()
     track.name = action.name
-    track.strips.new(action.name, int(action.frame_range[0]), action)
+    strip = track.strips.new(action.name, int(action.frame_range[0]), action)
+    strip.use_sync_length = True   # (Done Editing fits the strip to the action's keys)
+    strip.use_animated_influence = True
+    for key in strip.fcurves.find("influence").keyframe_points:   # (turning it on keys the unused value, 0)
+        key.co.y = key.handle_left.y = key.handle_right.y = 1.0
+    strip.influence = 1.0
     ad.action = None
     return track
+
+
+def layer_strip(track):
+    """The track's strip (a layer has one), or None."""
+    return track.strips[0] if len(track.strips) else None
 
 
 def add_additive_layer(ob):
@@ -797,25 +1279,49 @@ class M3D_OT_anim_layer(Operator):
 
 
 # -----------------------------------------------------------------------------
-# Playblast: the viewport rendered frame by frame into a folder
+# Playblast: the viewport rendered into a movie (with the scene's sound) or a picture per frame, for review
 
 def playblast_folder(scene):
     s = scene.m3d_anim
     return bpy.path.abspath(s.playblast_dir) if s.playblast_dir else os.path.join(tempfile.gettempdir(), "m3d_playblast")
 
 
-def playblast_frames(scene):
-    """Frames to play: the preview range when it is on, else the scene range."""
-    return (scene.frame_preview_start, scene.frame_preview_end) if scene.use_preview_range \
+def playblast_frames(scene, kind='PLAYBACK'):
+    """Frames to play: the preview range when it is on (kind 'PLAYBACK'), else the scene range."""
+    return (scene.frame_preview_start, scene.frame_preview_end) if scene.use_preview_range and kind == 'PLAYBACK' \
         else (scene.frame_start, scene.frame_end)
+
+
+def playblast_name(folder, base):
+    """<base>_v001, _v002 ...: the next version in the folder (a playblast never replaces an earlier one)."""
+    pattern = re.compile(re.escape(base) + r"_v(\d{3,})")
+    used = [int(m.group(1)) for m in map(pattern.match, os.listdir(folder) if os.path.isdir(folder) else ()) if m]
+    return "%s_v%03d" % (base, max(used, default=0) + 1)
+
+
+def has_sound(scene):
+    """True when the scene has sound to put in the movie: sound strips or speakers."""
+    ed = scene.sequence_editor
+    return bool(ed is not None and any(s.type == 'SOUND' for s in ed.strips_all)) \
+        or any(ob.type == 'SPEAKER' for ob in scene.objects)
+
+
+_FFMPEG = ("format", "codec", "audio_codec", "constant_rate_factor")
+BURN_IN = {"use_stamp", "use_stamp_frame", "use_stamp_camera", "use_stamp_filename", "use_stamp_date", "use_stamp_labels"}
+
+
+def _stamp_props():
+    return [p.identifier for p in bpy.types.RenderSettings.bl_rna.properties if p.identifier.startswith("use_stamp")]
 
 
 def snapshot_render(scene):
     """The render settings a playblast changes (the user's output settings are put back afterwards)."""
     r = scene.render
-    return {"render": {k: getattr(r, k) for k in ("filepath", "resolution_percentage", "use_file_extension")},
+    return {"render": {k: getattr(r, k) for k in ("filepath", "resolution_percentage", "use_file_extension",
+                                                  *_stamp_props())},
             "image": {k: getattr(r.image_settings, k) for k in ("media_type", "file_format", "color_mode")},
-            "scene": {k: getattr(scene, k) for k in ("frame_start", "frame_end", "frame_current")}}
+            "ffmpeg": {k: getattr(r.ffmpeg, k) for k in _FFMPEG},
+            "scene": {k: getattr(scene, k) for k in ("frame_start", "frame_end", "frame_current", "use_preview_range")}}
 
 
 def restore_render(scene, snap):
@@ -824,19 +1330,30 @@ def restore_render(scene, snap):
         setattr(r, k, v)
     for k in ("media_type", "file_format", "color_mode"):   # In this order: the format depends on the media type.
         setattr(r.image_settings, k, snap["image"][k])
+    for k, v in snap["ffmpeg"].items():
+        setattr(r.ffmpeg, k, v)
     for k, v in snap["scene"].items():
         setattr(scene, k, v)
     scene.frame_set(snap["scene"]["frame_current"])
 
 
-def configure_playblast(scene, folder, percent):
-    """PNG frames at `percent` of the render size, no file extension surprises."""
+def configure_playblast(scene, folder, percent, movie=False, burn_in=False):
+    """PNG frames, or an H.264 movie (with the scene's sound), at `percent` of the render size; burn-in = the frame,
+    camera, file name and date written onto the pictures."""
     r = scene.render
     r.resolution_percentage = percent
     r.use_file_extension = True
-    r.image_settings.media_type = 'IMAGE'
-    r.image_settings.file_format = 'PNG'
+    if movie:
+        r.image_settings.media_type = 'VIDEO'
+        r.image_settings.file_format = 'FFMPEG'
+        r.ffmpeg.format, r.ffmpeg.codec, r.ffmpeg.constant_rate_factor = 'MPEG4', 'H264', 'MEDIUM'
+        r.ffmpeg.audio_codec = 'AAC' if has_sound(scene) else 'NONE'
+    else:
+        r.image_settings.media_type = 'IMAGE'
+        r.image_settings.file_format = 'PNG'
     r.image_settings.color_mode = 'RGB'
+    for name in _stamp_props():
+        setattr(r, name, burn_in and name in BURN_IN)
     os.makedirs(folder, exist_ok=True)
 
 
@@ -852,8 +1369,9 @@ playblast_state = {"running": False, "files": [], "folder": ""}
 
 
 class M3D_OT_playblast(Operator):
-    """Playblast: render the viewport (the camera view when there is one) over the playback range into a folder, then play
-it. The render output settings are put back afterwards. Esc cancels"""
+    """Playblast: render the viewport (the camera view when there is one) into a movie with the scene's sound, or a
+picture per frame, then play it. Each playblast is a new version named after the file; the render output settings are
+put back afterwards. Esc cancels pictures"""
     bl_idname = "m3d.playblast"
     bl_label = "Playblast"
     bl_options = {'REGISTER'}
@@ -867,45 +1385,66 @@ it. The render output settings are put back afterwards. Esc cancels"""
 
     def invoke(self, context, _event):
         scene = context.scene
+        s = scene.m3d_anim
         self.area = playblast_area(context.screen)
         self.window = context.window or context.window_manager.windows[0]
         self.folder = playblast_folder(scene)
-        self.base = bpy.path.clean_name(bpy.path.display_name_from_filepath(bpy.data.filepath) or "playblast")
+        self.movie = s.playblast_format == 'MOVIE'
+        base = bpy.path.clean_name(bpy.path.display_name_from_filepath(bpy.data.filepath) or "playblast")
+        self.out_name = playblast_name(self.folder, base)
         self.snap = snapshot_render(scene)
-        first, last = playblast_frames(scene)
-        self.frames = list(range(first, last + 1))
+        self.first, self.last = playblast_frames(scene, s.playblast_range)
+        self.frames = list(range(self.first, self.last + 1))
         try:
-            configure_playblast(scene, self.folder, scene.m3d_anim.playblast_percent)
+            configure_playblast(scene, self.folder, s.playblast_percent, self.movie, s.playblast_burn_in)
         except OSError as err:
             restore_render(scene, self.snap)
             self.report({'ERROR'}, "Playblast folder: %s" % err)
             return {'CANCELLED'}
-        for old in os.listdir(self.folder):   # A new playblast replaces the last one.
-            if old.startswith(self.base + "_") and old.endswith(".png"):
-                os.remove(os.path.join(self.folder, old))
+        overlay = self.area.spaces.active.overlay
+        self.overlays = overlay.show_overlays
+        if s.playblast_meshes:   # (bones, controls, the grid, cameras and lights are overlays)
+            overlay.show_overlays = False
         playblast_state.update(running=True, files=[], folder=self.folder)
-        scene.m3d_anim.playblast_note = ""
+        s.playblast_note = ""
+        context.workspace.status_text_set("Playblast: %d frames%s" % (
+            len(self.frames), " into a movie" if self.movie else " (Esc cancels)"))
         self.timer = context.window_manager.event_timer_add(0.05, window=self.window)
         context.window_manager.modal_handler_add(self)
         return {'RUNNING_MODAL'}
+
+    def render(self, context, animation):
+        region = next(r for r in self.area.regions if r.type == 'WINDOW')
+        with context.temp_override(window=self.window, screen=context.screen, area=self.area, region=region,
+                                   space_data=self.area.spaces.active):
+            bpy.ops.render.opengl(animation=animation, write_still=not animation, view_context=True)
 
     def modal(self, context, event):
         if event.type == 'ESC' and event.value == 'PRESS':
             return self.finish(context, "Playblast cancelled", cancelled=True)
         if event.type != 'TIMER':
             return {'PASS_THROUGH'}
-        if not self.frames:
-            return self.finish(context, "Playblast: %d frames in %s" % (len(playblast_state["files"]), self.folder))
-        frame = self.frames.pop(0)
         scene = context.scene
+        if self.movie:   # One call writes the whole movie (and its sound).
+            path = os.path.join(self.folder, self.out_name + ".mp4")
+            scene.render.filepath = path
+            scene.use_preview_range = False
+            scene.frame_start, scene.frame_end = self.first, self.last
+            try:
+                self.render(context, True)
+            except RuntimeError as err:
+                return self.finish(context, "Playblast failed: %s" % str(err).strip(), cancelled=True)
+            if os.path.exists(path):
+                playblast_state["files"].append(path)
+            self.frames = []
+        if not self.frames:
+            return self.finish(context, "Playblast: %s in %s" % (self.result(), self.folder))
+        frame = self.frames.pop(0)
         scene.frame_set(frame)
-        scene.render.filepath = os.path.join(self.folder, "%s_%04d" % (self.base, frame))
+        scene.render.filepath = os.path.join(self.folder, "%s_%04d" % (self.out_name, frame))
         context.workspace.status_text_set("Playblast: frame %d (Esc cancels)" % frame)
         try:
-            region = next(r for r in self.area.regions if r.type == 'WINDOW')
-            with context.temp_override(window=self.window, screen=context.screen, area=self.area, region=region,
-                                       space_data=self.area.spaces.active):
-                bpy.ops.render.opengl(write_still=True, view_context=True)
+            self.render(context, False)
         except RuntimeError as err:
             return self.finish(context, "Playblast failed: %s" % str(err).strip(), cancelled=True)
         path = scene.render.filepath + ".png"
@@ -913,22 +1452,30 @@ it. The render output settings are put back afterwards. Esc cancels"""
             playblast_state["files"].append(path)
         return {'RUNNING_MODAL'}
 
+    def result(self):
+        """"scene_v003.mp4 (24 frames)" or "scene_v003 (24 frames)"."""
+        if self.movie:
+            return "%s.mp4 (%d frames)" % (self.out_name, self.last - self.first + 1)
+        return "%s (%d frames)" % (self.out_name, len(playblast_state["files"]))
+
     def finish(self, context, message, cancelled=False):
         scene = context.scene
         context.window_manager.event_timer_remove(self.timer)
         context.workspace.status_text_set(None)
-        files = playblast_state["files"]
-        if self.play and files and not cancelled:
-            scene.render.filepath = os.path.join(self.folder, self.base + "_####")
-            scene.frame_start, scene.frame_end = playblast_frames(scene)
+        self.area.spaces.active.overlay.show_overlays = self.overlays
+        if self.play and playblast_state["files"] and not cancelled:
+            if not self.movie:
+                scene.render.filepath = os.path.join(self.folder, self.out_name + "_####")
+            scene.use_preview_range = False
+            scene.frame_start, scene.frame_end = self.first, self.last
             try:
                 bpy.ops.render.play_rendered_anim()
             except RuntimeError:
-                pass   # The player is not essential: the frames are in the folder.
+                pass   # The player is not essential: the playblast is in the folder.
         restore_render(scene, self.snap)
         playblast_state["running"] = False
         # (the dock's note leaves the folder out: its button opens it)
-        scene.m3d_anim.playblast_note = message if cancelled else "Last playblast: %d frames" % len(files)
+        scene.m3d_anim.playblast_note = message if cancelled else "Last playblast: " + self.result()
         self.report({'WARNING'} if cancelled else {'INFO'}, message)
         return {'CANCELLED'} if cancelled else {'FINISHED'}
 
@@ -998,6 +1545,34 @@ class _Pick(_Page):
 
 def _rig(context):
     return posed_rig(context) or rig_of(context)
+
+
+class PROPERTIES_PT_m3d_an_controls(_Pick, Panel):
+    bl_label = "Controls"
+
+    @classmethod
+    def page_poll(cls, context):   # (in Object Mode the Bone Collections panel says to enter Pose Mode)
+        return posed_rig(context) is not None
+
+    def draw(self, context):
+        layout = self.layout
+        rig = posed_rig(context)
+        _button(layout, context, "Select All Controls", "pose.select_all", 'RESTRICT_SELECT_OFF', {"action": 'SELECT'})
+        row = layout.row(align=True)
+        row.label(text="Set Key keys")
+        row.prop(context.scene.m3d_anim, "key_scope", expand=True)
+        rig_id = rig.data.get("rig_id")
+        if not isinstance(rig_id, str):
+            return
+        # A generated rig's own controls (IK / FK switches, snapping): the panel its script registers for the viewport.
+        rig_ui = getattr(bpy.types, "VIEW3D_PT_rig_ui_" + rig_id, None)
+        if rig_ui is None:
+            reason(layout, "The rig's control script isn't running: allow Auto Run Python Scripts in Preferences > "
+                           "Save & Load, then open the file again")
+            return
+        box = layout.box()
+        box.label(text="Rig Controls", icon='ARMATURE_DATA')
+        rig_ui.draw(namedtuple("RigPanel", "layout")(box.column()), context)
 
 
 class PROPERTIES_PT_m3d_an_bone_sets(_Pick, Panel):
@@ -1132,7 +1707,18 @@ class PROPERTIES_PT_m3d_an_poses(_Tween, Panel):
             ("Copy", "pose.copy", 'COPYDOWN', {}),
             ("Paste", "pose.paste", 'PASTEDOWN', {}),
             ("Flipped", "pose.paste", 'PASTEFLIPDOWN', {"flipped": True}),
+            ("Mirror", "m3d.anim_mirror_pose", 'MOD_MIRROR', {"whole": False}),
+            ("Mirror All", "m3d.anim_mirror_pose", 'ARMATURE_DATA', {"whole": True}),
+            ("Mirror Anim", "m3d.anim_mirror_animation", 'ACTION', {"half_cycle": True}),
         ), columns=3)
+        reason(layout, "Mirror: the selection's pose to the other side; Mirror Anim: half a cycle later")
+        layout.label(text="World Position")
+        grid(layout, context, (
+            ("Copy", "m3d.anim_world_position", 'COPYDOWN', {"action": 'COPY', "over_range": False}),
+            ("Paste", "m3d.anim_world_position", 'PASTEDOWN', {"action": 'PASTE', "over_range": False}),
+            ("Copy Range", "m3d.anim_world_position", 'COPYDOWN', {"action": 'COPY', "over_range": True}),
+            ("Paste Range", "m3d.anim_world_position", 'PASTEDOWN', {"action": 'PASTE', "over_range": True}),
+        ), columns=2)
         split_props(layout)
         layout.prop(context.scene.m3d_rig, "pose_name")
         layout.operator("m3d.rig_pose_save", icon='ASSET_MANAGER')
@@ -1212,7 +1798,7 @@ class PROPERTIES_PT_m3d_an_layers(_Layers, Panel):
         ad = ob.animation_data
         if ad is None or (ad.action is None and not ad.nla_tracks):
             empty_state(layout, context, "%s has no animation yet" % ob.name,
-                        ("Set Key", "anim.keyframe_insert", 'KEY_HLT', {}))
+                        ("Set Key", "m3d.set_key", 'KEY_HLT', {}))
             return
         reason(layout, "Layers are NLA tracks: each pushed action is one layer")
         tweak = ad.use_tweak_mode
@@ -1240,6 +1826,12 @@ class PROPERTIES_PT_m3d_an_layers(_Layers, Panel):
                 o.action, o.index = 'TWEAK', i
                 o = sub.operator("m3d.anim_layer", text="", icon='X')
                 o.action, o.index = 'REMOVE', i
+                strip = layer_strip(track)
+                if strip is not None:   # The layer's weight (keyable: S over it) and its frames.
+                    row = col.row(align=True)
+                    if strip.use_animated_influence:   # (layers pushed by older versions have none)
+                        row.prop(strip, "influence", text="Weight", slider=True)
+                    row.label(text="%d - %d" % (round(strip.frame_start), round(strip.frame_end)))
         else:
             reason(layout, "No layers yet: Push Down puts the action on one")
         if tweak:
@@ -1278,7 +1870,11 @@ class PROPERTIES_PT_m3d_an_range(_Playback, Panel):
         if scene.use_preview_range:
             layout.prop(scene, "frame_preview_start", text="Start")
             layout.prop(scene, "frame_preview_end", text="End")
-        layout.prop(scene.render, "fps")
+        split = layout.split(factor=0.4)   # (lined up with the property rows above)
+        col = split.column()
+        col.alignment = 'RIGHT'
+        col.label(text="Frame Rate")
+        split.operator_menu_enum("m3d.anim_fps", "rate", text=frame_rate_label(scene))
         row = layout.row(align=True)
         for kind, label in (('KEYS', "Range from Keys"), ('FIT', "Scene from Keys"), ('SCENE', "Scene Range")):
             row.operator("m3d.anim_range", text=label).kind = kind
@@ -1294,13 +1890,14 @@ class PROPERTIES_PT_m3d_an_blocking(_Playback, Panel):
         kind = new_key_kind(context)
         row.operator("m3d.anim_preset", text="Blocking", depress=kind == 'STEPPED').preset = 'BLOCKING'
         row.operator("m3d.anim_preset", text="Polish", depress=kind == 'CLAMPED').preset = 'POLISH'
+        layout.prop(context.scene.m3d_anim, "convert_scope", text="Convert")
         layout.label(text="New keys")
         row = layout.row(align=True)
         for k, label in INTERP_LABELS.items():
             row.operator("m3d.anim_interp", text=label, depress=kind == k).kind = k
         if _prefs_before:
             layout.operator("m3d.anim_preset", text="Restore My Defaults", icon='LOOP_BACK').preset = 'RESTORE'
-        reason(layout, "Blocking / Polish also convert the selection's keys")
+        reason(layout, "Blocking / Polish also convert the keys of the choice above")
         reason(layout, "New keys copy the key before them; the default is a Preference")
 
 
@@ -1324,15 +1921,20 @@ class PROPERTIES_PT_m3d_an_playblast(_Playback, Panel):
         layout = self.layout
         split_props(layout)
         s = context.scene.m3d_anim
-        first, last = playblast_frames(context.scene)
+        first, last = playblast_frames(context.scene, s.playblast_range)
+        layout.prop(s, "playblast_format", expand=True)
+        layout.prop(s, "playblast_range")
         layout.prop(s, "playblast_dir")
         layout.prop(s, "playblast_percent")
+        col = layout.column()
+        col.prop(s, "playblast_meshes")
+        col.prop(s, "playblast_burn_in")
         layout.prop(s, "playblast_play")
         sub = layout.row()
         sub.scale_y = 1.3
         sub.operator("m3d.playblast", icon='RENDER_ANIMATION').play = s.playblast_play
         row = layout.row()
-        row.label(text="Frames %d - %d, PNG, %s" % (first, last, "in the folder" if s.playblast_dir else "in a temp folder"))
+        row.label(text="Frames %d - %d, %s" % (first, last, "in the folder" if s.playblast_dir else "in a temp folder"))
         folder = playblast_folder(context.scene)
         if os.path.isdir(folder):   # (the folder in the file browser of the system: its full path)
             row.operator("wm.path_open", text="", icon='FILEBROWSER', emboss=False).filepath = folder
@@ -1389,8 +1991,9 @@ INTERP_ICONS = {'STEPPED': 'IPO_CONSTANT', 'SPLINE': 'IPO_BEZIER', 'LINEAR': 'IP
 
 
 def draw_status_line(layout, context):
-    """Animation Status Line: file, Object / Pose, Auto Key (+ options), key type, new key interpolation, keying set,
-    playback range, FPS, loop mode, Graph / Dope Sheet, Blocking / Polish, Playblast. Narrower windows show icons (with
+    """Animation Status Line: file, Object / Pose, Auto Key (+ options), key type, new key interpolation, Blocking /
+    Polish (+ whose keys), Key: Selected / Character, keying set, playback range, frame rate, loop mode, Graph / Dope
+    Sheet, Playblast. Narrower windows show icons (with
     their tooltips) for the editors and Playblast first, then for the modes, Auto Key and the interpolation."""
     from m3d_ui import draw_file_buttons, draw_workspace_picker, status_narrow
     scene, ts = context.scene, context.tool_settings
@@ -1423,8 +2026,13 @@ def draw_status_line(layout, context):
     row = layout.row(align=True)
     row.operator("m3d.anim_preset", text="Blocking", depress=kind == 'STEPPED').preset = 'BLOCKING'
     row.operator("m3d.anim_preset", text="Polish", depress=kind == 'CLAMPED').preset = 'POLISH'
+    row.prop(scene.m3d_anim, "convert_scope", text="", icon_only=True)
 
     layout.separator()
+    row = layout.row(align=True)
+    if not icons:
+        row.label(text="Key:")
+    row.prop(scene.m3d_anim, "key_scope", expand=True, icon_only=icons)
     row = layout.row(align=True)
     row.scale_x = 0.8 if icons else 1.1
     row.prop_search(scene.keying_sets_all, "active", scene, "keying_sets_all", text="")
@@ -1441,7 +2049,9 @@ def draw_status_line(layout, context):
     row.prop(scene, "use_preview_range", text="", icon='PREVIEW_RANGE')
     row = layout.row(align=True)
     row.scale_x = 0.9
-    row.prop(scene.render, "fps", text="FPS")
+    sub = row.row(align=True)
+    sub.ui_units_x = 4.5   # (a menu button is sized for its icon: "29.97 fps" needs the room)
+    sub.operator_menu_enum("m3d.anim_fps", "rate", text=frame_rate_label(scene))
     row.prop(scene, "playback_loop_mode", text="")
 
     layout.separator()
@@ -1463,10 +2073,10 @@ def _pose_menu(row, _context):
 
 
 SHELF_ANIMATE = [
-    ("anim.keyframe_insert", 'KEY_HLT', {}, "Set Key"),
-    ("anim.keyframe_insert_by_name", 'CON_LOCLIKE', {"type": 'Location'}, "Translate"),
-    ("anim.keyframe_insert_by_name", 'CON_ROTLIKE', {"type": 'Rotation'}, "Rotate"),
-    ("anim.keyframe_insert_by_name", 'CON_SIZELIKE', {"type": 'Scaling'}, "Scale"),
+    ("m3d.set_key", 'KEY_HLT', {"channels": 'ALL'}, "Set Key"),
+    ("m3d.set_key", 'CON_LOCLIKE', {"channels": 'LOCATION'}, "Translate"),
+    ("m3d.set_key", 'CON_ROTLIKE', {"channels": 'ROTATION'}, "Rotate"),
+    ("m3d.set_key", 'CON_SIZELIKE', {"channels": 'SCALE'}, "Scale"),
     ("m3d.anim_key_type", 'KEYTYPE_BREAKDOWN_VEC', {"key_type": 'BREAKDOWN'}, "Breakdown"),
     ("anim.keyframe_delete_v3d", 'KEY_DEHLT', {}, "Delete Key"),
     None,
@@ -1478,6 +2088,7 @@ SHELF_POSES = [
     ("pose.copy", 'COPYDOWN', {}, "Copy"),
     ("pose.paste", 'PASTEDOWN', {}, "Paste"),
     ("pose.paste", 'PASTEFLIPDOWN', {"flipped": True}, "Paste Flipped"),
+    ("m3d.anim_mirror_pose", 'MOD_MIRROR', {"whole": False}, "Mirror Pose"),
     None,
     ("m3d.rig_reset_pose", 'LOOP_BACK', {}, "Reset"),
     ("m3d.rig_pose_save", 'ASSET_MANAGER', {}, "Save Pose"),
@@ -1534,16 +2145,21 @@ classes = (
     M3D_AnimSet,
     M3D_AnimSettings,
     M3D_UL_anim_sets,
+    M3D_OT_set_key,
     M3D_OT_tween,
     M3D_OT_anim_revert,
     M3D_OT_anim_key_type,
     M3D_OT_anim_euler_filter,
     M3D_OT_anim_range,
+    M3D_OT_anim_fps,
     M3D_OT_anim_interp,
     M3D_OT_anim_editor,
     M3D_OT_anim_preset,
     M3D_OT_anim_set,
     M3D_OT_anim_pick_bones,
+    M3D_OT_anim_mirror_pose,
+    M3D_OT_anim_mirror_animation,
+    M3D_OT_anim_world_position,
     M3D_OT_anim_paths,
     M3D_OT_anim_graph,
     M3D_OT_anim_layer,
@@ -1553,6 +2169,7 @@ classes = (
     PROPERTIES_PT_m3d_an_camera,
     *PAGE_GATES,
     PROPERTIES_PT_m3d_an_object_sets,
+    PROPERTIES_PT_m3d_an_controls,
     PROPERTIES_PT_m3d_an_bone_sets,
     PROPERTIES_PT_m3d_an_collections,
     PROPERTIES_PT_m3d_an_tween,
@@ -1569,13 +2186,26 @@ classes = (
 )
 
 
+def draw_zoom_region(self, _context):
+    """View menu of the Graph Editor and the Dope Sheet: Zoom Region (Z is Undo there, as everywhere)."""
+    self.layout.separator()
+    self.layout.operator("view2d.zoom_border", text="Zoom Region...")
+
+
+ZOOM_MENUS = ("GRAPH_MT_view", "DOPESHEET_MT_view")
+
+
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.m3d_anim = PointerProperty(type=M3D_AnimSettings)
+    for menu in ZOOM_MENUS:
+        getattr(bpy.types, menu).append(draw_zoom_region)
 
 
 def unregister():
+    for menu in ZOOM_MENUS:
+        getattr(bpy.types, menu).remove(draw_zoom_region)
     del bpy.types.Scene.m3d_anim
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

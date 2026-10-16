@@ -49,6 +49,8 @@ def action_text(idname, data):
         if idname.startswith("wm.context_scale"):
             return f"Scale {path} x{props['value']}"
         return f"Set {path} = {props['value']}" if "value" in props else "Toggle " + path
+    if "." not in idname:   # (an item of a modal keymap, e.g. a gesture's)
+        return idname.replace("_", " ").title()
     mod, name = idname.split(".")
     try:
         label = getattr(getattr(bpy.ops, mod), name).get_rna_type().name
