@@ -2411,6 +2411,14 @@ class PROPERTIES_PT_m3d_sc_overlays(_Display, Panel):
                 row.prop(overlay, opacity, text="Opacity")
 
 
+class PROPERTIES_PT_m3d_sc_turntable(_Display, Panel):
+    bl_label = "Turntable"
+
+    def draw(self, context):
+        from m3d_render import draw_turntable
+        draw_turntable(self.layout, context)
+
+
 class PROPERTIES_PT_m3d_sc_performance(_Display, Panel):
     bl_label = "Performance"
 
@@ -2847,6 +2855,7 @@ classes = (
     PROPERTIES_PT_m3d_sc_color_filter,
     PROPERTIES_PT_m3d_sc_shading,
     PROPERTIES_PT_m3d_sc_overlays,
+    PROPERTIES_PT_m3d_sc_turntable,
     PROPERTIES_PT_m3d_sc_performance,
     PROPERTIES_PT_m3d_sc_objects,
     *TOOL_PANELS,

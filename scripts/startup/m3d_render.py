@@ -6,6 +6,8 @@
 Rendering workspace (F7) for Maelstrom3D: the dock pages (Camera, Lighting, Materials, Render, Output, Passes & Layers,
 Advanced), the Rendering Status Line, the Lights and Render shelves and the operators behind them (quality presets, the
 light table, HDRI setup, camera from view, IPR, Render and Render View).
+Scene extras: render snapshots (a slot per render), the Scene Materials browser, the Shader Graph in F7's Render View,
+background renders and render jobs, the turntable, the missing-textures banner and Save Copy for Sharing.
 
 The layout is built by tools/m3d/build_startup.py (phase6_rendering), the tabs are DOCK_TABS['RENDER'] in
 m3d_workspace.py, the menus and shelves in m3d_ui.py.
@@ -14,6 +16,12 @@ m3d_workspace.py, the menus and shelves in m3d_ui.py.
 import math
 import os
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
 from types import SimpleNamespace
 
 import bpy
@@ -21,7 +29,7 @@ from bpy.props import BoolProperty, EnumProperty, FloatProperty, PointerProperty
 from bpy.types import Menu, Operator, Panel, PropertyGroup
 from mathutils import Vector
 
-from m3d_mode import _button
+from m3d_mode import _button, is_internal_material
 from m3d_sculpt import draw_list, draw_lines, draw_object_picks, empty_state, grid, reason, split_props, viewport
 from m3d_workspace import _PagePanel, current_kind, workspace_kind
 
@@ -340,7 +348,8 @@ class M3D_RenderSettings(PropertyGroup):
     preset: EnumProperty(name="Quality", default='CUSTOM', items=[*[(k, v, "") for k, v in QUALITY], ('CUSTOM', "Custom", "")],
                          description="The quality preset applied last (Custom once a value was edited)")
     user_preset: StringProperty(name="Your Preset", description="The preset of yours applied last (empty: a built-in one)")
-    hdri_path: StringProperty(name="HDRI File", subtype='FILE_PATH', description="An .exr or .hdr image for the sky")
+    hdri_path: StringProperty(name="HDRI File", subtype='FILE_PATH', options={'PATH_SUPPORTS_BLEND_RELATIVE'},
+                              description="An .exr or .hdr image for the sky")
     hdri_rotation: FloatProperty(
         name="Rotation", subtype='ANGLE', unit='ROTATION', soft_min=-math.pi, soft_max=math.pi, description=
         "Turn the sky around the vertical axis",
@@ -351,6 +360,14 @@ class M3D_RenderSettings(PropertyGroup):
         get=_hdri_get(1.0, lambda n: n["background"].inputs["Strength"].default_value),
         set=_hdri_set(_set_strength))
     previous_world: PointerProperty(type=bpy.types.World, description="The world the scene had before the HDRI")
+    keep_renders: BoolProperty(
+        name="Keep Each Render", default=True, description=
+        "Each render goes into a slot of its own in the Render View (named with the time, the preset and the engine), so "
+        "the ones before stay: flip through them with Left / Right or J / Shift+J over the Render View")
+    save_stills: BoolProperty(
+        name="Save Each Still", default=False, description=
+        "Save every still render as render/stills/<scene>_v001.png, v002... next to the saved file")
+    browser_material: StringProperty(name="Picked Material", description="The material picked in Scene Materials")
 
 
 class M3D_OT_hdri_setup(Operator):
@@ -384,8 +401,56 @@ is kept: Back to Previous World puts it back"""
             s.previous_world = scene.world
         scene.world = world
         s.hdri_path = path
+        relative_hdri(scene)
         show_world(True)
         return {'FINISHED'}
+
+
+def is_bundled(path):
+    """One of the studio HDRIs of the install (found again by name when the install moves: relink_hdris)."""
+    folder = os.path.normcase(os.path.dirname(os.path.abspath(bpy.path.abspath(path))))
+    return any(os.path.normcase(os.path.dirname(p)) == folder for _l, p in bundled_hdris())
+
+
+def _relative(path):
+    """`path` relative to the saved file (unchanged: an unsaved file, a bundled HDRI, another drive)."""
+    if not bpy.data.filepath or path.startswith("//") or is_bundled(path):
+        return path
+    try:
+        return bpy.path.relpath(path)
+    except ValueError:
+        return path
+
+
+def relative_hdri(scene):
+    """The scene's HDRI is stored relative to the saved file (Blender makes every path relative when an unsaved file is first
+    saved; afterwards a new HDRI would stay absolute)."""
+    s = scene.m3d_render
+    s.hdri_path = _relative(s.hdri_path)
+    nodes = hdri_nodes(scene.world)
+    image = nodes["env"].image if nodes else None
+    if image is not None and image.library is None and not image.packed_file:
+        image.filepath = _relative(image.filepath)
+
+
+def relink_hdris():
+    """A bundled HDRI whose file isn't there (the install moved, another computer): the studio HDRI of the same name in this
+    install. The number of images found again."""
+    bundled = {os.path.basename(p).lower(): p for _l, p in bundled_hdris()}
+    found = 0
+    for image in bpy.data.images:
+        if image.source != 'FILE' or image.packed_file or image.library is not None or not image.filepath:
+            continue
+        new = bundled.get(os.path.basename(image.filepath.replace("\\", "/")).lower())
+        if new and not os.path.isfile(bpy.path.abspath(image.filepath)):
+            image.filepath = new
+            found += 1
+    for scene in bpy.data.scenes:
+        s = scene.m3d_render
+        new = bundled.get(os.path.basename(s.hdri_path.replace("\\", "/")).lower())
+        if new and not os.path.isfile(bpy.path.abspath(s.hdri_path)):
+            s.hdri_path = new
+    return found
 
 
 class M3D_OT_hdri_clear(Operator):
@@ -403,6 +468,187 @@ class M3D_OT_hdri_clear(Operator):
         context.scene.world = s.previous_world
         s.previous_world = None
         show_world(False)
+        return {'FINISHED'}
+
+
+# --- Files: textures not found after a file loads (a banner in the status bar), Save Copy for Sharing
+
+def image_file(image):
+    """The file an image reads (a UDIM image: its first tile), or "" when it reads none (packed, generated, a render)."""
+    if image.source not in {'FILE', 'SEQUENCE', 'TILED', 'MOVIE'} or image.packed_file or not image.filepath:
+        return ""
+    path = bpy.path.abspath(image.filepath, library=image.library)
+    if "<UDIM>" in path and len(image.tiles):
+        path = path.replace("<UDIM>", str(image.tiles[0].number))
+    return path
+
+
+def missing_images():
+    """Names of the images whose file isn't there."""
+    return [im.name for im in bpy.data.images if image_file(im) and not os.path.exists(image_file(im))]
+
+
+_missing = []   # images not found when the file was loaded (the banner shows those still missing)
+
+
+def still_missing():
+    return [name for name in _missing if name in bpy.data.images and image_file(bpy.data.images[name])
+            and not os.path.exists(image_file(bpy.data.images[name]))]
+
+
+def draw_status(layout):
+    """Status bar (bl_ui/space_statusbar.py): a background render's progress, the textures a loaded file didn't find."""
+    draw_background_status(layout)
+    missing = still_missing() if _missing else []
+    if not missing:
+        return
+    from m3d_ui import status_narrow
+    row = layout.row(align=True)
+    row.label(text="%d texture%s not found" % (len(missing), "" if len(missing) == 1 else "s"), icon='ERROR')
+    row.operator("file.find_missing_files", text="" if status_narrow(bpy.context, 1700) else "Find Missing Files...",
+                 icon='VIEWZOOM')
+    row.operator("m3d.missing_textures", text="Show List")
+    row.operator("m3d.missing_textures", text="", icon='X', emboss=False).dismiss = True
+
+
+class M3D_OT_missing_textures(Operator):
+    """The textures this file didn't find: their names and where they were looked for"""
+    bl_idname = "m3d.missing_textures"
+    bl_label = "Textures Not Found"
+
+    dismiss: BoolProperty(options={'SKIP_SAVE'}, description="Hide the note (File > External Data still finds them)")
+
+    @classmethod
+    def description(cls, _context, props):
+        return "Hide this note (File > External Data > Find Missing Files still finds them)" if props.dismiss else \
+            "The textures this file didn't find: their names and where they were looked for"
+
+    def invoke(self, context, _event):
+        if self.dismiss:
+            return self.execute(context)
+        return context.window_manager.invoke_popup(self, width=560)
+
+    def draw(self, _context):
+        col = self.layout.column()
+        missing = still_missing()
+        col.label(text="%d textures not found" % len(missing), icon='ERROR')
+        for name in missing[:30]:
+            col.label(text="%s:  %s" % (name, image_file(bpy.data.images[name])), translate=False)
+        if len(missing) > 30:
+            col.label(text="%d more" % (len(missing) - 30))
+        col.operator("file.find_missing_files", text="Find Missing Files...", icon='VIEWZOOM')
+
+    def execute(self, _context):
+        if self.dismiss:
+            _missing.clear()
+            import m3d_help
+            m3d_help._redraw_status()
+        return {'FINISHED'}
+
+
+@bpy.app.handlers.persistent
+def _check_files(*_args):
+    """After a file loads: bundled HDRIs found again in this install, then the banner for the textures still missing."""
+    relink_hdris()
+    _missing[:] = missing_images()
+    if _missing:
+        print("Maelstrom3D: %d textures not found: %s" % (len(_missing), ", ".join(_missing[:10])))
+
+
+@bpy.app.handlers.persistent
+def _file_saved(*_args):
+    for scene in bpy.data.scenes:
+        relative_hdri(scene)
+
+
+def sharing_notes():
+    """What stock Blender (5.2 or newer) won't show of this file: lines for the Save Copy for Sharing report."""
+    notes = []
+    if any(ws.m3d_kind for ws in bpy.data.workspaces):
+        notes.append("Workspaces F1-F7 open as plain workspaces, without the F-keys, shelves and menu sets")
+    docks = sum(1 for screen in bpy.data.screens for area in screen.areas if area.type == 'PROPERTIES'
+                and area.spaces.active.context in {'CHANNEL_BOX', 'MODELING_TOOLKIT'})
+    if docks:
+        notes.append("%d docks show Maelstrom3D tabs (Channel Box, toolkits): stock Blender shows them empty, so open the "
+                     "file there with Load UI off (File > Open, gear menu)" % docks)
+    notes.append("Maelstrom3D settings (render presets, texture sets, layers) are kept in the file but not used; "
+                 "the scene, materials and renders are plain Blender")
+    return notes
+
+
+def packable(image):
+    """An image whose file Save Copy for Sharing can pack: there, not packed, not edited since (packing that would keep the
+    edit in the copy but unpacking it again would reload the file: the edit would be lost here)."""
+    path = image_file(image)
+    return bool(path) and image.source in {'FILE', 'TILED'} and image.library is None and not image.is_dirty and os.path.isfile(path)
+
+
+class M3D_OT_save_for_sharing(Operator):
+    """Save a copy of the scene to give to someone else: the textures go into the file (or stay beside it with relative
+    paths), with a note of what stock Blender doesn't show. This scene stays as it is"""
+    bl_idname = "m3d.save_for_sharing"
+    bl_label = "Save Copy for Sharing"
+
+    filepath: StringProperty(subtype='FILE_PATH')
+    filter_glob: StringProperty(default="*.blend", options={'HIDDEN'})
+    textures: EnumProperty(name="Textures", items=(
+        ('PACK', "Pack Into the File", "The textures go into the .blend: one file to send"),
+        ('RELATIVE', "Keep Beside It", "The textures stay files, found relative to the .blend: send the folder")))
+
+    def invoke(self, context, _event):
+        name = bpy.path.display_name_from_filepath(bpy.data.filepath) or "scene"
+        folder = os.path.dirname(bpy.data.filepath) if bpy.data.filepath else ""
+        self.filepath = os.path.join(folder, bpy.path.clean_name(name) + "_shared.blend")
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        path = bpy.path.ensure_ext(self.filepath, ".blend")
+        if bpy.data.filepath and os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(bpy.data.filepath)):
+            self.report({'ERROR'}, "Pick another name: this is the scene's own file")
+            return {'CANCELLED'}
+        packed, kept = [], {}
+        try:
+            if self.textures == 'PACK':
+                for image in bpy.data.images:
+                    if packable(image):
+                        image.pack()
+                        packed.append(image)
+            elif bpy.data.filepath:
+                # Absolute paths relative to this file for the copy (Blender then rebases them to the copy's folder).
+                for image in bpy.data.images:
+                    if image_file(image) and image.library is None and not image.filepath.startswith("//"):
+                        try:
+                            kept[image] = image.filepath
+                            image.filepath_raw = bpy.path.relpath(image.filepath)
+                        except ValueError:
+                            del kept[image]   # (another drive: stays absolute)
+            bpy.ops.wm.save_as_mainfile(filepath=path, copy=True, relative_remap=True)
+        except RuntimeError as err:
+            self.report({'ERROR'}, str(err).strip())
+            return {'CANCELLED'}
+        finally:
+            for image in packed:
+                image.unpack(method='REMOVE')   # (the packed data goes, the path stays: as before)
+            for image, old in kept.items():
+                image.filepath_raw = old
+        missing = missing_images()
+        edited = [im.name for im in bpy.data.images if im.is_dirty and image_file(im)]
+        lines = ["Saved %s" % path]
+        if self.textures == 'PACK':
+            lines.append("%d textures packed into the file" % len(packed))
+        if missing:
+            lines.append("%d textures not found, not in the copy: %s" % (len(missing), ", ".join(missing[:3])))
+        if edited:
+            lines.append("%d edited textures are in the copy as last saved: save them first (%s)" % (len(edited), ", ".join(edited[:3])))
+        lines += sharing_notes()
+        self.report({'INFO'}, "; ".join(lines[:2]))
+        if not bpy.app.background and context.window is not None:
+            def draw(menu, _context):
+                for line in lines[1:]:
+                    menu.layout.label(text=line, translate=False)
+                menu.layout.operator("wm.path_open", text="Open Folder", icon='FILE_FOLDER').filepath = os.path.dirname(path)
+            context.window_manager.popup_menu(draw, title=lines[0], icon='FILE_TICK')
         return {'FINISHED'}
 
 
@@ -521,6 +767,69 @@ def render_view_area(screen):
     return max(found, key=lambda a: a.width * a.height) if found else None
 
 
+GRAPH = 'ShaderNodeTree'   # the ui_type F7's middle area shows instead of the Render View
+
+
+def middle_area(screen):
+    """F7's middle area: the Render View, or the Shader Graph it was switched to (the area keeps what it shows, so each
+    Rendering workspace remembers it)."""
+    found = [a for a in screen.areas if a.type == 'IMAGE_EDITOR' or a.ui_type == GRAPH] if screen else []
+    return max(found, key=lambda a: a.width * a.height) if found else None
+
+
+def graph_shown(screen):
+    area = middle_area(screen)
+    return area is not None and area.ui_type == GRAPH
+
+
+def render_view_back(screen):
+    """The Shader Graph of F7's middle area goes back to the Render View (a render shows there)."""
+    area = middle_area(screen)
+    if area is not None and area.ui_type == GRAPH:
+        area.ui_type = 'IMAGE_EDITOR'
+
+
+class M3D_OT_render_graph(Operator):
+    """Shader Graph: F7's Render View shows the active material's shader graph instead (click again, or Render View, for the
+    render)"""
+    bl_idname = "m3d.render_graph"
+    bl_label = "Shader Graph"
+
+    show: EnumProperty(name="Show", default='TOGGLE', options={'SKIP_SAVE'}, items=(
+        ('TOGGLE', "Toggle", "Switch between the Render View and the Shader Graph"),
+        ('GRAPH', "Shader Graph", "Show the active material's shader graph"),
+        ('RENDER', "Render View", "Show the render")))
+
+    def execute(self, context):
+        area = middle_area(context.screen) if current_kind(context) == 'RENDER' else None
+        if area is None:   # (not in F7: the Shader Editor in a window of its own)
+            return bpy.ops.m3d.open_editor(ui_type=GRAPH)
+        graph = area.ui_type != GRAPH if self.show == 'TOGGLE' else self.show == 'GRAPH'
+        if graph:
+            new = not any(space.type == 'NODE_EDITOR' for space in area.spaces)
+            area.ui_type = GRAPH
+            if new:   # (the first time: no sidebar, the graph framed once it has been drawn)
+                area.spaces.active.show_region_ui = False
+                key = area.as_pointer()
+                bpy.app.timers.register(lambda: frame_graph(key), first_interval=0.2)
+        else:
+            area.ui_type = 'IMAGE_EDITOR'
+            show_render_result(context)
+        return {'FINISHED'}
+
+
+def frame_graph(key):
+    """Frame the whole graph in the area `key` (a pointer)."""
+    for win in bpy.context.window_manager.windows:
+        for area in win.screen.areas:
+            if area.as_pointer() == key and area.type == 'NODE_EDITOR':
+                region = next(r for r in area.regions if r.type == 'WINDOW')
+                with bpy.context.temp_override(window=win, area=area, region=region):
+                    if bpy.ops.node.view_all.poll():   # (an object without a material: no graph to frame)
+                        bpy.ops.node.view_all()
+    return None
+
+
 def show_render_result(context):
     """Point the Rendering workspace's Image Editor at the Render Result (a render then shows there, not in a new window).
     False when this is another workspace or nothing has been rendered yet."""
@@ -566,6 +875,12 @@ def _render_started(*_args):
 @bpy.app.handlers.persistent
 def _file_loaded(*_args):
     _rendered[0] = False   # (a file has no render in it)
+    _slots.clear()
+    _compare["slot"] = None
+    image = render_result()
+    for i, slot in enumerate(image.render_slots if image is not None else ()):
+        if SLOT_NAME.match(slot.name):   # (our names say what a render was; the file has none)
+            slot.name = "Slot %d" % (i + 1)
 
 
 def empty_hint(context):
@@ -686,6 +1001,171 @@ def render_report(scene, frames):
     return "Rendered %s to %s" % (done, output_folder(scene))
 
 
+# --- Render snapshots: each still in a slot of its own (Keep Each Render), named with the time, the preset and the engine
+
+MAX_SLOTS = 16   # slots the Render Result grows to; then the oldest render makes room (each slot holds a whole render)
+SLOT_NAME = re.compile(r"^\d\d:\d\d ")   # a slot named by us (a file keeps the names, not the renders)
+_slots = []      # Render Result slots holding a render of this session, oldest first
+_compare = {"slot": None}   # the slot A/B flips to
+
+
+def render_result():
+    return next((i for i in bpy.data.images if i.type == 'RENDER_RESULT'), None)
+
+
+def slot_label(scene):
+    """"14:32 Medium EEVEE": when, which preset, which engine."""
+    now = current_quality(scene)
+    preset = dict(QUALITY).get(now) or ("Custom" if now == 'CUSTOM' else now)
+    engine = dict(ENGINES).get(scene.render.engine) or scene.render.engine.replace("BLENDER_", "").title()
+    return "%s %s %s" % (time.strftime("%H:%M"), preset, engine)
+
+
+def pick_slot(image):
+    """Keep Each Render: the next render goes into the first slot without a render of this session, else a new slot (up to
+    MAX_SLOTS), else the oldest one's. The one shown before is what A/B flips back to."""
+    slots = image.render_slots
+    _compare["slot"] = slots.active_index
+    free = next((i for i in range(len(slots)) if i not in _slots), None)
+    if free is None and len(slots) < MAX_SLOTS:
+        slots.new()
+        free = len(slots) - 1
+    slots.active_index = _slots[0] if free is None else free
+
+
+def name_slot(image, scene):
+    """The slot the render went into gets its name and is the newest of this session."""
+    index = image.render_slots.active_index
+    if index in _slots:
+        _slots.remove(index)
+    _slots.append(index)
+    image.render_slots[index].name = slot_label(scene)
+
+
+def still_path(scene):
+    """render/stills/<scene>_v###.png next to the saved file, the next number that isn't there yet."""
+    folder = bpy.path.abspath("//render/stills/")
+    base = bpy.path.clean_name(scene.name)
+    found = [int(m.group(1)) for name in (os.listdir(folder) if os.path.isdir(folder) else ())
+             for m in [re.match(re.escape(base) + r"_v(\d+)\.png$", name)] if m]
+    return os.path.join(folder, "%s_v%03d.png" % (base, max(found, default=0) + 1))
+
+
+def save_still(scene):
+    """Save Each Still: the Render Result's slot as a PNG (whatever the output type is; the settings are put back). The path,
+    or None (no render, an unsaved file)."""
+    image = render_result()
+    if image is None or not bpy.data.filepath:
+        return None
+    path = still_path(scene)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    im = scene.render.image_settings
+    before = [("media_type", im.media_type), ("file_format", im.file_format), ("color_mode", im.color_mode),
+              ("color_depth", im.color_depth)]
+    try:
+        im.media_type, im.file_format = 'IMAGE', 'PNG'
+        image.save_render(path, scene=scene)
+    finally:
+        for name, value in before:
+            try:
+                setattr(im, name, value)
+            except (TypeError, ValueError):
+                pass   # (a value the format before has no more: its default)
+    return path
+
+
+_still = {"scene": None, "cancelled": False}   # the still render that runs (Save Each Still after it)
+
+
+def still_done():
+    """Timer while a still renders: then Save Each Still."""
+    if bpy.app.is_job_running('RENDER'):
+        return 0.5
+    scene = bpy.data.scenes.get(_still["scene"] or "")
+    _still["scene"] = None
+    if scene is not None and not _still["cancelled"]:
+        path = save_still(scene)
+        if path:
+            import m3d_bakeq
+            m3d_bakeq.report_later('INFO', "Saved the still to " + path)
+    return None
+
+
+@bpy.app.handlers.persistent
+def _render_cancelled(*_args):
+    _still["cancelled"] = True
+
+
+class M3D_OT_render_compare(Operator):
+    """A/B: flip the Render View to the render before; again flips back (Left / Right or J / Shift+J go through all of them)"""
+    bl_idname = "m3d.render_compare"
+    bl_label = "A/B"
+
+    @classmethod
+    def poll(cls, context):
+        image = render_result()
+        return image is not None and len(_slots) > 1
+
+    def execute(self, _context):
+        image = render_result()
+        slots = image.render_slots
+        now = slots.active_index
+        other = _compare["slot"]
+        if other is None or other == now or other >= len(slots) or other not in _slots:
+            other = next((i for i in reversed(_slots) if i != now), now)
+        slots.active_index, _compare["slot"] = other, now
+        image.update_tag()
+        for win in bpy.context.window_manager.windows:
+            for area in win.screen.areas:
+                if area.type == 'IMAGE_EDITOR':
+                    area.tag_redraw()
+        return {'FINISHED'}
+
+
+def slots_only(context, image):
+    """Does the Render View's header need only the slot dropdown (the Render Result of a scene with one render layer and no
+    passes; else Blender's slot / layer / pass dropdowns)?"""
+    scene = context.scene
+    return image.type == 'RENDER_RESULT' and len(scene.view_layers) == 1 and not extra_passes(scene)
+
+
+class M3D_MT_render_slots(Menu):
+    """The Render View's slots: each render of this session (Keep Each Render), Left / Right or J / Shift+J flip through them"""
+    bl_label = "Render Slots"
+
+    def draw(self, _context):
+        image = render_result()
+        for i, slot in enumerate(image.render_slots if image is not None else ()):
+            o = self.layout.operator("wm.context_set_int", text=slot.name, translate=False,
+                                     icon='CHECKMARK' if i == image.render_slots.active_index else 'BLANK1')
+            o.data_path, o.value = "space_data.image.render_slots.active_index", i
+        others = [im for im in bpy.data.images if im.type != 'RENDER_RESULT' and not is_internal_material(im)]
+        if others:   # (to show another image instead: its own picker comes back with it)
+            self.layout.separator()
+            self.layout.label(text="Show Another Image")
+            for im in others[:20]:
+                o = self.layout.operator("wm.context_set_id", text=im.name, translate=False, icon='IMAGE_DATA')
+                o.data_path, o.value = "space_data.image", im.name
+
+
+def draw_slot_menu(layout, image):
+    slot = image.render_slots.active
+    sub = layout.row()
+    sub.ui_units_x = 7
+    sub.menu("M3D_MT_render_slots", text=slot.name if slot is not None else "Slot", icon='RENDER_RESULT')
+
+
+def draw_render_view_header(layout, context):
+    """The Render View's header (bl_ui/space_image.py), beside its menus: the slot dropdown (when it needs no layer / pass
+    dropdowns), A/B and Save Render (an icon: the header is narrow; Keep Each Render is in the Output tab and the Render menu)."""
+    image = context.space_data.image
+    if slots_only(context, image):
+        draw_slot_menu(layout, image)
+    row = layout.row(align=True)
+    row.operator("m3d.render_compare", text="A/B")
+    row.operator("image.save_as", text="", icon='FILE_TICK').copy = False
+
+
 class M3D_OT_render(Operator):
     """Render the scene: a still, or the whole animation. The result shows in the Render View"""
     bl_idname = "m3d.render"
@@ -775,11 +1255,15 @@ class M3D_OT_render(Operator):
     def execute(self, context):
         self.answer(context)
         scene = context.scene
+        image = render_result()
+        if not self.animation and image is not None and scene.m3d_render.keep_renders:
+            pick_slot(image)
         if self.interactive:
             # The Rendering workspace has its Render View: while it shows the Render Result, no render window opens (the
             # preference "Render In" is put back as soon as the render has started).
             view = context.preferences.view
             display = view.render_display_type
+            render_view_back(context.screen if current_kind(context) == 'RENDER' else None)
             if show_render_result(context):
                 view.render_display_type = 'NONE'
             try:
@@ -793,6 +1277,8 @@ class M3D_OT_render(Operator):
                 _animation["scene"], _animation["frames"] = scene.name, len(frame_numbers(scene))
                 if not bpy.app.timers.is_registered(animation_done):
                     bpy.app.timers.register(animation_done, first_interval=1.0)
+            else:
+                self.after_still(scene, later=True)
             return {'FINISHED'}
         try:
             result = bpy.ops.render.render(animation=self.animation, use_viewport=True)
@@ -801,7 +1287,431 @@ class M3D_OT_render(Operator):
             return {'CANCELLED'}
         if self.animation:
             self.report({'INFO'}, render_report(scene, len(frame_numbers(scene))))
+        else:
+            self.after_still(scene, later=False)
         return result
+
+    def after_still(self, scene, later):
+        """The still's slot is named; Save Each Still saves it (`later`: once the render job is over)."""
+        image = render_result()
+        if image is not None:
+            name_slot(image, scene)
+        if not scene.m3d_render.save_stills:
+            return
+        if not bpy.data.filepath:
+            self.report({'WARNING'}, "Save Each Still: save the scene first (the stills go next to it)")
+        elif later:
+            _still["scene"], _still["cancelled"] = scene.name, False
+            if not bpy.app.timers.is_registered(still_done):
+                bpy.app.timers.register(still_done, first_interval=1.0)
+        else:
+            path = save_still(scene)
+            if path:
+                self.report({'INFO'}, "Saved the still to " + path)
+
+
+# --- Render Sequence in Background: a copy of the scene renders in another Blender (low priority) while you work on
+
+_bg = {"proc": None, "reader": None, "scene": "", "total": 0, "saved": 0, "frame": None, "folder": "", "temp": "", "error": "",
+       "state": None}   # state: None, 'RUNNING', 'DONE', 'CANCELLED', 'FAILED'
+# The job's log lines ("00:01.469  render | Saved: '...'"; older builds: "Fra:12 ...", "Saved: '...'").
+SAVED_LINE = re.compile(r"(^|\| )(Saved: |Append frame )")
+FRAME_LINE = re.compile(r"Rendering frame (\d+)|Fra:(\d+)")
+ERROR_LINE = re.compile(r"(^|\| )(ERROR|Error)\b")
+
+
+def job_command(blend, scene):
+    """The command that renders `blend`'s scene's animation with this Blender, headless (no crash dialog either)."""
+    return [bpy.app.binary_path, "--console-crash-handler", "-b", blend, "-S", scene.name, "-a"]
+
+
+def save_job_copy(scene, path):
+    """Save a copy of the file (unsaved changes too) at `path` for a render job: the output path is made absolute, so the
+    frames go where this scene says."""
+    r = scene.render
+    before = r.filepath
+    r.filepath = bpy.path.abspath(r.filepath)
+    try:
+        bpy.ops.wm.save_as_mainfile(filepath=path, copy=True, relative_remap=True)
+    finally:
+        r.filepath = before
+
+
+def _read_output(proc):
+    """Thread: the job's output, line by line, into _bg (the frame it is on, frames saved, the last error)."""
+    for line in proc.stdout:
+        line = line.strip()
+        found = FRAME_LINE.search(line)
+        if found:
+            _bg["frame"] = int(found.group(1) or found.group(2))
+        if SAVED_LINE.search(line):
+            _bg["saved"] += 1
+        elif ERROR_LINE.search(line):
+            _bg["error"] = line.rpartition("| ")[2]
+
+
+def background_tick():
+    """Timer while the job runs: the status bar redraws; at the end, the report and the temporary copy goes."""
+    import m3d_help
+    m3d_help._redraw_status()
+    proc = _bg["proc"]
+    if proc is None:
+        return None
+    if proc.poll() is None or _bg["reader"].is_alive():   # (the last lines may still be on their way)
+        return 0.5
+    _bg["proc"] = None
+    shutil.rmtree(_bg["temp"], ignore_errors=True)
+    if _bg["state"] == 'RUNNING':
+        _bg["state"] = 'DONE' if proc.returncode == 0 and _bg["saved"] else 'FAILED'
+    import m3d_bakeq
+    m3d_bakeq.report_later('INFO' if _bg["state"] == 'DONE' else 'WARNING', background_text())
+    return None
+
+
+def background_text():
+    b = _bg
+    if b["state"] == 'RUNNING':
+        return "Rendering in the background: frame %s, %d of %d saved" % (b["frame"] or "-", b["saved"], b["total"])
+    if b["state"] == 'DONE':
+        return "Background render done: %d frames to %s" % (b["saved"], b["folder"])
+    if b["state"] == 'CANCELLED':
+        return "Background render cancelled: %d of %d frames saved" % (b["saved"], b["total"])
+    return "Background render stopped%s: %d of %d frames saved" % (": " + b["error"] if b["error"] else "", b["saved"], b["total"])
+
+
+def draw_background_status(layout):
+    """The background render's progress, Cancel and Open Folder (status bar); after it, the result until closed."""
+    if _bg["state"] is None:
+        return
+    row = layout.row(align=True)
+    if _bg["state"] == 'RUNNING':
+        from m3d_ui import status_narrow
+        narrow = status_narrow(bpy.context, 1700)
+        bar = row.row(align=True)
+        bar.ui_units_x = 7 if narrow else 11   # (the whole text)
+        bar.progress(factor=min(_bg["saved"] / max(_bg["total"], 1), 1.0), type='BAR',
+                     text=("%d / %d frames" if narrow else "Background render: %d / %d frames") % (_bg["saved"], _bg["total"]))
+        row.operator("m3d.render_background_stop", text="Cancel", icon='CANCEL')
+    else:
+        row.label(text=background_text(), icon='CHECKMARK' if _bg["state"] == 'DONE' else 'ERROR')
+    if os.path.isdir(_bg["folder"]):
+        row.operator("wm.path_open", text="", icon='FILE_FOLDER').filepath = _bg["folder"]
+    if _bg["state"] != 'RUNNING':
+        row.operator("m3d.render_background_stop", text="", icon='X', emboss=False)
+
+
+class _JobOutput:
+    """The checks before an animation goes to another Blender: a saved file for an output next to it, frames there already."""
+    existing: EnumProperty(name="Frames There", default='ASK', options={'SKIP_SAVE'}, items=(
+        ('ASK', "Ask", "Render over them as Blender does (the Overwrite setting)"),
+        ('OVERWRITE', "Overwrite", "Render over the frames that are there"),
+        ('VERSION', "New Version Folder", "Render into the next version folder (v002, v003...): the frames there stay")))
+
+    def invoke(self, context, _event):
+        scene = context.scene
+        if not bpy.data.filepath and scene.render.filepath.startswith("//"):
+            self.report({'WARNING'}, "Save the scene first: the frames go into a folder next to it")
+            bpy.ops.wm.save_as_mainfile('INVOKE_DEFAULT')
+            return {'CANCELLED'}
+        name_frames(scene)
+        if self.ask_frames() and existing_frames(scene):
+            self.existing = 'VERSION'
+            return context.window_manager.invoke_props_dialog(self, width=420, confirm_text=self.bl_label)
+        return self.start(context)
+
+    def ask_frames(self):
+        return True
+
+    def draw(self, context):
+        scene = context.scene
+        self.layout.label(text="%d frames are in %s already" % (len(existing_frames(scene)), output_folder(scene)),
+                          icon='FILE_FOLDER')
+        row = self.layout.row(align=True)
+        for key in ('VERSION', 'OVERWRITE'):
+            row.prop_enum(self, "existing", key)
+
+    def execute(self, context):
+        return self.start(context)
+
+    def prepare(self, context):
+        scene = context.scene
+        if not bpy.data.filepath and scene.render.filepath.startswith("//"):
+            self.report({'WARNING'}, "Save the scene first: the frames go into a folder next to it")
+            return False
+        name_frames(scene)
+        if self.existing == 'VERSION':
+            scene.render.filepath = next_version(scene.render.filepath)
+        elif self.existing == 'OVERWRITE':
+            scene.render.use_overwrite = True
+        return True
+
+
+class M3D_OT_render_background(_JobOutput, Operator):
+    """Render the animation in the background: a copy of the scene renders in another Blender (low priority) while you go on
+    working; the status bar shows the frames, with Cancel and Open Folder"""
+    bl_idname = "m3d.render_background"
+    bl_label = "Render Sequence in Background"
+
+    def start(self, context):
+        if _bg["state"] == 'RUNNING':
+            self.report({'WARNING'}, "A background render is running: cancel it first (status bar)")
+            return {'CANCELLED'}
+        if not self.prepare(context):
+            return {'CANCELLED'}
+        scene = context.scene
+        temp = tempfile.mkdtemp(prefix="m3d_bgrender_")
+        blend = os.path.join(temp, bpy.path.clean_name(bpy.path.display_name_from_filepath(bpy.data.filepath) or "scene") + ".blend")
+        try:
+            save_job_copy(scene, blend)
+        except RuntimeError as err:
+            shutil.rmtree(temp, ignore_errors=True)
+            self.report({'ERROR'}, str(err).strip())
+            return {'CANCELLED'}
+        options = {"creationflags": subprocess.BELOW_NORMAL_PRIORITY_CLASS | subprocess.CREATE_NO_WINDOW} \
+            if sys.platform == "win32" else {"preexec_fn": lambda: os.nice(10)}
+        try:
+            proc = subprocess.Popen(job_command(blend, scene), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                    encoding="utf-8", errors="replace", **options)
+        except OSError as err:
+            shutil.rmtree(temp, ignore_errors=True)
+            self.report({'ERROR'}, "Could not start the render: %s" % err)
+            return {'CANCELLED'}
+        _bg.update(proc=proc, scene=scene.name, total=len(frame_numbers(scene)), saved=0, frame=None,
+                   folder=output_folder(scene), temp=temp, error="", state='RUNNING')
+        _bg["reader"] = threading.Thread(target=_read_output, args=(proc,), daemon=True)
+        _bg["reader"].start()
+        if not bpy.app.timers.is_registered(background_tick):
+            bpy.app.timers.register(background_tick, first_interval=0.5)
+        self.report({'INFO'}, "Rendering %d frames in the background to %s" % (_bg["total"], _bg["folder"]))
+        return {'FINISHED'}
+
+
+class M3D_OT_render_background_stop(Operator):
+    """Cancel the background render (the frames saved so far stay); after it: close its note"""
+    bl_idname = "m3d.render_background_stop"
+    bl_label = "Cancel Background Render"
+
+    def execute(self, _context):
+        proc = _bg["proc"]
+        if proc is not None and proc.poll() is None:
+            _bg["state"] = 'CANCELLED'
+            proc.kill()
+            proc.wait(timeout=10)
+            _bg["reader"].join(timeout=5)
+            background_tick()
+        else:
+            _bg["state"] = None
+        import m3d_help
+        m3d_help._redraw_status()
+        return {'FINISHED'}
+
+
+class M3D_OT_render_job_export(_JobOutput, Operator):
+    """Export Render Job: a copy of the scene and a script (.bat on Windows, .sh elsewhere) that renders its animation with
+    this Blender, to run later or on another computer with Maelstrom3D in the same place"""
+    bl_idname = "m3d.render_job_export"
+    bl_label = "Export Render Job"
+
+    filepath: StringProperty(subtype='FILE_PATH', options={'SKIP_SAVE'})
+    filter_glob: StringProperty(default="*.bat;*.sh", options={'HIDDEN'})
+
+    def ask_frames(self):
+        return False   # (the job runs later: the frames there now may be gone by then)
+
+    def invoke(self, context, event):
+        if not self.filepath:
+            name = bpy.path.clean_name(bpy.path.display_name_from_filepath(bpy.data.filepath) or "scene")
+            folder = os.path.dirname(bpy.data.filepath) if bpy.data.filepath else ""
+            self.filepath = os.path.join(folder, name + "_render" + (".bat" if sys.platform == "win32" else ".sh"))
+            context.window_manager.fileselect_add(self)
+            return {'RUNNING_MODAL'}
+        return super().invoke(context, event)
+
+    def start(self, context):
+        if not self.prepare(context):
+            return {'CANCELLED'}
+        scene = context.scene
+        windows = sys.platform == "win32"
+        script = bpy.path.ensure_ext(os.path.splitext(self.filepath)[0], ".bat" if windows else ".sh")
+        blend = os.path.splitext(script)[0] + ".blend"
+        try:
+            save_job_copy(scene, blend)
+            command = " ".join('"%s"' % part for part in job_command(blend, scene))
+            with open(script, "w", encoding="utf-8", newline="\r\n" if windows else "\n") as fh:
+                if windows:
+                    fh.write("@echo off\nrem Maelstrom3D render job: %s, frames %d-%d into %s\n" % (
+                        scene.name, scene.frame_start, scene.frame_end, output_folder(scene)))
+                    fh.write('start "" /low /wait /b %s\n' % command)
+                else:
+                    fh.write("#!/bin/sh\n# Maelstrom3D render job: %s, frames %d-%d into %s\nnice -n 10 %s\n" % (
+                        scene.name, scene.frame_start, scene.frame_end, output_folder(scene), command))
+            if not windows:
+                os.chmod(script, 0o755)
+        except (OSError, RuntimeError) as err:
+            self.report({'ERROR'}, "Could not write the render job: %s" % err)
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Render job: run %s (it renders %s)" % (script, os.path.basename(blend)))
+        return {'FINISHED'}
+
+
+# --- Turntable: a camera on a pivot at the selection's centre, once around over the frame range (or the sky turns instead)
+
+TURNTABLE = "m3d_turntable"   # custom property of the pivot: 'CAMERA' or 'HDRI'
+ELEVATION = math.radians(15)
+
+
+def turntable_pivot(scene):
+    return next((o for o in scene.objects if TURNTABLE in o), None)
+
+
+def bounds(obs):
+    """(centre, radius) of the objects' bounding boxes in world space."""
+    corners = [o.matrix_world @ Vector(c) for o in obs for c in o.bound_box]
+    lo = Vector(tuple(min(c[i] for c in corners) for i in range(3)))
+    hi = Vector(tuple(max(c[i] for c in corners) for i in range(3)))
+    centre = (lo + hi) / 2
+    return centre, max(max((c - centre).length for c in corners), 0.01)
+
+
+def make_linear(owner, data_path):
+    """The keys of `owner`'s F-curves on `data_path` run at an even speed (no ease in / out)."""
+    from bpy_extras.anim_utils import animdata_get_channelbag_for_assigned_slot
+    ad = owner.animation_data
+    bag = animdata_get_channelbag_for_assigned_slot(ad) if ad is not None and ad.action is not None else None
+    for fc in bag.fcurves if bag is not None else ():
+        if fc.data_path == data_path:
+            for key in fc.keyframe_points:
+                key.interpolation = 'LINEAR'
+
+
+def spin(owner, struct, prop, start, scene):
+    """Index 2 (Z) of `struct.prop` keyed from `start` on the first frame to a full turn more one frame after the last (the
+    loop has no repeated frame); `owner` is the ID that holds the keys."""
+    for frame, value in ((scene.frame_start, start), (scene.frame_end + 1, start + 2 * math.pi)):
+        getattr(struct, prop)[2] = value
+        struct.keyframe_insert(prop, index=2, frame=frame)
+    make_linear(owner, struct.path_from_id(prop))
+
+
+def remove_turntable(scene):
+    """Remove the turntable: its pivot and camera go, the scene camera and the sky's rotation are as before. False without one."""
+    pivot = turntable_pivot(scene)
+    if pivot is None:
+        return False
+    if pivot[TURNTABLE] == 'HDRI':
+        nodes = hdri_nodes(scene.world)
+        if nodes is not None:
+            tree, socket = scene.world.node_tree, nodes["mapping"].inputs["Rotation"]
+            path = socket.path_from_id("default_value")
+            ad = tree.animation_data
+            if ad is not None and ad.action is not None:
+                from bpy_extras.anim_utils import animdata_get_channelbag_for_assigned_slot
+                bag = animdata_get_channelbag_for_assigned_slot(ad)
+                for fc in [fc for fc in bag.fcurves if fc.data_path == path] if bag is not None else ():
+                    bag.fcurves.remove(fc)
+            socket.default_value[2] = pivot.get("m3d_sky_rotation", 0.0)
+    before = bpy.data.objects.get(pivot.get("m3d_camera_before", ""))
+    for ob in [*pivot.children, pivot]:
+        data = ob.data
+        bpy.data.objects.remove(ob)
+        if data is not None and not data.users:
+            bpy.data.cameras.remove(data)
+    if scene.camera is None and before is not None:
+        scene.camera = before
+    return True
+
+
+class M3D_OT_turntable(Operator):
+    """Create Turntable: a camera that goes once around the selection over the frame range (the selection's centre is the
+    pivot); render it or playblast it. Again: a new one in its place"""
+    bl_idname = "m3d.turntable"
+    bl_label = "Create Turntable"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    turn: EnumProperty(name="Turn", items=(
+        ('CAMERA', "Camera Around", "The camera goes around the model (the lights stay)"),
+        ('HDRI', "Sky Around", "The camera stays, the HDRI sky turns: the reflections and the lighting move over the model")))
+
+    def execute(self, context):
+        scene = context.scene
+        before = scene.camera
+        if turntable_pivot(scene) is not None:
+            before = bpy.data.objects.get(turntable_pivot(scene).get("m3d_camera_before", ""))
+            remove_turntable(scene)
+        obs = [o for o in context.selected_objects if o.type in MATERIAL_TYPES] or \
+              [o for o in context.visible_objects if o.type in MATERIAL_TYPES]
+        if not obs:
+            self.report({'WARNING'}, "Nothing to turn around: select a model")
+            return {'CANCELLED'}
+        centre, radius = bounds(obs)
+        pivot = bpy.data.objects.new("Turntable", None)
+        pivot.empty_display_type, pivot.empty_display_size = 'CIRCLE', radius
+        pivot.location = centre
+        pivot[TURNTABLE] = self.turn
+        pivot["m3d_camera_before"] = before.name if before is not None else ""
+        data = bpy.data.cameras.new("Turntable Camera")
+        cam = bpy.data.objects.new("Turntable Camera", data)
+        for ob in (pivot, cam):
+            scene.collection.objects.link(ob)
+        cam.parent = pivot
+        # The distance that fits the bounding sphere in the narrower side of the picture.
+        r = scene.render
+        aspect = (r.resolution_x * r.pixel_aspect_x) / max(r.resolution_y * r.pixel_aspect_y, 1)
+        narrow = 2 * math.atan(math.tan(data.angle / 2) * min(aspect, 1 / aspect))
+        distance = radius / math.sin(narrow / 2) * 1.05
+        offset = Vector((0.0, -math.cos(ELEVATION), math.sin(ELEVATION))) * distance
+        cam.location = offset
+        cam.rotation_euler = (-offset).to_track_quat('-Z', 'Y').to_euler()
+        data.clip_start, data.clip_end = min(data.clip_start, distance / 100), max(data.clip_end, distance + radius * 4)
+        scene.camera = cam
+        if self.turn == 'HDRI':
+            if hdri_nodes(scene.world) is None:
+                bpy.ops.m3d.hdri_setup()
+            nodes = hdri_nodes(scene.world)
+            if nodes is None:
+                self.report({'WARNING'}, "No HDRI sky to turn: the camera goes around instead")
+                pivot[TURNTABLE] = 'CAMERA'
+            else:
+                socket = nodes["mapping"].inputs["Rotation"]
+                pivot["m3d_sky_rotation"] = socket.default_value[2]
+                spin(scene.world.node_tree, socket, "default_value", socket.default_value[2], scene)
+        if pivot[TURNTABLE] == 'CAMERA':
+            spin(pivot, pivot, "rotation_euler", 0.0, scene)
+        self.report({'INFO'}, "Turntable: once around over frames %d-%d (Render Animation or Playblast)" % (
+            scene.frame_start, scene.frame_end))
+        return {'FINISHED'}
+
+
+class M3D_OT_turntable_remove(Operator):
+    """Remove Turntable: its camera and pivot go, the scene camera (and the sky) are as before"""
+    bl_idname = "m3d.turntable_remove"
+    bl_label = "Remove Turntable"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return turntable_pivot(context.scene) is not None
+
+    def execute(self, context):
+        remove_turntable(context.scene)
+        return {'FINISHED'}
+
+
+def draw_turntable(layout, context):
+    """Create / Remove Turntable, Playblast, Render Animation (Sculpt's Display tab, F7's Render tab)."""
+    pivot = turntable_pivot(context.scene)
+    row = layout.row(align=True)
+    row.operator_menu_enum("m3d.turntable", "turn", text="Create Turntable" if pivot is None else "New Turntable",
+                           icon='FILE_REFRESH')
+    if pivot is None:
+        reason(layout, "A camera goes once around the selection over the frame range")
+        return
+    row.operator("m3d.turntable_remove", text="", icon='X')
+    reason(layout, "%s, frames %d-%d" % ("The sky turns" if pivot[TURNTABLE] == 'HDRI' else "The camera goes around",
+                                         context.scene.frame_start, context.scene.frame_end))
+    row = layout.row(align=True)
+    row.operator("m3d.playblast", text="Playblast", icon='RENDER_ANIMATION')
+    row.operator("m3d.render", text="Render Animation", icon='RENDER_ANIMATION').animation = True
 
 
 class M3D_OT_render_view(Operator):
@@ -810,6 +1720,8 @@ class M3D_OT_render_view(Operator):
     bl_label = "Render View"
 
     def execute(self, context):
+        if current_kind(context) == 'RENDER':
+            render_view_back(context.screen)
         if current_kind(context) == 'RENDER' and render_view_area(context.screen) is not None:
             if not show_render_result(context):
                 self.report({'INFO'}, "Nothing rendered yet: Render (Shift+F12)")
@@ -1297,9 +2209,177 @@ class PROPERTIES_PT_m3d_rn_surface(_Materials, Panel):
                 layout.prop(normal.inputs["Strength"], "default_value", text="Normal Strength")
             else:
                 reason(layout, "Normal Strength needs a Normal Map or Bump node")
-        if "Shading" in bpy.data.workspaces:
-            o = layout.operator("wm.context_set_id", text="Edit Nodes in the Shading Workspace", icon='NODE_MATERIAL')
-            o.data_path, o.value = "window.workspace", "Shading"
+        # (the graph in the Render View's place; the stock Shading workspace stays in the workspace menu)
+        layout.operator("m3d.render_graph", text="Edit Graph", icon='NODE_MATERIAL').show = 'GRAPH'
+
+
+# --- Scene Materials: every material of the file as a preview grid (Maelstrom3D's own left out)
+
+def scene_materials():
+    return sorted((m for m in bpy.data.materials if not is_internal_material(m) and not m.is_grease_pencil),
+                  key=lambda m: m.name.lower())
+
+
+def picked_material(scene):
+    mat = bpy.data.materials.get(scene.m3d_render.browser_material)
+    return mat if mat is not None and not is_internal_material(mat) else None
+
+
+def unused_materials():
+    """Materials no object uses (a fake user alone doesn't count), not linked from another file."""
+    return [m for m in scene_materials() if m.library is None and m.users - int(m.use_fake_user) == 0]
+
+
+def material_users(context, mat):
+    return [o for o in context.view_layer.objects if any(slot.material == mat for slot in o.material_slots)]
+
+
+class M3D_OT_scene_material(Operator):
+    """Scene Materials buttons"""
+    bl_idname = "m3d.scene_material"
+    bl_label = "Scene Material"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    ACTIONS = (('PICK', "Pick", "Pick this material: the buttons below act on it"),
+               ('SELECT', "Select Objects Using", "Select the objects that use this material"),
+               ('DUPLICATE', "Duplicate", "A copy of this material to change on its own (kept when the file is saved, "
+                                          "used or not)"),
+               ('RENAME', "Rename", "Rename this material"),
+               ('NEW', "New", "A new material (kept when the file is saved, used or not)"),
+               ('DELETE_UNUSED', "Delete Unused", "Delete the materials no object uses"))
+    action: EnumProperty(items=ACTIONS)
+    name: StringProperty(options={'SKIP_SAVE'})
+    new_name: StringProperty(name="Name", options={'SKIP_SAVE'})
+
+    @classmethod
+    def description(cls, _context, props):
+        return {key: text for key, _label, text in cls.ACTIONS}[props.action]
+
+    def invoke(self, context, event):
+        if self.action == 'RENAME':
+            self.new_name = self.name
+            return context.window_manager.invoke_props_dialog(self, title="Rename Material", confirm_text="Rename")
+        if self.action == 'DELETE_UNUSED':
+            found = unused_materials()
+            if not found:
+                self.report({'INFO'}, "Every material is used")
+                return {'CANCELLED'}
+            return context.window_manager.invoke_confirm(
+                self, event, title="Delete Unused Materials", confirm_text="Delete", icon='QUESTION',
+                message="Delete %d materials no object uses: %s%s?" % (
+                    len(found), ", ".join(m.name for m in found[:4]), "..." if len(found) > 4 else ""))
+        return self.execute(context)
+
+    def execute(self, context):
+        s = context.scene.m3d_render
+        mat = bpy.data.materials.get(self.name)
+        if self.action == 'NEW':
+            mat = bpy.data.materials.new("standardSurface1")
+            mat.use_fake_user = True
+        elif self.action == 'DELETE_UNUSED':
+            found = unused_materials()
+            for m in found:
+                bpy.data.materials.remove(m)
+            self.report({'INFO'}, "Deleted %d unused materials" % len(found))
+            return {'FINISHED'}
+        elif mat is None:
+            return {'CANCELLED'}
+        elif self.action == 'DUPLICATE':
+            mat = mat.copy()
+            mat.use_fake_user = True
+        elif self.action == 'RENAME':
+            if mat.library is not None or not self.new_name.strip():
+                return {'CANCELLED'}
+            mat.name = self.new_name.strip()
+        elif self.action == 'SELECT':
+            if context.mode != 'OBJECT':
+                self.report({'WARNING'}, "Select Objects Using works in Object Mode")
+                return {'CANCELLED'}
+            found = [o for o in material_users(context, mat) if o.visible_get()]
+            for ob in context.selected_objects:
+                ob.select_set(False)
+            for ob in found:
+                ob.select_set(True)
+            if found:
+                context.view_layer.objects.active = found[0]
+            self.report({'INFO'}, "%d objects use %s" % (len(found), mat.name) if found else
+                        "No visible object uses %s" % mat.name)
+        s.browser_material = mat.name
+        return {'FINISHED'}
+
+
+class M3D_OT_scene_materials_show(Operator):
+    """Scene Materials: every material of the file as a preview grid (Rendering workspace, Materials tab)"""
+    bl_idname = "m3d.scene_materials_show"
+    bl_label = "Scene Materials"
+
+    def execute(self, context):
+        from m3d_workspace import find_workspace
+        if current_kind(context) != 'RENDER' and context.window is not None:
+            bpy.ops.m3d.workspace(kind='RENDER')
+        ws = find_workspace('RENDER')
+        if ws is None:
+            return {'CANCELLED'}
+        ws.m3d_page_right = "render_materials"
+        for screen in ws.screens:
+            docks = [a for a in screen.areas if a.type == 'PROPERTIES']
+            if docks:
+                max(docks, key=lambda a: a.height).spaces.active.context = 'MODELING_TOOLKIT'
+        return {'FINISHED'}
+
+
+GRID_MAX = 60   # materials drawn in the grid
+
+
+def _scene_op(layout, action, name="", **kw):
+    o = layout.operator("m3d.scene_material", **kw)
+    o.action, o.name = action, name
+    return o
+
+
+class PROPERTIES_PT_m3d_rn_scene_materials(_PagePanel, Panel):
+    page = "render_materials"
+    bl_label = "Scene Materials"
+
+    def draw(self, context):
+        layout = self.layout
+        mats = scene_materials()
+        picked = picked_material(context.scene)
+        row = layout.row(align=True)
+        _scene_op(row, 'NEW', text="New", icon='ADD')
+        unused = len(unused_materials())
+        sub = row.row(align=True)
+        sub.enabled = unused > 0
+        _scene_op(sub, 'DELETE_UNUSED', text="Delete Unused (%d)" % unused if unused else "Delete Unused", icon='TRASH')
+        if not mats:
+            reason(layout, "No materials yet: New makes one, Assign New Material gives the selection one")
+            return
+        region = getattr(context, "region", None)
+        scale = context.preferences.system.ui_scale or 1.0
+        columns = max(2, int((getattr(region, "width", 0) or 300) / (96 * scale)))
+        flow = layout.grid_flow(row_major=True, columns=columns, even_columns=True, align=False)
+        for mat in mats[:GRID_MAX]:
+            col = flow.column(align=True)
+            col.template_icon(icon_value=layout.icon(mat), scale=3.6)
+            _scene_op(col, 'PICK', mat.name, text=mat.name, depress=mat == picked)
+        if len(mats) > GRID_MAX:
+            layout.label(text="%d more materials not shown" % (len(mats) - GRID_MAX))
+        if picked is None:
+            reason(layout, "Click a material to pick it")
+            return
+        box = layout.box()
+        users = len(material_users(context, picked))
+        box.label(text="%s: %s" % (picked.name, "%d object%s" % (users, "" if users == 1 else "s") if users else "not used"),
+                  icon='MATERIAL')
+        col = box.column(align=True)
+        o = col.operator("m3d.assign_existing_material", text="Assign to Selection", icon='CHECKMARK')
+        o.material = picked.name
+        _scene_op(col, 'SELECT', picked.name, text="Select Objects Using", icon='RESTRICT_SELECT_OFF')
+        row = col.row(align=True)
+        _scene_op(row, 'DUPLICATE', picked.name, text="Duplicate", icon='DUPLICATE')
+        sub = row.row(align=True)
+        sub.enabled = picked.library is None
+        _scene_op(sub, 'RENAME', picked.name, text="Rename")
 
 
 # --- Render
@@ -1474,6 +2554,9 @@ class PROPERTIES_PT_m3d_rn_output(_Output, Panel):
             layout.prop(im, "color_mode", text="Color")
             layout.prop(im, "color_depth", text="Depth")
         layout.prop(r, "use_overwrite", text="Overwrite Existing Frames")
+        s = context.scene.m3d_render
+        layout.prop(s, "keep_renders")
+        layout.prop(s, "save_stills")
         draw_pass_warning(layout, context)
 
 
@@ -1493,6 +2576,9 @@ class PROPERTIES_PT_m3d_rn_frames(_Output, Panel):
         row.scale_y = 1.3
         row.operator("m3d.render", text="Render", icon='RENDER_STILL')
         row.operator("m3d.render", text="Render Animation", icon='RENDER_ANIMATION').animation = True
+        row = layout.row(align=True)
+        row.operator("m3d.render_background", text="Render in Background", icon='TIME')
+        row.operator("m3d.render_job_export", text="", icon='EXPORT')
         folder = output_folder(scene)
         if (bpy.data.filepath or not scene.render.filepath.startswith("//")) and os.path.isdir(folder):
             layout.operator("wm.path_open", text="Open Render Folder", icon='FILE_FOLDER').filepath = folder
@@ -1849,7 +2935,8 @@ def draw_status_line(layout, context):
     layout.separator()
     row = layout.row(align=True)
     row.operator("m3d.render_ipr", text="IPR", icon='SHADING_RENDERED', depress=space is not None and space.shading.type == 'RENDERED')
-    row.operator("m3d.render_view", text="Render View", icon='IMAGE')
+    row.operator("m3d.render_view", text="Render View", icon='IMAGE', depress=not graph_shown(context.screen))
+    row.operator("m3d.render_graph", text="Shader Graph", icon='NODE_MATERIAL', depress=graph_shown(context.screen))
     draw_workspace_picker(layout, context)
 
 
@@ -1865,8 +2952,10 @@ SHELF_RENDER = [
     ("m3d.render", 'RENDER_STILL', {}, "Render"),
     ("m3d.render", 'RENDER_ANIMATION', {"animation": True}, "Animation"),
     ("m3d.render_view", 'IMAGE', {}, "Render View"),
+    ("m3d.render_background", 'TIME', {}, "Background"),
     None,
     ("m3d.render_camera_from_view", 'CAMERA_DATA', {"mode": 'NEW'}, "Camera from View"),
+    ("m3d.turntable", 'FILE_REFRESH', {"turn": 'CAMERA'}, "Turntable"),
     ("view3d.view_camera", 'VIEW_CAMERA', {}, "Look Through"),
     None,
     *(("m3d.render_preset", 'NONE', {"preset": key}, label) for key, label in QUALITY),
@@ -1891,6 +2980,18 @@ classes = (
     M3D_MT_render_presets,
     M3D_OT_view_lighting,
     M3D_OT_render_layer_from_selection,
+    M3D_OT_render_compare,
+    M3D_MT_render_slots,
+    M3D_OT_render_graph,
+    M3D_OT_scene_material,
+    M3D_OT_scene_materials_show,
+    M3D_OT_missing_textures,
+    M3D_OT_save_for_sharing,
+    M3D_OT_render_background,
+    M3D_OT_render_background_stop,
+    M3D_OT_render_job_export,
+    M3D_OT_turntable,
+    M3D_OT_turntable_remove,
     *PAGE_GATES,
     PROPERTIES_PT_m3d_rn_camera,
     PROPERTIES_PT_m3d_rn_lens,
@@ -1904,6 +3005,7 @@ classes = (
     PROPERTIES_PT_m3d_rn_exposure,
     PROPERTIES_PT_m3d_rn_slots,
     PROPERTIES_PT_m3d_rn_surface,
+    PROPERTIES_PT_m3d_rn_scene_materials,
     PROPERTIES_PT_m3d_rn_quality,
     PROPERTIES_PT_m3d_rn_cycles,
     PROPERTIES_PT_m3d_rn_denoise,
@@ -1954,16 +3056,21 @@ def register():
     bpy.types.Scene.m3d_render = PointerProperty(type=M3D_RenderSettings)
     bpy.app.handlers.load_factory_startup_post.append(quality_default)
     bpy.app.handlers.load_post.append(render_path_default)
-    bpy.app.handlers.load_post.append(_file_loaded)
-    bpy.app.handlers.render_init.append(_render_started)
+    for handlers, fn in HANDLERS:
+        handlers.append(fn)
     if not bpy.app.background:
         _draw_handlers.append(bpy.types.SpaceImageEditor.draw_handler_add(draw_empty_hint, (), 'WINDOW', 'POST_PIXEL'))
+
+
+HANDLERS = ((bpy.app.handlers.load_post, _file_loaded), (bpy.app.handlers.load_post, _check_files),
+            (bpy.app.handlers.save_post, _file_saved), (bpy.app.handlers.render_init, _render_started),
+            (bpy.app.handlers.render_cancel, _render_cancelled))
 
 
 def unregister():
     while _draw_handlers:
         bpy.types.SpaceImageEditor.draw_handler_remove(_draw_handlers.pop(), 'WINDOW')
-    for handlers, fn in ((bpy.app.handlers.load_post, _file_loaded), (bpy.app.handlers.render_init, _render_started)):
+    for handlers, fn in HANDLERS:
         if fn in handlers:
             handlers.remove(fn)
     if render_path_default in bpy.app.handlers.load_post:

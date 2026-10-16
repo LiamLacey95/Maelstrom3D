@@ -246,6 +246,11 @@ OVERRIDES = {
         _kmi("ed.redo", 'Z', shift=True, repeat=True),
         # The Texture workspace's 2D view also when it shows a picture (View mode, no Image Paint keys): its view alone / both views.
         _kmi("m3d.tex_layout", 'SPACE', props={"mode": 'TOGGLE'}, ctrl=True),
+        # The Render View's slots (Keep Each Render): next / previous render. Over any other image the keys pass through
+        # (Left / Right change the frame there).
+        *(_kmi("image.cycle_render_slot", k, props={"reverse": back}, repeat=True, **mods)
+          for k, back, mods in (('RIGHT_ARROW', False, {}), ('LEFT_ARROW', True, {}), ('J', False, {}),
+                                ('J', True, {"shift": True}))),
     ],
     "UV Editor": [
         _pie("M3D_MT_uv_marking_menu", 'RIGHTMOUSE'),

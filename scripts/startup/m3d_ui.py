@@ -186,6 +186,7 @@ MENUS = {
         op("Save Scene", "m3d.save_scene", 'FILE_TICK'),
         op("Save Scene As...", "m3d.save_scene", as_new=True),
         op("Increment and Save", "wm.save_mainfile", incremental=True),
+        op("Save Copy for Sharing...", "m3d.save_for_sharing"),
         {**op("Save All Images", "m3d.tex_save_all", 'FILE_TICK'), "sets": {'TEXTURING'}},   # (the painted images, on their own)
         {**op("Revert", "wm.revert_mainfile", 'FILE_REFRESH'), "when": lambda _context: bpy.data.is_saved},   # (a saved file only)
         sub("Recover", "TOPBAR_MT_file_recover", 'RECOVER_LAST'),
@@ -684,6 +685,7 @@ MENUS = {
     "M3D_MT_lighting_shading": ("Lighting/Shading", [
         op("Assign New Material", "m3d.assign_material", 'MATERIAL'),
         enum("Assign Existing Material", "m3d.assign_existing_material", "material", 'MATERIAL'),
+        op("Scene Materials", "m3d.scene_materials_show", 'MATERIAL_DATA'),
         editor("Shader Editor", 'ShaderNodeTree', 'NODE_MATERIAL'),
         sub("Lights", "VIEW3D_MT_light_add", 'LIGHT'),
         op("HDRI Sky", "m3d.hdri_setup", 'WORLD'),
@@ -698,6 +700,15 @@ MENUS = {
         op("Render Sequence", "m3d.render", 'RENDER_ANIMATION', animation=True),
         op("IPR Render (Viewport)", "m3d.render_ipr", 'SHADING_RENDERED'),
         op("Render View", "m3d.render_view", 'IMAGE'),
+        op("Shader Graph", "m3d.render_graph", 'NODE_MATERIAL'),
+        prop("Keep Each Render", "scene.m3d_render.keep_renders"),
+        SEP,
+        op("Render Sequence in Background", "m3d.render_background", 'TIME'),
+        op("Export Render Job...", "m3d.render_job_export", 'EXPORT'),
+        SEP,
+        op("Create Turntable", "m3d.turntable", 'FILE_REFRESH', turn='CAMERA'),
+        op("Create Turntable (Sky Turns)", "m3d.turntable", turn='HDRI'),
+        op("Remove Turntable", "m3d.turntable_remove"),
         SEP,
         op("Camera from View", "m3d.render_camera_from_view", 'CAMERA_DATA', mode='NEW'),
         op("Draft Quality", "m3d.render_preset", preset='DRAFT'),
