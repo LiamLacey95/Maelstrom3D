@@ -9,7 +9,8 @@ Textures dialog and the New Texture Project dialog.
 A texture set is a material: its layer stack (m3d_layers.py) and its channels. The channels of a set are the ones of
 CHANNELS that are not removed (Material.m3d_off): removing one keeps the layers' images but builds, paints and exports nothing
 for it until it is added again. The channels that are not sRGB colors can be stored as 16 bit float (Material.m3d_depth), and
-the set has one size (Material.m3d_size): changing it scales every image of the set. The mesh maps are the images a bake makes,
+the set has one size (Material.m3d_size): changing it scales every image of the set. It can be painted at a working size (Material.m3d_work:
+1/2 or 1/4 of it), its full size pixels kept for Export and Bake (m3d_layers.set_working). The mesh maps are the images a bake makes,
 named <texture set>_<map> (m3d_texture.py), or ones picked from a file. The Texture Set List, Bake Mesh Maps and the export
 engine (templates, file types, padding) are in m3d_texture.py; this module has what the settings tab and the dialogs add.
 """
@@ -149,6 +150,34 @@ class M3D_OT_tex_set_size(Operator):
         return {'FINISHED'}
 
 
+class M3D_OT_tex_working_size(Operator):
+    """Paint the texture set at a share of its size: less memory and faster strokes. Its full size pixels are kept: Export and Bake
+    write the full size, and Full brings them back with what was painted (scaled up where it was painted)"""
+    bl_idname = "m3d.tex_working_size"
+    bl_label = "Working Size"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    work: EnumProperty(name="Working Size", items=L.WORK_ITEMS)
+
+    @classmethod
+    def poll(cls, context):
+        return active_material(context) is not None
+
+    def execute(self, context):
+        mat = active_material(context)
+        count = L.set_working(context, mat, int(self.work))
+        full = L.set_size(context, mat)
+        self.report({'INFO'}, "%s: painting at %d px, %d images" % (mat.name, full // int(self.work), count))
+        return {'FINISHED'}
+
+
+def working_text(context, mat):
+    """The Working Size dropdown's text: the share and the size painted at."""
+    factor = L.work_factor(mat)
+    label = dict((k, label) for k, label, _t in L.WORK_ITEMS)[str(factor)]
+    return "%s (%d px)" % (label, L.set_size(context, mat) // factor)
+
+
 class PROPERTIES_PT_m3d_tx_set_general(_Settings, Panel):
     bl_label = "General"
     bl_order = 10
@@ -167,7 +196,18 @@ class PROPERTIES_PT_m3d_tx_set_general(_Settings, Panel):
         sub.label(text="Size")
         split.operator_menu_enum("m3d.tex_set_size", "size", text="%d px" % L.set_size(context, mat))
         row.label(text="", icon='LOCKED')
+        row = layout.row(align=True)
+        row.use_property_split = False
+        split = row.split(factor=0.4, align=True)
+        sub = split.row()
+        sub.alignment = 'RIGHT'
+        sub.label(text="Working Size")
+        split.operator_menu_enum("m3d.tex_working_size", "work", text=working_text(context, mat))
+        row.label(text="", icon='BLANK1')
         layout.prop(tex, "normal_format")
+        if L.work_factor(mat) > 1:
+            full = L.set_size(context, mat)
+            reason(layout, "Painting at %d px: Export and Bake write %d px" % (full // L.work_factor(mat), full))
         reason(layout, "Square sizes: masks and export need them")
 
 
@@ -634,6 +674,7 @@ classes = (
     M3D_OT_tex_channel_remove,
     M3D_OT_tex_channel_format,
     M3D_OT_tex_set_size,
+    M3D_OT_tex_working_size,
     M3D_MT_tex_channel_add,
     M3D_OT_tex_map_load,
     M3D_OT_tex_map_clear,

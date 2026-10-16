@@ -112,10 +112,10 @@ the 3D view (Solid, seams shown) on the right, and the dock with the UV tools. N
 |---|---|
 | Status Line | Object / Edit Mode, UV Sync, select mode (Vertex / Edge / Face) and Shell select, Live Unwrap, Distortion (and its type), Checker, texture size |
 | Shelf | Cut, Sew, Unfold, Optimize, Layout (large buttons), Auto Unwrap, Custom |
-| Unwrap tab | Cut and Sew (Cut, Sew, Split, Merge, Seams from Shells), Unfold (Angle Based or Conformal, Fill Holes), Optimize (iterations), Layout (margin in pixels of the texture size, rotation: none / 90 degrees / axis aligned / any), Pin (Pin, Unpin, Invert Pins, Select Pinned) |
+| Unwrap tab | Cut and Sew (Cut, Sew, Split, Merge, Seams from Shells, Harden UV Borders), Unfold (Angle Based or Conformal, Fill Holes), Optimize (iterations), Layout (margin in pixels of the texture size, rotation: none / 90 degrees / axis aligned / any), Pin (Pin, Unpin, Invert Pins, Select Pinned) |
 | Arrange tab | Select (Shell, Grow, Shrink, Invert, Overlapping, Pinned), Transform (Flip U/V, Rotate 90, Align U/V, Straighten, Snap Together), Shells (Orient Shells, Match Scale) |
-| Check tab | Checker map, Distortion (angle or area), Shaded UVs, Texel Density: texture size, target, **Read**, **Set**, **Match** |
-| Create tab | Auto Unwrap (seam angle, margin in pixels), projections: Automatic, Planar, Cylindrical, Spherical, Camera-Based, Cube |
+| Check tab | Checker map, Distortion (angle or area), Shaded UVs, Texel Density: texture size, target, **Read**, **Set**, **Match**, **Low Poly Check** (see below) |
+| Create tab | **UV Sets** (the mesh's UV maps: pick the one the UV Editor edits, double-click to rename, + adds a copy of the active one, - removes it, **Lightmap UV**), Auto Unwrap (seam angle, margin in pixels), projections: Automatic, Planar, Cylindrical, Spherical, Camera-Based, Cube |
 | UDIM tab | The UV Editor's image (New / New UDIM Image), tile list with Add, Remove, Fill, tile grid, Pack to Active / Closest Tile, Select Tile |
 
 Typical flow: **Cut** the edges you want as seams, **Unfold**, **Optimize** if shells stretch (it is slow on dense
@@ -128,12 +128,32 @@ texture set, shown as "1024 px (Set)"; 2048 while it has none), and the Layout a
 (nothing selected: the whole mesh), Set scales every selected shell about its centre to the target, Match scales
 them to the shell of the active face.
 
+**UV Sets.** A mesh can have more than one UV map. The UV Editor edits the one picked in UV Sets; painting, baking and export
+always use the **first** one (the list marks it "Painted" and says so): going into Texture Paint makes the first map the active and the
+rendered one again, the bakes name it, and the export padding and the Polygon Fill's UV Island read it. **Lightmap UV** makes a second
+map called Lightmap (again when there is one): the shells of the first, scaled to one texel density and packed without overlaps, for
+baked lighting in an engine.
+
+**Low Poly Check.** What spoils a bake, counted on the mesh (the first UV map): **Overlapping shells** (two shells inside the 0-1 square on the
+same pixel of the texture size), **Mirrored shells**, **Shells outside 0-1** (across a tile border), **Flat shaded faces**, **Hard edges not on
+UV borders**, **Negative scale** and **Faces not triangulated**. Each line has Select (Edit Mode with those faces or edges selected) and its
+fix: **Move Overlaps One Tile** ("Move Overlaps" in a narrow dock; the shells that overlap an earlier one move whole tiles to the right: they read the same pixels and the
+bake writes each pixel once), **Shade Smooth**, **Harden UV Borders**, **Freeze Scale**, **Triangulate** (a Triangulate modifier: the bake and
+the export use the same triangles, the quads stay editable); **Prepare for Baking** does Harden UV Borders and Triangulate. It is in the
+Check tab and above the Bake button of Bake Mesh Maps. A mesh up to 50,000 faces is checked again by itself when it changes (out of Edit
+Mode); otherwise **Check** / **Check Again** runs it. **Harden UV Borders** (also in Mesh Display and beside Seams from Shells) shades the
+mesh smooth with its hard edges exactly on the UV borders, so a baked normal map has no seams inside the shells.
+
 Keys in the UV Editor: Alt+P Layout, Ctrl+Shift+U Unfold, Alt+C Checker, Shift+T Set texel density, Alt+S UV Sync.
 RMB switches UV / Edge / Face / Shell, Shift+RMB has Cut, Sew, Unfold, Layout, Straighten, Orient, Optimize, Automatic.
 F9-F11 change mode, Z undoes, Alt+MMB/RMB pan and zoom. The checker map is taken off before a file is saved (and put
 back afterwards), so scene files never keep it.
 
 A UV Editor opened in another workspace (Windows > UV Editor) keeps the old sidebar UV Toolkit with the same tools.
+**Mesh > Cleanup...** (Modeling) lists the **N-gons**, **Concave faces**, **Non-manifold edges**, **Lamina faces** (two faces on the same
+corners), **Zero-area faces** and **Loose vertices and edges** of the active mesh with their counts, each with Select and a fix (Triangulate,
+Split, Fill Holes, Delete Extra, Dissolve, Delete Loose; one Undo step each), and **Merge by Distance**.
+
 Difference from Maya: Blender stores cuts as seams, and shells split when you Unfold. Maya splits them as soon as you cut.
 
 ## Sculpt (F2)
@@ -372,8 +392,12 @@ and opacity of every channel, the eye, Image Alpha, the channels the layer has a
 painted (**Properties - Mask**) the
 Material is replaced by the two **Grayscale** colors: white shows the layer, black hides it, X swaps them.
 
-For a Fill Layer it is **Properties - Fill**. **Fill** has the UV transform of the layer's textures, **Tiling**, **Rotation**
-and **Offset**, with **Reset** (tiling and rotation turn around the middle of the UV map); the projection is the UV map. **Material**
+For a Fill Layer it is **Properties - Fill**. **Fill** has the **Projection** of the layer's textures, **UV** or **Tri-planar**, and their UV
+transform, **Tiling**, **Rotation** and **Offset**, with **Reset** (tiling and rotation turn around the middle of the UV map). UV: the
+textures follow the UV map. Tri-planar: the texture is projected along the three axes and blended where the surface turns (**Scale**:
+repeats per unit, **Sharpness**: how narrow the blend is), so it has no seams where UV shells meet; it reads the baked **Position** and
+**World Normal** maps, so the 3D view and the exported files are the same picture. Without those maps the panel says so (with **Bake Mesh
+Maps**) and the textures follow the UV map meanwhile; Export bakes them when they are missing. **Material**
 is a row of buttons for the channels the fill has (**Base Color**, **Height**, **Roughness**, **Metallic**, **Emission**, **Normal**; **Color**, **Rough**... when the editor is narrow), and below it, for each one that is on, its
 value and a texture slot: an image picked there (Open loads a file) replaces the value, follows the UV map through the layer's UV
 transform and does not use the image's alpha. A file picked for a channel takes that channel's color space (sRGB for Base Color and
@@ -500,7 +524,11 @@ the toolbar buttons are hidden. In the 2D view the image shown there is painted 
 stroke in the 2D view changes the same channels as one in the 3D view. Not done yet: UDIM tiles (a stroke on a mesh with
 UDIM paints its own image only).
 
-**Texture set settings.** **General** has the **Name** of the set (its material), its **Size** and the **Normal Map Format**. The size is one square size for the whole set: picking another
+**Texture set settings.** **General** has the **Name** of the set (its material), its **Size**, the **Working Size** and the **Normal Map Format**.
+**Working Size** (Full, 1/2, 1/4) paints the set at a share of its size: less memory and faster strokes on big sets. The full size pixels
+are kept (an original beside each image, saved with the file), and Export, Bake and Flatten work at the full size: where you painted at the
+working size that paint is scaled up, everywhere else the original keeps its full detail. **Full** brings the images back to the full size
+the same way; Merge Down and Flatten while working merge at the full size too. The size is one square size for the whole set: picking another
 scales every image of it (the layers' images, the masks' paint images, the images of frozen folders), and a layer, mask or folder made later starts at that size. A smaller size asks first ("Scale Down"):
 the detail the painted images lose is gone for good, Undo does not bring it back. The set's size is the one size of the project: the Bake page's Size, the texture size of the UV tools and the export's
 **Based on the Set** follow it unless you pick another. It is square only, because masks,
@@ -525,6 +553,7 @@ layer settings are no use while baking. Back to Painting puts all three back as 
 
 | Part | What it is |
 |---|---|
+| Low Poly Check | Above the Bake button: the problems the Low Poly Check finds on the mesh, each with Select and its fix (see UV editing) |
 | Size and Bake | On top, so it is always in sight: the **Size** of the maps (**Same as Set** by default, shown as "1024 = Set": the size of the texture set; 1024 for a mesh without one) and one big **Bake** button that says what it bakes: **Bake 2 maps**, or **Bake 2 maps for 3 texture sets** (**Rebake 2 maps** when the maps of the active set are older than its mesh) (the ticked maps of the active set, for every texture set that has its Bake checkbox ticked in the Texture Set List; a mesh with several sets is baked once, a bake group as a group). Its tooltip says where it bakes ("GPU: NVIDIA GeForce RTX 4070 SUPER (OPTIX)" or "CPU: ..." with the reason). While a bake runs the page shows its progress instead (see Baking while you work) |
 | High Poly | One line: the picker of the high poly (for a mesh without a group; the eyedropper takes the other selected mesh) or, for a mesh of a bake group, the group with its number of low and high polys. **Auto-Pair** is on the same line: it pairs meshes called Sword_low and Sword_high into bake groups. Under it, when it applies, "Maps older than the mesh" (see Out-of-date maps) and "Crate_low has Smooth Preview on: the bake uses the plain mesh" (Smooth Preview, key 3, is turned off on the low polys for a bake and for an export, and back on after; a high poly keeps it), then the result of the cage check (see The view of Bake Mesh Maps), with a button that checks again, then the **Cage Distance** (how far in front of the low poly the rays start; a group has its own) and **Auto-fit Cage** |
 | Maps | A checkbox for each map with what it is for beside it (Normal: surface bumps, Ambient Occlusion: dark in crevices, Curvature: edges and cavities, Position: height and sides, Thickness: thin parts, ID: parts by colour, World Normal: which way it faces; the tooltip says more), and a line that says which maps the smart materials and masks of the library use (made from the items, also your own). When a mask of the layers reads a map that the bake leaves out, a line says so ("Rust uses Curvature") with **Tick**; it is a warning when the map is missing ("Rust needs Curvature") |
@@ -566,6 +595,13 @@ the low poly (each corner, and the middle of each face, which lies deeper than i
 ("Cage too tight in 3 places: raise Cage Distance"; "Rays find no high poly here: raise Max Ray Distance", or "...: the high poly does not cover it" where it has a hole or a gap; places are patches of faces that touch), and a button next to it checks again. The check runs a moment after the last change (the Cage Distance, the Max Ray Distance, a custom cage, a mesh that moved or was edited), in small slices
 of a timer, so the window stays usable; a high poly bigger than 8 million faces is not checked. **Auto-fit Cage** (next to the Cage Distance) measures, from every point of the low polys (corners and face middles, at most 50,000 of each mesh), how far the high polys stick out along the normal, and sets the Cage Distance 10% past the farthest (in the units of the mesh, as the bake extrudes; a ray that leaves through a hole of an open high poly is not counted); a Max Ray Distance that is set and too short for that cage is raised. It does that for every group and mesh the Bake button bakes (not for one that bakes from a cage mesh), as one step of Undo, and the check runs again. **Visualization** (Bake Settings) has **Show High Poly**, **High Poly Opacity**, **Show Cage**, **Problem Color** and **Outlines and Stripes** (on at first: a thick black and white outline around the problem areas and diagonal stripes on the see-through high poly, so neither needs telling colours apart; the stripes show in the Material view). Everything goes back when you leave the Bake page
 (the high polys are hidden again), before a file is saved (a file never has the blue material), and after an Undo or when a file is loaded.
+
+**UVs changed after painting.** The layers' images are painted in UV space, so moving UVs would move the paint off its place. When a
+painted mesh goes into Edit Mode (in F3 or anywhere) a hidden copy of its UV map is kept; when the UVs differ afterwards, the Layers tab
+shows **UVs changed since painting** with **Transfer Layers to New UVs** (every layer image, content and masks, every channel, is drawn
+again at the new UVs, with a two pixel margin around the shells; one Undo step brings the layers back as they were) and **Keep** (the paint
+stays where the old UVs were). Fill textures follow the UVs by themselves. Added or removed geometry is fine: Edit Mode carries the copy
+along like any UV map.
 
 **Baked maps in the viewport.** A bake changes what you see: the texture sets of the baked meshes use the **Normal** and **AO** maps in their shader (Texture Set Settings > Mesh Maps and a map picked from a file do the same, and so does a file that has baked maps when it is opened). The baked **Normal** is the base normal of the material: an Image Texture (Non-Color) into a Normal Map node, under the layers. When the layers paint a Normal channel, the layers' normal goes on top of the baked one as detail, a whiteout combine in tangent space made of Vector Math nodes in front of the Normal Map node (decode both to -1..1, add the slopes x and y, multiply the z's, make the vector one long, encode): a flat layer normal leaves the baked normal as it is and a flat baked normal leaves the painted one. A normal bake made as DirectX is read with its green channel turned over first (the bake remembers its format, so changing the project's format later does not change a map that is made). A set without the Normal channel uses no baked normal. The **AO** map darkens the Base Color in the viewport only: a Multiply node between the Base Color layers and the Principled shader (Display Settings > **AO in Viewport**, on by default), and the Unlit viewport type, the exported Base Color and a render (F12, an animation: the multiply is taken out of the shader when a render starts and put back when it ends) never have it. Export writes the same combined normal the nodes show (in OpenGL, or DirectX when the template follows a DirectX project), computed in numpy and compared with a Cycles bake of the nodes; Merge Down and Flatten work on the layers alone, since the baked map is not a layer. Height from a Multires displacement is not combined: the Normal bake already holds that detail, so it would count twice.
 

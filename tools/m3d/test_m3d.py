@@ -10,8 +10,8 @@ def check(cond, msg):
 # Icons used in m3d_mode exist.
 import re, m3d_mode
 icons = set(bpy.types.UILayout.bl_rna.functions['operator'].parameters['icon'].enum_items.keys())
-import m3d_bakegroups, m3d_bakeq, m3d_bakeview, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_retopo, m3d_sculpt, m3d_texset, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv
-src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_bakegroups, m3d_bakeq, m3d_bakeview, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_retopo, m3d_sculpt, m3d_texset, m3d_texture, _maya_ui, _maya_uv))
+import m3d_bakegroups, m3d_bakeq, m3d_bakeview, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_meshcheck, m3d_pair, m3d_retopo, m3d_sculpt, m3d_texset, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv
+src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_bakegroups, m3d_bakeq, m3d_bakeview, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_meshcheck, m3d_pair, m3d_retopo, m3d_sculpt, m3d_texset, m3d_texture, _maya_ui, _maya_uv))
 for ic in set(re.findall(r"icon='([A-Z_0-9]+)'", src)):
     check(ic in icons, "missing icon " + ic)
 
@@ -10081,8 +10081,9 @@ log = pp_draw("layer_props")
 check({"name", "blend", "opacity", "visible"} <= {n for n, _o in pp_props(log)} and "color" not in {n for n, _o in pp_props(log)},
       "...Layer Settings: name, every channel's blend and opacity, visible (the values are in Material)")
 log = pp_draw("fl_fill")
-check([(n, o == fill) for n, o in pp_props(log)] == [("uv_tiling", True), ("uv_rotation", True), ("uv_offset", True)]
-      and [r._args[0] for r in log if r._kind == "operator"] == ["m3d.layer_fill_reset"], "Fill: the UV transform of the layer (Tiling, Rotation, Offset) and Reset")
+check([(n, o == fill) for n, o in pp_props(log)] == [("projection", True), ("uv_tiling", True), ("uv_rotation", True), ("uv_offset", True)]
+      and [r._args[0] for r in log if r._kind == "operator"] == ["m3d.layer_fill_reset"],
+      "Fill: the projection, the UV transform of the layer (Tiling, Rotation, Offset) and Reset")
 log = pp_draw("fl_material")
 uses = [(r._args[1], r._kw.get("text")) for r in log if r._kind == "prop" and r._args[1] == "use"]
 check(uses == [("use", t) for t in T.button_texts(bpy.context, T.FILL_BUTTONS)] and T.FILL_BUTTONS[-1][1] == "Normal"
@@ -11553,7 +11554,8 @@ p4_a.m3d_bake.use_ao = True
 tex_ws.m3d_page_right = "tex_bake"
 names_ = tex_shown("tex_bake")
 BAKE_PANELS = (T.PROPERTIES_PT_m3d_tx_bake_settings, T.PROPERTIES_PT_m3d_tx_bake_high, T.PROPERTIES_PT_m3d_tx_bake_maps)
-check(set(names_) == {c.__name__ for c in BAKE_PANELS}, "the Bake page: Size and Bake, High Poly, Maps: %s" % names_)
+check(set(names_) == {c.__name__ for c in BAKE_PANELS} | {"PROPERTIES_PT_m3d_tx_bake_check"},
+      "the Bake page: Low Poly Check, Size and Bake, High Poly, Maps: %s" % names_)
 check([c.bl_order for c in BAKE_PANELS] == [-10, 0, 10] and [c.bl_label for c in BAKE_PANELS[1:]] == ["High Poly", "Maps"]
       and 'HIDE_HEADER' in T.PROPERTIES_PT_m3d_tx_bake_settings.bl_options and not any('DEFAULT_CLOSED' in getattr(c, "bl_options", set()) for c in BAKE_PANELS),
       "...in that order, the Bake button on top without a header")
@@ -13979,7 +13981,7 @@ for pb_width, pb_cols in ((240, 1), (600, 2)):
     S.grid(Rec(log), pb_ctx, U.UV_SHELVES)
     check(next(r for r in log if r._kind == "grid_flow")._kw.get("columns") == pb_cols,
           "Orient Shells / Match Texel Scale in a %d px dock: %d column(s)" % (pb_width, pb_cols))
-check(U.UVTK_CUT_SEW[-1][0] == "Seams from Shells", "Seams from Shells (was Auto Seams (from shells), cut off)")
+check(U.UVTK_CUT_SEW[4][0] == "Seams from Shells", "Seams from Shells (was Auto Seams (from shells), cut off)")
 clean_scene()
 
 # --- Layouts and views: narrow 3D view headers, one transport row in Animation, the empty Render View, bone collections.
@@ -15970,6 +15972,308 @@ m3d_user.data().pop("recent_projects", None)
 m3d_user.save()
 shutil.rmtree(p7_tmp, ignore_errors=True)
 clean_scene()
+
+# --- UX pass 2, P10 texturing / UV advanced: UVs changed after painting (Transfer / Keep), the Low Poly Check, tri-planar fills, UV
+# sets (the first UV map rule, Lightmap UV), Mesh > Cleanup, the working size of a texture set
+import m3d_meshcheck as MC
+clean_scene()
+p10_tx = p4_tx = bpy.context.scene.m3d_tex   # (files were opened since p4_tx was taken)
+p10_saved = (p10_tx.export_preset, p10_tx.export_folder, p10_tx.export_padding, p10_tx.export_size, p10_tx.resolution)
+
+
+def p10_plate(name, size='64'):
+    """One quad whose UVs fill the left half, a texture set of `size` px."""
+    ob = bg_plate(name, uv=(0.0, 0.0, 0.5, 1.0))
+    mat = bpy.data.materials.new(name + "Mat")
+    mat.use_nodes = True
+    ob.data.materials.append(mat)
+    p4_select(ob)
+    bpy.ops.m3d.tex_project('EXEC_DEFAULT', resolution=size, template='MINIMAL', unwrap=False, bake_after=False)
+    return ob, mat
+
+
+def p10_uvs(ob, uv):
+    ob.data.uv_layers[0].uv.foreach_set("vector", np.ascontiguousarray(uv, np.float32).ravel())
+
+
+# UVs changed after painting: a red square moves with its island
+p10_ob, p10_mat = p10_plate("P10Xfer")
+p10_base = p4_stack_image(p10_mat, 'BASE_COLOR')
+p10_px = read_image(p10_base).copy()
+p10_px[..., :3] = 0.2
+p10_px[8:16, 8:16, :3] = (1.0, 0.0, 0.0)
+LY.write_pixels(p10_base, p10_px)
+p10_layer = p10_mat.m3d_layers[0]
+bpy.ops.m3d.layer_mask_add(fill='WHITE')   # (a mask with a Paint effect moves too)
+p10_mask = LY.paint_effect(p10_layer).image
+p10_mpx = np.ones((64, 64, 4), np.float32)
+p10_mpx[8:16, 8:16, :3] = 0.0
+LY.write_pixels(p10_mask, p10_mpx)
+bpy.ops.object.mode_set(mode='EDIT')
+T.mode_changed(p10_ob, 'OBJECT', 'EDIT')   # (what the timer does after the depsgraph handler saw the mode change)
+check(p10_ob.data.uv_layers.get(T.PAINTED_UV) is not None, "Edit Mode on a painted mesh keeps a copy of its UV map")
+check(not U.M3D_UL_uv_sets.filter_items(NS(bitflag_filter_item=1), None, p10_ob.data, "uv_layers")[0][-1],
+      "...hidden from the UV Sets list")
+bpy.ops.object.mode_set(mode='OBJECT')
+T.mode_changed(p10_ob, 'EDIT', 'OBJECT')
+check(p10_ob.data.uv_layers.get(T.PAINTED_UV) is None and not T.uv_moved(p10_ob), "...and drops it when the UVs did not change")
+bpy.ops.object.mode_set(mode='EDIT')
+T.mode_changed(p10_ob, 'OBJECT', 'EDIT')
+bpy.ops.object.mode_set(mode='OBJECT')
+p10_uv = MC.first_uv(p10_ob.data)
+p10_uv[:, 0] += 0.5   # (the island goes to the right half)
+p10_uvs(p10_ob, p10_uv)
+T.mode_changed(p10_ob, 'EDIT', 'OBJECT')
+check(T.uv_moved(p10_ob), "UVs moved since painting: the card shows")
+p10_log = []
+T.draw_uv_moved(Rec(p10_log), p10_ob)
+check(any(r._kind == "operator" and r._args[0] == "m3d.tex_uv_transfer" for r in p10_log)
+      and any(r._kind == "operator" and r._args[0] == "m3d.tex_uv_keep" for r in p10_log)
+      and any("UVs changed since painting" in str(r._kw.get("text")) for r in p10_log), "...UVs changed since painting: Transfer / Keep")
+bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+T.mode_changed(p10_ob, 'OBJECT', 'TEXTURE_PAINT')
+bpy.ops.ed.undo_push(message="P10 before transfer")
+check(bpy.ops.m3d.tex_uv_transfer() == {'FINISHED'} and not T.uv_moved(p10_ob), "Transfer Layers to New UVs")
+p10_new = read_image(p4_stack_image(p10_mat, 'BASE_COLOR'))
+check(np.abs(p10_new[12, 44, :3] - (1.0, 0.0, 0.0)).max() < 0.02 and np.abs(p10_new[40, 44, :3] - 0.2).max() < 0.02,
+      "...the red square is at the island's new place (%s)" % p10_new[12, 44, :3])
+p10_newm = read_image(LY.paint_effect(p10_mat.m3d_layers[0]).image)
+check(p10_newm[12, 44, 0] < 0.02 and p10_newm[40, 44, 0] > 0.98, "...and so is the mask's paint")
+check(p4_stack_image(p10_mat, 'BASE_COLOR') != p10_base and p10_base.users == 0 and "before the UV change" in p10_base.name,
+      "...in new images; the old ones are kept for Undo (%s)" % p10_base.name)
+check(p4_stack_image(p10_mat, 'BASE_COLOR') in {n.image for n in p10_mat.node_tree.nodes if n.type == 'TEX_IMAGE'},
+      "...the nodes read the new images")
+bpy.ops.ed.undo_push(message="P10 after transfer")
+bpy.ops.ed.undo()
+p10_mat, p10_ob = bpy.data.materials["P10XferMat"], bpy.data.objects["P10Xfer"]
+p10_tx = p4_tx = bpy.context.scene.m3d_tex   # (Undo made the scene anew)
+check(np.abs(read_image(p4_stack_image(p10_mat, 'BASE_COLOR'))[12, 12, :3] - (1.0, 0.0, 0.0)).max() < 0.02 and T.uv_moved(p10_ob),
+      "...one Undo step: the layers as they were, and the card again")
+check(bpy.ops.m3d.tex_uv_keep() == {'FINISHED'} and not T.uv_moved(p10_ob)
+      and np.abs(read_image(p4_stack_image(p10_mat, 'BASE_COLOR'))[12, 12, :3] - (1.0, 0.0, 0.0)).max() < 0.02,
+      "Keep: the paint stays, the card goes")
+
+# The first UV map: painting, baking and export use it whichever map is active
+p10_second = p10_ob.data.uv_layers.new(name="Second")
+p10_second.uv.foreach_set("vector", np.full(len(p10_ob.data.loops) * 2, 0.95, np.float32))
+p10_ob.data.uv_layers.active = p10_second
+p10_cov = T.uv_coverage(p10_ob, p10_mat, 64)
+check(p10_cov[:, 40:].mean() > 0.9 and p10_cov[:, :24].mean() < 0.01, "export padding reads the first UV map, not the active one")
+check(sorted(T.uv_island(p10_ob.data, 0)) == [0], "the Fill tool's island too")
+T.mode_changed(p10_ob, 'OBJECT', 'TEXTURE_PAINT')
+check(p10_ob.data.uv_layers.active_index == 0 and p10_ob.data.uv_layers[0].active_render, "Texture Paint makes the first map active and rendered")
+p10_req = {}
+p10_steps = T.bake_maps_steps(bpy.context, p10_ob, None, p10_ob.m3d_bake, [('AO', "AO", "use_ao")])
+p10_req = next(p10_steps)
+p10_steps.close()
+check(p10_req.get("uv_layer") == p10_ob.data.uv_layers[0].name, "the bake names the first UV map: %s" % p10_req.get("uv_layer"))
+p10_log = []
+p10_ob.data.uv_layers.active = p10_second
+bpy.ops.object.mode_set(mode='EDIT')
+U.PROPERTIES_PT_m3d_uv_sets.draw(NS(layout=Rec(p10_log)), bpy.context)
+check(any(r._kind == "template_list" and r._args[0] == "M3D_UL_uv_sets" for r in p10_log)
+      and any("use the first UV map (UVMap)" in str(r._kw.get("text", "")) for r in p10_log), "UV Sets: the list, and which map is painted")
+check(bpy.ops.m3d.uv_set_add() == {'FINISHED'} and len(p10_ob.data.uv_layers) == 3, "UV Sets: Add")
+check(bpy.ops.m3d.uv_set_remove() == {'FINISHED'} and len(p10_ob.data.uv_layers) == 2, "...Remove")
+p10_ob.data.uv_layers.remove(p10_ob.data.uv_layers["Second"])
+check(bpy.ops.m3d.uv_lightmap() == {'FINISHED'} and p10_ob.mode == 'EDIT', "Lightmap UV")
+bpy.ops.object.mode_set(mode='OBJECT')
+p10_lm = p10_ob.data.uv_layers.get(U.LIGHTMAP)
+check(p10_lm is not None and p10_ob.data.uv_layers.find(U.LIGHTMAP) == 1 and p10_ob.data.uv_layers.active_index == 0,
+      "...a second UV map, the first stays active")
+# Low Poly Check: each problem on a crafted cube, its count, its fix
+clean_scene()
+bpy.ops.mesh.primitive_cube_add()
+p10_cube = bpy.context.active_object
+p10_cube.data.materials.append(bpy.data.materials.new("P10Check"))
+p4_select(p10_cube)
+p10_me = p10_cube.data
+p10_r = MC.analyse(p10_cube, 256)
+p10_c = MC.counts(p10_r)
+check(p10_r.shells == 1 and p10_c['OVERLAP'] == p10_c['MIRRORED'] == p10_c['OUTSIDE'] == 0 and p10_c['UNTRI'] == 6,
+      "a cube: one shell, no UV problem, 6 faces not triangulated (%s)" % p10_c)
+p10_uv = MC.first_uv(p10_me)
+for f_ in p10_me.polygons:
+    p10_uv[list(f_.loop_indices)] = ((0.1, 0.1), (0.4, 0.1), (0.4, 0.4), (0.1, 0.4))   # (every face on the same square)
+p10_uvs(p10_cube, p10_uv)
+p10_r = MC.analyse(p10_cube, 256)
+check(p10_r.shells == 6 and MC.counts(p10_r)['OVERLAP'] == 6, "6 faces on one square: 6 overlapping shells (%s)" % MC.counts(p10_r))
+p10_uv = MC.first_uv(p10_me)
+p10_uv[list(p10_me.polygons[0].loop_indices), 0] = 0.4 - p10_uv[list(p10_me.polygons[0].loop_indices), 0]   # (mirrored in U)
+p10_uv[list(p10_me.polygons[1].loop_indices), 0] += 0.75   # (across the right border)
+p10_uvs(p10_cube, p10_uv)
+p10_c = MC.counts(MC.analyse(p10_cube, 256))
+check(p10_c['MIRRORED'] == 1 and p10_c['OUTSIDE'] == 1, "a mirrored shell, a shell across the 0-1 border (%s)" % p10_c)
+p10_cube.scale.x = -1.0
+bpy.context.view_layer.update()
+p10_c = MC.counts(MC.analyse(p10_cube, 256))
+check(p10_c['FLAT'] == 6 and p10_c['SCALE'] == 1, "flat shading, negative scale (%s)" % p10_c)
+p10_log = []
+MC.draw_lowpoly(Rec(p10_log), bpy.context, p10_cube)
+p10_fixes = {r._kw.get("text") for r in p10_log if r._kind == "operator" and r._args[0] == "m3d.mesh_check_fix"}
+check({"Move Overlaps", "Shade Smooth", "Freeze Scale", "Triangulate", "Prepare for Baking"} <= p10_fixes,
+      "the panel: one fix per line (narrow: the short names) (%s)" % sorted(p10_fixes))
+check(any(r._kind == "operator" and r._args[0] == "m3d.mesh_check_select" for r in p10_log), "...and Select")
+check(bpy.ops.m3d.mesh_check_fix(fix='MOVE') == {'FINISHED'} and MC.counts(MC.analyse(p10_cube, 256))['OVERLAP'] == 0,
+      "Move Overlaps One Tile: no overlaps left")
+check(MC.first_uv(p10_me)[:, 0].max() > 1.0, "...the moved shells are whole tiles away")
+check(bpy.ops.m3d.mesh_check_fix(fix='FREEZE') == {'FINISHED'} and p10_cube.scale.x == 1.0
+      and MC.counts(MC.analyse(p10_cube))['SCALE'] == 0, "Freeze Scale")
+check(bpy.ops.m3d.mesh_check_fix(fix='SMOOTH') == {'FINISHED'} and MC.counts(MC.analyse(p10_cube))['FLAT'] == 0, "Shade Smooth")
+check(bpy.ops.m3d.mesh_check_fix(fix='TRIANGULATE') == {'FINISHED'} and MC.triangulate_mod(p10_cube) is not None
+      and MC.counts(MC.analyse(p10_cube))['UNTRI'] == 0 and len(p10_me.polygons) == 6, "Triangulate: a modifier, the quads stay")
+clean_scene()
+bpy.ops.mesh.primitive_cube_add()
+p10_cube = bpy.context.active_object
+p4_select(p10_cube)
+p10_me = p10_cube.data
+p10_sharp = p10_me.attributes.new("sharp_edge", 'BOOLEAN', 'EDGE')
+p10_sharp.data.foreach_set("value", np.ones(len(p10_me.edges), bool))
+p10_r = MC.analyse(p10_cube)
+check(MC.counts(p10_r)['HARD'] == 12 - int(p10_r.border.sum()) > 0, "hard edges inside a shell: %d" % MC.counts(p10_r)['HARD'])
+check(bpy.ops.m3d.uv_harden_borders() == {'FINISHED'}, "Harden UV Borders")
+p10_r = MC.analyse(p10_cube)
+check(MC.counts(p10_r)['HARD'] == 0 and MC.counts(p10_r)['FLAT'] == 0
+      and (MC._flag(p10_me, "sharp_edge", len(p10_me.edges)) == p10_r.border).all(), "...smooth, hard edges exactly on the UV borders")
+bpy.ops.object.mode_set(mode='EDIT')
+check(bpy.ops.m3d.lowpoly_check() == {'FINISHED'} and p10_cube.mode == 'EDIT', "the check in Edit Mode (the edit mesh is read)")
+check(bpy.ops.m3d.mesh_check_select(problem='UNTRI') == {'FINISHED'} and p10_cube.mode == 'EDIT', "Select: in Edit Mode")
+bpy.ops.object.mode_set(mode='OBJECT')
+check(sum(p_.select for p_ in p10_me.polygons) == 6, "...the faces of the problem selected")
+p10_log = []
+U.PROPERTIES_PT_m3d_uv_lowpoly.draw(NS(layout=Rec(p10_log)), bpy.context)
+check_calls("UV Check Low Poly Check", p10_log)
+check(any("Check Again" == r._kw.get("text") for r in p10_log), "...the UV Check tab has it")
+p10_log = []
+T.PROPERTIES_PT_m3d_tx_bake_check.draw(NS(layout=Rec(p10_log)), bpy.context)
+check_calls("Bake page Low Poly Check", p10_log)
+check(T.PROPERTIES_PT_m3d_tx_bake_check.bl_order < T.PROPERTIES_PT_m3d_tx_bake_settings.bl_order, "...and the Bake page above the Bake button")
+check(any(e.get("idname") == "m3d.uv_harden_borders" for e in m3d_ui.MENUS["M3D_MT_mesh_display"][1])
+      and any(t[1] == "m3d.uv_harden_borders" for t in U.UVTK_CUT_SEW), "Harden UV Borders in Mesh Display and beside Seams from Shells")
+# Mesh > Cleanup: n-gons, concave, non-manifold, lamina, zero area, loose
+clean_scene()
+p10_me = bpy.data.meshes.new("P10Dirty")
+p10_me.from_pydata([(0, 0, 0), (1, 0, 0), (2, 0, 0), (2, 1, 0), (1, 0.3, 0), (0, 1, 0),   # a concave six-sided face
+                    (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1),                        # a quad, twice (lamina)
+                    (5, 0, 0), (6, 0, 0), (7, 0, 0),                                   # a face of zero area
+                    (9, 9, 9), (10, 0, 0), (11, 0, 0)],                                # a loose vertex, a loose edge
+                   [(14, 15)], [(0, 1, 2, 3, 4, 5), (6, 7, 8, 9), (9, 8, 7, 6), (10, 11, 12)])
+p10_dirty = bpy.data.objects.new("P10Dirty", p10_me)
+bpy.context.collection.objects.link(p10_dirty)
+p4_select(p10_dirty)
+p10_n = MC.cleanup_counts(MC.cleanup_analyse(p10_dirty))
+check(p10_n['NGON'] == 1 and p10_n['CONCAVE'] == 1 and p10_n['LAMINA'] == 2 and p10_n['ZERO'] == 1 and p10_n['LOOSE'] == 2
+      and p10_n['NONMANIFOLD'] > 0, "Cleanup counts each problem: %s" % p10_n)
+check(any(e.get("idname") == "m3d.mesh_cleanup" for e in m3d_ui.MENUS["M3D_MT_mesh"][1]), "Mesh > Cleanup...")
+check(bpy.ops.m3d.mesh_cleanup() == {'FINISHED'} and MC._cleanup[0][1] == p10_n, "...the dialog's counts")
+p10_log = []
+MC.M3D_OT_mesh_cleanup.draw(NS(layout=Rec(p10_log)), bpy.context)
+check_calls("Cleanup dialog", p10_log)
+check(len([r for r in p10_log if r._kind == "operator" and r._args[0] == "m3d.mesh_check_fix"]) == 6, "...a fix on each line")
+check(bpy.ops.m3d.mesh_check_select(problem='LAMINA') == {'FINISHED'} and p10_dirty.mode == 'EDIT', "...Select")
+bpy.ops.object.mode_set(mode='OBJECT')
+check(sum(p_.select for p_ in p10_me.polygons) == 2, "...the two faces of the pile")
+for p10_pid in ('NGON', 'LAMINA', 'ZERO', 'LOOSE'):
+    check(bpy.ops.m3d.mesh_check_fix(fix="C_" + p10_pid) == {'FINISHED'} and p10_dirty.mode == 'OBJECT'
+          and MC.cleanup_counts(MC.cleanup_analyse(p10_dirty))[p10_pid] == 0, "Cleanup fixes %s" % p10_pid)
+check(len(p10_me.polygons) >= 5, "...the faces are kept (%d)" % len(p10_me.polygons))
+
+# Tri-planar fill: the shader and numpy read the same baked Position / World Normal maps
+clean_scene()
+bpy.ops.mesh.primitive_cube_add()
+p10_cube = bpy.context.active_object
+p10_cube.name = "P10Tri"
+bpy.ops.object.mode_set(mode='EDIT')
+bpy.ops.mesh.select_all(action='SELECT')
+bpy.ops.uv.smart_project(island_margin=0.05)
+bpy.ops.object.mode_set(mode='OBJECT')
+p10_tm = bpy.data.materials.new("P10TriMat")
+p10_tm.use_nodes = True
+p10_cube.data.materials.append(p10_tm)
+p4_select(p10_cube)
+bpy.ops.m3d.tex_project('EXEC_DEFAULT', resolution='64', template='MINIMAL', unwrap=False, bake_after=False)
+bpy.ops.m3d.layer_add(kind='FILL')
+p10_fill = LY.active_layer(p10_tm)
+p10_tex = bpy.data.images.new("P10TriTex", 16, 16, alpha=False)
+p10_tpx = np.ones((16, 16, 4), np.float32)
+p10_tpx[..., :3] = np.random.default_rng(10).random((16, 16, 3))
+LY.write_pixels(p10_tex, p10_tpx)
+LY.entry_of(p10_fill, 'BASE_COLOR').use = True
+LY.entry_of(p10_fill, 'BASE_COLOR').texture = p10_tex
+p10_fill.projection = 'TRIPLANAR'
+check(LY.triplanar(p10_fill) is None and p10_tm.node_tree.nodes.get(LY.part('BASE_COLOR', p10_fill.uid, "tpos")) is None,
+      "Tri-planar without the baked maps: by the UV map meanwhile")
+p10_log = []
+T.draw_fill(Rec(p10_log), p10_fill)
+check(any("Needs Position and World Normal" in str(r._kw.get("text")) for r in p10_log)
+      and {"tri_scale", "tri_sharpness"} <= {r._args[1] for r in p10_log if r._kind == "prop"}, "...the Fill panel says so; Scale, Sharpness")
+p10_s = p10_cube.m3d_bake
+p10_s.resolution, p10_s.samples, p10_s.margin = '64', 1, 2
+for key_, _l, flag_ in T.BAKE_MAPS:
+    setattr(p10_s, flag_, key_ in {'POSITION', 'WORLDNORMAL'})
+T.bake_mesh(bpy.context, p10_cube)
+check(LY.triplanar(p10_fill) is not None, "...baked: the texture set has the maps")
+p10_fill.tri_scale, p10_fill.tri_sharpness, p10_fill.uv_rotation = 0.7, 3.0, 0.3
+check(p10_tm.node_tree.nodes.get(LY.part('BASE_COLOR', p10_fill.uid, "tpos")) is not None, "...the tri-planar nodes")
+for n_ in p10_tm.node_tree.nodes:
+    if n_.type == 'TEX_IMAGE':
+        n_.interpolation = 'Closest'   # (texel for texel: the bake's pixel jitter cannot matter)
+p10_numpy = LY.composite(p10_tm, 'BASE_COLOR', 64)
+p10_N, N = N, 64   # (bake_out bakes N x N)
+p10_nodes = bake_out(p10_cube, p10_tm, lambda t: LY.principled_of(t).inputs["Base Color"].links[0].from_node.outputs[2])
+N = p10_N
+p10_cov = T.uv_coverage(p10_cube, p10_tm, 64)
+p10_inner = p10_cov & np.roll(p10_cov, 1, 0) & np.roll(p10_cov, -1, 0) & np.roll(p10_cov, 1, 1) & np.roll(p10_cov, -1, 1)
+check(np.abs(p10_nodes - p10_numpy)[p10_inner].max() < 1e-3,
+      "tri-planar: the shader and numpy (Export) agree (%.5f)" % np.abs(p10_nodes - p10_numpy)[p10_inner].max())
+p10_fill.projection = 'UV'
+check(np.abs(LY.composite(p10_tm, 'BASE_COLOR', 64) - p10_numpy)[p10_inner].mean() > 0.02, "...(UV projection is another picture)")
+p10_fill.projection = 'TRIPLANAR'
+p10_copy = LY.copy_layer(p10_tm, p10_fill.uid)
+check(p10_copy.projection == 'TRIPLANAR' and abs(p10_copy.tri_scale - 0.7) < 1e-6, "a copy of the layer keeps its projection")
+
+# Working size: paint at 1/2, export and bake at the full size, the originals kept
+clean_scene()
+p10_ob, p10_mat = p10_plate("P10Work")
+p10_img = p4_stack_image(p10_mat, 'BASE_COLOR')
+p10_px = np.ones((64, 64, 4), np.float32)
+p10_px[..., :3] = np.random.default_rng(11).random((64, 64, 3))
+LY.write_pixels(p10_img, p10_px)
+p10_orig = read_image(p10_img).copy()
+check(bpy.ops.m3d.tex_working_size(work='2') == {'FINISHED'} and tuple(p10_img.size) == (32, 32), "Working Size 1/2: the images at 32 px")
+check(LY.stack_size(p10_mat) == 64 and LY.set_size(bpy.context, p10_mat) == 64 and LY.new_size(bpy.context, p10_mat) == 32
+      and T.map_size(p10_ob.m3d_bake) == 64, "...the set is still 64 px (bakes too); new images at 32")
+check(np.abs(MK.pixels_of(p10_img, 64) - p10_orig).max() < 1e-6, "...read at the full size: the original, exactly")
+p10_w = read_image(p10_img).copy()
+p10_w[4:8, 4:8, :3] = (0.0, 1.0, 0.0)   # (painted at the working size)
+LY.write_pixels(p10_img, p10_w)
+p10_full = MK.pixels_of(p10_img, 64)
+check(np.abs(p10_full[12, 12, :3] - (0.0, 1.0, 0.0)).max() < 0.01 and np.abs(p10_full[32:, 32:] - p10_orig[32:, 32:]).max() < 1e-6,
+      "...what was painted comes from the working image, the rest keeps the full detail")
+p10_log = []
+TS.PROPERTIES_PT_m3d_tx_set_general.draw(NS(layout=Rec(p10_log)), bpy.context)
+check(any(r._kind == "operator_menu_enum" and r._args[0] == "m3d.tex_working_size" and "1/2 (32 px)" in r._kw.get("text", "")
+          for r in p10_log) and any("write 64 px" in str(r._kw.get("text")) for r in p10_log), "Texture Set Settings shows the working size")
+for mat_ in bpy.data.materials:
+    mat_.m3d_set_export = mat_ == p10_mat
+res, out, files = p4_export('BLENDER', export_padding='NONE', export_size='SAME')
+p10_raw, _img = p4_load(out, "P10Work_BaseColor.png")
+check(res == {'FINISHED'} and p10_raw.shape[:2] == (64, 64) and np.abs(p10_raw[32:, 32:, :3] - p10_orig[32:, 32:, :3]).max() < 0.01,
+      "Export writes the full size, with the full detail (%s)" % (p10_raw.shape[:2],))
+check(bpy.ops.m3d.tex_set_size('INVOKE_DEFAULT', size='64') == {'FINISHED'}, "(the set size at its own size: nothing to ask)")
+p10_full_name = p10_img.get(MK.FULL).name
+check(bpy.ops.m3d.tex_working_size(work='1') == {'FINISHED'} and tuple(p10_img.size) == (64, 64) and p10_img.get(MK.FULL) is None
+      and p10_full_name not in bpy.data.images, "Full again: the images at 64, the originals gone")
+p10_back = read_image(p10_img)
+check(np.abs(p10_back[12, 12, :3] - (0.0, 1.0, 0.0)).max() < 0.02 and np.abs(p10_back[40:, 40:] - p10_orig[40:, 40:]).max() < 1e-6,
+      "...with what was painted, and the full detail elsewhere")
+check(bpy.ops.m3d.tex_working_size(work='4') == {'FINISHED'} and tuple(p10_img.size) == (16, 16), "Working Size 1/4: 16 px")
+p10_full_img = p10_img.get(MK.FULL)
+check(bpy.ops.m3d.tex_set_size('EXEC_DEFAULT', size='128') == {'FINISHED'} and tuple(p10_img.size) == (32, 32)
+      and tuple(p10_full_img.size) == (128, 128) and LY.stack_size(p10_mat) == 128, "a bigger set size while working: 32 painted, 128 kept")
+check(bpy.ops.m3d.tex_working_size(work='1') == {'FINISHED'} and tuple(p10_img.size) == (128, 128), "...Full: 128")
+clean_scene()
+(p10_tx.export_preset, p10_tx.export_folder, p10_tx.export_padding, p10_tx.export_size, p10_tx.resolution) = p10_saved
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture
