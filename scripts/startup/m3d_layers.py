@@ -878,8 +878,8 @@ def settings_of(node):
     """(properties, input values, {input: socket feeding it}) of a node, for the kinds in _PROPS."""
     return ({k: getattr(node, k) for k in _PROPS.get(node.type, ())},
             {k: node.inputs[k].default_value for k in _VALUES.get(node.type, ())},
-            {k: l.from_socket for k in _LINKED.get(node.type, ()) for l in node.inputs[k].links
-             if TAG not in l.from_node.keys()})
+            {k: (l.from_node.name, l.from_socket.identifier) for k in _LINKED.get(node.type, ()) for l in node.inputs[k].links
+             if TAG not in l.from_node.keys()})   # (names, not sockets: a socket outlives nothing, it is looked up again)
 
 
 def restore_settings(node):
@@ -888,8 +888,11 @@ def restore_settings(node):
         setattr(node, key, value)
     for key, value in values.items():
         node.inputs[key].default_value = value
-    for key, socket in links.items():
-        node.id_data.links.new(socket, node.inputs[key])
+    for key, (from_name, identifier) in links.items():
+        source = node.id_data.nodes.get(from_name)
+        socket = next((o for o in source.outputs if o.identifier == identifier), None) if source is not None else None
+        if socket is not None:
+            node.id_data.links.new(socket, node.inputs[key])
 
 
 def part(ch_id, uid, key):
@@ -1405,9 +1408,11 @@ def rebuild_all(mat):
     live = live_layers(mat)
     for layer in live:
         MK.ensure_caches(layer)
-    changed = [rebuild_masks(mat)] + [rebuild(mat, ch.id) for ch in CHANNELS]
-    changed.append(sync_ao(mat))
-    _carry.clear()
+    try:
+        changed = [rebuild_masks(mat)] + [rebuild(mat, ch.id) for ch in CHANNELS]
+        changed.append(sync_ao(mat))
+    finally:
+        _carry.clear()   # (also after an error: nothing carried over goes on to another material or file)
     if not mat.m3d_layers:
         remove_scratch(mat)
     if any(changed):
@@ -3192,9 +3197,10 @@ class M3D_OT_mask_effect_duplicate(_ActiveLayerOp, Operator):
         mat = self.material(context)
         layer = active_layer(mat)
         i = layer.mask_index
-        src = layer.mask_stack[i]
         with muted():
             e = layer.mask_stack.add()
+            # (after the add: growing a collection can move its items, so one taken before it would point at freed memory)
+            src = layer.mask_stack[i]
             MK.copy_params(src, e)
             e.uid, e.name = MK.new_uid(), MK.unique_name(layer, src.name + " Copy")
             e.image2 = src.image2
@@ -4260,6 +4266,12 @@ classes = (
 
 
 @bpy.app.handlers.persistent
+def _forget_carry(*_args):
+    """load_pre / undo_pre / redo_pre: settings waiting for a chain belong to the data that is about to go."""
+    _carry.clear()
+
+
+@bpy.app.handlers.persistent
 def load_post(*_args):
     """Files from before mask stacks and per-channel looks: upgrade their layers right away, so the panels and the nodes agree."""
     for mat in bpy.data.materials:
@@ -4365,6 +4377,8 @@ def register():
                                  description="Show the Base Color flat, without lighting (the viewport type Unlit)")
     bpy.types.UI_MT_button_context_menu.prepend(draw_list_menu)
     bpy.app.handlers.load_post.append(load_post)
+    for handlers in (bpy.app.handlers.load_pre, bpy.app.handlers.undo_pre, bpy.app.handlers.redo_pre):
+        handlers.append(_forget_carry)
     bpy.app.handlers.undo_post.append(undo_post)
     bpy.app.handlers.redo_post.append(undo_post)
     bpy.app.handlers.depsgraph_update_post.append(depsgraph_post)
@@ -4381,6 +4395,9 @@ def unregister():
     bpy.app.handlers.redo_post.remove(undo_post)
     bpy.app.handlers.undo_post.remove(undo_post)
     bpy.app.handlers.load_post.remove(load_post)
+    for handlers in (bpy.app.handlers.load_pre, bpy.app.handlers.undo_pre, bpy.app.handlers.redo_pre):
+        if _forget_carry in handlers:
+            handlers.remove(_forget_carry)
     bpy.types.UI_MT_button_context_menu.remove(draw_list_menu)
     del bpy.types.Material.m3d_unlit, bpy.types.Material.m3d_baked_ao, bpy.types.Material.m3d_baked_normal
     del bpy.types.Material.m3d_baked_position, bpy.types.Material.m3d_baked_worldnormal, bpy.types.Material.m3d_work

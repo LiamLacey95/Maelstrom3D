@@ -790,7 +790,8 @@ class M3D_OT_workspace_reset(Operator):
             self.report({'WARNING'}, "\"%s\" has no factory layout" % ws.name)
             return {'CANCELLED'}
         # The window switches to the appended workspace on the next event; then the old one can go.
-        bpy.app.timers.register(lambda: _finish_reset(ws.name, fresh.name, name), first_interval=0.3)
+        old_name, fresh_name = ws.name, fresh.name   # (names now: the timer must not read the workspaces later)
+        bpy.app.timers.register(lambda: _finish_reset(old_name, fresh_name, name), first_interval=0.3)
         return {'FINISHED'}
 
 

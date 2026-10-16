@@ -894,6 +894,7 @@ def add_probe_keys():
         km.keymap_items.new("m3d.edit_probe", key, value, **mods)
 
 
+@bpy.app.handlers.persistent
 def _load_post(*_args):
     """Modal operators don't survive loading a file: edit mode is off in the new one."""
     add_probe_keys()

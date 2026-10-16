@@ -1417,15 +1417,21 @@ def plain_lows(obs):
     """Smooth Preview is off meanwhile on the meshes `obs` that are not high polys, and the Multires levels of a low poly
     (Project Detail): a bake reads the low poly, an export writes it, as it is and not smoothed (a high poly keeps it: Create
     High Poly gives it one on purpose). It comes back after."""
-    saved = [(mod, mod.show_viewport, mod.show_render) for o in obs if o.m3d_pair.role != 'HIGH'
+    # (names, looked up again when putting back: a queued bake keeps this open across its jobs, and a modifier held from
+    # before a file load or an undo would point at freed memory)
+    saved = [(o.name, mod.name, mod.show_viewport, mod.show_render) for o in obs if o.m3d_pair.role != 'HIGH'
              for mod in (smooth_preview(o), multires_of(o) if o.m3d_pair.role == 'LOW' else None) if mod]
     try:
-        for mod, _v, _r in saved:
+        for ob_name, mod_name, _v, _r in saved:
+            mod = bpy.data.objects[ob_name].modifiers[mod_name]
             mod.show_viewport = mod.show_render = False
         yield
     finally:
-        for mod, viewport, render in saved:
-            mod.show_viewport, mod.show_render = viewport, render
+        for ob_name, mod_name, viewport, render in ([] if Q._state["dropping"] else saved):
+            ob = bpy.data.objects.get(ob_name)
+            mod = ob.modifiers.get(mod_name) if ob is not None else None
+            if mod is not None:
+                mod.show_viewport, mod.show_render = viewport, render
 
 
 @contextmanager
@@ -1447,6 +1453,7 @@ def _bake_scene(context, ob, highs=None, hide=(), cycles=True):
     before it is hidden again; in a queue (the window draws meanwhile) the high polys are drawn as boxes, a mesh of millions of faces
     would slow the window down."""
     scene, layer = context.scene, context.view_layer
+    layer_name = layer.name   # (the view layer is not an ID: looked up again when putting back, see the finally)
     highs = meshes_of(highs)
     objs = [ob, *highs]
     if any(o.name not in layer.objects for o in objs):
@@ -1477,24 +1484,35 @@ def _bake_scene(context, ob, highs=None, hide=(), cycles=True):
             scene.cycles.device = Q.device_for(context)
         yield
     finally:
-        scene.render.engine, scene.cycles.samples, scene.cycles.device = state["engine"], state["samples"], state["device"]
-        for o, hide_render in state["hidden"]:
-            o.hide_render = hide_render
-        for o, display in state["display"]:
-            o.display_type = display
-        for o, hidden, hide_viewport, hide_render, hide_select in state["flags"]:
-            o.hide_set(hidden)
-            o.hide_viewport, o.hide_render, o.hide_select = hide_viewport, hide_render, hide_select
-        for o in objs:
-            o.select_set(False)
-        for o in state["selected"]:
-            o.select_set(True)
+        try:
+            if not Q._state["dropping"]:   # (a file is loading: its data is going, nothing to put back)
+                _put_back(scene, layer_name, objs, state)
+        except ReferenceError:   # (the scene or its objects went with a file load or an undo: nothing to put back)
+            pass
+
+
+def _put_back(scene, layer_name, objs, state):
+    """What _bake_scene changed, back as it was."""
+    layer = scene.view_layers.get(layer_name)
+    scene.render.engine, scene.cycles.samples, scene.cycles.device = state["engine"], state["samples"], state["device"]
+    for o, hide_render in state["hidden"]:
+        o.hide_render = hide_render
+    for o, display in state["display"]:
+        o.display_type = display
+    for o, hidden, hide_viewport, hide_render, hide_select in state["flags"]:
+        o.hide_set(hidden)
+        o.hide_viewport, o.hide_render, o.hide_select = hide_viewport, hide_render, hide_select
+    for o in objs:
+        o.select_set(False)
+    for o in state["selected"]:
+        o.select_set(True)
+    if layer is not None:
         layer.objects.active = state["active"]
-        if state["mode"] != 'OBJECT' and state["active"] is not None:
-            try:
-                bpy.ops.object.mode_set(mode=state["mode"])
-            except RuntimeError:
-                pass   # (the mode can't be entered any more: this must not hide the error that got us here)
+    if state["mode"] != 'OBJECT' and state["active"] is not None:
+        try:
+            bpy.ops.object.mode_set(mode=state["mode"])
+        except RuntimeError:
+            pass   # (the mode can't be entered any more: this must not hide the error that got us here)
 
 
 def id_color(i):

@@ -230,6 +230,9 @@ def drive(steps):
                 request = steps.send(None)
     except StopIteration as done:
         return done.value
+    except BaseException:
+        steps.close()   # (its `with` blocks put things back now, while the data is there: not when the garbage is collected)
+        raise
 
 
 def run_blocking(context, job, report):
@@ -290,6 +293,7 @@ class Run:
 
 
 _run = None
+_state = {"dropping": False}   # (see _drop_run)
 _bars = {"status": None}   # the rectangle (x, y, width, height) of the Status Line in the window, noted by its header when it draws
 
 
@@ -467,6 +471,11 @@ def _finish(run, result, error):
     they were, `job.finish` says the news."""
     global _run
     context = bpy.context
+    try:
+        run.job.steps.close()   # (a generator stopped half way closes its `with` blocks now, while the data is there)
+    except Exception:
+        import traceback
+        traceback.print_exc()
     try:
         run.phase = 'END'
         retire(context)
@@ -737,14 +746,42 @@ classes = (
 )
 
 
+@bpy.app.handlers.persistent
+def _drop_run(*_args):
+    """load_pre: a queue still running when another file opens stops here, while its data is still there (its generator puts
+    back what it changed, the views are as they were); afterwards it would write to freed memory."""
+    global _run
+    run = _run
+    if run is None:
+        return
+    # The file that is going needs nothing put back: its generator is closed with `dropping` on, so its `with` blocks skip their
+    # clean-up (operators and edits in the middle of a file load are not safe), and it isn't left for the garbage collector to
+    # close after the load, when its data is freed.
+    _state["dropping"] = True
+    try:
+        run.job.steps.close()
+        handle = _banner.pop("handle", None)
+        if handle is not None:
+            bpy.types.SpaceView3D.draw_handler_remove(handle, 'WINDOW')
+    except Exception:
+        import traceback
+        traceback.print_exc()
+    finally:
+        _state["dropping"] = False
+    _run = None
+
+
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.app.handlers.object_bake_complete.append(_on_complete)
     bpy.app.handlers.object_bake_cancel.append(_on_cancel)
+    bpy.app.handlers.load_pre.append(_drop_run)
 
 
 def unregister():
+    if _drop_run in bpy.app.handlers.load_pre:
+        bpy.app.handlers.load_pre.remove(_drop_run)
     bpy.app.handlers.object_bake_cancel.remove(_on_cancel)
     bpy.app.handlers.object_bake_complete.remove(_on_complete)
     for cls in reversed(classes):

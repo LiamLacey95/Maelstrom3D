@@ -860,6 +860,7 @@ def _load_post(*_args):
 def _undo_post(*_args):
     """An undo or redo brings the objects as they were at that step: the blue that it holds goes, the view is made again."""
     context = bpy.context
+    stop_check()   # (a running cage check holds the objects of the step before)
     repair(context)
     _view["sig"] = None
 
