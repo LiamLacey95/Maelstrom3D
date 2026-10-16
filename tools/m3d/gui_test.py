@@ -12121,10 +12121,17 @@ def bq_wheel_check():
     event('F', 'RELEASE', xy=(cx, cy))
 
 
+def bq_framed():
+    rv = view3d()[1].spaces.active.region_3d
+    return ((rv.view_distance - BQ["dist1"]) ** 2 + (rv.view_location - BQ["loc1"]).length_squared) > 1e-8
+
+
+step(wait_until(bq_framed, "F to frame the model"))   # (F frames with a smooth view: it moves over a few redraws)
+
+
 @step
 def bq_frame_check():
-    rv = view3d()[1].spaces.active.region_3d
-    check(QB.running() and ((rv.view_distance - BQ["dist1"]) ** 2 + (rv.view_location - BQ["loc1"]).length_squared) > 1e-8, "...and F frames the model")
+    check(QB.running() and bq_framed(), "...and F frames the model")
     # Clicks and keys that edit are blocked: the viewport (a click selects), the Texture Set List, keys that delete or save
     win, area, region = view3d()
     cx, cy = region.x + region.width // 2, region.y + region.height // 2
