@@ -39,7 +39,7 @@ def draw_splash(layout, context):
     col.operator("wm.read_homefile", text="New Scene", icon='FILE_NEW').app_template = ""
     sub = col.column()
     sub.operator_context = 'INVOKE_DEFAULT'
-    sub.operator("wm.open_mainfile", text="Open Scene...", icon='FILE_FOLDER')
+    sub.operator("m3d.open_scene", text="Open Scene...", icon='FILE_FOLDER')
     col.operator("wm.recover_last_session", text="Recover Last Session", icon='RECOVER_LAST')
     col = split.column()
     col.label(text="Recent Files")
@@ -127,8 +127,8 @@ def _key_card():
             ("Hotbox / four views", *_HOTBOX[1:]),
             ("Undo", "Window", "ed.undo", {}),
             ("Redo", "Window", "ed.redo", {}),
-            ("Save Scene", "Window", "wm.save_mainfile", {}),
-            ("Open Scene", "Window", "wm.open_mainfile", {}),
+            ("Save Scene", "Window", "m3d.save_scene", {}),
+            ("Open Scene", "Window", "m3d.open_scene", {}),
             ("Maximize panel", "3D View", "screen.screen_full_area", {"use_hide_panels": True}),
         )),
         ("View and Select", (

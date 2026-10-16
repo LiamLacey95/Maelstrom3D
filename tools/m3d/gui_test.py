@@ -13045,6 +13045,7 @@ def p8_brush():
     win, area, region = view3d()
     with bpy.context.temp_override(window=win, area=area, region=region):
         bpy.ops.wm.tool_set_by_id(name="builtin.brush")
+        bpy.ops.view3d.view_all(center=True)   # (Sculpt's own view: earlier steps may have left it looking elsewhere)
     press_ok("brush.asset_activate", **m3d_sculpt.brush_props("Draw"))
     brush = bpy.context.tool_settings.sculpt.brush
     brush.size, brush.strength, brush.direction = 150, 1.0, 'ADD'

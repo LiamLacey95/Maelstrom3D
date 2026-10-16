@@ -15983,7 +15983,7 @@ p8_log = []
 WL.draw_splash(Rec(p8_log), bpy.context)
 check_calls("splash", p8_log)
 p8_ops = [r._args[0] for r in p8_log if r._kind == "operator"]
-check({"wm.read_homefile", "wm.open_mainfile", "wm.recover_last_session", "m3d.key_card", "m3d.report_bug", "wm.url_open"} <= set(p8_ops)
+check({"wm.read_homefile", "m3d.open_scene", "wm.recover_last_session", "m3d.key_card", "m3d.report_bug", "wm.url_open"} <= set(p8_ops)
       and any(r._kind == "template_recent_files" for r in p8_log), "splash: New, Open, Recent, Recover, the guide, the key card, Report a Bug: %s" % p8_ops)
 check(any(r._kind == "prop" and r._args[1] == "show_splash" for r in p8_log), "splash: Show this at startup")
 check(any(k == "Tab" and "Search" in w for k, w in WL.GETTING_STARTED) and any(k == "F1-F7" for k, _w in WL.GETTING_STARTED),
