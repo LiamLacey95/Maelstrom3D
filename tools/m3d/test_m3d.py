@@ -5768,7 +5768,7 @@ check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in A.clas
 check(m3d_ui.shelves_for('ANIM') == ['ANIM_ANIMATE', 'ANIM_POSES', 'CUSTOM'] and 'ANIM' in m3d_ui.STATUS_LINES, "Animation shelf tabs and Status Line")
 check([it[3] for it in m3d_ui.SHELVES['ANIM_ANIMATE'][1] if it] == ["Set Key", "Translate", "Rotate", "Scale", "Breakdown", "Delete Key",
                                                                    "Euler Filter", "Stepped", "Spline"], "Animate shelf buttons")
-check([it[3] if not callable(it) else "menu" for it in m3d_ui.SHELVES['ANIM_POSES'][1] if it] == ["Copy", "Paste", "Paste Flipped", "Reset", "Save Pose", "menu"],
+check([it[3] if not callable(it) else "menu" for it in m3d_ui.SHELVES['ANIM_POSES'][1] if it] == ["Copy", "Paste", "Paste Flipped", "Mirror Pose", "Reset", "Save Pose", "menu"],
       "Poses shelf buttons")
 check(anim_ws.m3d_kind == 'ANIM' and anim_ws.object_mode == 'POSE', "Animation workspace kind and entry mode")
 an_src = open(A.__file__, encoding="utf-8").read().lower()
@@ -5908,8 +5908,9 @@ check(draw_anim_panels('POSE') >= 9, "Animation panels drew in Pose Mode")
 log = []
 A.draw_status_line(Rec(log), ACtx())
 check({r.values().get("mode") for r in log if r._kind == "operator" and r.values().get("mode")} >= {'OBJECT', 'POSE'}, "Status Line: Object / Pose")
-check({r._args[1] for r in log if r._kind == "prop"} >= {"use_keyframe_insert_auto", "frame_start", "frame_end", "use_preview_range", "fps",
-                                                      "playback_loop_mode"}, "Status Line: Auto Key, range, preview range, FPS, loop mode")
+check({r._args[1] for r in log if r._kind == "prop"} >= {"use_keyframe_insert_auto", "frame_start", "frame_end", "use_preview_range",
+                                                      "playback_loop_mode"} and any(r._kind == "operator_menu_enum" for r in log),
+      "Status Line: Auto Key, range, preview range, frame rate, loop mode")
 check(len([r for r in log if r._kind == "prop_enum" and r._args[1] == "keyframe_type"]) == 4, "Status Line: four key types")
 check({r.values().get("kind") for r in log if r._kind == "operator" and r._args[0] == "m3d.anim_interp"} == set(A.INTERP), "Status Line: four new-key interpolations")
 check({r.values().get("editor") for r in log if r._kind == "operator" and r._args[0] == "m3d.anim_editor"} == {'GRAPH', 'DOPESHEET'}, "Status Line: Graph / Dope Sheet")
@@ -13916,7 +13917,7 @@ pb_cube.animation_data_clear()
 log = pb_log(A.PROPERTIES_PT_m3d_an_paths, ACtx())
 check([r.values().get("action") for r in log if r._kind == "operator" and r._args[0] == "m3d.anim_paths"] == ['CALCULATE'],
       "Motion Paths before Calculate: no greyed Update / Clear")
-check(pb_ops(pb_log(A.PROPERTIES_PT_m3d_an_layers, ACtx())) == ["anim.keyframe_insert"], "Layers without animation: Set Key")
+check(pb_ops(pb_log(A.PROPERTIES_PT_m3d_an_layers, ACtx())) == ["m3d.set_key"], "Layers without animation: Set Key")
 log = pb_log(A.PROPERTIES_PT_m3d_an_inbetween, ACtx())
 check(pb_ops(log) == ["m3d.workspace"] and not A.PROPERTIES_PT_m3d_an_poses.page_poll(ACtx()),
       "no skeleton: Push / Relax says to make one in F5 Rigging, no Poses panel")
@@ -14734,6 +14735,325 @@ for mode_ in ('OBJECT', 'POSE', 'EDIT'):
             check(False, "%s in %s: %r" % (cls_.__name__, mode_, err_))
 bpy.ops.m3d.rig_mode(mode='OBJECT')
 clean_scene()
+
+# ----------------------------------------------------------------------------------------------------
+# UX pass 2, P4 Animation: tangents on the selection, Z undo everywhere, one Set Key rule, playblast for review, Blocking /
+# Polish scope, F6 on a bound mesh, layer strips and weights, frame rate, mirror pose / animation, world position.
+import m3d_anim as A
+from mathutils import Euler
+bpy.utils.keyconfig_set(bpy.utils.preset_find("Maelstrom3D", "keyconfig"))
+kc = bpy.context.window_manager.keyconfigs["Maelstrom3D"]
+clean_scene()
+for act_ in list(bpy.data.actions):
+    bpy.data.actions.remove(act_)
+an2_scn = bpy.context.scene
+an2_scn.frame_start, an2_scn.frame_end, an2_scn.use_preview_range = 1, 24, False
+an2_scn.render.fps, an2_scn.render.fps_base = 24, 1.0
+an2_scn.m3d_anim.key_scope = 'SELECTED'
+an2_rig = R.new_armature(bpy.context, "An2Rig")
+R._select_only(bpy.context, an2_rig)
+bpy.ops.object.mode_set(mode='EDIT')
+for name_, x_ in (("Root", 0.0), ("Arm.L", 1.0), ("Arm.R", -1.0)):
+    eb_ = an2_rig.data.edit_bones.new(name_)
+    eb_.head, eb_.tail = (x_, 0, 1), (x_ * 2 if x_ else 0, 0, 1 if x_ else 2)
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.ops.m3d.rig_mode(mode='POSE')
+an2_pb = an2_rig.pose.bones
+for pb_ in an2_pb:
+    pb_.rotation_mode = 'XYZ'
+
+
+def an2_only(*names):
+    for pb_ in an2_pb:
+        pb_.select = pb_.name in names
+    an2_rig.data.bones.active = an2_rig.data.bones[names[0]]
+
+
+def an2_keys(path, index=0):
+    fc_ = next((f for f in A.channel_fcurves(an2_rig) if f.data_path == path and f.array_index == index), None)
+    return fc_
+
+
+# --- One Set Key rule: unlocked channels and custom properties of the selected bones (or the whole character)
+an2_pb["Arm.L"]["IK_FK"] = 0.5
+an2_pb["Arm.L"].lock_location = (False, True, False)
+an2_only("Arm.L")
+an2_scn.frame_set(1)
+check(bpy.ops.m3d.set_key() == {'FINISHED'}, "S (m3d.set_key) keys a bone")
+an2_paths = {(f.data_path, f.array_index) for f in A.channel_fcurves(an2_rig)}
+check(('pose.bones["Arm.L"]["IK_FK"]', 0) in an2_paths, "S keys the bone's custom property: %s" % sorted(an2_paths))
+check(('pose.bones["Arm.L"].location', 1) not in an2_paths and ('pose.bones["Arm.L"].location', 0) in an2_paths,
+      "...and skips the locked translate Y")
+check({p for p, _i in an2_paths} == {'pose.bones["Arm.L"].location', 'pose.bones["Arm.L"].rotation_euler', 'pose.bones["Arm.L"].scale',
+                                     'pose.bones["Arm.L"]["IK_FK"]'}, "...only the selected bone: %s" % sorted(an2_paths))
+an2_pb["Arm.L"].lock_location = (False, False, False)
+check(bpy.ops.m3d.set_key(channels='ROTATION') == {'FINISHED'} and A.key_channels(an2_pb["Root"], 'SCALE') == [("scale", i) for i in range(3)],
+      "Key Rotate / the channels of one kind")
+an2_pb["Root"].rotation_mode = 'QUATERNION'
+an2_pb["Root"].lock_rotations_4d, an2_pb["Root"].lock_rotation_w = True, True
+check(("rotation_quaternion", 0) not in A.key_channels(an2_pb["Root"], 'ROTATION') and len(A.key_channels(an2_pb["Root"], 'ROTATION')) == 3,
+      "a locked W is skipped (quaternion)")
+an2_pb["Root"].lock_rotations_4d = an2_pb["Root"].lock_rotation_w = False
+an2_pb["Root"].rotation_mode = 'XYZ'
+an2_scn.m3d_anim.key_scope = 'CHARACTER'
+bpy.ops.m3d.set_key()
+check({f.data_path.split('"')[1] for f in A.channel_fcurves(an2_rig)} == {"Root", "Arm.L", "Arm.R"}, "Key: Character keys every control")
+an2_hidden = an2_rig.data.collections.new("MCH")
+an2_hidden.assign(an2_rig.data.bones["Arm.R"])
+an2_hidden.is_visible = False
+check([pb_.name for pb_ in A.character_bones(an2_rig)] == ["Root", "Arm.L"], "...bones in hidden collections are not controls")
+an2_rig.data.collections.remove(an2_hidden)
+an2_scn.m3d_anim.key_scope = 'SELECTED'
+for km_ in ("Object Mode", "Pose"):
+    check(find(km_, "m3d.set_key", 'S', shift=False, ctrl=False, alt=False), "S is m3d.set_key in " + km_)
+    check(find(km_, "m3d.key_marking_menu", 'S', shift=True, ctrl=False), "Shift+S keyframe marking menu in " + km_)
+    check(find(km_, "m3d.key_marking_menu", 'S', shift=True)[0].properties.menu_mmb == "M3D_MT_tangent_mm", "...tangents on middle click in " + km_)
+    for key_, ch_ in (('W', 'LOCATION'), ('E', 'ROTATION'), ('R', 'SCALE')):
+        for ctrl_ in (False, True):
+            it_ = find(km_, "m3d.set_key", key_, shift=True, ctrl=ctrl_, alt=False)
+            check(it_ and it_[0].properties.channels == ch_, "%s+Shift+%s keys %s in %s" % ("Ctrl" * ctrl_, key_, ch_, km_))
+    check(not find(km_, "anim.keyframe_insert_by_name", 'S'), "no stock S keying left in " + km_)
+check(find("User Interface", "anim.keyframe_insert_button", 'S', shift=False) and
+      not find("User Interface", "anim.keyframe_insert_button", 'S', shift=False)[0].properties.all, "S over a Channel Box row keys that channel")
+check([it[0] for it in m3d_ui.SHELVES['ANIM_ANIMATE'][1][:4]] == ["m3d.set_key"] * 4, "the shelf keys with the same rule")
+check([e["idname"] for e in m3d_ui.MENUS["M3D_MT_key"][1][:4]] == ["m3d.set_key"] * 4, "...the Key menu too")
+an2_log = []
+m3d_marking.M3D_MT_keyframe_mm.draw(NS(layout=Rec(an2_log)), bpy.context)
+check([r.values().get("channels") for r in an2_log if r._kind == "operator" and r._args[0] == "m3d.set_key"] == ['ALL', 'ROTATION', 'LOCATION', 'SCALE'],
+      "...and the keyframe marking menu: %s" % [(r._args, r.values()) for r in an2_log if r._kind == "operator"])
+
+# --- Tangents: selected keys, else every key of the selected bones (the other bone is left alone); no Plateau
+for act_ in list(bpy.data.actions):
+    bpy.data.actions.remove(act_)
+for frame_, value_ in ((1, 0.0), (11, 1.0), (21, 0.0)):
+    for name_ in ("Arm.L", "Root"):
+        an2_pb[name_].location.x = value_
+        an2_pb[name_].keyframe_insert("location", index=0, frame=frame_)
+an2_only("Arm.L")
+check(bpy.ops.m3d.set_tangents(kind='STEPPED') == {'FINISHED'}, "Stepped runs")
+check([k.interpolation for k in an2_keys('pose.bones["Arm.L"].location').keyframe_points] == ['CONSTANT'] * 3
+      and [k.interpolation for k in an2_keys('pose.bones["Root"].location').keyframe_points] == ['BEZIER'] * 3,
+      "Stepped changes only the selected bone's keys")
+for k_ in an2_keys('pose.bones["Arm.L"].location').keyframe_points:
+    k_.select_control_point = k_.co.x == 11
+bpy.ops.m3d.set_tangents(kind='FLAT')
+check([k.interpolation for k in an2_keys('pose.bones["Arm.L"].location').keyframe_points] == ['CONSTANT', 'BEZIER', 'CONSTANT'],
+      "...with keys selected, only those keys")
+k_ = an2_keys('pose.bones["Arm.L"].location').keyframe_points[1]
+check(abs(k_.handle_left.y - k_.co.y) < 1e-6 and abs(k_.handle_right.y - k_.co.y) < 1e-6, "Flat flattens the handles")
+check('PLATEAU' not in {k for k, _l, _i in m3d_marking.TANGENTS}, "no Plateau (it was Clamped twice)")
+
+# --- Blocking / Polish: Selection / Whole Character / Scene
+for k_ in an2_keys('pose.bones["Arm.L"].location').keyframe_points:
+    k_.select_control_point = True
+an2_scn.m3d_anim.convert_scope = 'SELECTION'
+bpy.ops.m3d.anim_preset(preset='POLISH')
+check(all(k.interpolation == 'BEZIER' for k in an2_keys('pose.bones["Arm.L"].location').keyframe_points), "Polish Selection converts the selected bone")
+bpy.ops.m3d.anim_preset(preset='BLOCKING')
+check(all(k.interpolation == 'CONSTANT' for k in an2_keys('pose.bones["Arm.L"].location').keyframe_points)
+      and all(k.interpolation == 'BEZIER' for k in an2_keys('pose.bones["Root"].location').keyframe_points), "...Blocking Selection leaves the other bone")
+an2_scn.m3d_anim.convert_scope = 'CHARACTER'
+bpy.ops.m3d.anim_preset(preset='POLISH')
+check(all(k.interpolation == 'BEZIER' and k.handle_left_type == 'AUTO_CLAMPED' for f in A.channel_fcurves(an2_rig) for k in f.keyframe_points),
+      "Polish Whole Character converts every bone")
+check(an2_scn.m3d_anim.bl_rna.properties["convert_scope"].default == 'CHARACTER', "Whole Character is the default")
+bpy.ops.m3d.anim_preset(preset='RESTORE')
+
+# --- Mirror Pose: .L to .R, both sides swap, a middle bone mirrors itself; Mirror Animation half a cycle later
+an2_scn.frame_set(5)
+an2_pb["Arm.L"].location = (0.3, 0.2, 0.1)
+an2_pb["Arm.L"].rotation_euler = (0.1, 0.2, 0.3)
+an2_pb["Arm.R"].location = (0, 0, 0)
+an2_only("Arm.L")
+check(bpy.ops.m3d.anim_mirror_pose(whole=False) == {'FINISHED'}, "Mirror Pose runs")
+check(tuple(round(v, 4) for v in an2_pb["Arm.R"].location) == (-0.3, 0.2, 0.1)
+      and tuple(round(v, 4) for v in an2_pb["Arm.R"].rotation_euler) == (0.1, -0.2, -0.3), "Mirror Pose flips .L onto .R: %s %s" % (
+          tuple(an2_pb["Arm.R"].location), tuple(an2_pb["Arm.R"].rotation_euler)))
+check(abs(an2_pb["Arm.R"]["IK_FK"] - 0.5) < 1e-6, "...custom properties too")
+an2_pb["Arm.R"].location = (0.5, 0, 0)
+an2_only("Arm.L", "Arm.R")
+bpy.ops.m3d.anim_mirror_pose(whole=False)
+check(abs(an2_pb["Arm.L"].location.x + 0.5) < 1e-6 and abs(an2_pb["Arm.R"].location.x + 0.3) < 1e-6, "...both sides selected: they swap")
+an2_pb["Root"].location = (0.4, 0, 0)
+bpy.ops.m3d.anim_mirror_pose(whole=True)
+check(abs(an2_pb["Root"].location.x + 0.4) < 1e-6 and abs(an2_pb["Arm.L"].location.x - 0.3) < 1e-6 and abs(an2_pb["Arm.R"].location.x - 0.5) < 1e-6,
+      "Mirror All flips the whole pose")
+an2_pb["Arm.R"].rotation_mode = 'QUATERNION'
+an2_only("Arm.L")
+bpy.ops.m3d.anim_mirror_pose(whole=False)
+an2_want = Euler((an2_pb["Arm.L"].rotation_euler.x, -an2_pb["Arm.L"].rotation_euler.y, -an2_pb["Arm.L"].rotation_euler.z)).to_quaternion()
+check(an2_pb["Arm.R"].rotation_quaternion.rotation_difference(an2_want).angle < 1e-4, "...onto a bone with another rotation mode")
+an2_pb["Arm.R"].rotation_mode = 'XYZ'
+for act_ in list(bpy.data.actions):
+    bpy.data.actions.remove(act_)
+for frame_, value_ in ((1, 0.0), (5, 1.0), (9, 0.0)):   # A cycle 1-9: half a cycle is 4 frames.
+    an2_pb["Arm.L"].location.x = value_
+    an2_pb["Arm.L"].keyframe_insert("location", index=0, frame=frame_)
+an2_only("Arm.L")
+check(bpy.ops.m3d.anim_mirror_animation(half_cycle=True) == {'FINISHED'}, "Mirror Animation runs")
+an2_r = an2_keys('pose.bones["Arm.R"].location')
+check(an2_r is not None and {round(k.co.x): round(k.co.y, 4) for k in an2_r.keyframe_points} == {1: -1.0, 5: 0.0, 9: -1.0},
+      "...the other side's keys, flipped, half a cycle later: %s" % ({round(k.co.x): round(k.co.y, 4) for k in an2_r.keyframe_points} if an2_r else None))
+check(an2_r.group is not None and an2_r.group.name == "Arm.R", "...in the bone's group")
+bpy.ops.m3d.anim_mirror_animation(half_cycle=False)
+check({round(k.co.x): round(k.co.y, 4) for k in an2_keys('pose.bones["Arm.R"].location').keyframe_points} == {1: -0.0, 5: -1.0, 9: -0.0},
+      "...without the offset: the same frames")
+
+# --- Copy / Paste World Position
+an2_scn.frame_set(3)
+an2_pb["Root"].location = (0.7, 0, 0)
+bpy.context.view_layer.update()
+an2_only("Root")
+an2_world = (an2_rig.matrix_world @ an2_pb["Root"].matrix).to_translation()
+check(bpy.ops.m3d.anim_world_position(action='COPY', over_range=False) == {'FINISHED'}, "Copy World Position")
+an2_pb["Root"].location = (0, 0, 0)
+an2_rig.location.x = 2.0
+bpy.context.view_layer.update()
+check(bpy.ops.m3d.anim_world_position(action='PASTE', over_range=False) == {'FINISHED'}, "Paste World Position")
+bpy.context.view_layer.update()
+check(((an2_rig.matrix_world @ an2_pb["Root"].matrix).to_translation() - an2_world).length < 1e-4,
+      "...puts the bone back where it was in the world (the rig moved)")
+an2_rig.location.x = 0.0
+
+# --- Frame rate: the dropdown's rates, 29.97 = 30 / 1.001, Keep Timing moves the keys, Keep Frames leaves them
+check(list(A.FRAME_RATES) == ["23.976", "24", "25", "29.97", "30", "48", "50", "60", "120"], "frame rates 23.976 ... 120")
+check(A.frame_rate_label(an2_scn) == "24 fps", "the dropdown reads 24 fps")
+an2_x = an2_keys('pose.bones["Arm.L"].location')
+check(bpy.ops.m3d.anim_fps(rate="29.97", keep='TIMING') == {'FINISHED'}, "29.97 runs")
+check(an2_scn.render.fps == 30 and abs(an2_scn.render.fps_base - 1.001) < 1e-6 and A.frame_rate_label(an2_scn) == "29.97 fps", "29.97 sets fps 30 / fps_base 1.001")
+an2_factor = (30 / 1.001) / 24
+check(abs(an2_keys('pose.bones["Arm.L"].location').keyframe_points[2].co.x - (1 + 8 * an2_factor)) < 1e-3,
+      "Keep Timing moves the keys: %s" % [k.co.x for k in an2_keys('pose.bones["Arm.L"].location').keyframe_points])
+check(an2_scn.frame_end == round(1 + 23 * an2_factor), "...and the scene end (%d)" % an2_scn.frame_end)
+an2_before = [k.co.x for k in an2_keys('pose.bones["Arm.L"].location').keyframe_points]
+bpy.ops.m3d.anim_fps(rate="24", keep='FRAMES')
+check(an2_scn.render.fps == 24 and an2_scn.render.fps_base == 1.0 and [k.co.x for k in an2_keys('pose.bones["Arm.L"].location').keyframe_points] == an2_before,
+      "Keep Frames leaves the keys where they are")
+an2_scn.frame_end = 24
+
+# --- Layers: a pushed strip grows with keys set later; each layer has a keyable weight
+bpy.ops.m3d.rig_mode(mode='OBJECT')
+bpy.ops.mesh.primitive_cube_add(size=1)
+an2_box = bpy.context.active_object
+an2_box.keyframe_insert("location", index=0, frame=1)
+an2_box.location.x = 3
+an2_box.keyframe_insert("location", index=0, frame=10)
+check(bpy.ops.m3d.anim_layer(action='PUSH_DOWN') == {'FINISHED'}, "Push Down")
+an2_ad = an2_box.animation_data
+an2_strip = an2_ad.nla_tracks[0].strips[0]
+check(an2_strip.use_sync_length and an2_strip.use_animated_influence and abs(an2_strip.influence - 1.0) < 1e-6, "the layer's strip syncs and has a weight of 1")
+an2_scn.frame_set(10)
+check(abs(an2_box.location.x - 3) < 1e-4, "(the layer plays at full weight)")
+bpy.ops.m3d.anim_layer(action='TWEAK', index=0)
+an2_box.location.x = 5
+an2_box.keyframe_insert("location", index=0, frame=30)
+bpy.ops.m3d.anim_layer(action='EXIT_TWEAK')
+check(an2_strip.frame_end == 30, "a pushed layer's strip grows with keys set later (%s)" % an2_strip.frame_end)
+an2_strip.influence = 0.5
+an2_strip.keyframe_insert("influence", frame=10)
+an2_scn.frame_set(10)
+check(abs(an2_box.location.x - 1.5) < 1e-3, "the layer's weight scales it (%.3f)" % an2_box.location.x)
+an2_log = []
+A.PROPERTIES_PT_m3d_an_layers.draw(NS(layout=Rec(an2_log)), bpy.context)
+check(any(r._kind == "prop" and r._args[1] == "influence" and r._kw.get("text") == "Weight" for r in an2_log)
+      and any(r._kind == "label" and r._kw.get("text") == "1 - 30" for r in an2_log), "the Layers tab shows each layer's weight and frames")
+check_calls_ext("Layers with a weight", an2_log)
+check(bpy.ops.m3d.anim_fps(rate="48", keep='TIMING') == {'FINISHED'} and an2_strip.frame_end == 59, "Keep Timing stretches the layers too (%s)" % an2_strip.frame_end)
+bpy.ops.m3d.anim_fps(rate="24", keep='TIMING')
+an2_scn.frame_end = 24
+
+# --- A bound mesh: S warns about its object transform; F6 picks its skeleton and Pose Mode
+bpy.ops.mesh.primitive_cube_add(size=1)
+an2_body = bpy.context.active_object
+an2_body.modifiers.new("Armature", 'ARMATURE').object = an2_rig
+R._select_only(bpy.context, an2_body)
+check(bpy.ops.m3d.set_key() == {'FINISHED'} and A.channel_fcurves(an2_body), "S keys the bound mesh (with a warning)")
+an2_reports = []
+an2_op = NS(report=lambda kind, text: an2_reports.append(text))
+A.M3D_OT_set_key.execute(NS(report=an2_op.report, channels='ALL'), bpy.context)
+check(any("bound mesh" in t for t in an2_reports), "...the warning says the skeleton poses it: %s" % an2_reports)
+R._select_only(bpy.context, an2_body)
+W.use_bound_rig(bpy.context)
+check(bpy.context.active_object == an2_rig and an2_rig.select_get() and not an2_body.select_get(), "F6 with a bound mesh active picks its skeleton")
+R._select_only(bpy.context, an2_box)
+W.use_bound_rig(bpy.context)
+check(bpy.context.active_object == an2_box, "...an unbound mesh stays active")
+
+# --- Playblast settings: a movie (H.264, sound when there is any), burn-in, versioned names, range choice; put back after
+an2_r_ = an2_scn.render
+an2_snap = A.snapshot_render(an2_scn)
+an2_tmp = tempfile.mkdtemp(prefix="m3d_pb2_")
+A.configure_playblast(an2_scn, an2_tmp, 20, movie=True, burn_in=True)
+check(an2_r_.image_settings.media_type == 'VIDEO' and an2_r_.image_settings.file_format == 'FFMPEG' and an2_r_.ffmpeg.codec == 'H264'
+      and an2_r_.ffmpeg.format == 'MPEG4' and an2_r_.ffmpeg.audio_codec == 'NONE', "Movie: H.264 .mp4, no sound track without sound")
+check(an2_r_.use_stamp and an2_r_.use_stamp_frame and an2_r_.use_stamp_camera and an2_r_.use_stamp_filename and not an2_r_.use_stamp_render_time,
+      "Burn-in: frame, camera, file name")
+A.restore_render(an2_scn, an2_snap)
+check(A.snapshot_render(an2_scn) == an2_snap, "the output settings are put back")
+an2_scn.sequence_editor_create()
+check(not A.has_sound(an2_scn), "no sound strips: no sound")
+check(A.playblast_name(an2_tmp, "shot") == "shot_v001", "the first playblast is v001")
+open(os.path.join(an2_tmp, "shot_v001.mp4"), "w").close()
+open(os.path.join(an2_tmp, "shot_v002_0001.png"), "w").close()
+check(A.playblast_name(an2_tmp, "shot") == "shot_v003" and A.playblast_name(an2_tmp, "other") == "other_v001", "...each one a new version")
+an2_scn.use_preview_range, an2_scn.frame_preview_start, an2_scn.frame_preview_end = True, 5, 8
+check(A.playblast_frames(an2_scn, 'PLAYBACK') == (5, 8) and A.playblast_frames(an2_scn, 'SCENE') == (1, 24), "Range: playback (preview) or scene")
+an2_scn.use_preview_range = False
+shutil.rmtree(an2_tmp)
+an2_log = []
+A.PROPERTIES_PT_m3d_an_playblast.draw(NS(layout=Rec(an2_log)), bpy.context)
+check({r._args[1] for r in an2_log if r._kind == "prop"} >= {"playblast_format", "playblast_range", "playblast_meshes", "playblast_burn_in"},
+      "the Playblast panel has format, range, meshes only and burn-in")
+
+# --- Z / Shift+Z undo and redo in every editor; the 2D views' Z zoom is gone (still on the View menu)
+check(find("Window", "ed.undo", 'Z', shift=False, ctrl=False, alt=False) and find("Window", "ed.redo", 'Z', shift=True, ctrl=False, alt=False),
+      "Z / Shift+Z undo / redo in the Window keymap")
+check(not [k for k in kc.keymaps["View2D"].keymap_items if k.type == 'Z' and not (k.shift or k.ctrl or k.alt)], "View2D Z zoom removed")
+for km_ in ("Graph Editor", "Graph Editor Generic", "Dopesheet", "Dopesheet Generic", "Outliner", "Node Editor", "Property Editor", "Frames",
+            "Animation", "Screen", "Time Scrub"):
+    if km_ in kc.keymaps:
+        check(not [k.idname for k in kc.keymaps[km_].keymap_items if k.type == 'Z' and not k.ctrl and not k.alt and k.active],
+              "Z is free in %s: Window's undo runs" % km_)
+an2_log = []
+A.draw_zoom_region(NS(layout=Rec(an2_log)), bpy.context)
+check(A.draw_zoom_region in bpy.types.GRAPH_MT_view._dyn_ui_initialize() and any(r._kind == "operator" and r._args[0] == "view2d.zoom_border" for r in an2_log),
+      "Zoom Region on the Graph Editor View menu")
+
+# --- Status Line and Pick: Key: Selected | Character, the frame rate dropdown, Blocking / Polish scope, Select All Controls
+bpy.ops.m3d.rig_mode(mode='OBJECT')
+R._select_only(bpy.context, an2_rig)
+bpy.ops.m3d.rig_mode(mode='POSE')
+an2_log = []
+A.draw_status_line(Rec(an2_log), ACtx())
+check_calls_ext("P4 status line", an2_log)
+check(any(r._kind == "prop" and r._args[1] == "key_scope" for r in an2_log) and any(r._kind == "prop" and r._args[1] == "convert_scope" for r in an2_log)
+      and any(r._kind == "operator_menu_enum" and r._args[:2] == ("m3d.anim_fps", "rate") for r in an2_log), "Status Line: Key scope, Blocking scope, frame rate")
+anim_ws.m3d_page_right = "anim_pick"
+check(A.PROPERTIES_PT_m3d_an_controls.poll(ACtx()), "Pick: Controls in Pose Mode")
+an2_log = draw_stub(A.PROPERTIES_PT_m3d_an_controls, ACtx())
+check_calls_ext("Controls", an2_log)
+check(any(r._kind == "operator" and r._args[0] == "pose.select_all" or r.values().get("idname") == "pose.select_all" for r in an2_log), "Select All Controls")
+an2_rig.data["rig_id"] = "an2test"
+
+
+class VIEW3D_PT_rig_ui_an2test:   # (what a generated rig's script registers)
+    @staticmethod
+    def draw(panel, context):
+        panel.layout.prop(context.active_pose_bone, '["IK_FK"]', text="IK FK")
+
+
+bpy.types.VIEW3D_PT_rig_ui_an2test = VIEW3D_PT_rig_ui_an2test
+an2_log = draw_stub(A.PROPERTIES_PT_m3d_an_controls, ACtx())
+check(any(r._kind == "prop" and r._kw.get("text") == "IK FK" for r in an2_log), "a generated rig's controls draw in Pick")
+del bpy.types.VIEW3D_PT_rig_ui_an2test
+check("control script" in " ".join(str(r._kw.get("text")) for r in draw_stub(A.PROPERTIES_PT_m3d_an_controls, ACtx()) if r._kind == "label"),
+      "...without its script: how to get it")
+del an2_rig.data["rig_id"]
+anim_ws.m3d_page_right = ""
+bpy.ops.m3d.rig_mode(mode='OBJECT')
+clean_scene()
+for act_ in list(bpy.data.actions):
+    bpy.data.actions.remove(act_)
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

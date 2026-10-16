@@ -8470,6 +8470,70 @@ def anim_set_key_check():
     check(not tracebacks(), "Python error with Auto Key / S")
 
 
+# --- S in Pose Mode: the selected bone's unlocked channels and custom property (one Set Key rule)
+@step
+def anim_pose_s():
+    rig = an_rig()
+    m3d_rig._select_only(bpy.context, rig)
+    bpy.ops.m3d.rig_mode(mode='POSE')
+    for pb in rig.pose.bones:
+        pb.select = pb.name == "Arm"
+    rig.data.bones.active = rig.data.bones["Arm"]
+    rig.pose.bones["Arm"].lock_location[2] = True
+    bpy.context.scene.frame_set(16)
+    event('MOUSEMOVE', xy=an_xy())
+    event('S', 'PRESS', an_xy())
+    event('S', 'RELEASE', an_xy())
+
+
+@step
+def anim_pose_s_check():
+    rig = an_rig()
+    check(16 in an_keys(rig, 'pose.bones["Arm"]["IK_FK"]'), "S in Pose Mode keys the bone's custom property: %s" % an_keys(rig, 'pose.bones["Arm"]["IK_FK"]'))
+    check(16 in an_keys(rig, 'pose.bones["Arm"].location') and 16 not in an_keys(rig, 'pose.bones["Arm"].location', 2),
+          "...its unlocked channels, not the locked translate Z")
+    check(16 not in an_keys(rig, 'pose.bones["Root"].location'), "...only the selected bone")
+    rig.pose.bones["Arm"].lock_location[2] = False
+    for fc in m3d_anim.channel_fcurves(rig):   # (the keys at 16 go again: the steps below count on two keys a channel)
+        for key in [k for k in fc.keyframe_points if round(k.co.x) == 16][::-1]:
+            fc.keyframe_points.remove(key)
+    bag = m3d_anim.animdata_get_channelbag_for_assigned_slot(rig.animation_data)
+    for fc in [f for f in bag.fcurves if not len(f.keyframe_points)]:
+        bag.fcurves.remove(fc)
+    bpy.context.scene.frame_set(1)
+    check(not tracebacks(), "Python error with S in Pose Mode")
+
+
+# --- Z / Shift+Z undo and redo with the pointer over the Graph Editor (Z used to be Zoom Region there)
+@step
+def anim_z_undo():
+    an_status("m3d.anim_editor", editor='GRAPH')
+    bpy.ops.ed.undo_push(message="Before Z")
+    an_box().location.z = 7.0
+    bpy.ops.ed.undo_push(message="Box up")
+    area = m3d_anim.bottom_area(window().screen)
+    region = next(r for r in area.regions if r.type == 'WINDOW')
+    GIZMO["graph_xy"] = (region.x + region.width // 2, region.y + region.height // 2)
+    event('MOUSEMOVE', xy=GIZMO["graph_xy"])
+    event('Z', 'PRESS', GIZMO["graph_xy"])
+    event('Z', 'RELEASE', GIZMO["graph_xy"])
+
+
+@step
+def anim_z_undo_check():
+    check(abs(an_box().location.z - 7.0) > 1e-3, "Z over the Graph Editor undoes (z = %.2f)" % an_box().location.z)
+    an_mod_key('Z', True, shift=True, xy=GIZMO["graph_xy"])
+    an_mod_key('Z', False, shift=True, xy=GIZMO["graph_xy"])
+
+
+@step
+def anim_z_redo_check():
+    check(abs(an_box().location.z - 7.0) < 1e-3, "Shift+Z over the Graph Editor redoes (z = %.2f)" % an_box().location.z)
+    an_box().location.z = 0.5
+    an_status("m3d.anim_editor", editor='DOPESHEET')
+    check(not tracebacks(), "Python error with Z / Shift+Z")
+
+
 # --- Breakdown key and Euler filter from the shelf's operators
 @step
 def anim_breakdown_key():
@@ -8700,6 +8764,8 @@ def anim_playblast():
                           scene.frame_current, scene.frame_start, scene.frame_end)
     scene.m3d_anim.playblast_dir = tempfile.mkdtemp(prefix="m3d_gui_pb_")
     scene.m3d_anim.playblast_percent = 10
+    scene.m3d_anim.playblast_format = 'IMAGES'
+    GIZMO["pb_overlays"] = m3d_anim.playblast_area(window().screen).spaces.active.overlay.show_overlays
     check(an_status("m3d.playblast", play=False) == {'RUNNING_MODAL'}, "Playblast button runs")
 
 
@@ -8714,8 +8780,29 @@ def anim_playblast_check():
     after = (scene.render.filepath, scene.render.resolution_percentage, scene.render.image_settings.file_format, scene.frame_current,
              scene.frame_start, scene.frame_end)
     check(after == GIZMO["pb_before"], "the render output settings are put back: %s vs %s" % (after, GIZMO["pb_before"]))
-    check(scene.m3d_anim.playblast_note == "Last playblast: 3 frames", "Playblast reports: %r" % scene.m3d_anim.playblast_note)
+    GIZMO["pb_base"] = base = bpy.path.clean_name(bpy.path.display_name_from_filepath(bpy.data.filepath) or "playblast")
+    check(all(os.path.basename(f).startswith(base + "_v001_") for f in files), "...named after the file, version 1: %s" % files)
+    check(scene.m3d_anim.playblast_note == "Last playblast: %s_v001 (3 frames)" % base, "Playblast reports: %r" % scene.m3d_anim.playblast_note)
+    check(m3d_anim.playblast_area(window().screen).spaces.active.overlay.show_overlays == GIZMO["pb_overlays"],
+          "the overlays are back after a Meshes Only playblast")
     check(not tracebacks(), "Python error in the Playblast")
+    scene.m3d_anim.playblast_format = 'MOVIE'   # A movie of the same three frames, tiny: the next version.
+    check(an_status("m3d.playblast", play=False) == {'RUNNING_MODAL'}, "Playblast button runs for a movie")
+
+
+step(wait_until(lambda: not m3d_anim.playblast_state["running"], "the movie Playblast to finish", tries=60))
+
+
+@step
+def anim_playblast_movie_check():
+    scene = bpy.context.scene
+    files = m3d_anim.playblast_state["files"]
+    check(len(files) == 1 and os.path.basename(files[0]) == GIZMO["pb_base"] + "_v002.mp4" and os.path.getsize(files[0]) > 0,
+          "Movie playblast: one .mp4, version 2: %s" % files)
+    after = (scene.render.filepath, scene.render.resolution_percentage, scene.render.image_settings.file_format, scene.frame_current,
+             scene.frame_start, scene.frame_end)
+    check(after == GIZMO["pb_before"] and scene.render.image_settings.media_type == 'IMAGE', "...the output settings are put back: %s" % (after,))
+    check(not tracebacks(), "Python error in the movie Playblast")
     scene.frame_start, scene.frame_end = 1, 24
 
 
@@ -8746,6 +8833,66 @@ def _anim_tab_steps():
 
 for _fn in _anim_tab_steps():
     step(_fn)
+
+
+# --- Pick: Select All Controls; Tween & Poses: Mirror (the dock's buttons)
+@step
+def anim_select_controls():
+    bpy.ops.m3d.rig_mode(mode='OBJECT')
+    m3d_rig._select_only(bpy.context, an_rig())
+    bpy.ops.m3d.rig_mode(mode='POSE')
+    rig = an_rig()
+    for pb in rig.pose.bones:
+        pb.select = pb.name == "Arm"
+    press_ok("m3d.dock_page", _area=an_dock(), tab="anim_pick")
+    an_press("pose.select_all", action='SELECT')
+
+
+@step
+def anim_select_controls_check():
+    check(all(pb.select for pb in an_rig().pose.bones), "Select All Controls selects every bone")
+    rig = an_rig()
+    for pb in rig.pose.bones:
+        pb.select = pb.name == "Arm"
+    rig.pose.bones["Arm"].location.x = 0.25
+    press_ok("m3d.dock_page", _area=an_dock(), tab="anim_tween")
+    an_press("m3d.anim_mirror_pose", whole=True)
+
+
+@step
+def anim_mirror_check():
+    check(abs(an_rig().pose.bones["Arm"].location.x + 0.25) < 1e-4, "Mirror All flips a middle bone (x = %.3f)" % an_rig().pose.bones["Arm"].location.x)
+    check(not tracebacks(), "Python error with Select All Controls / Mirror")
+    bpy.context.scene.frame_set(1)
+
+
+# --- F6 with a bound mesh active: its skeleton in Pose Mode
+@step
+def anim_f6_bound():
+    bpy.ops.m3d.workspace(kind='MODEL')
+    bpy.ops.m3d.rig_mode(mode='OBJECT')
+    bpy.ops.object.select_all(action='DESELECT')
+    bpy.ops.mesh.primitive_cube_add(size=0.5, location=(-1.5, 0, 1))
+    body = bpy.context.active_object
+    body.name = "Body"
+    body.modifiers.new("Armature", 'ARMATURE').object = an_rig()
+    m3d_rig._select_only(bpy.context, body)
+    c = (window().width // 2, window().height // 2)
+    event('MOUSEMOVE', xy=c)
+    event('F6', 'PRESS', c)
+    event('F6', 'RELEASE', c)
+
+
+step(wait_until(lambda: window().workspace.name == "Animation", "F6 with a bound mesh"))
+
+
+@step
+def anim_f6_bound_check():
+    check(bpy.context.active_object == an_rig() and bpy.context.mode == 'POSE',
+          "F6 with a bound mesh active enters Pose Mode on its skeleton (%s, %s)" % (bpy.context.active_object, bpy.context.mode))
+    bpy.ops.m3d.rig_mode(mode='OBJECT')
+    bpy.data.objects.remove(bpy.data.objects["Body"])
+    check(not tracebacks(), "Python error with F6 on a bound mesh")
 
 
 @step

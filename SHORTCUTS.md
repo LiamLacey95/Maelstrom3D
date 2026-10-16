@@ -123,6 +123,19 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 | Ctrl+Shift+B | — | Bake Mesh Maps (on=True) |
 | Ctrl+Shift+E | — | Export Textures |
 | F | — | Frame |
+| Ctrl+Space | — | View Layout (mode='TOGGLE') |
+
+## Property Editor
+
+| Key | Before (Industry Compatible) | Now (Maelstrom3D) |
+|---|---|---|
+| Ctrl+C | — | Layer Key (action='COPY') |
+| Ctrl+X | — | Layer Key (action='CUT') |
+| Ctrl+V | — | Layer Key (action='PASTE') |
+| Ctrl+Shift+V | — | Layer Key (action='PASTE') |
+| Ctrl+D | Copy Modifier<br>Objectshaderfx Copy<br>Duplicate Constraint | Layer Key (action='DUPLICATE') |
+| Ctrl+G | — | Layer Key (action='GROUP') |
+| Delete | Remove Modifier (report=True)<br>Remove Grease Pencil Effect (report=True)<br>Delete Constraint (report=True) | Layer Key (action='DELETE') |
 
 ## Armature
 
@@ -135,6 +148,14 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 
 | Key | Before (Industry Compatible) | Now (Maelstrom3D) |
 |---|---|---|
+| S | Insert Keyframe (by name) (type='LocRotScale') | Set Key (channels='ALL') |
+| Shift+S | Insert Keyframe | Hotkey Marking Menu (menu='M3D_MT_keyframe_mm', menu_mmb='M3D_MT_tangent_mm', tool='', command='') |
+| Shift+W | Insert Keyframe (by name) (type='Location') | Set Key (channels='LOCATION') |
+| Ctrl+Shift+W | — | Set Key (channels='LOCATION') |
+| Shift+E | Insert Keyframe (by name) (type='Rotation') | Set Key (channels='ROTATION') |
+| Ctrl+Shift+E | — | Set Key (channels='ROTATION') |
+| Shift+R | Insert Keyframe (by name) (type='Scaling') | Set Key (channels='SCALE') |
+| Ctrl+Shift+R | — | Set Key (channels='SCALE') |
 | Shift+N | — | Menu: Bone Names |
 | Alt+Q | — | Tween (interactive=True) |
 | Shift+Alt+P | — | Push Pose from Breakdown |
@@ -162,8 +183,22 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 | F7 | — | Switch Workspace (kind='RENDER') |
 | Ctrl+R | — | Link |
 | Ctrl+Y | — | Redo |
+| Z | — | Undo |
+| Shift+Z | — | Redo |
 | Shift+Left Bracket | — | Cycle Workspace (direction='PREV') |
 | Shift+Right Bracket | — | Cycle Workspace (direction='NEXT') |
+
+## View2D
+
+| Key | Before (Industry Compatible) | Now (Maelstrom3D) |
+|---|---|---|
+| Z | Zoom to Border | *(removed)* |
+
+## User Interface
+
+| Key | Before (Industry Compatible) | Now (Maelstrom3D) |
+|---|---|---|
+| S | Insert Keyframe (Buttons) | Insert Keyframe (Buttons) (all=False) |
 
 ## Generic Gizmo Drag
 
@@ -189,6 +224,7 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 | F4 | View Zoom Ratio (ratio=0.125) | *(removed)* |
 | Z | Zoom to Border | Undo |
 | Shift+Z | — | Redo |
+| Ctrl+Space | — | View Layout (mode='TOGGLE') |
 
 ## UV Editor
 
@@ -247,14 +283,18 @@ F/A framing and Ctrl+D duplicate) and changes the shortcuts below.
 | Down | Select Less | Pickwalk (direction='DOWN') |
 | Left Arrow | Frame Offset (delta=-1) | Pickwalk (direction='LEFT') |
 | Right Arrow | Frame Offset (delta=1) | Pickwalk (direction='RIGHT') |
-| Shift+S | Insert Keyframe | Hotkey Marking Menu (menu='M3D_MT_keyframe_mm', menu_mmb='M3D_MT_tangent_mm', tool='', command='') |
 | Ctrl+H | Hide Objects (unselected=False) | Hide Selection |
 | Ctrl+Shift+H | — | Show Hidden (which='LAST') |
 | Shift+H | Hide Objects (unselected=True) | Show Hidden (which='SELECTED') |
-| Ctrl+Shift+W | — | Insert Keyframe (by name) (type='Location') |
-| Ctrl+Shift+E | — | Insert Keyframe (by name) (type='Rotation') |
-| Ctrl+Shift+R | — | Insert Keyframe (by name) (type='Scaling') |
 | Alt+I | — | Insert Keyframe |
+| S | Insert Keyframe (by name) (type='LocRotScale') | Set Key (channels='ALL') |
+| Shift+S | Insert Keyframe | Hotkey Marking Menu (menu='M3D_MT_keyframe_mm', menu_mmb='M3D_MT_tangent_mm', tool='', command='') |
+| Shift+W | Insert Keyframe (by name) (type='Location') | Set Key (channels='LOCATION') |
+| Ctrl+Shift+W | — | Set Key (channels='LOCATION') |
+| Shift+E | Insert Keyframe (by name) (type='Rotation') | Set Key (channels='ROTATION') |
+| Ctrl+Shift+E | — | Set Key (channels='ROTATION') |
+| Shift+R | Insert Keyframe (by name) (type='Scaling') | Set Key (channels='SCALE') |
+| Ctrl+Shift+R | — | Set Key (channels='SCALE') |
 | Ctrl+T | — | Tool: Transform |
 | Ctrl+X | — | Cut |
 | F1 | — | *(removed)* |

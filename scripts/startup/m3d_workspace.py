@@ -96,6 +96,27 @@ def use_selected_mesh(context):
         context.view_layer.objects.active = mesh
 
 
+def use_bound_rig(context):
+    """Entering Pose Mode with a bound mesh active (or selected) would leave the workspace in Object Mode: make its
+    skeleton the active, selected object instead."""
+    from m3d_rig import armature_of
+    layer = context.view_layer
+    ob = context.active_object
+    if ob is not None and ob.type == 'ARMATURE':
+        return
+    meshes = [ob] if ob is not None else []
+    rig = next((r for r in map(armature_of, meshes + list(context.selected_objects))
+                if r is not None and r.name in layer.objects and r.visible_get()), None)
+    if rig is None:
+        return
+    if ob is not None and ob.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    for other in context.selected_objects:
+        other.select_set(False)
+    rig.select_set(True)
+    layer.objects.active = rig
+
+
 class M3D_OT_workspace(Operator):
     """Switch to a task workspace (F1 Modeling ... F7 Rendering) and its menu set"""
     bl_idname = "m3d.workspace"
@@ -116,6 +137,8 @@ class M3D_OT_workspace(Operator):
         win = context.window or (wm.windows[0] if wm.windows else None)
         if KINDS[self.kind][2] in MESH_MODES:
             use_selected_mesh(context)
+        elif KINDS[self.kind][2] == 'POSE':
+            use_bound_rig(context)
         # A high poly is hidden (Sculpt shows it) before the window changes, so the redraw never draws the wrong one.
         import m3d_pair
         hold = m3d_pair.before_switch(context, win.workspace if win is not None else context.workspace, ws)

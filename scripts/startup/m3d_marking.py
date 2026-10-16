@@ -161,11 +161,11 @@ class M3D_MT_keyframe_mm(Menu):
 
     def draw(self, context):
         pie = self.layout.menu_pie()
-        _op(pie, "anim.keyframe_insert", "Set Key", 'KEY_HLT')
+        _op(pie, "m3d.set_key", "Set Key", 'KEY_HLT', channels='ALL')
         _op(pie, "anim.keyframe_delete_v3d", "Delete Key", 'KEY_DEHLT')
-        _op(pie, "anim.keyframe_insert_by_name", "Key Rotate", 'CON_ROTLIKE', type='Rotation')
-        _op(pie, "anim.keyframe_insert_by_name", "Key Translate", 'CON_LOCLIKE', type='Location')
-        _op(pie, "anim.keyframe_insert_by_name", "Key Scale", 'CON_SIZELIKE', type='Scaling')
+        _op(pie, "m3d.set_key", "Key Rotate", 'CON_ROTLIKE', channels='ROTATION')
+        _op(pie, "m3d.set_key", "Key Translate", 'CON_LOCLIKE', channels='LOCATION')
+        _op(pie, "m3d.set_key", "Key Scale", 'CON_SIZELIKE', channels='SCALE')
         pie.prop(context.tool_settings, "use_keyframe_insert_auto", text="Auto Key")
         _op(pie, "m3d.open_editor", "Graph Editor", 'GRAPH', ui_type='FCURVES')
         _op(pie, "m3d.open_editor", "Dope Sheet", 'ACTION', ui_type='DOPESHEET')
@@ -174,14 +174,16 @@ class M3D_MT_keyframe_mm(Menu):
 # -----------------------------------------------------------------------------
 # Right click variants
 
+# (Clamped never overshoots between keys: what other packages call Plateau)
 TANGENTS = (
     ('SPLINE', "Spline", 'IPO_BEZIER'), ('LINEAR', "Linear", 'IPO_LINEAR'), ('CLAMPED', "Clamped", 'HANDLE_AUTOCLAMPED'),
-    ('FLAT', "Flat", 'IPO_CONSTANT'), ('STEPPED', "Stepped", 'IPO_CONSTANT'), ('PLATEAU', "Plateau", 'HANDLE_AUTOCLAMPED'),
+    ('FLAT', "Flat", 'IPO_CONSTANT'), ('STEPPED', "Stepped", 'IPO_CONSTANT'),
 )
 
 
 class M3D_OT_set_tangents(Operator):
-    """Tangents for the selected objects' keys (Spline, Linear, Clamped, Flat, Stepped, Plateau)"""
+    """Tangents (Spline, Linear, Clamped, Flat, Stepped) of the keys selected in the Graph Editor / Dope Sheet, else of
+every key of the selected bones (Pose Mode) or objects"""
     bl_idname = "m3d.set_tangents"
     bl_label = "Set Tangents"
     bl_options = {'REGISTER', 'UNDO'}
@@ -189,18 +191,22 @@ class M3D_OT_set_tangents(Operator):
     kind: bpy.props.EnumProperty(items=[(k, label, "") for k, label, _icon in TANGENTS])
 
     def execute(self, context):
-        from bpy_extras.anim_utils import animdata_get_channelbag_for_assigned_slot
+        from m3d_anim import target_curves
         interpolation = {'LINEAR': 'LINEAR', 'STEPPED': 'CONSTANT'}.get(self.kind, 'BEZIER')
         handle = {'SPLINE': 'AUTO', 'FLAT': 'ALIGNED'}.get(self.kind, 'AUTO_CLAMPED')
-        for ob in context.selected_objects:
-            bag = ob.animation_data and animdata_get_channelbag_for_assigned_slot(ob.animation_data)
-            for fcurve in (bag.fcurves if bag else ()):
-                for key in fcurve.keyframe_points:
-                    key.interpolation = interpolation
-                    key.handle_left_type = key.handle_right_type = handle
-                    if self.kind == 'FLAT':
-                        key.handle_left.y = key.handle_right.y = key.co.y
-                fcurve.update()
+        curves = [fc for _id, fc in target_curves(context)]
+        keys = [(fc, k) for fc in curves for k in fc.keyframe_points if k.select_control_point]
+        picked = bool(keys)
+        keys = keys or [(fc, k) for fc in curves for k in fc.keyframe_points]
+        for _fc, key in keys:
+            key.interpolation = interpolation
+            key.handle_left_type = key.handle_right_type = handle
+            if self.kind == 'FLAT':
+                key.handle_left.y = key.handle_right.y = key.co.y
+        for fc in {fc for fc, _k in keys}:
+            fc.update()
+        self.report({'INFO'}, "%s: %d %skeys" % (dict((k, l) for k, l, _i in TANGENTS)[self.kind], len(keys),
+                                                  "selected " if picked else ""))
         return {'FINISHED'}
 
 

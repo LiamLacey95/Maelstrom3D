@@ -577,10 +577,10 @@ MENUS = {
 
     # Animation menu set.
     "M3D_MT_key": ("Key", [
-        op("Set Key", "anim.keyframe_insert", 'KEY_HLT'),
-        op("Key Translate", "anim.keyframe_insert_by_name", type='Location'),
-        op("Key Rotate", "anim.keyframe_insert_by_name", type='Rotation'),
-        op("Key Scale", "anim.keyframe_insert_by_name", type='Scaling'),
+        op("Set Key", "m3d.set_key", 'KEY_HLT', channels='ALL'),
+        op("Key Translate", "m3d.set_key", channels='LOCATION'),
+        op("Key Rotate", "m3d.set_key", channels='ROTATION'),
+        op("Key Scale", "m3d.set_key", channels='SCALE'),
         op("Delete Keys", "anim.keyframe_delete_v3d", 'KEY_DEHLT'),
         op("Breakdown Key", "m3d.anim_key_type", 'KEYTYPE_BREAKDOWN_VEC', key_type='BREAKDOWN'),
         SEP,
@@ -1047,7 +1047,7 @@ MODE_HINTS = {
     'EDIT_ARMATURE': (*_SELECT_HINTS, *_VIEW_HINTS, ("Extrude", "Armature", "armature.extrude_move", {}),
                       ("Names", "Armature", "wm.call_menu_pie", {"name": "M3D_MT_rig_names"}),
                       ("Menu", "Armature", "wm.call_menu", {"name": "VIEW3D_MT_armature_context_menu"})),
-    'POSE': (*_SELECT_HINTS[:2], *_VIEW_HINTS, ("Set Key", "Pose", "anim.keyframe_insert_by_name", {"type": 'LocRotScale'}),
+    'POSE': (*_SELECT_HINTS[:2], *_VIEW_HINTS, ("Set Key", "Pose", "m3d.set_key", {"channels": 'ALL'}),
              ("Tween", "Pose", "m3d.tween", {}), ("Play", "Frames", "screen.animation_play", {})),
     'PAINT_WEIGHT': (("Paint", "Weight Paint", "paint.weight_paint", {"mode": 'NORMAL'}),
                      ("Subtract", "Weight Paint", "paint.weight_paint", {"mode": 'INVERT'}),
@@ -1300,10 +1300,10 @@ SHELVES = {
         ("object.empty_add", 'EMPTY_AXIS', {"type": 'PLAIN_AXES'}),
     ], _MODEL),
     'ANIMATION': ("Animation", [
-        ("anim.keyframe_insert", 'KEY_HLT', {}),
-        ("anim.keyframe_insert_by_name", 'CON_LOCLIKE', {"type": 'Location'}),
-        ("anim.keyframe_insert_by_name", 'CON_ROTLIKE', {"type": 'Rotation'}),
-        ("anim.keyframe_insert_by_name", 'CON_SIZELIKE', {"type": 'Scaling'}),
+        ("m3d.set_key", 'KEY_HLT', {"channels": 'ALL'}),
+        ("m3d.set_key", 'CON_LOCLIKE', {"channels": 'LOCATION'}),
+        ("m3d.set_key", 'CON_ROTLIKE', {"channels": 'ROTATION'}),
+        ("m3d.set_key", 'CON_SIZELIKE', {"channels": 'SCALE'}),
         ("anim.keyframe_delete_v3d", 'KEY_DEHLT', {}),
         None,
         ("screen.animation_play", 'PLAY', {}),

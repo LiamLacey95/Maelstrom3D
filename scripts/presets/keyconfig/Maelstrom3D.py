@@ -40,14 +40,19 @@ _QWER_MM = (
 _UNIVERSAL = _kmi("wm.tool_set_by_id", 'T', props={"name": "builtin.transform"}, ctrl=True)
 _PICKWALK = tuple(_kmi("m3d.pickwalk", k + '_ARROW', props={"direction": k}) for k in ('UP', 'DOWN', 'LEFT', 'RIGHT'))
 _KEYS = (
-    _mm('S', "M3D_MT_keyframe_mm", menu_mmb="M3D_MT_tangent_mm", shift=True),
     _kmi("m3d.hide_selection", 'H', ctrl=True),
     _kmi("m3d.show_hidden", 'H', props={"which": 'LAST'}, ctrl=True, shift=True),
     _kmi("m3d.show_hidden", 'H', props={"which": 'SELECTED'}, shift=True),
-    _kmi("anim.keyframe_insert_by_name", 'W', props={"type": 'Location'}, ctrl=True, shift=True),
-    _kmi("anim.keyframe_insert_by_name", 'E', props={"type": 'Rotation'}, ctrl=True, shift=True),
-    _kmi("anim.keyframe_insert_by_name", 'R', props={"type": 'Scaling'}, ctrl=True, shift=True),
     _kmi("anim.keyframe_insert", 'I', alt=True),
+)
+# Keying in Object and Pose Mode, one rule (m3d.set_key: the unlocked channels, custom properties too): S sets a key,
+# Shift+W / E / R and Ctrl+Shift+W / E / R key translate / rotate / scale; Shift+S + left click is the keyframe marking
+# menu, + middle click the tangents.
+_SET_KEYS = (
+    _kmi("m3d.set_key", 'S', props={"channels": 'ALL'}),
+    _mm('S', "M3D_MT_keyframe_mm", menu_mmb="M3D_MT_tangent_mm", shift=True),
+    *(_kmi("m3d.set_key", k, props={"channels": channels}, shift=True, **ctrl)
+      for k, channels in (('W', 'LOCATION'), ('E', 'ROTATION'), ('R', 'SCALE')) for ctrl in ({}, {"ctrl": True})),
 )
 
 
@@ -186,6 +191,7 @@ OVERRIDES = {
     # Animation: Alt+Q tweens (also in Object Mode below), Alt+Shift+P / R / B push, relax, breakdown (Blender's
     # Shift+E / Ctrl+E / Alt+E clash with the Maya-style keys).
     "Pose": [
+        *_SET_KEYS,
         _pie("M3D_MT_rig_names", 'N', shift=True),
         _kmi("m3d.tween", 'Q', props={"interactive": True}, alt=True),
         _kmi("pose.push", 'P', alt=True, shift=True),
@@ -203,9 +209,16 @@ OVERRIDES = {
         *(_kmi("m3d.workspace", k, props={"kind": kind}) for kind, k in WORKSPACE_KEYS),
         _kmi("wm.link", 'R', ctrl=True),
         _kmi("ed.redo", 'Y', ctrl=True, repeat=True),
+        # Z / Shift+Z undo / redo in every editor (the 3D View and Image keymaps put them over their Zoom Region too).
+        _kmi("ed.undo", 'Z', repeat=True),
+        _kmi("ed.redo", 'Z', shift=True, repeat=True),
         _kmi("screen.workspace_cycle", 'LEFT_BRACKET', props={"direction": 'PREV'}, shift=True),
         _kmi("screen.workspace_cycle", 'RIGHT_BRACKET', props={"direction": 'NEXT'}, shift=True),
     ],
+    # Z is Undo (Window): Zoom Region stays on the View menu of the Graph Editor and Dope Sheet (m3d_anim.py).
+    "View2D": [("REMOVE", {"type": 'Z', "value": 'PRESS'}, None)],
+    # S over a button keys that channel alone (a Channel Box row is one channel; Blender keys the whole vector).
+    "User Interface": [_kmi("anim.keyframe_insert_button", 'S', props={"all": False})],
     # Shift+drag on the move manipulator extrudes (components only; objects keep box selection).
     "Generic Gizmo Drag": [
         _kmi("m3d.gizmo_shift_drag", 'LEFTMOUSE', 'CLICK_DRAG', shift=True),
@@ -258,7 +271,7 @@ OVERRIDES = {
         _kmi("m3d.smooth_levels", 'PAGE_DOWN', props={"delta": -1}),
         _kmi("wm.context_toggle", 'INSERT', props={"data_path": "tool_settings.use_transform_data_origin"}),
         _pie("M3D_MT_shift_rmb", 'RIGHTMOUSE', shift=True),
-        *_QWER_MM, *_PICKWALK, *_KEYS, _UNIVERSAL,
+        *_QWER_MM, *_PICKWALK, *_KEYS, *_SET_KEYS, _UNIVERSAL,
         _kmi("m3d.cut", 'X', ctrl=True),
         ("REMOVE", {"type": 'F1', "value": 'PRESS'}, None),
         _kmi("m3d.soft_radius", 'B'),
