@@ -16130,6 +16130,8 @@ p8_releases[1]["html_url"] = "https://example.com/elsewhere"
 check(HP.latest_release() == ("m3d.7", HP.RELEASES), "a release page elsewhere is never linked")
 p8_releases[1]["html_url"] = HP.REPO + "/releases/tag/m3d.7"
 check(HP.tag_number("m3d.12") == 12 and HP.tag_number("dev") is None, "alpha numbers")
+check(HP.tag_number("v5.2.2-m3d.12-alpha") == 12 and HP.tag_number("v5.2.2-m3d.3") == 3 and HP.tag_number("m3d.13 (dev)") is None
+      and HP.tag_number("v1.0") is None, "...from the GitHub release tags too; a dev build has none")
 HP.version_tag = lambda: "m3d.5"
 m3d_user.data().pop("update", None)
 check(HP.start_update_check(manual=True), "with online access: the check starts")

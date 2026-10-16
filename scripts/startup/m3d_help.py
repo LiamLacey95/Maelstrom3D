@@ -293,9 +293,9 @@ def fetch(url):
 
 
 def tag_number(tag):
-    """"m3d.12" -> 12; None for "dev" or any other tag."""
+    """"m3d.12" or the release tag "v5.2.2-m3d.12-alpha" -> 12; None for "dev", "m3d.13 (dev)" or any other tag."""
     import re
-    found = re.fullmatch(r"m3d\.(\d+)", tag or "")
+    found = re.fullmatch(r"(?:v[\d.]+-)?m3d\.(\d+)(?:-[a-z]+)?", tag or "")
     return int(found.group(1)) if found else None
 
 
