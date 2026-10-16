@@ -24,6 +24,9 @@ class STATUSBAR_HT_header(Header):
         # Maelstrom3D: a command line result, or a note about a Python error.
         import m3d_help
         m3d_help.draw_status(layout)
+        # Maelstrom3D: a background render's progress, textures a loaded file didn't find.
+        import m3d_render
+        m3d_render.draw_status(layout)
 
         # Progress Bar
         layout.template_running_jobs()

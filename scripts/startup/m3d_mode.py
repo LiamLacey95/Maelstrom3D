@@ -306,8 +306,14 @@ EDITOR_NAMES = {'INFO': "Log (the reports and the commands run)", 'OUTLINER': "O
                 'IMAGE_EDITOR': "Image Editor", 'ShaderNodeTree': "Shader Editor", 'TEXT_EDITOR': "Text Editor"}   # (tooltips)
 
 
+def editor_window(context, ui_type):
+    """Another window that is just this editor (one m3d.open_editor opened), or None."""
+    return next((win for win in context.window_manager.windows if win != context.window and len(win.screen.areas) == 1
+                 and win.screen.areas[0].ui_type == ui_type), None)
+
+
 class M3D_OT_open_editor(Operator):
-    """Open an editor in a new window (Windows menu)"""
+    """Open an editor in a window of its own (Windows menu); when it is open already, that window comes to the front"""
     bl_idname = "m3d.open_editor"
     bl_label = "Open Editor Window"
 
@@ -316,9 +322,18 @@ class M3D_OT_open_editor(Operator):
     @classmethod
     def description(cls, _context, props):
         name = EDITOR_NAMES.get(props.ui_type, props.ui_type.replace("_", " ").title())
-        return "%s: open it in a window of its own" % name
+        return "%s: open it in a window of its own (the one that is open comes to the front)" % name
 
     def execute(self, context):
+        win = editor_window(context, self.ui_type)
+        if win is not None:
+            focus = getattr(win, "focus", None)   # (Window.focus() raises a window, in a build that has it)
+            if focus is not None:
+                focus()
+                return {'FINISHED'}
+            # Without it: that window closes and a new one opens in front (one window, not one more per click).
+            with context.temp_override(window=win):
+                bpy.ops.wm.window_close()
         bpy.ops.wm.window_new()
         context.window_manager.windows[-1].screen.areas[0].ui_type = self.ui_type
         return {'FINISHED'}
@@ -1136,6 +1151,117 @@ class PROPERTIES_PT_m3d_channel_box(_DockPanel, Panel):
                 row.label(text=mod.name)
 
 
+def layer_rows(lc, depth=0):
+    """(layer collection, depth) of every layer under `lc`, a parent before its children."""
+    for child in lc.children:
+        yield child, depth
+        yield from layer_rows(child, depth + 1)
+
+
+def layer_parent(scene, coll):
+    """The collection that has `coll` as a child (the scene's own collection at the top)."""
+    return next((c for c in (scene.collection, *bpy.data.collections) if coll.name in c.children), scene.collection)
+
+
+class M3D_OT_layer_edit(Operator):
+    """Layer Editor: a layer's right-click menu"""
+    bl_idname = "m3d.layer_edit"
+    bl_label = "Layer"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    ACTIONS = (('ADD', "Add Selected Objects", "Put the selected objects in this layer too"),
+               ('REMOVE', "Remove Selected Objects", "Take the selected objects out of this layer (an object in no other "
+                                                    "layer goes to the scene's top level)"),
+               ('SELECT', "Select Objects", "Select the objects of this layer"),
+               ('RENAME', "Rename Layer", "Rename this layer"),
+               ('DELETE', "Delete Layer", "Delete this layer: its objects and layers stay, one level up"))
+    action: bpy.props.EnumProperty(items=ACTIONS)
+    name: bpy.props.StringProperty(options={'SKIP_SAVE'})
+    new_name: bpy.props.StringProperty(name="Name", options={'SKIP_SAVE'})
+
+    @classmethod
+    def description(cls, _context, props):
+        return {key: text for key, _label, text in cls.ACTIONS}[props.action]
+
+    def invoke(self, context, _event):
+        if self.action == 'RENAME':
+            self.new_name = self.name
+            return context.window_manager.invoke_props_dialog(self, title="Rename Layer", confirm_text="Rename")
+        return self.execute(context)
+
+    def execute(self, context):
+        coll = bpy.data.collections.get(self.name)
+        scene = context.scene
+        if coll is None or coll.library is not None:
+            return {'CANCELLED'}
+        picked = list(context.selected_objects)
+        if self.action == 'ADD':
+            for ob in picked:
+                if ob.name not in coll.objects:
+                    coll.objects.link(ob)
+        elif self.action == 'REMOVE':
+            for ob in picked:
+                if ob.name in coll.objects:
+                    if len(ob.users_collection) == 1:
+                        scene.collection.objects.link(ob)
+                    coll.objects.unlink(ob)
+        elif self.action == 'SELECT':
+            if context.mode != 'OBJECT':
+                self.report({'WARNING'}, "Select Objects works in Object Mode")
+                return {'CANCELLED'}
+            found = [ob for ob in coll.all_objects if ob.visible_get()]
+            for ob in picked:
+                ob.select_set(False)
+            for ob in found:
+                ob.select_set(True)
+            if found:
+                context.view_layer.objects.active = found[0]
+            self.report({'INFO'}, "%d objects selected" % len(found))
+        elif self.action == 'RENAME':
+            if not self.new_name.strip():
+                return {'CANCELLED'}
+            coll.name = self.new_name.strip()
+        elif self.action == 'DELETE':
+            parent = layer_parent(scene, coll)
+            for ob in coll.objects:
+                if len(ob.users_collection) == 1 and ob.name not in parent.objects:
+                    parent.objects.link(ob)
+            for child in coll.children:
+                if child.name not in parent.children:
+                    parent.children.link(child)
+            bpy.data.collections.remove(coll)
+        return {'FINISHED'}
+
+
+class M3D_MT_layer(Menu):
+    """A layer's menu (right-click a row of the Layer Editor, or its arrow)"""
+    bl_label = "Layer"
+
+    def draw(self, context):
+        draw_layer_menu(self.layout, getattr(context, "m3d_layer", None))
+
+
+def draw_layer_menu(layout, coll):
+    if coll is None:
+        return
+    for key, label, _text in M3D_OT_layer_edit.ACTIONS:
+        if key == 'RENAME':
+            layout.separator()
+        o = layout.operator("m3d.layer_edit", text=label, icon='X' if key == 'DELETE' else 'NONE')
+        o.action, o.name = key, coll.name
+
+
+def layer_context_menu(self, context):
+    """Right-click on a row of the Layer Editor: the layer's commands above Blender's own (UI_MT_button_context_menu)."""
+    coll = getattr(context, "m3d_layer", None)
+    if isinstance(coll, bpy.types.Collection):
+        draw_layer_menu(self.layout, coll)
+        self.layout.separator()
+
+
+LAYER_ROWS = 60   # rows drawn in the Layer Editor
+
+
 class PROPERTIES_PT_m3d_layer_editor(_DockPanel, Panel):
     """Layer Editor: display layers are collections here"""
     bl_context = "channel_box"
@@ -1145,14 +1271,30 @@ class PROPERTIES_PT_m3d_layer_editor(_DockPanel, Panel):
         layout = self.layout
         _button(layout, context, "Create Layer from Selected", "object.move_to_collection", 'COLLECTION_NEW',
                     {"is_new": True, "new_collection_name": "layer1"})
+        rows = list(layer_rows(context.view_layer.layer_collection))
         col = layout.column(align=True)
-        for lc in context.view_layer.layer_collection.children:
+        for lc, depth in rows[:LAYER_ROWS]:
+            coll = lc.collection
             row = col.row(align=True)
+            row.context_pointer_set("m3d_layer", coll)   # (the right-click menu's layer)
             sub = row.row(align=True)
             sub.scale_x = 0.5
             sub.prop(lc, "hide_viewport", text="V", toggle=True, invert_checkbox=True)
-            sub.prop(lc.collection, "hide_select", text="R", toggle=True)
-            row.prop(lc.collection, "name", text="")
+            sub.prop(coll, "hide_select", text="R", toggle=True)
+            name = row.row(align=True)
+            if depth:   # (a layer inside another: indented under it)
+                name.separator(factor=2.0 * depth)
+            name.prop(coll, "name", text="")
+            count = row.row(align=True)
+            count.ui_units_x = 1.6
+            count.alignment = 'RIGHT'
+            count.label(text=str(len(coll.objects)))
+            row.menu("M3D_MT_layer", text="", icon='DOWNARROW_HLT')
+        if len(rows) > LAYER_ROWS:
+            layout.label(text="%d more layers not shown" % (len(rows) - LAYER_ROWS))
+        if rows:
+            from m3d_sculpt import reason
+            reason(layout, "Right-click a layer: add or remove the selection, select, rename, delete")
 
 
 def _button(layout, context, label, idname, icon, props, depress=False):
@@ -1434,6 +1576,8 @@ classes = (
     M3D_MT_marking_menu,
     M3D_MT_convert_selection_pie,
     PROPERTIES_PT_m3d_channel_box,
+    M3D_OT_layer_edit,
+    M3D_MT_layer,
     PROPERTIES_PT_m3d_layer_editor,
     PROPERTIES_PT_m3d_mtk_selection,
     PROPERTIES_PT_m3d_mtk_soft_selection,
@@ -1520,11 +1664,13 @@ def register():
     bpy.app.handlers.load_factory_startup_post.append(m3d_startup_scene)
     bpy.app.handlers.load_factory_preferences_post.append(m3d_preferences)
     bpy.app.timers.register(_migrate_on_startup, first_interval=1.0, persistent=True)
+    bpy.types.UI_MT_button_context_menu.prepend(layer_context_menu)
 
 
 def unregister():
     if bpy.app.timers.is_registered(_migrate_on_startup):
         bpy.app.timers.unregister(_migrate_on_startup)
+    bpy.types.UI_MT_button_context_menu.remove(layer_context_menu)
     bpy.app.handlers.load_factory_startup_post.remove(m3d_workspace_names)
     bpy.app.handlers.load_factory_startup_post.remove(m3d_startup_layout)
     bpy.app.handlers.load_factory_startup_post.remove(m3d_startup_scene)

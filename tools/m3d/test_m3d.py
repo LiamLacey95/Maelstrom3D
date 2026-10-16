@@ -6232,8 +6232,8 @@ check(all(isinstance(getattr(bpy.types, c.__name__, None), type) for c in RN.cla
       "Rendering classes registered")
 check(m3d_ui.shelves_for('RENDER') == ['RENDER_LIGHTS', 'RENDER_RENDER', 'CUSTOM'] and 'RENDER' in m3d_ui.STATUS_LINES, "Rendering shelf tabs and Status Line")
 check([it[3] for it in m3d_ui.SHELVES['RENDER_LIGHTS'][1] if it] == ["Point", "Spot", "Area", "Sun", "HDRI Sky", "Previous World"], "Lights shelf buttons")
-check([it[3] for it in m3d_ui.SHELVES['RENDER_RENDER'][1] if it] == ["Render", "Animation", "Render View", "Camera from View", "Look Through",
-                                                                  "Draft", "Medium", "Final"], "Render shelf buttons")
+check([it[3] for it in m3d_ui.SHELVES['RENDER_RENDER'][1] if it] == ["Render", "Animation", "Render View", "Background", "Camera from View",
+                                                                  "Turntable", "Look Through", "Draft", "Medium", "Final"], "Render shelf buttons")
 check(render_ws.m3d_kind == 'RENDER' and render_ws.object_mode == 'OBJECT', "Rendering workspace kind and entry mode")
 rn_src = open(RN.__file__, encoding="utf-8").read()
 for ic in set(re.findall(r"icon='([A-Z_0-9]+)'", rn_src)):
@@ -6531,12 +6531,12 @@ def rn_draw_all(label):
 check([c.__name__ for c in RN.PAGE_GATES] == ["PROPERTIES_PT_m3d_rn_materials_gate"], "Materials is the page with a gate")
 bpy.ops.object.select_all(action='DESELECT')
 bpy.context.view_layer.objects.active = None
-check(rn_shown("render_materials") == ["PROPERTIES_PT_m3d_rn_materials_gate"], "Materials without an object shows its message only: %s" % rn_shown("render_materials"))
+check(rn_shown("render_materials") == ["PROPERTIES_PT_m3d_rn_materials_gate", "PROPERTIES_PT_m3d_rn_scene_materials"], "Materials without an object shows its message (and Scene Materials): %s" % rn_shown("render_materials"))
 bpy.context.view_layer.objects.active = spot_
-check(rn_shown("render_materials") == ["PROPERTIES_PT_m3d_rn_materials_gate"], "...and for a light")
+check(rn_shown("render_materials") == ["PROPERTIES_PT_m3d_rn_materials_gate", "PROPERTIES_PT_m3d_rn_scene_materials"], "...and for a light")
 bpy.context.view_layer.objects.active = cube_rn
 cube_rn.select_set(True)
-check(rn_shown("render_materials") == ["PROPERTIES_PT_m3d_rn_slots", "PROPERTIES_PT_m3d_rn_surface"], "Materials with a mesh: %s" % rn_shown("render_materials"))
+check(rn_shown("render_materials") == ["PROPERTIES_PT_m3d_rn_slots", "PROPERTIES_PT_m3d_rn_surface", "PROPERTIES_PT_m3d_rn_scene_materials"], "Materials with a mesh: %s" % rn_shown("render_materials"))
 for page_ in rn_pages - {"render_materials"}:
     check(not any(n.endswith("_gate") for n in rn_shown(page_)) and rn_shown(page_), "%s needs no object: %s" % (page_, rn_shown(page_)))
 log_ = []
@@ -6545,7 +6545,7 @@ for cls_ in rn_panels("render_materials"):
     log_.extend(draw_stub(cls_, RnCtx()))
 check(sum(1 for r in log_ if r._kind == "prop" and r._args[1] == "default_value") == 6,
       "Surface shows base color, metallic, roughness, emission color / strength, normal strength")
-check(any(r._kind == "operator" and r._args[0] == "wm.context_set_id" and r.values().get("value") == "Shading" for r in log_), "Materials links to the Shading workspace")
+check(any(r._kind == "operator" and r._args[0] == "m3d.render_graph" and r.values().get("show") == 'GRAPH' for r in log_), "Materials: Edit Graph (in the Render View's place)")
 
 for engine_ in ('BLENDER_EEVEE', 'CYCLES'):
     rn.engine = engine_
@@ -15620,6 +15620,321 @@ p2_n = len(bpy.data.objects)
 check(bpy.ops.m3d.sculpt_object(name=p2_join.name, action='MERGE') == {'FINISHED'} and len(bpy.data.objects) == 1,
       "Merge Visible: one mesh (%d before)" % p2_n)
 clean_scene()
+
+# --- UX pass 2, P9: render snapshots, Scene Materials, the Shader Graph in F7, files (missing textures, HDRI paths, Save Copy for
+# Sharing), background renders and render jobs, the turntable, the Layer Editor.
+import time
+import m3d_render as RN
+from bpy_extras.object_utils import world_to_camera_view
+p9_dir = tempfile.mkdtemp(prefix="m3d_p9_")
+clean_scene()
+for coll_ in list(bpy.data.collections):
+    bpy.data.collections.remove(coll_)
+scn = bpy.context.scene
+p9_snap = (scn.render.engine, scn.render.resolution_x, scn.render.resolution_y, scn.render.resolution_percentage, scn.frame_start,
+           scn.frame_end, scn.render.filepath, scn.camera)
+scn.render.engine = 'BLENDER_WORKBENCH'
+scn.render.resolution_x = scn.render.resolution_y = 16
+scn.render.resolution_percentage, scn.frame_start, scn.frame_end = 100, 1, 2
+bpy.ops.mesh.primitive_cube_add()
+p9_cube = bpy.context.active_object
+bpy.ops.object.camera_add(location=(0, -6, 1), rotation=(math.radians(80), 0, 0))
+scn.camera = p9_cam = bpy.context.active_object
+RN._camera_ok.add(p9_cam.name)
+
+# Keep Each Render: each still in the next slot, named with the time, the preset and the engine; A/B flips back; keys flip.
+RN._slots.clear()
+check(scn.m3d_render.keep_renders and not scn.m3d_render.save_stills, "Keep Each Render is on, Save Each Still off")
+bpy.ops.m3d.render()
+bpy.ops.m3d.render()
+p9_img = RN.render_result()
+p9_names = [s.name for s in p9_img.render_slots]
+check(p9_img.render_slots.active_index == RN._slots[-1] and len(RN._slots) == 2 and RN._slots[0] != RN._slots[1]
+      and all(RN.SLOT_NAME.match(p9_names[i]) and p9_names[i].endswith(" Workbench") for i in RN._slots),
+      "two renders, two slots named with the time and the engine: %s" % p9_names)
+p9_last = p9_img.render_slots.active_index
+check(bpy.ops.m3d.render_compare() == {'FINISHED'} and p9_img.render_slots.active_index == RN._slots[0], "A/B: the render before")
+check(bpy.ops.m3d.render_compare() == {'FINISHED'} and p9_img.render_slots.active_index == p9_last, "...and back")
+scn.m3d_render.keep_renders = False
+bpy.ops.m3d.render()
+check(p9_img.render_slots.active_index == p9_last and len(RN._slots) == 2, "Keep Each Render off: the slot is rendered over")
+scn.m3d_render.keep_renders = True
+RN._slots[:] = list(range(len(p9_img.render_slots)))
+p9_count = len(p9_img.render_slots)
+bpy.ops.m3d.render()
+check(len(p9_img.render_slots) == p9_count + 1 and p9_img.render_slots.active_index == p9_count, "all slots full: a new one")
+RN._slots[:] = list(range(RN.MAX_SLOTS))
+while len(p9_img.render_slots) < RN.MAX_SLOTS:
+    p9_img.render_slots.new()
+bpy.ops.m3d.render()
+check(len(p9_img.render_slots) == RN.MAX_SLOTS and p9_img.render_slots.active_index == 0 and RN._slots[-1] == 0,
+      "...up to %d, then the oldest makes room" % RN.MAX_SLOTS)
+RN._file_loaded()
+check(not RN._slots and not any(RN.SLOT_NAME.match(s.name) for s in p9_img.render_slots), "a file loads: the slot names go (no renders in it)")
+log_ = []
+RN.draw_render_view_header(Rec(log_), NS(space_data=NS(image=p9_img), scene=scn))
+check_calls_ext("Render View header", log_)
+check({"m3d.render_compare", "image.save_as"} <= {r._args[0] for r in log_ if r._kind == "operator"}
+      and any(r._kind == "menu" and r._args[0] == "M3D_MT_render_slots" for r in log_), "Render View header: the slots, A/B, Save Render")
+check(any(e.get("path") == "scene.m3d_render.keep_renders" for e in m3d_ui.MENUS["M3D_MT_render"][1]), "Render > Keep Each Render")
+log_ = []
+RN.M3D_MT_render_slots.draw(NS(layout=Rec(log_)), bpy.context)
+check([r.values().get("value") for r in log_ if r._kind == "operator" and r.values().get("data_path") == "space_data.image.render_slots.active_index"]
+      == list(range(len(p9_img.render_slots))), "the slot dropdown: every slot")
+check(RN.slots_only(bpy.context, p9_img), "one render layer, no passes: the header shows the slots alone")
+scn.view_layers[0].use_pass_z = True
+check(not RN.slots_only(bpy.context, p9_img), "...with passes: Blender's slot / layer / pass dropdowns")
+scn.view_layers[0].use_pass_z = False
+for p9_key, p9_mods, p9_back in (('RIGHT_ARROW', {}, False), ('LEFT_ARROW', {}, True), ('J', {"shift": False}, False), ('J', {"shift": True}, True)):
+    p9_items = find("Image", "image.cycle_render_slot", p9_key, **p9_mods)
+    check(p9_items and p9_items[0].properties.reverse == p9_back, "Render View: %s %s flips the slot" % (p9_key, p9_mods))
+# Save Each Still: render/stills/<scene>_v###.png next to the saved file, a PNG whatever the output is.
+bpy.ops.wm.save_as_mainfile(filepath=os.path.join(p9_dir, "p9.blend"))
+scn.m3d_render.save_stills = True
+scn.render.image_settings.file_format = 'OPEN_EXR'
+bpy.ops.m3d.render()
+bpy.ops.m3d.render()
+p9_stills = os.path.join(p9_dir, "render", "stills")
+p9_base = bpy.path.clean_name(scn.name)
+check(sorted(os.listdir(p9_stills)) == [p9_base + "_v001.png", p9_base + "_v002.png"], "Save Each Still: v001, v002 (%s)" % os.listdir(p9_stills))
+check(scn.render.image_settings.file_format == 'OPEN_EXR', "...and the output format is as it was")
+scn.render.image_settings.file_format = 'PNG'
+scn.m3d_render.save_stills = False
+log_ = draw_stub(RN.PROPERTIES_PT_m3d_rn_output, RnCtx())
+check({"keep_renders", "save_stills"} <= {r._args[1] for r in log_ if r._kind == "prop"}, "Output tab: Keep Each Render, Save Each Still")
+
+# Scene Materials: a grid of the file's materials (internal ones left out), New / Duplicate keep theirs, Delete Unused.
+p9_used = bpy.data.materials.new("P9Used")
+p9_cube.data.materials.clear()
+p9_cube.data.materials.append(p9_used)
+p9_spare = bpy.data.materials.new("P9Spare")
+bpy.data.materials.new("m3dP9Internal")
+check(p9_used in RN.scene_materials() and p9_spare in RN.scene_materials() and not any(m.name.startswith("m3dP9") for m in RN.scene_materials()),
+      "Scene Materials leaves Maelstrom3D's own materials out")
+check(p9_spare in RN.unused_materials() and p9_used not in RN.unused_materials(), "unused: on no object")
+bpy.ops.m3d.scene_material(action='NEW')
+p9_new = RN.picked_material(scn)
+check(p9_new is not None and p9_new.use_fake_user, "New: a material kept when the file is saved, and picked")
+bpy.ops.m3d.scene_material(action='DUPLICATE', name="P9Used")
+p9_dup = RN.picked_material(scn)
+check(p9_dup is not None and p9_dup != p9_used and p9_dup.use_fake_user and p9_dup.name.startswith("P9Used"), "Duplicate: a copy, kept")
+bpy.ops.m3d.scene_material(action='RENAME', name=p9_dup.name, new_name="P9Copy")
+check(p9_dup.name == "P9Copy" and scn.m3d_render.browser_material == "P9Copy", "Rename keeps it picked")
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.m3d.scene_material(action='SELECT', name="P9Used")
+check(bpy.context.selected_objects == [p9_cube] and bpy.context.active_object == p9_cube, "Select Objects Using")
+render_ws.m3d_page_right = "render_materials"
+scn.m3d_render.browser_material = "P9Used"
+log_ = draw_stub(RN.PROPERTIES_PT_m3d_rn_scene_materials, RnCtx())
+check_calls_ext("Scene Materials", log_)
+p9_actions = {r.values().get("action") for r in log_ if r._kind == "operator" and r._args[0] == "m3d.scene_material"}
+check(p9_actions >= {'NEW', 'DELETE_UNUSED', 'PICK', 'SELECT', 'DUPLICATE', 'RENAME'}
+      and any(r._kind == "operator" and r._args[0] == "m3d.assign_existing_material" and r.values().get("material") == "P9Used" for r in log_)
+      and sum(1 for r in log_ if r._kind == "template_icon") == min(len(RN.scene_materials()), RN.GRID_MAX),
+      "the grid (a preview each) and Assign to Selection, Select Objects Using, Duplicate, Rename, New, Delete Unused")
+bpy.ops.m3d.scene_material(action='DELETE_UNUSED')
+check("P9Spare" not in bpy.data.materials and "P9Copy" not in bpy.data.materials and "P9Used" in bpy.data.materials
+      and "m3dP9Internal" in bpy.data.materials, "Delete Unused: the unused ones go (ours stay)")
+render_ws.m3d_page_right = "render_camera"
+bpy.ops.m3d.scene_materials_show()
+check(render_ws.m3d_page_right == "render_materials", "Lighting/Shading > Scene Materials opens the Materials tab")
+check(any(e.get("idname") == "m3d.scene_materials_show" for e in m3d_ui.MENUS["M3D_MT_lighting_shading"][1]), "...it is in the menu")
+
+# The Shader Graph in F7's middle area (the area keeps what it shows); open_editor finds its window again.
+p9_screen = render_ws.screens[0]
+p9_area = RN.middle_area(p9_screen)
+check(p9_area is not None and p9_area.type == 'IMAGE_EDITOR' and not RN.graph_shown(p9_screen), "F7's middle area is the Render View")
+p9_area.ui_type = RN.GRAPH
+check(RN.middle_area(p9_screen) == p9_area and RN.graph_shown(p9_screen), "...switched to the Shader Graph")
+RN.render_view_back(p9_screen)
+check(p9_area.type == 'IMAGE_EDITOR' and p9_area.spaces.active.mode == 'VIEW', "...and back to the Render View (a render shows there)")
+log_ = []
+RN.draw_status_line(Rec(log_), RnCtx())
+check("m3d.render_graph" in [r._args[0] for r in log_ if r._kind == "operator"], "F7's Status Line: Shader Graph beside Render View")
+p9_w0 = NS(screen=NS(areas=[NS(ui_type='VIEW_3D'), NS(ui_type='PROPERTIES')]))
+p9_w1 = NS(screen=NS(areas=[NS(ui_type='ShaderNodeTree')]))
+p9_ctx = NS(window=p9_w0, window_manager=NS(windows=[p9_w0, p9_w1]))
+check(m3d_mode.editor_window(p9_ctx, 'ShaderNodeTree') is p9_w1 and m3d_mode.editor_window(p9_ctx, 'OUTLINER') is None,
+      "open_editor finds the window it opened before")
+
+# Missing textures: the banner after a load, Show List, dismiss; bundled HDRIs are found again in this install.
+p9_png = os.path.join(p9_dir, "p9_tex.png")
+p9_tex = bpy.data.images.new("P9Tex", 4, 4)
+p9_tex.filepath_raw, p9_tex.file_format = p9_png, 'PNG'
+p9_tex.save()
+p9_tex.source = 'FILE'
+p9_tex.use_fake_user = True
+check(not RN.missing_images(), "a texture that is there is not missing")
+os.remove(p9_png)
+p9_hd = bpy.data.images.new("P9Hdri", 4, 4)
+p9_hd.source = 'FILE'
+p9_hd.filepath_raw = "C:/Old Install/datafiles/studiolights/world/" + RN.DEFAULT_HDRI
+RN._check_files()
+check(os.path.normcase(p9_hd.filepath) == os.path.normcase(RN.default_hdri()), "a bundled HDRI moved: found again (%s)" % p9_hd.filepath)
+check("P9Tex" in RN._missing and "P9Tex" in RN.still_missing(), "the missing texture is noted: %s" % RN._missing)
+log_ = []
+RN.draw_status(Rec(log_))
+p9_n = len(RN.still_missing())
+check(any(r._kind == "label" and r._kw.get("text") == "%d texture%s not found" % (p9_n, "" if p9_n == 1 else "s") for r in log_)
+      and {"file.find_missing_files", "m3d.missing_textures"} <= {r._args[0] for r in log_ if r._kind == "operator"},
+      "status bar: N textures not found, Find Missing Files..., Show List")
+check(bpy.ops.m3d.missing_textures(dismiss=True) == {'FINISHED'} and not RN.still_missing(), "...closed with its X")
+bpy.data.images.remove(p9_hd)
+# HDRI paths: relative to the saved file (a bundled one stays where the install is).
+p9_own = os.path.join(p9_dir, "sky", "own.exr")
+os.makedirs(os.path.dirname(p9_own))
+shutil.copyfile(RN.default_hdri(), p9_own)
+bpy.ops.m3d.hdri_setup(filepath=p9_own)
+p9_env = RN.hdri_nodes(scn.world)["env"].image
+check(p9_env.filepath.replace("\\", "/") == "//sky/own.exr" and scn.m3d_render.hdri_path.replace("\\", "/") == "//sky/own.exr",
+      "an HDRI of yours is stored relative to the file: %s, %s" % (p9_env.filepath, scn.m3d_render.hdri_path))
+bpy.ops.m3d.hdri_setup(filepath=RN.default_hdri())
+check(os.path.isabs(RN.hdri_nodes(scn.world)["env"].image.filepath), "a bundled HDRI keeps its install path")
+# Save Copy for Sharing: packed (this scene unchanged) or relative, with the notes for stock Blender.
+p9_tex.filepath_raw = p9_png
+p9_tex.save()
+bpy.ops.m3d.hdri_setup(filepath=p9_own)
+p9_share = os.path.join(p9_dir, "out", "shared.blend")
+os.makedirs(os.path.dirname(p9_share))
+check(bpy.ops.m3d.save_for_sharing(filepath=p9_share, textures='PACK') == {'FINISHED'} and os.path.isfile(p9_share), "Save Copy for Sharing")
+check(not p9_tex.packed_file and not p9_env.packed_file and bpy.data.filepath.endswith("p9.blend"), "...this scene is as it was")
+
+
+def p9_linked_images(path):
+    """(name, filepath, packed) of the images in a .blend."""
+    with bpy.data.libraries.load(path, link=True) as (src, dst):
+        dst.images = [n for n in src.images if n.startswith(("P9Tex", "own"))]
+    found = [(im.name, im.filepath, bool(im.packed_file)) for im in dst.images]
+    for lib in [lib for lib in bpy.data.libraries if os.path.normcase(bpy.path.abspath(lib.filepath)) == os.path.normcase(path)]:
+        bpy.data.libraries.remove(lib)
+    return sorted(found)
+
+
+p9_found = p9_linked_images(p9_share)
+check(len(p9_found) == 2 and all(packed for _n, _p, packed in p9_found), "...the textures are packed into it: %s" % p9_found)
+check(bpy.ops.m3d.save_for_sharing(filepath=p9_share, textures='RELATIVE') == {'FINISHED'}, "Save Copy for Sharing, textures beside it")
+p9_found = p9_linked_images(p9_share)
+check(len(p9_found) == 2 and all(p.replace("\\", "/").startswith("//../") and not packed for _n, p, packed in p9_found), "...with relative paths: %s" % p9_found)
+check(any("Load UI" in line for line in RN.sharing_notes()), "the note says how to open it in stock Blender")
+check(any(e.get("idname") == "m3d.save_for_sharing" for e in m3d_ui.MENUS["M3D_MT_file"][1]), "File > Save Copy for Sharing...")
+scn.world = None
+
+# Render Sequence in Background: a real Blender renders the two frames (16 px, Workbench) while this one goes on; Cancel kills it.
+scn.render.filepath = "//render/"
+check("--console-crash-handler" in RN.job_command("x.blend", scn) and RN.job_command("x.blend", scn)[-1] == "-a", "the job command")
+check(bpy.ops.m3d.render_background('INVOKE_DEFAULT') == {'FINISHED'} and RN._bg["state"] == 'RUNNING' and RN._bg["total"] == 2,
+      "Render Sequence in Background starts")
+p9_t0 = time.time()
+while RN._bg["proc"] is not None and (RN._bg["proc"].poll() is None or RN._bg["reader"].is_alive()) and time.time() - p9_t0 < 180:
+    time.sleep(0.25)
+RN.background_tick()
+p9_out = os.path.join(p9_dir, "render")
+check(RN._bg["state"] == 'DONE' and RN._bg["saved"] == 2 and sorted(n for n in os.listdir(p9_out) if n.endswith(".png")) == [p9_base + "_0001.png", p9_base + "_0002.png"],
+      "...and renders both frames: %s, %s" % (RN.background_text(), sorted(os.listdir(p9_out))))
+check(not os.path.exists(RN._bg["temp"]) and RN.background_text().startswith("Background render done: 2 frames"), "...the copy goes, the note says so")
+log_ = []
+RN.draw_status(Rec(log_))
+check({"wm.path_open", "m3d.render_background_stop"} <= {r._args[0] for r in log_ if r._kind == "operator"}, "...with Open Folder and close")
+check(bpy.ops.m3d.render_background(existing='VERSION') == {'FINISHED'} and RN._bg["folder"].replace("\\", "/").endswith("render/v002"),
+      "frames there: a new version folder")
+p9_proc = RN._bg["proc"]
+log_ = []
+RN.draw_status(Rec(log_))
+check(any(r._kind == "progress" for r in log_) and "m3d.render_background_stop" in [r._args[0] for r in log_ if r._kind == "operator"],
+      "while it runs: the progress and Cancel")
+bpy.ops.m3d.render_background_stop()
+check(p9_proc.poll() is not None and RN._bg["state"] == 'CANCELLED' and RN._bg["proc"] is None, "Cancel stops the other Blender")
+bpy.ops.m3d.render_background_stop()
+check(RN._bg["state"] is None, "...and the note closes")
+p9_job = os.path.join(p9_dir, "job", "shot.bat")
+os.makedirs(os.path.dirname(p9_job))
+check(bpy.ops.m3d.render_job_export(filepath=p9_job) == {'FINISHED'} and os.path.isfile(os.path.join(p9_dir, "job", "shot.blend")),
+      "Export Render Job: the scene's copy")
+p9_text = open(p9_job if sys.platform == "win32" else p9_job[:-4] + ".sh").read()
+check(bpy.app.binary_path in p9_text and "shot.blend" in p9_text and " -a" in p9_text.replace('"', ""), "...and the script: %s" % p9_text)
+check({"m3d.render_background", "m3d.render_job_export", "m3d.turntable", "m3d.turntable_remove"}
+      <= {e.get("idname") for e in m3d_ui.MENUS["M3D_MT_render"][1]}, "the Render menu: background render, render job, turntable")
+
+# Turntable: the camera on a pivot at the selection's centre, once around linearly; or the sky turns; Remove puts things back.
+scn.frame_start, scn.frame_end = 1, 24
+p9_cube.location = (2, 0, 1)
+bpy.context.view_layer.update()
+bpy.ops.object.select_all(action='DESELECT')
+p9_cube.select_set(True)
+check(bpy.ops.m3d.turntable(turn='CAMERA') == {'FINISHED'}, "Create Turntable")
+p9_pivot = RN.turntable_pivot(scn)
+check(p9_pivot is not None and (p9_pivot.location - p9_cube.location).length < 1e-4 and scn.camera.parent == p9_pivot,
+      "a pivot at the selection's centre, the camera on it")
+p9_rot = []
+for frame_ in (1, 7, 13, 25):
+    scn.frame_set(frame_)
+    p9_rot.append(p9_pivot.rotation_euler[2])
+check(all(abs(a - b) < 1e-4 for a, b in zip(p9_rot, [0, math.pi / 2, math.pi, 2 * math.pi])), "360 degrees over the range, linear: %s" % p9_rot)
+p9_ndc = world_to_camera_view(scn, scn.camera, p9_cube.matrix_world.translation)
+check(abs(p9_ndc.x - 0.5) < 0.01 and abs(p9_ndc.y - 0.5) < 0.01, "...framing it: %s" % p9_ndc)
+check(bpy.ops.m3d.turntable_remove() == {'FINISHED'} and RN.turntable_pivot(scn) is None and scn.camera == p9_cam
+      and "Turntable Camera" not in bpy.data.objects, "Remove Turntable: the scene camera is the one before")
+bpy.ops.m3d.hdri_setup(filepath=RN.default_hdri())
+p9_sock = RN.hdri_nodes(scn.world)["mapping"].inputs["Rotation"]
+p9_sock.default_value[2] = 0.5
+bpy.ops.m3d.turntable(turn='HDRI')
+scn.frame_set(13)
+check(abs(p9_sock.default_value[2] - (0.5 + math.pi)) < 1e-4 and RN.turntable_pivot(scn).rotation_euler[2] == 0, "Sky Around: the HDRI turns, the camera stays")
+bpy.ops.m3d.turntable_remove()
+scn.frame_set(13)
+check(abs(p9_sock.default_value[2] - 0.5) < 1e-4, "...and Remove puts the sky back")
+log_ = []
+RN.draw_turntable(Rec(log_), bpy.context)
+check(any(r._kind == "operator_menu_enum" and r._args[0] == "m3d.turntable" for r in log_), "the turntable buttons")
+check(S.PROPERTIES_PT_m3d_sc_turntable.page == "sculpt_display", "...in Sculpt's Display tab")
+scn.world = None
+
+# Layer Editor: nested layers indented, counts, a menu per row (right-click too): add / remove / select / rename / delete.
+p9_l1 = bpy.data.collections.new("P9Layer")
+p9_l2 = bpy.data.collections.new("P9Inner")
+scn.collection.children.link(p9_l1)
+p9_l1.children.link(p9_l2)
+p9_l2.objects.link(p9_cam)
+log_ = draw_stub(m3d_mode.PROPERTIES_PT_m3d_layer_editor, RnCtx())
+check_calls_ext("Layer Editor", log_)
+p9_rows = [r for r in log_ if r._kind == "prop" and r._args[1] == "name"]
+check([r._args[0] for r in p9_rows] == [p9_l1, p9_l2] and [r._kw.get("factor") for r in log_ if r._kind == "separator"] == [2.0],
+      "nested layers: the inner one indented under its parent: %s" % [(r._kind, r._args[:1], r._kw) for r in log_ if r._kind in {"prop", "label"}])
+check([r._kw.get("text") for r in log_ if r._kind == "label" and r._kw.get("text", "").isdigit()] == ["0", "1"]
+      and sum(1 for r in log_ if r._kind == "menu" and r._args[0] == "M3D_MT_layer") == 2, "each row: its object count and menu")
+log_ = []
+m3d_mode.layer_context_menu(NS(layout=Rec(log_)), NS(m3d_layer=p9_l1))
+check([r.values().get("action") for r in log_ if r._kind == "operator"] == ['ADD', 'REMOVE', 'SELECT', 'RENAME', 'DELETE'], "right-click a layer: its commands")
+log_ = []
+m3d_mode.layer_context_menu(NS(layout=Rec(log_)), NS())
+check(not log_, "...not on other buttons")
+bpy.ops.object.select_all(action='DESELECT')
+p9_cube.select_set(True)
+bpy.ops.m3d.layer_edit(action='ADD', name="P9Layer")
+check(p9_cube.name in p9_l1.objects, "Add Selected Objects")
+for coll_ in list(p9_cube.users_collection):
+    if coll_ != p9_l1:
+        coll_.objects.unlink(p9_cube)
+bpy.ops.m3d.layer_edit(action='REMOVE', name="P9Layer")
+check(p9_cube.name not in p9_l1.objects and p9_cube.name in scn.collection.objects, "Remove Selected Objects (to the top level when in no other)")
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.m3d.layer_edit(action='SELECT', name="P9Layer")
+check(bpy.context.selected_objects == [p9_cam], "Select Objects (inner layers too)")
+bpy.ops.m3d.layer_edit(action='RENAME', name="P9Inner", new_name="P9Renamed")
+check(p9_l2.name == "P9Renamed", "Rename Layer")
+bpy.ops.m3d.layer_edit(action='DELETE', name="P9Layer")
+check("P9Layer" not in bpy.data.collections and p9_l2.name in scn.collection.children and p9_cam.name in p9_l2.objects,
+      "Delete Layer: its layers and objects stay, one level up")
+bpy.data.collections.remove(p9_l2)
+
+(scn.render.engine, scn.render.resolution_x, scn.render.resolution_y, scn.render.resolution_percentage, scn.frame_start, scn.frame_end,
+ scn.render.filepath, scn.camera) = p9_snap
+clean_scene()
+for m_ in [m for m in bpy.data.materials if m.name.startswith(("P9", "m3dP9", "standardSurface"))]:
+    bpy.data.materials.remove(m_)
+for im_ in [im for im in bpy.data.images if im.name.startswith(("P9", "own", "courtyard"))]:
+    bpy.data.images.remove(im_)
+shutil.rmtree(p9_dir, ignore_errors=True)
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

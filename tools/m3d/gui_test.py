@@ -12800,6 +12800,219 @@ def p5_done():
     check(not tracebacks(), "Python error in the P5 steps")
 
 
+# ----------------------------------------------------------------------------------------------------
+# UX pass 2, P9: render snapshots and their keys, the Shader Graph in F7, Scene Materials, the status bar notes (a texture not
+# found, a background render: a real one), the Layer Editor, the turntable in Sculpt's Display tab, one Shader Editor window.
+import m3d_help
+
+
+def p9_redraw():
+    for a in window().screen.areas:
+        a.tag_redraw()
+    m3d_help._redraw_status()
+
+
+def p9_render_view_xy():
+    region = next(r for r in rn_image_area().regions if r.type == 'WINDOW')
+    return region.x + region.width // 2, region.y + region.height // 2
+
+
+@step
+def p9_setup():
+    bpy.ops.m3d.workspace(kind='MODEL')
+    for ob in list(bpy.data.objects):
+        if ob.mode != 'OBJECT':
+            bpy.context.view_layer.objects.active = ob
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.data.objects.remove(ob)
+    for coll in list(bpy.data.collections):
+        bpy.data.collections.remove(coll)
+    scene = bpy.context.scene
+    r = scene.render
+    GIZMO["p9_start"] = (r.engine, r.resolution_x, r.resolution_y, r.resolution_percentage, r.filepath, scene.frame_start, scene.frame_end)
+    r.engine, r.resolution_x, r.resolution_y, r.resolution_percentage = 'BLENDER_EEVEE', 32, 24, 100
+    GIZMO["p9_samples"], scene.eevee.taa_render_samples = scene.eevee.taa_render_samples, 1
+    scene.frame_start, scene.frame_end, scene.frame_current = 1, 2, 1
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.mesh.primitive_cube_add()
+        box = bpy.context.active_object
+        box.name = "P9Box"
+        box.data.materials.append(bpy.data.materials.new("P9Mat"))
+        bpy.ops.object.camera_add(location=(0, -6, 1), rotation=(math.radians(80), 0, 0))
+    scene.camera = bpy.context.active_object
+    m3d_render._camera_ok.add(scene.camera.name)
+    m3d_render._slots.clear()
+    GIZMO["p9_dir"] = tempfile.mkdtemp(prefix="m3d_gui_p9_")
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(GIZMO["p9_dir"], "p9.blend"))
+    r.filepath = "//render/"
+    bpy.ops.m3d.workspace(kind='RENDER')
+
+
+@step
+def p9_render_one():   # (a step after the switch: the Render View is drawn by then)
+    RN_DONE["renders"] = 0
+    an_status("m3d.render")
+
+
+step(wait_until(lambda: RN_DONE["renders"] >= 1 and not bpy.app.is_job_running('RENDER'), "the first P9 render", tries=60))
+
+
+@step
+def p9_render_two():
+    RN_DONE["renders"] = 0
+    an_status("m3d.render")
+
+
+step(wait_until(lambda: RN_DONE["renders"] >= 1 and not bpy.app.is_job_running('RENDER'), "the second P9 render", tries=60))
+
+
+@step
+def p9_slots():
+    image = m3d_render.render_result()
+    slots = m3d_render._slots
+    check(len(slots) == 2 and image.render_slots.active_index == slots[-1] and rn_image_area().spaces.active.image == image,
+          "Keep Each Render: two renders, two slots, the newest shown (%s, %d)" % (slots, image.render_slots.active_index))
+    check(all(m3d_render.SLOT_NAME.match(image.render_slots[i].name) for i in slots), "...named with the time")
+    GIZMO["p9_frame"] = bpy.context.scene.frame_current
+    xy = p9_render_view_xy()
+    event('MOUSEMOVE', xy=xy)
+    event('LEFT_ARROW', 'PRESS', xy)
+    event('LEFT_ARROW', 'RELEASE', xy)
+
+
+@step
+def p9_slot_left():
+    image = m3d_render.render_result()
+    check(image.render_slots.active_index == m3d_render._slots[0], "Left over the Render View: the render before (%d)" % image.render_slots.active_index)
+    check(bpy.context.scene.frame_current == GIZMO["p9_frame"], "...and not the frame")
+    xy = p9_render_view_xy()
+    event('J', 'PRESS', xy)
+    event('J', 'RELEASE', xy)
+
+
+@step
+def p9_slot_j():
+    image = m3d_render.render_result()
+    check(image.render_slots.active_index == m3d_render._slots[-1], "J: the next render")
+    an_status("m3d.render_graph")
+    p9_redraw()
+
+
+@step
+def p9_graph():
+    check(m3d_render.graph_shown(window().screen) and rn_image_area() is None, "Shader Graph: F7's middle area shows the graph")
+    check(not tracebacks(), "Python error with the Shader Graph shown")
+    RN_DONE["renders"] = 0
+    an_status("m3d.render")
+
+
+step(wait_until(lambda: RN_DONE["renders"] >= 1 and not bpy.app.is_job_running('RENDER'), "the render from the Shader Graph", tries=60))
+
+
+@step
+def p9_graph_render():
+    check(not m3d_render.graph_shown(window().screen) and rn_image_area() is not None and len(m3d_render._slots) == 3,
+          "a render brings the Render View back, into a third slot")
+    check(len(bpy.context.window_manager.windows) == 1, "...without a render window: %s" % [[a.type for a in w.screen.areas]
+                                                                      for w in bpy.context.window_manager.windows])
+    rn_press("m3d.dock_page", tab="render_materials")
+    p9_redraw()
+
+
+@step
+def p9_materials():
+    check(window().workspace.m3d_page_right == "render_materials" and not tracebacks(), "Scene Materials drawn without an error")
+    image = bpy.data.images.new("P9Missing", 4, 4)
+    image.source = 'FILE'
+    image.filepath_raw = os.path.join(GIZMO["p9_dir"], "gone.png")
+    m3d_render._missing[:] = ["P9Missing"]
+    GIZMO["p9_drawn"], GIZMO["p9_draw"] = [], m3d_render.draw_status
+
+    def rec(layout):   # (what the status bar drew: the background render, the missing texture)
+        GIZMO["p9_drawn"].append((m3d_render._bg["state"], tuple(m3d_render.still_missing())))
+        GIZMO["p9_draw"](layout)
+    m3d_render.draw_status = rec
+    check(an_status("m3d.render_background") == {'FINISHED'} and m3d_render._bg["state"] == 'RUNNING', "Render Sequence in Background starts")
+    p9_redraw()
+
+
+step(wait_until(lambda: m3d_render._bg["state"] not in {None, 'RUNNING'}, "the background render", tries=150))
+step(wait_until(lambda: (m3d_render._bg["state"], ("P9Missing",)) in GIZMO["p9_drawn"], "the status bar to show the result", tries=30))
+
+
+@step
+def p9_background_done():
+    folder = os.path.join(GIZMO["p9_dir"], "render")
+    files = sorted(n for n in os.listdir(folder) if n.endswith(".png")) if os.path.isdir(folder) else []
+    check(m3d_render._bg["state"] == 'DONE' and len(files) == 2, "the background render saved both frames: %s, %s" % (m3d_render.background_text(), files))
+    check(not tracebacks(), "Python error in the status bar (background render, texture not found)")
+    m3d_render.draw_status = GIZMO["p9_draw"]
+    check(('RUNNING', ("P9Missing",)) in GIZMO["p9_drawn"], "the status bar showed the progress and the texture not found")
+    an_status("m3d.render_background_stop")
+    an_status("m3d.missing_textures", dismiss=True)
+    check(m3d_render._bg["state"] is None and not m3d_render.still_missing(), "the status bar notes close")
+    bpy.data.images.remove(bpy.data.images["P9Missing"])
+    # The Layer Editor with a layer inside another.
+    outer, inner = bpy.data.collections.new("P9Outer"), bpy.data.collections.new("P9Inner")
+    bpy.context.scene.collection.children.link(outer)
+    outer.children.link(inner)
+    inner.objects.link(bpy.data.objects["P9Box"])
+    bpy.ops.m3d.workspace(kind='MODEL')
+    with bpy.context.temp_override(window=window(), screen=window().screen):
+        bpy.ops.m3d.dock_tab(tab='CHANNEL_BOX')
+    p9_redraw()
+
+
+@step
+def p9_layers():
+    check(not tracebacks(), "Python error in the Layer Editor with nested layers")
+    box = bpy.data.objects["P9Box"]
+    for ob in bpy.context.selected_objects:
+        ob.select_set(False)
+    box.select_set(True)
+    bpy.context.view_layer.objects.active = box
+    bpy.ops.m3d.turntable(turn='CAMERA')
+    bpy.ops.m3d.workspace(kind='SCULPT')
+    window().workspace.m3d_page_right = "sculpt_display"
+    p9_redraw()
+
+
+@step
+def p9_turntable():
+    check(m3d_render.turntable_pivot(bpy.context.scene) is not None and not tracebacks(), "the Turntable panel of Sculpt's Display tab")
+    bpy.ops.m3d.turntable_remove()
+    bpy.ops.m3d.workspace(kind='MODEL')
+    GIZMO["p9_windows"] = len(bpy.context.window_manager.windows)
+    an_status("m3d.open_editor", ui_type='ShaderNodeTree')
+
+
+@step
+def p9_editor_again():
+    check(len(bpy.context.window_manager.windows) == GIZMO["p9_windows"] + 1, "a Shader Editor window opens")
+    an_status("m3d.open_editor", ui_type='ShaderNodeTree')
+
+
+@step
+def p9_editor_once():
+    wm = bpy.context.window_manager
+    check(len(wm.windows) == GIZMO["p9_windows"] + 1, "a second click: still one Shader Editor window (%d)" % len(wm.windows))
+    for win in list(wm.windows)[1:]:
+        with bpy.context.temp_override(window=win):
+            bpy.ops.wm.window_close()
+
+
+@step
+def p9_done():
+    check(len(bpy.context.window_manager.windows) == GIZMO["p9_windows"], "the Shader Editor window closes")
+    check(not tracebacks(), "Python error in the P9 steps")
+    scene = bpy.context.scene
+    r = scene.render
+    r.engine, r.resolution_x, r.resolution_y, r.resolution_percentage, r.filepath, scene.frame_start, scene.frame_end = GIZMO["p9_start"]
+    scene.eevee.taa_render_samples = GIZMO["p9_samples"]
+    shutil.rmtree(GIZMO["p9_dir"], ignore_errors=True)
+
+
 @step
 def finish():
     errors = "".join(stderr_tee.buf + sys.stdout.buf)

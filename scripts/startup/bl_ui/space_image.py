@@ -912,12 +912,20 @@ class IMAGE_HT_header(Header):
 
         IMAGE_MT_editor_menus.draw_collapsible(context, layout)
 
+        # Maelstrom3D: the Render View's slots, A/B and Save Render, beside its menus (the header is narrow).
+        if render_view and ima is not None and ima.type == 'RENDER_RESULT':
+            from m3d_render import draw_render_view_header
+            draw_render_view_header(layout, context)
+
         layout.separator_spacer()
 
         IMAGE_HT_header.draw_xform_template(layout, context)
 
         if render_view:
-            layout.template_ID(sima, "image")
+            # Maelstrom3D: showing the render, the slot dropdown has the other images (the header is narrow).
+            from m3d_render import slots_only
+            if not (ima is not None and slots_only(context, ima)):
+                layout.template_ID(sima, "image")
         else:
             layout.template_ID(sima, "image", new="image.new", open="image.open")
 
@@ -978,7 +986,10 @@ class IMAGE_HT_header(Header):
                 row.prop(sima, "show_stereo_3d", text="")
 
             # layers.
-            layout.template_image_layers(ima, iuser)
+            # Maelstrom3D: the Render View of a scene with one render layer and no passes has its slot dropdown beside the menus.
+            from m3d_render import slots_only
+            if not (render_view and slots_only(context, ima)):
+                layout.template_image_layers(ima, iuser)
 
             # draw options.
             row = layout.row()
