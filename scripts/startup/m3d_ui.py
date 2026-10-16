@@ -240,7 +240,7 @@ MENUS = {
         op("Parent", "object.parent_set", modes=OBJECT),
         op("Unparent", "object.parent_clear", modes=OBJECT, type='CLEAR_KEEP_TRANSFORM'),
         SEP,
-        op("Search Command...", "wm.search_menu", 'VIEWZOOM'),
+        op("Search Every Menu...", "wm.search_single_menu", 'VIEWZOOM', menu_idname="M3D_MT_hotbox"),   # (Tab: every menu set)
     ]),
     "M3D_MT_create": ("Create", [
         sub("Polygon Primitives", "M3D_MT_poly_primitives", 'MESH_CUBE'),
@@ -349,9 +349,11 @@ MENUS = {
     ]),
     "M3D_MT_help": ("Help", [
         op("Maelstrom3D Guide", "wm.url_open", 'HELP', url=DOCS + "MAELSTROM3D.md"),
-        op("Keyboard Shortcuts", "wm.url_open", 'KEYINGSET', url=DOCS + "SHORTCUTS.md"),
+        op("Getting Started", "wm.splash", 'INFO'),
+        op("Keyboard Shortcuts", "m3d.key_card", 'KEYINGSET'),
         op("Hotkey Editor", "screen.userpref_show", 'PREFERENCES', section='KEYMAP'),
         op("What's New in This Alpha", "wm.url_open", 'TEXT', url=REPO + "/releases"),
+        op("Check for Updates", "m3d.check_updates", 'URL'),
         SEP,
         op("Report a Bug...", "m3d.report_bug", 'URL'),
         op("Open Crash Log", "m3d.open_log", 'FILE_TEXT', what='CRASH'),
@@ -735,6 +737,8 @@ MENUS = {
         prop("Sidebar", "space_data.show_region_ui"),
         prop("Viewport Menu Bar", "space_data.show_region_header"),
         prop("Help Line", "screen.show_statusbar"),
+        SEP,
+        prop("UI Size", "preferences.view.ui_scale"),
     ]),
     "M3D_MT_general_editors": ("General Editors", [
         editor("Outliner", 'OUTLINER', 'OUTLINER'),
@@ -874,16 +878,24 @@ PANEL_MENUS = ["M3D_MT_panel_view", "M3D_MT_panel_shading", "M3D_MT_panel_lighti
 
 
 class M3D_MT_workspaces(Menu):
+    """Switch workspace (F1-F7: the task workspaces)"""
     bl_label = "Workspaces"
 
     def draw(self, context):
-        from m3d_workspace import WORKSPACE_ORDER
+        from m3d_workspace import FKEY_MENU_SETS, WORKSPACE_ORDER, find_workspace, fkeys_change_menus, workspace_kind
         # The factory order, then the others (the tab order itself is not available to Python).
         rank = {name: i for i, name in enumerate(WORKSPACE_ORDER)}
         for ws in sorted(bpy.data.workspaces, key=lambda w: rank.get(w.name, len(rank))):
-            o = self.layout.operator("wm.context_set_id", text=ws.name,
-                                     icon='CHECKMARK' if ws == context.workspace else 'BLANK1')
-            o.data_path, o.value = "window.workspace", ws.name
+            icon = 'CHECKMARK' if ws == context.workspace else 'BLANK1'
+            kind = workspace_kind(ws)
+            # A task workspace through its F-key's operator: the menu shows the key beside the name.
+            if kind and find_workspace(kind) == ws and not (KINDS[kind][1] in FKEY_MENU_SETS and fkeys_change_menus()):
+                self.layout.operator("m3d.workspace", text=ws.name, icon=icon).kind = kind
+            else:
+                o = self.layout.operator("wm.context_set_id", text=ws.name, icon=icon)
+                o.data_path, o.value = "window.workspace", ws.name
+        self.layout.separator()
+        self.layout.operator("workspace.add", text="New Workspace...", icon='ADD')
 
 
 class M3D_MT_blender_menus(Menu):
@@ -906,7 +918,8 @@ def _make_menu(idname, label, entries):
 def draw_menu_bar(layout, context):
     """Main menu bar: menu set selector, common menus, menu set menus, Help."""
     wm = context.window_manager
-    layout.prop(wm, "m3d_menu_set", text="")
+    # (labelled, so the menu set is not taken for the workspace picker at the other end of the top bar)
+    layout.prop(wm, "m3d_menu_set", text="" if status_narrow(context, 1500) else "Menus")
     for idname in [*MENU_ORDER.get(wm.m3d_menu_set, COMMON_MENUS + MENU_SETS[wm.m3d_menu_set][1]), "M3D_MT_help"]:
         layout.menu(idname)
 
@@ -1008,8 +1021,10 @@ def draw_workspace_picker(layout, context, extra=None):
         extra(layout)
     if not status_narrow(context, 1500):
         layout.label(text="Workspace:")
-    # (template_search: template_ID always draws a delete button, greyed out without one; Workspace Settings has Delete)
-    layout.template_search(context.window, "workspace", bpy.data, "workspaces", new="workspace.add")
+    # (a menu, not template_ID: it shows the F-keys and has no delete button; Workspace Settings has Delete, the menu New.
+    # A button that opens it: a header draws a menu as plain text)
+    ws = getattr(getattr(context, "window", None), "workspace", None)   # (none in a test)
+    layout.operator("wm.call_menu", text=ws.name if ws else "Workspaces", icon='WORKSPACE').name = "M3D_MT_workspaces"
     layout.popover("M3D_PT_workspace_settings", text="", icon='PREFERENCES')   # (its tooltip: Workspace settings...)
 
 
@@ -1092,10 +1107,11 @@ _VIEW_HINTS = (("Tumble", "3D View", "view3d.rotate", {}), ("Track", "3D View", 
                ("Dolly", "3D View", "view3d.zoom", {"delta": 0}))
 _MARKING_MENU = ("Marking Menu", "Object Mode", "wm.call_menu_pie", {"name": "M3D_MT_marking_menu"})
 _HOTBOX = ("Hotbox", "3D View", "m3d.space_hotbox", {})
+_SEARCH = ("Search", "3D View", "wm.search_single_menu", {"menu_idname": "M3D_MT_hotbox"})   # (Tab: every menu set's menus)
 MODE_HINTS = {
-    'OBJECT': (*_SELECT_HINTS, *_VIEW_HINTS, _MARKING_MENU, _HOTBOX),
+    'OBJECT': (*_SELECT_HINTS, *_VIEW_HINTS, _MARKING_MENU, _HOTBOX, _SEARCH),
     'EDIT_MESH': (*_SELECT_HINTS, *_VIEW_HINTS, ("Marking Menu", "Mesh", "wm.call_menu_pie", {"name": "M3D_MT_marking_menu"}),
-                  _HOTBOX),
+                  _HOTBOX, _SEARCH),
     'EDIT_ARMATURE': (*_SELECT_HINTS, *_VIEW_HINTS, ("Extrude", "Armature", "armature.extrude_move", {}),
                       ("Names", "Armature", "wm.call_menu_pie", {"name": "M3D_MT_rig_names"}),
                       ("Menu", "Armature", "wm.call_menu", {"name": "VIEW3D_MT_armature_context_menu"})),
@@ -1165,7 +1181,7 @@ def plain_key(kmi):
     """A key or mouse button a hint can show (not the wheel, a trackpad gesture, a 3D mouse, a media key or the menu key)."""
     if kmi.type in {'LEFTMOUSE', 'MIDDLEMOUSE', 'RIGHTMOUSE'}:
         return True
-    return kmi.map_type == 'KEYBOARD' and kmi.type != 'APP' and not kmi.type.startswith("MEDIA")
+    return kmi.map_type == 'KEYBOARD' and kmi.type != 'APP' and not kmi.type.startswith(("MEDIA", "MOUSE"))
 
 
 def status_hints(context):
@@ -1538,17 +1554,14 @@ class TOPBAR_HT_m3d_shelf(bpy.types.Header):
 
 
 def draw_panel_menus(layout, context, collapsed=False):
-    """The 3D view header's menus: the panel menus, then Blender's own menus of the mode (object and component modes: in
-    one "Blender Menus" button; sculpt / paint modes whose menus are in the menu bar: none; other modes: inline, without
-    Blender's View menu, which is under View > More). `collapsed`: drawn as the items of the one menu button."""
-    from types import SimpleNamespace
+    """The 3D view header's menus, the same in every mode: the panel menus, then Blender's own menus of the mode in one
+    "Blender Menus" button (none in the sculpt / paint modes whose menus are in the menu bar). `collapsed`: drawn as the
+    items of the one menu button."""
     from m3d_workspace import menu_bar_has_mode
     for idname in PANEL_MENUS:
         layout.menu(idname)
-    if context.mode in {'OBJECT', 'EDIT_MESH'}:
+    if not menu_bar_has_mode(context):
         layout.menu("M3D_MT_blender_menus", text="Blender Menus" if collapsed else "", icon='COLLAPSEMENU')
-    elif not menu_bar_has_mode(context):
-        bpy.types.VIEW3D_MT_editor_menus.draw_blender(SimpleNamespace(layout=layout), context, view=False)
 
 
 # Header widths in UI units (20 pixels at scale 1) that view_header_fit estimates with: the editor type button with the
@@ -1573,19 +1586,19 @@ def view_header_fit(context, classic):
     def text(label):
         return blf.dimensions(0, label)[0] / unit
 
+    from m3d_workspace import menu_bar_has_mode
     ob = context.active_object
     mode = ob.mode if ob is not None else 'OBJECT'
     menus = sum(text(MENUS[idname][0]) + MENU_PAD for idname in PANEL_MENUS)
+    menus += 0.0 if menu_bar_has_mode(context) else COLLAPSED   # Blender's menus of the mode, in one button
     middle = compact = 0.0
     if classic:
-        menus += COLLAPSED if context.mode in {'OBJECT', 'EDIT_MESH'} else 0.0
         right = 2 * POP + (ICON if context.mode == 'EDIT_MESH' else 0.0)   # overlays, shading
         optional = 0.0
     else:
         label = bpy.types.Object.bl_rna.properties["mode"].enum_items[mode].name
         middle += text(label) + POP + MENU_PAD   # the mode dropdown
         compact += text(label) + MENU_PAD
-        menus += sum(text(label) + MENU_PAD for label in ("Select", "Object") + (("Add",) if mode == 'OBJECT' else ()))
         if mode in {'OBJECT', 'EDIT', 'POSE'}:   # orientation, pivot, snapping (+ proportional editing)
             middle += text("Global") + POP + POP + (POP + ICON) * (2 if mode != 'POSE' else 1)
             compact += text("Global")
@@ -1633,7 +1646,8 @@ def register():
         bpy.utils.register_class(cls)
     wm = bpy.types.WindowManager
     wm.m3d_menu_set = bpy.props.EnumProperty(
-        name="Menu Set", description="Menu set: which menus the main menu bar shows",
+        name="Menus", description="Menus: the menu set the menu bar shows (F1-F7 change it with the workspace; this "
+                                  "changes the menus alone)",
         items=[(k, label, "", 'NONE', _MENU_SET_NUMBERS[k]) for k, (label, _) in MENU_SETS.items()])
     wm.m3d_shelf = bpy.props.EnumProperty(
         name="Shelf", description="Shelf tab",

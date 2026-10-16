@@ -10,8 +10,8 @@ def check(cond, msg):
 # Icons used in m3d_mode exist.
 import re, m3d_mode
 icons = set(bpy.types.UILayout.bl_rna.functions['operator'].parameters['icon'].enum_items.keys())
-import m3d_bakegroups, m3d_bakeq, m3d_bakeview, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_retopo, m3d_sculpt, m3d_texset, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv
-src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_bakegroups, m3d_bakeq, m3d_bakeview, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_retopo, m3d_sculpt, m3d_texset, m3d_texture, _maya_ui, _maya_uv))
+import m3d_bakegroups, m3d_bakeq, m3d_bakeview, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_retopo, m3d_sculpt, m3d_texset, m3d_texture, m3d_ui as _maya_ui, m3d_uv as _maya_uv, m3d_welcome
+src = "".join(open(m.__file__).read() for m in (m3d_mode, m3d_bakegroups, m3d_bakeq, m3d_bakeview, m3d_layers, m3d_library, m3d_marking, m3d_masks, m3d_pair, m3d_retopo, m3d_sculpt, m3d_texset, m3d_texture, _maya_ui, _maya_uv, m3d_welcome))
 for ic in set(re.findall(r"icon='([A-Z_0-9]+)'", src)):
     check(ic in icons, "missing icon " + ic)
 
@@ -30,7 +30,7 @@ def op_ok(idname, props):
 C_MENUS = {"TOPBAR_MT_file_open_recent", "OBJECT_MT_move_to_collection"}
 
 ROOTS = {"space_data": bpy.types.SpaceView3D, "tool_settings": bpy.types.ToolSettings,
-         "scene": bpy.types.Scene, "screen": bpy.types.Screen, "area": bpy.types.Area}
+         "scene": bpy.types.Scene, "screen": bpy.types.Screen, "area": bpy.types.Area, "preferences": bpy.types.Preferences}
 
 def path_ok(path):
     head, *rest = path.split(".")
@@ -6681,8 +6681,9 @@ def ws_ops(log):
 log = []
 m3d_ui.draw_workspace_picker(Rec(log), WsCtx(bpy.data.workspaces[0]))
 check(any(r._kind == "popover" and r._args[0] == "M3D_PT_workspace_settings" for r in log), "Status Line has the Workspace Settings popover")
-check([(r._args[1], r._kw.get("new"), r._kw.get("unlink", "")) for r in log if r._kind in {"template_ID", "template_search"}] == [("workspace", "workspace.add", "")]
-      and not [r for r in log if r._kind == "template_ID"], "the workspace picker has no delete button, not even greyed out (Workspace Settings has Delete Workspace)")
+check([r.values().get("name") for r in log if r._kind == "operator" and r._args[0] == "wm.call_menu"] == ["M3D_MT_workspaces"]
+      and not [r for r in log if r._kind in {"template_ID", "template_search"}],
+      "the workspace picker is the Workspaces menu (F-keys beside the names, New Workspace; no delete button: Workspace Settings has Delete Workspace)")
 check(hasattr(W.M3D_OT_workspace_reset, "invoke"), "Reset Workspace asks for confirmation")
 check(hasattr(bpy.types, "M3D_PT_workspace_settings"), "settings panel registered")
 for kind_, (wname_, *_rest) in W.KINDS.items():
@@ -13748,9 +13749,9 @@ def pa_key(kmi):
 VIEW_KEYS = [("Tumble", "Alt+LEFTMOUSE"), ("Track", "Alt+MIDDLEMOUSE"), ("Dolly", "Alt+RIGHTMOUSE")]
 for kind, mode, want in (
         ('MODEL', 'OBJECT', [("Select", "LEFTMOUSE"), ("Toggle", "Shift+LEFTMOUSE"), ("Deselect", "Ctrl+LEFTMOUSE"), *VIEW_KEYS,
-                             ("Marking Menu", "RIGHTMOUSE"), ("Hotbox", "SPACE")]),
+                             ("Marking Menu", "RIGHTMOUSE"), ("Hotbox", "SPACE"), ("Search", "TAB")]),
         ('MODEL', 'EDIT_MESH', [("Select", "LEFTMOUSE"), ("Toggle", "Shift+LEFTMOUSE"), ("Deselect", "Ctrl+LEFTMOUSE"), *VIEW_KEYS,
-                                ("Marking Menu", "RIGHTMOUSE"), ("Hotbox", "SPACE")]),
+                                ("Marking Menu", "RIGHTMOUSE"), ("Hotbox", "SPACE"), ("Search", "TAB")]),
         ('UV', 'EDIT_MESH', [("Select", "LEFTMOUSE"), ("Toggle", "Shift+LEFTMOUSE"), *VIEW_KEYS, ("UV Menu", "RIGHTMOUSE"),
                              ("UV Tools", "Shift+RIGHTMOUSE")]),
         ('RIG', 'EDIT_ARMATURE', [("Select", "LEFTMOUSE"), ("Toggle", "Shift+LEFTMOUSE"), ("Deselect", "Ctrl+LEFTMOUSE"), *VIEW_KEYS,
@@ -15093,7 +15094,8 @@ check([e.get("idname") for e in m3d_ui.MENUS["M3D_MT_file_defaults"][1] if e["ki
       ["m3d.save_layouts_default", "wm.read_homefile", "m3d.reset_settings", "m3d.reset_settings", "m3d.reset_settings",
        "m3d.settings_export", "m3d.settings_import"], "File > Defaults: layouts, resets, settings export / import")
 p5_help = {e.get("label"): e for e in m3d_ui.MENUS["M3D_MT_help"][1] if e["kind"] == 'OP'}
-check(set(p5_help) == {"Maelstrom3D Guide", "Keyboard Shortcuts", "Hotkey Editor", "What's New in This Alpha", "Report a Bug...",
+check(set(p5_help) == {"Maelstrom3D Guide", "Getting Started", "Keyboard Shortcuts", "Hotkey Editor", "What's New in This Alpha",
+                       "Check for Updates", "Report a Bug...",
                        "Open Crash Log", "Open Log Folder", "About Maelstrom3D", "Blender Manual (reference)"}
       and not any(e.get("idname") == "TOPBAR_MT_help" for e in m3d_ui.MENUS["M3D_MT_help"][1]), "Help: our own menu, %s" % sorted(p5_help))
 check(all(e["props"]["url"].startswith(HP.REPO) for e in p5_help.values() if e["idname"] == "wm.url_open"), "Help links go to the Maelstrom3D repository")
@@ -15970,6 +15972,224 @@ m3d_user.data().pop("recent_projects", None)
 m3d_user.save()
 shutil.rmtree(p7_tmp, ignore_errors=True)
 clean_scene()
+
+# --- First run and discoverability (UX pass 2, P8): the splash and Quick Setup, the key card, Tab search over every menu set,
+# F-keys in the workspace picker and their notices, Check for Updates (the network call is replaced: nothing goes online),
+# theme presets, the viewport header the same in every mode, files saved by stock Blender (opens files: keep it last but one).
+import json as p8_json
+import m3d_welcome as WL
+import m3d_hud as P8_HUD
+p8_log = []
+WL.draw_splash(Rec(p8_log), bpy.context)
+check_calls("splash", p8_log)
+p8_ops = [r._args[0] for r in p8_log if r._kind == "operator"]
+check({"wm.read_homefile", "wm.open_mainfile", "wm.recover_last_session", "m3d.key_card", "m3d.report_bug", "wm.url_open"} <= set(p8_ops)
+      and any(r._kind == "template_recent_files" for r in p8_log), "splash: New, Open, Recent, Recover, the guide, the key card, Report a Bug: %s" % p8_ops)
+check(any(r._kind == "prop" and r._args[1] == "show_splash" for r in p8_log), "splash: Show this at startup")
+check(any(k == "Tab" and "Search" in w for k, w in WL.GETTING_STARTED) and any(k == "F1-F7" for k, _w in WL.GETTING_STARTED),
+      "splash: the keys to get started (F1-F7, Tab search...)")
+p8_log = []
+WL.draw_quick_setup(Rec(p8_log), bpy.context)
+check_calls("quick setup", p8_log)
+check([r._args[1] for r in p8_log if r._kind == "prop"] == ["ui_scale"]
+      and [r._args[0] for r in p8_log if r._kind == "menu"] == ["USERPREF_MT_interface_theme_presets"]
+      and "wm.save_userpref" in [r._args[0] for r in p8_log if r._kind == "operator"], "Quick Setup: UI size, theme, Continue (no keymap choice)")
+check("draw_splash" in bpy.types.WM_MT_splash.draw.__code__.co_names
+      and "draw_quick_setup" in bpy.types.WM_MT_splash_quick_setup.draw.__code__.co_names, "the splash draws Maelstrom3D's content")
+check("Polygon Primitives" in P8_HUD.EMPTY_SCENE_HINT and "Space" in P8_HUD.EMPTY_SCENE_HINT, "the empty scene's hint")
+# The splash is back for saved preferences (a migration step) and fresh ones, not in a --factory-startup session (this one);
+# the first run's preferences are not saved by the migration (that would take the Quick Setup off the splash).
+p8_prefs_version, p8_view = m3d_user.data().get("prefs_version"), bpy.context.preferences.view
+m3d_user.data()["prefs_version"] = 2
+p8_view.show_splash = False
+_mm.migrate_preferences()
+check(m3d_user.data().get("prefs_version") == _mm.PREFS_VERSION == 3 and p8_view.show_splash
+      and not os.path.exists(os.path.join(bpy.utils.user_resource('CONFIG'), "userpref.blend")),
+      "migration 3: the splash at startup; the first run (no userpref.blend) saves nothing")
+_mm.m3d_preferences()
+check(not p8_view.show_splash, "no splash in a --factory-startup session")
+m3d_user.data()["prefs_version"] = p8_prefs_version
+# The keys: Tab searches the hotbox (every menu set), the key card has a key for every row, the claims of the splash and of
+# "If you know Blender" hold in the keymap.
+p8_kctx = NS(window_manager=NS(keyconfigs=NS(user=kc)))
+check(find("3D View", "wm.search_single_menu", "TAB", ctrl=False, shift=False)
+      and find("3D View", "wm.search_single_menu", "TAB")[0].properties.menu_idname == "M3D_MT_hotbox", "Tab: search every menu set")
+for p8_task, p8_rows in WL._key_card():
+    for p8_row in p8_rows:
+        check(WL.row_key(p8_kctx, p8_row), "key card %s: no key for %s" % (p8_task, p8_row[0]))
+p8_card = dict(WL.card(p8_kctx))
+check(("F1-F7", "Task workspaces") in p8_card["Everywhere"] and ("Tab", "Search every menu") in p8_card["Everywhere"]
+      and ("Shift+1-7", "Brushes") in p8_card["Sculpt"] and ("Alt+V", "Play") in p8_card["Animation"], "key card text: %s" % p8_card["Everywhere"])
+for p8_km, p8_id, p8_key, p8_mods, p8_props in (
+        ("Object Mode", "object.editmode_toggle", "F8", {}, {}), ("Object Mode", "m3d.key_marking_menu", "W", {}, {"tool": "builtin.move"}),
+        ("Frames", "screen.animation_play", "V", {"alt": True}, {}), ("3D View", "m3d.space_hotbox", "SPACE", {}, {}),
+        ("Object Mode", "wm.call_menu_pie", "RIGHTMOUSE", {"shift": True}, {"name": "M3D_MT_shift_rmb"}),
+        ("Object Mode", "wm.call_menu_pie", "RIGHTMOUSE", {"shift": False}, {"name": "M3D_MT_marking_menu"}),
+        ("Window", "m3d.workspace", "F2", {}, {"kind": 'SCULPT'}), ("Window", "m3d.workspace", "F3", {}, {"kind": 'UV'}),
+        ("Object Mode", "m3d.duplicate", "D", {"ctrl": True}, {}), ("Object Mode", "m3d.hide_selection", "H", {"ctrl": True}, {}),
+        ("Object Mode", "m3d.show_hidden", "H", {"ctrl": True, "shift": True}, {}), ("Object Mode", "m3d.set_key", "S", {"shift": False}, {}),
+        ("3D View", "m3d.dock_tab", "A", {"ctrl": True}, {}), ("Screen Editing", "m3d.render", "F12", {"shift": True}, {}),
+        ("Mesh", "m3d.workspace", "F12", {}, {"kind": 'UV'})):
+    check(any(all(getattr(k.properties, n) == v for n, v in p8_props.items()) for k in find(p8_km, p8_id, p8_key, **p8_mods)),
+          "If you know Blender / splash: %s %s %s" % (p8_key, p8_mods, p8_id))
+check(m3d_ui._SEARCH in m3d_ui.MODE_HINTS['OBJECT'] and m3d_ui._SEARCH in m3d_ui.MODE_HINTS['EDIT_MESH'], "Tab Search in the Object / Edit hints")
+check(any(e.get("idname") == "wm.search_single_menu" and e["props"].get("menu_idname") == "M3D_MT_hotbox" for e in m3d_ui.MENUS["M3D_MT_edit"][1]),
+      "Edit > Search Every Menu")
+p8_help = {e.get("label"): e.get("idname") for e in m3d_ui.MENUS["M3D_MT_help"][1] if e["kind"] == 'OP'}
+check(p8_help.get("Keyboard Shortcuts") == "m3d.key_card" and p8_help.get("Getting Started") == "wm.splash"
+      and p8_help.get("Check for Updates") == "m3d.check_updates", "Help: key card, Getting Started (the splash), Check for Updates")
+check(any(e.get("path") == "preferences.view.ui_scale" for e in m3d_ui.MENUS["M3D_MT_ui_elements"][1]), "Display > UI Elements > UI Size")
+check(bpy.types.WindowManager.bl_rna.properties["m3d_menu_set"].name == "Menus", "the menu set list is called Menus")
+p8_log = []
+m3d_ui.draw_menu_bar(Rec(p8_log), bpy.context)
+check(next(r for r in p8_log if r._kind == "prop")._kw.get("text") == "Menus", "the menu bar labels the menu set list Menus")
+
+
+# The workspace picker: the task workspaces through their F-key operator (the menu shows the key), the others by name.
+def p8_menu(ws):
+    log = []
+    m3d_ui.M3D_MT_workspaces.draw(type("Inst", (), {"layout": Rec(log)})(), WsCtx(ws))
+    return log
+
+
+p8_log = p8_menu(W.find_workspace('MODEL'))
+check(sorted(r.kind for r in p8_log if r._kind == "operator" and r._args[0] == "m3d.workspace") == sorted(W.KINDS)
+      and "workspace.add" in [r._args[0] for r in p8_log if r._kind == "operator"]
+      and sorted(r.value for r in p8_log if r._kind == "operator" and r._args[0] == "wm.context_set_id")
+      == sorted(w.name for w in bpy.data.workspaces if W.workspace_kind(w) is None or W.find_workspace(W.workspace_kind(w)) != w),
+      "Workspaces menu: F1-F7 through m3d.workspace (keys shown), the others by name, New Workspace")
+p8_fk = m3d_user.data().get("fkeys_menu_sets")
+bpy.context.window_manager.m3d_fkeys_menus = True
+check(m3d_user.data().get("fkeys_menu_sets") is True and W.fkeys_change_menus(), "F2-F6 Change Menus Only is kept in m3d_user.json")
+check(sorted(r.kind for r in p8_menu(W.find_workspace('MODEL')) if r._kind == "operator" and r._args[0] == "m3d.workspace") == ['MODEL', 'RENDER'],
+      "...the menu then shows only F1 and F7 beside their workspaces")
+check(any(r._kind == "prop" and r._args[1] == "m3d_fkeys_menus" for r in ws_settings_log(W.find_workspace('MODEL'))),
+      "Workspace Settings: F2-F6 Change Menus Only")
+p8_wm = NS(m3d_menu_set='MODELING')
+p8_ran = []
+p8_self = NS(kind='ANIM', execute=lambda ctx: p8_ran.append(1) or {'FINISHED'})
+check(W.M3D_OT_workspace.invoke(p8_self, NS(window_manager=p8_wm), NS(type='F6')) == {'FINISHED'} and p8_wm.m3d_menu_set == 'RENDERING'
+      and not p8_ran, "F6 with Change Menus Only: the Rendering menu set, no workspace switch")
+bpy.context.window_manager.m3d_fkeys_menus = False
+m3d_user.data()["fkeys_seen"] = ["F6"]
+W.M3D_OT_workspace.invoke(p8_self, NS(window_manager=p8_wm), NS(type='F6'))
+check(p8_ran == [1], "...off: F6 switches the workspace")
+m3d_user.data()["fkeys_menu_sets"] = p8_fk
+# The first use of each F-key: one status bar note.
+m3d_user.data()["fkeys_seen"] = []
+W.first_use_notice('F2', 'SCULPT')
+check("F2" in HP.note_text() and "Sculpt" in HP.note_text() and "Workspace Settings" in HP.note_text()
+      and m3d_user.data()["fkeys_seen"] == ["F2"], "F2's first use: a note (%s)" % HP.note_text())
+HP.show_note("", seconds=0)
+W.first_use_notice('F2', 'SCULPT')
+check(not HP.note_text(), "...once")
+W.first_use_notice('F7', 'RENDER')
+check("F7" in HP.note_text() and "F2-F6" not in HP.note_text(), "F7: no menu-set hint (%s)" % HP.note_text())
+HP.show_note("", seconds=0)
+# The header: the panel menus and one Blender Menus button in every mode (none where the menu bar has the mode's menus).
+for p8_mode, p8_ws, p8_want in (('POSE', 'Animation', True), ('OBJECT', 'Modeling', True), ('SCULPT', 'Sculpt', False)):
+    p8_log = []
+    m3d_ui.draw_panel_menus(Rec(p8_log), NS(mode=p8_mode, active_object=NS(mode=p8_mode), workspace=bpy.data.workspaces[p8_ws]))
+    p8_menus = [r._args[0] for r in p8_log if r._kind == "menu"]
+    check(p8_menus == m3d_ui.PANEL_MENUS + (["M3D_MT_blender_menus"] if p8_want else []), "3D view header in %s: %s" % (p8_mode, p8_menus))
+
+# Check for Updates: the release list is read only with online access, in a thread; a newer alpha gets the status bar link.
+p8_calls = []
+p8_releases = [{"tag_name": "m3d.9", "draft": True, "html_url": HP.REPO + "/releases/tag/m3d.9"},
+               {"tag_name": "m3d.7", "html_url": HP.REPO + "/releases/tag/m3d.7"}, {"tag_name": "m3d.6", "html_url": "https://example.com/x"},
+               {"tag_name": "v1.0"}]
+p8_fetch, p8_online, p8_tag, p8_update = HP.fetch, HP.online, HP.version_tag, m3d_user.data().get("update")
+HP.fetch = lambda url: p8_calls.append(url) or p8_json.dumps(p8_releases).encode()
+HP.online = lambda: False
+check(not HP.start_update_check(manual=True) and not p8_calls, "offline: nothing is fetched")
+HP.online = lambda: True
+check(HP.latest_release() == ("m3d.7", HP.REPO + "/releases/tag/m3d.7") and p8_calls == [HP.RELEASES_API],
+      "the newest release, drafts left out, from the GitHub releases API")
+p8_releases[1]["html_url"] = "https://example.com/elsewhere"
+check(HP.latest_release() == ("m3d.7", HP.RELEASES), "a release page elsewhere is never linked")
+p8_releases[1]["html_url"] = HP.REPO + "/releases/tag/m3d.7"
+check(HP.tag_number("m3d.12") == 12 and HP.tag_number("dev") is None, "alpha numbers")
+HP.version_tag = lambda: "m3d.5"
+m3d_user.data().pop("update", None)
+check(HP.start_update_check(manual=True), "with online access: the check starts")
+HP._check["thread"].join(5)
+HP.finish_update_check()
+check(m3d_user.data()["update"]["tag"] == "m3d.7" and HP.newer_release() == ("m3d.7", HP.REPO + "/releases/tag/m3d.7")
+      and "m3d.7" in HP.note_text(), "a newer alpha: kept, and said in the status bar (%s)" % HP.note_text())
+p8_log = []
+HP.draw_version(Rec(p8_log), NS(region=None))
+check([(r._kw.get("text"), r.url) for r in p8_log if r._kind == "operator"] == [("New alpha m3d.7", HP.REPO + "/releases/tag/m3d.7")],
+      "the status bar links the newer alpha")
+HP.version_tag = lambda: "m3d.7"
+check(HP.newer_release() is None, "the newest alpha: no link")
+HP.version_tag = lambda: "dev"
+check(HP.newer_release() is None, "a dev build: no link")
+p8_calls.clear()
+HP.auto_update_check()
+check(not p8_calls and not HP._check["thread"].is_alive(), "checked today: no automatic check")
+m3d_user.data()["update"]["checked"] -= HP.WEEK + 1
+HP.auto_update_check()
+HP._check["thread"].join(5)
+check(p8_calls == [HP.RELEASES_API], "a week later: checked again")
+HP.finish_update_check()
+
+
+def p8_fail(url):
+    raise OSError("no network")
+
+
+HP.fetch = p8_fail
+HP.show_note("", seconds=0)
+HP.start_update_check(manual=True)
+HP._check["thread"].join(5)
+HP.finish_update_check()
+check("Could not check for updates" in HP.note_text(), "offline answer: said when asked (%s)" % HP.note_text())
+HP.show_note("", seconds=0)
+HP.fetch, HP.online, HP.version_tag = p8_fetch, p8_online, p8_tag
+if p8_update is None:
+    m3d_user.data().pop("update", None)
+else:
+    m3d_user.data()["update"] = p8_update
+check("urlopen" in HP.fetch.__code__.co_names and HP.online() == bpy.app.online_access, "(the real network call is back, and was never made)")
+
+# Theme presets: Maelstrom3D (the default), Maelstrom3D High Contrast, Blender Light (Original).
+p8_dir = next(p for p in bpy.utils.preset_paths("interface_theme") if os.path.exists(os.path.join(p, "Maelstrom3D.xml")))
+check(sorted(f for f in os.listdir(p8_dir) if f.endswith(".xml")) == ["Blender_Light_(Original).xml", "Maelstrom3D.xml",
+                                                                    "Maelstrom3D_High_Contrast.xml"], "theme presets: %s" % os.listdir(p8_dir))
+p8_theme = bpy.context.preferences.themes[0]
+p8_width, p8_text = p8_theme.view_3d.outline_width, tuple(p8_theme.user_interface.wcol_regular.text)
+bpy.ops.script.execute_preset(filepath=os.path.join(p8_dir, "Maelstrom3D_High_Contrast.xml"), menu_idname="USERPREF_MT_interface_theme_presets")
+check(p8_theme.view_3d.outline_width == 2 and sum(p8_theme.user_interface.wcol_regular.text) > sum(p8_text) + 0.1,
+      "High Contrast: thicker outlines, brighter text")
+bpy.ops.script.execute_preset(filepath=os.path.join(p8_dir, "Maelstrom3D.xml"), menu_idname="USERPREF_MT_interface_theme_presets")
+check(p8_theme.view_3d.outline_width == p8_width and tuple(p8_theme.user_interface.wcol_regular.text) == p8_text,
+      "the Maelstrom3D preset is the default theme again")
+
+# A file saved by stock Blender (no workspace with a kind or a name only Maelstrom3D's have): the task workspaces come beside
+# its own, which keep their layouts (" (Blender)" after the names a task workspace would be taken for).
+check(not W.foreign_file(), "a Maelstrom3D file is not foreign")
+p8_names = {"Sculpt": "Sculpting", "UV": "UV Editing", "Texture": "Texture Paint", "Rigging": "Layout", "Node Editor": "Geometry Nodes",
+            "Script Editor": "Scripting"}
+for p8_ws in list(bpy.data.workspaces):
+    p8_ws.m3d_kind = ""
+    if p8_ws.name in p8_names:
+        p8_ws.name = p8_names[p8_ws.name]
+check(W.foreign_file(), "...and one with Blender's own workspaces is")
+p8_path = os.path.join(tempfile.mkdtemp(prefix="m3d_p8_"), "stock.blend")
+bpy.ops.wm.save_as_mainfile(filepath=p8_path, copy=True)
+HP.show_note("", seconds=0)
+bpy.ops.wm.open_mainfile(filepath=p8_path)
+p8_ws_names = {w.name for w in bpy.data.workspaces}
+check({"Modeling (Blender)", "Sculpting (Blender)", "UV Editing (Blender)", "Animation (Blender)", "Rendering (Blender)", "Layout",
+       "Texture Paint", "Shading"} <= p8_ws_names, "the file's workspaces are kept: %s" % sorted(p8_ws_names))
+check(all(W.find_workspace(k) is not None and W.find_workspace(k).m3d_kind == k and W.find_workspace(k).name == v[0] for k, v in W.KINDS.items()),
+      "...and the seven task workspaces were added: %s" % sorted(p8_ws_names))
+check(HP.note_text() == "Opened with Maelstrom3D layouts (file layouts kept)" and not W.foreign_file(), "...and the status bar says so")
+p8_count = len(bpy.data.workspaces)
+bpy.ops.wm.save_as_mainfile(filepath=p8_path)
+bpy.ops.wm.open_mainfile(filepath=p8_path)
+check(len(bpy.data.workspaces) == p8_count, "saved with them, the file is not changed again")
+HP.show_note("", seconds=0)
 
 # --- A linked alpha comes through File > Open (keep this one last: it opens files, which makes the objects above stale).
 # The sculpt brush asset (linked from an editable asset library) is kept when another file is opened, with the alpha Texture

@@ -83,6 +83,8 @@ OVERRIDES = {
     ],
     "3D View": [
         _kmi("m3d.space_hotbox", 'SPACE'),
+        # Tab searches the menus of every menu set (the hotbox has them all), not only the menu bar's.
+        _kmi("wm.search_single_menu", 'TAB', props={"menu_idname": "M3D_MT_hotbox"}),
         _kmi("screen.screen_full_area", 'SPACE', props={"use_hide_panels": True}, ctrl=True),
         _kmi("view3d.localview", 'L', shift=True),
         _kmi("view3d.view_selected", 'F', props={"use_all_regions": True}, shift=True),

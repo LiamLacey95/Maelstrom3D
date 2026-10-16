@@ -14,6 +14,7 @@ import bpy
 from bpy.types import Menu, Operator, Panel
 
 import m3d_edit
+import m3d_user
 
 # kind -> (workspace name, key, object mode on entry, menu set)
 KINDS = {
@@ -117,6 +118,36 @@ def use_bound_rig(context):
     layer.objects.active = rig
 
 
+# F2-F6 change only the menu set in the classic menu-set keys (F1 is help there). Workspace Settings > "F2-F6 Change Menus
+# Only" makes them do that here too; F1, F7 and the picker still switch workspaces.
+FKEY_MENU_SETS = {'F2': 'MODELING', 'F3': 'RIGGING', 'F4': 'ANIMATION', 'F5': 'FX', 'F6': 'RENDERING'}
+
+
+def fkeys_change_menus():
+    return m3d_user.data().get("fkeys_menu_sets") is True
+
+
+def _set_fkeys_change_menus(_wm, value):
+    m3d_user.data()["fkeys_menu_sets"] = bool(value)
+    m3d_user.save()
+
+
+def first_use_notice(key, kind):
+    """The first time an F-key switches workspace: a status bar note says what it did (once per key, kept in m3d_user.json)."""
+    seen = m3d_user.data().get("fkeys_seen")
+    if not isinstance(seen, list):
+        seen = m3d_user.data()["fkeys_seen"] = []
+    if key in seen:
+        return
+    seen.append(key)
+    m3d_user.save()
+    import m3d_help
+    text = "%s: the %s workspace, with its menus" % (key, KINDS[kind][0])
+    if key in FKEY_MENU_SETS:
+        text += ". F2-F6 can change the menus only: Workspace Settings (the gear at the top right)"
+    m3d_help.show_note(text, 'INFO', 15.0)
+
+
 class M3D_OT_workspace(Operator):
     """Switch to a task workspace (F1 Modeling ... F7 Rendering) and its menu set"""
     bl_idname = "m3d.workspace"
@@ -127,6 +158,16 @@ class M3D_OT_workspace(Operator):
     @classmethod
     def description(cls, _context, props):
         return "Switch to the %s workspace (%s)" % (KINDS[props.kind][0], KINDS[props.kind][1])
+
+    def invoke(self, context, event):
+        key = event.type if event.type == KINDS[self.kind][1] else None   # (its F-key; a menu click or F12: None)
+        if key in FKEY_MENU_SETS and fkeys_change_menus():
+            context.window_manager.m3d_menu_set = FKEY_MENU_SETS[key]
+            return {'FINISHED'}
+        result = self.execute(context)
+        if key is not None and result == {'FINISHED'}:
+            first_use_notice(key, self.kind)
+        return result
 
     def execute(self, context):
         ws = find_workspace(self.kind)
@@ -708,6 +749,7 @@ class M3D_PT_workspace_settings(Panel):
             m3d_bakeq.check_gpu_soon()
             layout.label(text=m3d_bakeq.device_note(bpy.context), icon='INFO', translate=False)   # (a hint: the normal text colour)
         layout.separator()
+        layout.prop(wm, "m3d_fkeys_menus")
         layout.operator("screen.userpref_show", text="Keyboard Shortcuts...", icon='KEYINGSET').section = 'KEYMAP'
         layout.operator("m3d.save_layouts_default", icon='FILE_TICK')
         layout.label(text="All workspaces, for new files")
@@ -798,6 +840,54 @@ class M3D_OT_workspace_delete(Operator):
         return bpy.ops.workspace.delete()
 
 
+# -----------------------------------------------------------------------------
+# A file saved by stock Blender: its layouts are kept, Maelstrom3D's task workspaces come beside them
+
+# Names only Maelstrom3D's workspaces have, now or in older files (stock Blender's files have Modeling, Sculpting, UV Editing,
+# Animation, Rendering, Shading... too).
+OWN_NAMES = {"Sculpt", "UV", "Texture", "Rigging", "Node Editor", "Script Editor", *WORKSPACE_NAMES} - {"Sculpting", "UV Editing"}
+FOREIGN_SUFFIX = " (Blender)"
+
+
+def foreign_file():
+    """Is the open file one stock Blender saved: no workspace with a kind or a name only Maelstrom3D's have?"""
+    return bool(bpy.data.workspaces) and not any(ws.m3d_kind or _base_name(ws.name) in OWN_NAMES for ws in bpy.data.workspaces)
+
+
+def add_factory_workspaces():
+    """Append the seven task workspaces of the factory layouts beside the file's. The file's that would be taken for one
+    ("Modeling", "Sculpting", "Animation"...) get " (Blender)" after their name. The appended ones, [] without the file."""
+    path = factory_file()
+    if not os.path.exists(path):
+        return []
+    for ws in list(bpy.data.workspaces):
+        if _base_name(ws.name) in _KIND_BY_NAME:
+            ws.name = _base_name(ws.name) + FOREIGN_SUFFIX
+    names = [v[0] for v in KINDS.values()]
+    with bpy.data.libraries.load(path) as (src, dst):
+        dst.workspaces = [n for n in names if n in src.workspaces]
+    added = [ws for ws in dst.workspaces if ws is not None]
+    from m3d_mode import m3d_startup_layout
+    m3d_startup_layout(screens=[s for ws in added for s in ws.screens])
+    return added
+
+
+@bpy.app.handlers.persistent
+def _load_post(*_args):
+    """A file from stock Blender opens with the task workspaces added and Modeling shown (F1-F7 work at once)."""
+    if not foreign_file():
+        return
+    added = add_factory_workspaces()
+    model = next((ws for ws in added if ws.m3d_kind == 'MODEL'), None)
+    if model is None:
+        return
+    for win in bpy.context.window_manager.windows:
+        win.workspace = model
+    import m3d_help
+    m3d_help.show_note("Opened with Maelstrom3D layouts (file layouts kept)", 'INFO', 12.0)
+    print("Opened with Maelstrom3D layouts (file layouts kept)")
+
+
 def _finish_reset(old_name, new_name, name):
     old, new = bpy.data.workspaces.get(old_name), bpy.data.workspaces.get(new_name)
     win = bpy.context.window_manager.windows[0]
@@ -849,12 +939,19 @@ def register():
         name="Face Limit", default=500_000, min=0, soft_max=5_000_000, step=10000,
         description="A mesh with more faces than this opens in Object Mode here, so a huge high poly is not rebuilt for "
                     "Edit Mode or painting (0: no limit)")
+    bpy.types.WindowManager.m3d_fkeys_menus = bpy.props.BoolProperty(
+        name="F2-F6 Change Menus Only", get=lambda _wm: fkeys_change_menus(), set=_set_fkeys_change_menus,
+        description="F2-F6 change the menu set alone (F2 Modeling, F3 Rigging, F4 Animation, F5 FX, F6 Rendering), like the "
+                    "classic menu-set keys; F1, F7 and the workspace picker still switch workspaces")
     bpy.app.timers.register(_follow_workspace, first_interval=0.5, persistent=True)
+    bpy.app.handlers.load_post.append(_load_post)
 
 
 def unregister():
+    bpy.app.handlers.load_post.remove(_load_post)
     if bpy.app.timers.is_registered(_follow_workspace):
         bpy.app.timers.unregister(_follow_workspace)
+    del bpy.types.WindowManager.m3d_fkeys_menus
     ws = bpy.types.WorkSpace
     del ws.m3d_face_limit, ws.m3d_show_shelf, ws.m3d_layout, ws.m3d_page_left, ws.m3d_page_right, ws.m3d_kind
     for cls in reversed(classes):

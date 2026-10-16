@@ -1332,13 +1332,14 @@ def _zoom_preferences(prefs):
 
 
 # Bump when a default that existing users should get changes, and add its step to migrate_preferences().
-PREFS_VERSION = 2
+PREFS_VERSION = 3
 
 
 def migrate_preferences():
     """One-time preference updates for users who already have saved preferences (the factory handler below
     only runs for fresh ones). The version lives in m3d_user.json; it is written only after the preferences are
     saved, so a failed save retries next start, and a later choice by the user is never overridden."""
+    import os
     import m3d_user
     done = m3d_user.data().get("prefs_version", 0)
     if done >= PREFS_VERSION:
@@ -1348,8 +1349,14 @@ def migrate_preferences():
         _zoom_preferences(prefs)
     if done < 2:
         prefs.view.show_statusbar_version = False   # (the status bar shows the Maelstrom3D version instead: m3d_help.py)
+    if done < 3:
+        prefs.view.show_splash = True   # (the splash has Maelstrom3D's content now: m3d_welcome.py)
+    # The first run (no preferences saved yet: the factory ones have every step) saves nothing: that would take the Quick
+    # Setup off the splash, which shows until the preferences are saved.
+    first_run = not os.path.exists(os.path.join(bpy.utils.user_resource('CONFIG'), "userpref.blend"))
     try:
-        bpy.ops.wm.save_userpref()
+        if not first_run:
+            bpy.ops.wm.save_userpref()
     except RuntimeError:
         return
     m3d_user.data()["prefs_version"] = PREFS_VERSION
@@ -1364,13 +1371,13 @@ def _migrate_on_startup():
 
 @bpy.app.handlers.persistent
 def m3d_preferences(*_args):
-    """First run / factory preferences: classic UI defaults (solid tool and dock strips, no splash,
-    no Blender navigation buttons, Segoe UI like Maya on Windows, Maya dolly direction)."""
+    """First run / factory preferences: classic UI defaults (solid tool and dock strips, the Maelstrom3D splash, no Blender
+    navigation buttons, Segoe UI on Windows, the classic dolly direction)."""
     import os
     prefs = bpy.context.preferences
     _zoom_preferences(prefs)
     prefs.system.use_region_overlap = False
-    prefs.view.show_splash = False
+    prefs.view.show_splash = not bpy.app.factory_startup   # (a --factory-startup session, the tests, starts without it)
     prefs.view.show_navigate_ui = False
     prefs.view.show_statusbar_version = False   # (the status bar shows the Maelstrom3D version instead: m3d_help.py)
     segoe = os.path.join(os.environ.get("WINDIR", "C:/Windows"), "Fonts", "segoeui.ttf")
