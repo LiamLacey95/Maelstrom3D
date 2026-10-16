@@ -12921,7 +12921,8 @@ def bq_clean():
 # --- The device: a GPU is used when there is one that bakes right, and never against the user's choice
 bq_ctx = bpy.context
 bq_prefs = QQ.cycles_prefs()
-bq_type, bq_uses = bq_prefs.compute_device_type, [(d, d.use) for d in bq_prefs.devices]
+# (ids, not the device items: Cycles adds devices to that collection, which can move its items in memory)
+bq_type, bq_uses = bq_prefs.compute_device_type, [(d.id, d.type, d.use) for d in bq_prefs.devices]
 bq_data = lambda: tuple(len(c) for c in (bpy.data.scenes, bpy.data.objects, bpy.data.meshes, bpy.data.materials, bpy.data.images))
 bq_before = bq_data()
 bq_probe = QQ.probe
@@ -12933,7 +12934,7 @@ if bq_backends:
     QQ.probe = lambda *_a: False
     found = QQ.find_gpu(bq_ctx)
     check(found[0] is None and "did not pass" in found[2] and bq_prefs.compute_device_type == bq_type
-          and [(d.name, d.use) for d, _u in bq_uses] == [(d.name, u) for d, u in bq_uses],
+          and all({(d.id, d.type): d.use for d in bq_prefs.devices}.get((i, t), u) == u for i, t, u in bq_uses),
           "a GPU that fails its test bake is not used and the preferences are put back: %s" % (found,))
     check(QQ.device_for(bq_ctx) == 'CPU' and QQ.device_note(bq_ctx).startswith("CPU"), "...the bake runs on the CPU (%s)" % QQ.device_note(bq_ctx))
     if bq_type == 'NONE':
@@ -12986,8 +12987,10 @@ else:
     check(found[0] is None and QQ.device_for(bq_ctx) == 'CPU', "no GPU backend in this build: the CPU bakes (%s)" % (found,))
 QQ.probe = bq_probe
 bq_prefs.compute_device_type = bq_type
-for d, use in bq_uses:
-    d.use = use
+for i, t, use in bq_uses:
+    for d in bq_prefs.devices:
+        if (d.id, d.type) == (i, t):
+            d.use = use
 QQ._gpu.update(found=None, kind=None)
 bq_ctx.scene.m3d_tex.bake_gpu = True
 
@@ -16285,6 +16288,34 @@ p9_stills = os.path.join(p9_dir, "render", "stills")
 p9_base = bpy.path.clean_name(scn.name)
 check(sorted(os.listdir(p9_stills)) == [p9_base + "_v001.png", p9_base + "_v002.png"], "Save Each Still: v001, v002 (%s)" % os.listdir(p9_stills))
 check(scn.render.image_settings.file_format == 'OPEN_EXR', "...and the output format is as it was")
+# Slots of one name (two renders in a minute) keep their own renders through an undo: keyed by name alone they all got one
+# render back, freed once per slot when the file closed. A guarded-memory Blender sees the double free at once.
+p9_repro = os.path.join(p9_dir, "slot_undo.py")
+with open(p9_repro, "w") as f_:
+    f_.write("import bpy, os\n"
+             "s = bpy.context.scene\n"
+             "s.render.engine, s.render.resolution_x, s.render.resolution_y = 'BLENDER_WORKBENCH', 16, 16\n"
+             "bpy.ops.render.render()\n"
+             "img = next(i for i in bpy.data.images if i.type == 'RENDER_RESULT')\n"
+             "while len(img.render_slots) < 4:\n"
+             "    img.render_slots.new()\n"
+             "for n in range(4):\n"
+             "    img.render_slots.active_index = n\n"
+             "    bpy.ops.render.render()\n"
+             "for n in range(3):\n"
+             "    img.render_slots[n].name = '12:00 Medium Workbench'\n"
+             "bpy.ops.ed.undo_push(message='a')\n"
+             "img.render_slots[-1].name = 'changed'\n"
+             "bpy.ops.ed.undo_push(message='b')\n"
+             "bpy.ops.ed.undo()\n"
+             "bpy.ops.wm.read_homefile(use_factory_startup=True)\n"
+             "print('M3D-SLOTS-OK', flush=True)\n"
+             "os._exit(0)\n")
+import subprocess
+p9_run = subprocess.run([bpy.app.binary_path, "-b", "--factory-startup", "--debug-memory", "--python", p9_repro],
+                        capture_output=True, text=True, timeout=300)
+check(p9_run.returncode == 0 and "M3D-SLOTS-OK" in p9_run.stdout,
+      "render slots of one name: an undo, then a load frees each render once (exit %s)" % p9_run.returncode)
 scn.render.image_settings.file_format = 'PNG'
 scn.m3d_render.save_stills = False
 log_ = draw_stub(RN.PROPERTIES_PT_m3d_rn_output, RnCtx())

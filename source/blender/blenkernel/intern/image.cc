@@ -233,8 +233,17 @@ static void image_foreach_cache(ID *id,
   key.identifier = offsetof(Image, rr);
   function_callback(id, &key, reinterpret_cast<void **>(&image->rr), 0, user_data);
 
+  /* Maelstrom3D: keyed by the name and by how many slots before it have that name. With the name alone,
+   * slots of one name shared a key: after an undo they all held the same render, freed once per slot. */
   for (RenderSlot &slot : image->renderslots) {
-    key.identifier = size_t(BLI_ghashutil_strhash_p(slot.name));
+    size_t same_name = 0;
+    for (const RenderSlot &other : image->renderslots) {
+      if (&other == &slot) {
+        break;
+      }
+      same_name += STREQ(other.name, slot.name);
+    }
+    key.identifier = size_t(BLI_ghashutil_strhash_p(slot.name)) + (same_name << 40);
     function_callback(id, &key, reinterpret_cast<void **>(&slot.render), 0, user_data);
   }
 
