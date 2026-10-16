@@ -827,7 +827,6 @@ class VIEW3D_HT_header(Header):
 
         layout.row(align=True).template_header()
 
-        row = layout.row(align=True)
         obj = context.active_object
         mode_string = context.mode
         object_mode = 'OBJECT' if obj is None else obj.mode
@@ -863,8 +862,15 @@ class VIEW3D_HT_header(Header):
         from m3d_ui import view_header_fit
         fit = view_header_fit(context, classic_header)
 
+        # Maelstrom3D: the panel menus and the panel toolbar first, so the header looks the same in every mode (Blender's
+        # menus of the mode are in one button), as much as the header's width fits (m3d_ui.draw_view_menus: a narrow view
+        # gets the menus as one button, then fewer toolbar buttons, then fewer of the buttons on the right).
+        from m3d_ui import draw_view_menus
+        draw_view_menus(layout, context, fit)
+
         if not classic_header:
-            sub = row.row(align=True)
+            layout.separator()
+            sub = layout.row(align=True)
             sub.operator_menu_enum(
                 "object.mode_set", "mode",
                 text="" if fit >= 5 else iface_(act_mode_item.name, act_mode_i18n_context),
@@ -934,11 +940,6 @@ class VIEW3D_HT_header(Header):
                 row.prop(tool_settings, "use_gpencil_vertex_select_mask_segment", text="")
 
         overlay = view.overlay
-
-        # Maelstrom3D: the panel menus and the panel toolbar, as much as the header's width fits (m3d_ui.draw_view_menus:
-        # a narrow view gets the menus as one button, then fewer toolbar buttons, then fewer of the buttons on the right).
-        from m3d_ui import draw_view_menus
-        draw_view_menus(layout, context, fit)
 
         layout.separator_spacer()
 
@@ -1181,16 +1182,14 @@ class VIEW3D_MT_editor_menus(Menu):
         from m3d_ui import draw_panel_menus
         draw_panel_menus(self.layout, context, collapsed=True)
 
-    def draw_blender(self, context, view=True):
-        # Maelstrom3D: `view` False leaves out Blender's View menu (the View panel menu has it under More).
+    def draw_blender(self, context):
         layout = self.layout
         obj = context.active_object
         mode_string = context.mode
         edit_object = context.edit_object
         tool_settings = context.tool_settings
 
-        if view:
-            layout.menu("VIEW3D_MT_view")
+        layout.menu("VIEW3D_MT_view")
 
         # Select Menu
         if mode_string in {'PAINT_WEIGHT', 'PAINT_VERTEX', 'PAINT_TEXTURE'}:
@@ -3817,9 +3816,11 @@ class VIEW3D_MT_sculpt(Menu):
         # Rebuild BVH
         layout.operator("sculpt.optimize")
 
+        # Maelstrom3D: no sculpt object when Tab search (the hotbox: every menu set) draws this menu in another mode.
+        sculpt_object = context.sculpt_object
         layout.operator(
             "sculpt.dynamic_topology_toggle", text="Dynamic Topology",
-            icon='CHECKBOX_HLT' if context.sculpt_object.use_dynamic_topology_sculpting else 'CHECKBOX_DEHLT',
+            icon='CHECKBOX_HLT' if sculpt_object and sculpt_object.use_dynamic_topology_sculpting else 'CHECKBOX_DEHLT',
         )
 
         layout.separator()

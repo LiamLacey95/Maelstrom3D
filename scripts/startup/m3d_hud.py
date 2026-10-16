@@ -4,7 +4,8 @@
 
 """
 Maya viewport heads-up display: the camera name at the bottom centre ("persp", "top", "front", "side")
-and the view axis triad at the bottom left. Blender's own view-name text is turned off at startup.
+and the view axis triad at the bottom left; in an empty scene, where to start. Blender's own view-name text is turned off
+at startup.
 """
 
 import blf
@@ -17,6 +18,7 @@ AXES = ((Vector((1, 0, 0)), (0.86, 0.22, 0.22), "x"), (Vector((0, 1, 0)), (0.33,
         (Vector((0, 0, 1)), (0.25, 0.45, 0.95), "z"))
 ORTHO_NAMES = (((0, 0, 1), "top"), ((0, 0, -1), "bottom"), ((0, -1, 0), "front"), ((0, 1, 0), "back"),
                ((1, 0, 0), "side"), ((-1, 0, 0), "left"))
+EMPTY_SCENE_HINT = "Create > Polygon Primitives or the shelf · F1-F7 tasks · hold Space for every menu"
 
 
 def camera_name(context, rv3d):
@@ -55,6 +57,18 @@ def draw_hud():
         width, _height = blf.dimensions(font, text)
         blf.color(font, 0.95, 0.75, 0.3, 1.0)
         blf.position(font, (region.width - width) / 2, region.height / 2, 0)
+        blf.draw(font, text)
+        blf.size(font, 13 * scale)
+    # An empty scene (the new scene's camera and light are hidden): where to start.
+    elif not context.visible_objects:
+        blf.size(font, 15 * scale)
+        text = EMPTY_SCENE_HINT
+        width, _height = blf.dimensions(font, text)
+        if width > region.width - 20 * scale:   # (a narrow view: the first part only)
+            text = text.split(" · ")[0]
+            width, _height = blf.dimensions(font, text)
+        blf.color(font, 0.75, 0.75, 0.75, 1.0)
+        blf.position(font, (region.width - width) / 2, region.height * 0.4, 0)   # (below the 3D cursor)
         blf.draw(font, text)
         blf.size(font, 13 * scale)
 

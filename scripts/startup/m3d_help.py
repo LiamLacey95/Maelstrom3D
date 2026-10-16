@@ -4,9 +4,10 @@
 
 """
 Files, help and trust for Maelstrom3D: the version label, the log file and the status bar note, the Help menu's commands
-(Report a Bug, logs, About), the card after a session that ended unexpectedly, File > Defaults (reset, settings export /
-import), settings carried to a new version folder, and the command line strip (Windows > Command Line).
-Nothing is ever sent anywhere: Report a Bug only opens a pre-filled page in the browser.
+(Report a Bug, logs, About, Check for Updates), the card after a session that ended unexpectedly, File > Defaults (reset,
+settings export / import), settings carried to a new version folder, and the command line strip (Windows > Command Line).
+Nothing is ever sent anywhere: Report a Bug only opens a pre-filled page in the browser, and Check for Updates (only with
+online access allowed) only reads the list of releases.
 """
 
 import os
@@ -75,8 +76,11 @@ def draw_status(layout):
 
 
 def draw_version(layout, context):
-    """The version; on a narrow window it gives way to a note while that shows."""
+    """A newer alpha's link, the version; on a narrow window the version gives way to a note while that shows."""
     from m3d_ui import status_narrow
+    newer = newer_release()
+    if newer is not None:
+        layout.operator("wm.url_open", text="New alpha %s" % newer[0], icon='URL', emboss=False).url = newer[1]
     if not (note_text() and status_narrow(context, 1700)):
         layout.label(text=version_label(), translate=False)
 
@@ -265,6 +269,127 @@ class M3D_OT_about(Operator):
 
 
 # -----------------------------------------------------------------------------
+# Check for Updates: the newest release on GitHub (every release is an alpha pre-release), read only while Preferences >
+# System > Allow Online Access is on: by itself at most once a week, from Help > Check for Updates any time. The status bar
+# links a newer alpha. Nothing but the release list is fetched, in a thread with a short timeout (the UI never waits).
+
+RELEASES_API = "https://api.github.com/repos/LiamLacey95/Maelstrom3D/releases"
+RELEASES = REPO + "/releases"
+WEEK = 7 * 24 * 3600
+_check = {"thread": None, "result": None, "manual": False}
+
+
+def online():
+    """Preferences > System > Allow Online Access (or --online-mode); the tests replace this."""
+    return bpy.app.online_access
+
+
+def fetch(url):
+    """The body of a GET of `url` (the tests replace this: they never go online)."""
+    import urllib.request
+    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "Maelstrom3D"})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return response.read(2_000_000)
+
+
+def tag_number(tag):
+    """"m3d.12" -> 12; None for "dev" or any other tag."""
+    import re
+    found = re.fullmatch(r"m3d\.(\d+)", tag or "")
+    return int(found.group(1)) if found else None
+
+
+def latest_release():
+    """(tag, page) of the newest release (the highest m3d.N; drafts left out). ValueError for an answer without one."""
+    import json
+    found = [(tag_number(r.get("tag_name")), r.get("tag_name"), r.get("html_url"))
+             for r in json.loads(fetch(RELEASES_API)) if isinstance(r, dict) and not r.get("draft")]
+    found = [f for f in found if f[0] is not None]
+    if not found:
+        raise ValueError("no Maelstrom3D release found")
+    _n, tag, page = max(found)
+    return tag, page if isinstance(page, str) and page.startswith(REPO + "/") else RELEASES   # (only our pages are linked)
+
+
+def newer_release():
+    """(tag, page) of the last checked release when it is newer than this version, else None (a dev build: None)."""
+    found = m3d_user.data().get("update")
+    ours = tag_number(version_tag())
+    if not isinstance(found, dict) or ours is None or (tag_number(found.get("tag")) or 0) <= ours:
+        return None
+    return found["tag"], found.get("page") or RELEASES
+
+
+def _check_thread():
+    try:
+        _check["result"] = latest_release()
+    except Exception as err:   # (offline, a timeout, a changed answer: said when asked, else ignored)
+        _check["result"] = err
+
+
+def start_update_check(manual=False):
+    """Ask GitHub for the newest release in a thread; False (nothing sent) without online access or while one runs."""
+    if not online() or (_check["thread"] is not None and _check["thread"].is_alive()):
+        return False
+    import threading
+    _check.update(result=None, manual=manual, thread=threading.Thread(target=_check_thread, daemon=True))
+    _check["thread"].start()
+    if bpy.app.timers.is_registered(_check_wait):
+        bpy.app.timers.unregister(_check_wait)
+    bpy.app.timers.register(_check_wait, first_interval=0.5)
+    return True
+
+
+def _check_wait():
+    if _check["thread"].is_alive():
+        return 0.5
+    finish_update_check()
+    return None
+
+
+def finish_update_check():
+    """The thread is done: keep its answer (m3d_user.json) and, when asked from the menu, say what it found."""
+    result, manual = _check["result"], _check["manual"]
+    if isinstance(result, Exception):
+        if manual:
+            show_note("Could not check for updates: %s" % result, 'ERROR', 10.0)
+        return
+    tag, page = result
+    m3d_user.data()["update"] = {"checked": time.time(), "tag": tag, "page": page}
+    m3d_user.save()
+    if newer_release():
+        show_note("Maelstrom3D alpha %s is out: the link is at the right end of the status bar" % tag, 'INFO', 15.0)
+    elif manual:
+        show_note("You have the newest alpha (%s)" % version_tag(), 'INFO', 8.0)
+    else:
+        _redraw_status()
+
+
+def auto_update_check():
+    """At startup: check when the last check is a week old (only with online access)."""
+    found = m3d_user.data().get("update")
+    checked = found.get("checked", 0) if isinstance(found, dict) else 0
+    if not isinstance(checked, (int, float)) or time.time() - checked >= WEEK:
+        start_update_check()
+
+
+class M3D_OT_check_updates(Operator):
+    """Look for a newer alpha on GitHub (needs Preferences > System > Allow Online Access; only the list of releases is
+    read). With online access on, Maelstrom3D also looks once a week by itself"""
+    bl_idname = "m3d.check_updates"
+    bl_label = "Check for Updates"
+
+    def execute(self, context):
+        if not online():
+            self.report({'WARNING'}, "Checking for updates needs Preferences > System > Allow Online Access")
+            bpy.ops.screen.userpref_show(section='SYSTEM')
+            return {'CANCELLED'}
+        if start_update_check(manual=True):
+            self.report({'INFO'}, "Checking for updates...")
+        return {'FINISHED'}
+
+
+# -----------------------------------------------------------------------------
 # The last session ended unexpectedly: its auto save is newer than the last normal quit
 
 def crash_autosave():
@@ -340,6 +465,7 @@ def _startup():
         try:
             carry_settings()
             offer_recovery()
+            auto_update_check()
         except Exception:
             import traceback
             traceback.print_exc()
@@ -595,6 +721,7 @@ classes = (
     M3D_OT_report_bug,
     M3D_OT_open_log,
     M3D_OT_about,
+    M3D_OT_check_updates,
     M3D_OT_recover_card,
     M3D_OT_save_layouts_default,
     M3D_OT_reset_settings,

@@ -101,6 +101,11 @@ def restore_window():
 @step
 def setup():
     restore_window()
+    # Settings written by the steps (m3d_user.json: an F-key's first-use note, shelves...) go to a temp folder, never to the real one.
+    import tempfile
+    GIZMO["cfg"] = tempfile.mkdtemp(prefix="m3d_gui_")
+    m3d_user._path = lambda create=False: os.path.join(GIZMO["cfg"], "m3d_user.json")
+    m3d_user.reset_cache()
     check(bpy.context.scene.render.filepath == m3d_render.DEFAULT_OUTPUT, "a new file renders into //render/, not /tmp/ (%r)"
           % bpy.context.scene.render.filepath)
     lb_sandbox()   # (the Library tab: temporary folders and no thumbnails for the tests of the other phases, see lb_setup)
@@ -12798,6 +12803,224 @@ def p5_recover_card_close():
 @step
 def p5_done():
     check(not tracebacks(), "Python error in the P5 steps")
+
+
+# ----------------------------------------------------------------------------------------------------
+# First run and discoverability (UX pass 2, P8): the splash, the key card, Tab search over every menu set in each mode, the
+# Workspaces menu, the first-use note of an F-key, undo across workspace switches (edit, F2, a stroke, Ctrl+Z x3, F1, Ctrl+Shift+Z).
+
+P8 = GIZMO.setdefault("p8", {})
+
+
+def p8_key(type, **mods):
+    """A key press and release over the middle of the main 3D view."""
+    def body():
+        _win, _area, region = view3d()
+        xy = (region.x + region.width // 2, region.y + region.height // 2)
+        event('MOUSEMOVE', xy=xy)
+        event(type, 'PRESS', xy, **mods)
+        event(type, 'RELEASE', xy, **mods)
+    body.__name__ = "p8_key_" + type.lower()
+    return body
+
+
+@step
+def p8_setup():
+    import tempfile
+    if not GIZMO.get("cfg"):   # (a run of this segment alone: the settings still go to a temp folder)
+        GIZMO["cfg"] = tempfile.mkdtemp(prefix="m3d_gui_")
+        m3d_user._path = lambda create=False: os.path.join(GIZMO["cfg"], "m3d_user.json")
+        m3d_user.reset_cache()
+    bpy.ops.m3d.workspace(kind='MODEL')
+
+
+step(wait_until(lambda: window().workspace.name == "Modeling", "Modeling for the P8 steps"))
+
+
+@step
+def p8_splash():
+    with bpy.context.temp_override(window=window()):
+        check(bpy.ops.wm.splash('INVOKE_DEFAULT') == {'FINISHED'}, "the splash opens")
+
+
+step(p8_key('ESC'))
+
+
+@step
+def p8_key_card():
+    check(not tracebacks(), "Python error drawing the splash")
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.m3d.key_card('INVOKE_DEFAULT', page='TASKS')
+
+
+step(p8_key('ESC'))
+
+
+@step
+def p8_key_card_blender():
+    check(not tracebacks(), "Python error drawing the key card")
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.m3d.key_card('INVOKE_DEFAULT', page='BLENDER')
+        bpy.ops.m3d.add_primitive(kind='CUBE')
+
+
+step(p8_key('ESC'))
+
+
+# Tab: the menu search over the hotbox (every menu set) draws every menu in Object, Edit and Sculpt Mode without an error.
+for _mode in ('OBJECT', 'EDIT', 'SCULPT'):
+    def _p8_mode(mode=_mode):
+        check(not tracebacks(), "Python error before Tab in %s" % mode)
+        win, area, region = view3d()
+        with bpy.context.temp_override(window=win, area=area, region=region):
+            bpy.ops.object.mode_set(mode=mode)
+    _p8_mode.__name__ = "p8_tab_" + _mode.lower()
+    step(_p8_mode)
+    step(p8_key('TAB'))
+    step(p8_key('ESC'))
+
+
+@step
+def p8_workspaces_menu():
+    check(not tracebacks(), "Python error in Tab search (the menus of every menu set)")
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.ops.wm.call_menu(name="M3D_MT_workspaces")
+
+
+step(p8_key('ESC'))
+
+
+@step
+def p8_fkey_note():
+    check(not tracebacks(), "Python error in the Workspaces menu")
+    m3d_user.data()["fkeys_seen"] = []
+    m3d_help.show_note("", seconds=0)
+
+
+step(p8_key('F5'))
+step(wait_until(lambda: window().workspace.name == "Rigging", "F5 to Rigging"))
+
+
+@step
+def p8_fkey_note_check():
+    check("F5" in m3d_help.note_text() and "Rigging" in m3d_help.note_text() and m3d_user.data()["fkeys_seen"] == ["F5"],
+          "the first F5: a note in the status bar (%r)" % m3d_help.note_text())
+    m3d_help.show_note("", seconds=0)
+
+
+step(p8_key('F1'))
+step(wait_until(lambda: window().workspace.name == "Modeling", "F1 to Modeling"))
+
+
+# Undo across workspace switches: Component mode with an edit, F2, a stroke, Ctrl+Z three times, F1, Ctrl+Shift+Z: no crash,
+# and the mode always one the undo step was made in.
+def p8_positions():
+    import numpy as np
+    me = bpy.context.active_object.data
+    co = np.empty(len(me.vertices) * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    return co
+
+
+@step
+def p8_undo_setup():
+    check("F1" not in m3d_help.note_text() or "F1" in m3d_user.data()["fkeys_seen"], "(F1 noted once)")
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        for ob in list(bpy.data.objects):
+            if ob.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
+            bpy.data.objects.remove(ob)
+        bpy.ops.mesh.primitive_uv_sphere_add()
+        bpy.ops.view3d.view_all(center=True)
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        # (operators run from a script push no undo steps: the test pushes them, as the clicks would)
+        bpy.ops.ed.undo_push(message="P8 sphere")
+        bpy.ops.transform.translate(value=(0, 0, 0.1))
+        bpy.ops.ed.undo_push(message="P8 move")
+
+
+step(p8_key('F2'))
+step(wait_until(lambda: window().workspace.name == "Sculpt" and bpy.context.mode == 'SCULPT', "F2 to Sculpt"))
+
+
+@step
+def p8_brush():
+    # The Draw brush as the earlier steps may have left it: the brush tool, its size and strength.
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        bpy.ops.wm.tool_set_by_id(name="builtin.brush")
+    press_ok("brush.asset_activate", **m3d_sculpt.brush_props("Draw"))
+    brush = bpy.context.tool_settings.sculpt.brush
+    brush.size, brush.strength, brush.direction = 150, 1.0, 'ADD'
+    ups = bpy.context.tool_settings.sculpt.unified_paint_settings
+    ups.use_unified_size = ups.use_unified_strength = False
+
+
+@step
+def p8_stroke():
+    P8["edited"] = p8_positions().copy()   # (the mesh as it left component mode: the edit mode data is written back then)
+    _win, _area, region = view3d()
+    x, y = region.x + region.width // 2, region.y + region.height // 2
+    event('MOUSEMOVE', xy=(x - 40, y))
+    event('LEFTMOUSE', 'PRESS', (x - 40, y))
+    for i in range(1, 11):
+        event('MOUSEMOVE', xy=(x - 40 + 8 * i, y))
+    event('LEFTMOUSE', 'RELEASE', (x + 40, y))
+
+
+step(wait_until(lambda: abs(p8_positions() - P8["edited"]).max() > 1e-4, "the stroke to sculpt", tries=50))
+
+
+@step
+def p8_stroke_check():
+    brush = bpy.context.tool_settings.sculpt.brush
+    check(abs(p8_positions() - P8["edited"]).max() > 1e-4, "the stroke sculpted (tool %s, brush %s, size %s, strength %s, modal %s)"
+          % (active_tool_id(), brush and brush.name, brush and brush.size, brush and brush.strength,
+             [o.bl_idname for o in window().modal_operators]))
+step(p8_key('Z', ctrl=True))
+step(wait_until(lambda: abs(p8_positions() - P8["edited"]).max() < 1e-6, "Ctrl+Z to take the stroke back", tries=40))
+
+
+@step
+def p8_undo_1():
+    check(bpy.context.mode == 'SCULPT' and window().workspace.name == "Sculpt", "Ctrl+Z: the stroke back, still sculpting (%s, %s, %.3g)"
+          % (bpy.context.mode, window().workspace.name, abs(p8_positions() - P8["edited"]).max()))
+
+
+step(p8_key('Z', ctrl=True))
+step(wait_until(lambda: bpy.context.mode == 'EDIT_MESH', "the second Ctrl+Z to take back entering Sculpt Mode"))
+step(p8_key('Z', ctrl=True))
+
+
+@step
+def p8_undo_3():
+    check(bpy.context.mode == 'EDIT_MESH', "the third Ctrl+Z: component mode, the edit before (%s)" % bpy.context.mode)
+
+
+step(p8_key('F1'))
+step(wait_until(lambda: window().workspace.name == "Modeling" and bpy.context.mode == 'OBJECT', "F1 to Modeling (Object Mode)"))
+step(p8_key('Z', ctrl=True, shift=True))
+
+
+@step
+def p8_redo():
+    check(window().workspace.name == "Modeling" and bpy.context.mode in {'OBJECT', 'EDIT_MESH'},
+          "Ctrl+Shift+Z in Modeling: an object or component mode step, not Sculpt (%s)" % bpy.context.mode)
+    win, area, region = view3d()
+    with bpy.context.temp_override(window=win, area=area, region=region):
+        if bpy.context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+
+@step
+def p8_done():
+    check(not tracebacks(), "Python error in the P8 steps")
 
 
 @step
